@@ -16,6 +16,7 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -27,6 +28,8 @@ type Server struct {
 	audit        *audit.Recorder
 	nodes        *node.Service
 	users        *user.Service
+	traffic      *traffic.Querier
+	scheduler    *traffic.Scheduler
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
 	logger       *slog.Logger
@@ -41,15 +44,17 @@ type Server struct {
 
 // Options 是构造 Server 所需的依赖。
 type Options struct {
-	Config   config.Config
-	DB       *sql.DB
-	Auth     *auth.Service
-	Audit    *audit.Recorder
-	Nodes    *node.Service
-	Users    *user.Service
-	Pool     *sshx.Pool
-	Binaries node.BinaryProvider
-	Logger   *slog.Logger
+	Config    config.Config
+	DB        *sql.DB
+	Auth      *auth.Service
+	Audit     *audit.Recorder
+	Nodes     *node.Service
+	Users     *user.Service
+	Traffic   *traffic.Querier
+	Scheduler *traffic.Scheduler
+	Pool      *sshx.Pool
+	Binaries  node.BinaryProvider
+	Logger    *slog.Logger
 	// Assets 是前端构建产物的文件系统。为 nil 时只提供 API,
 	// 便于在前端尚未构建时启动后端。
 	Assets fs.FS
@@ -63,6 +68,8 @@ func NewServer(opts Options) *Server {
 		audit:        opts.Audit,
 		nodes:        opts.Nodes,
 		users:        opts.Users,
+		traffic:      opts.Traffic,
+		scheduler:    opts.Scheduler,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
 		logger:       opts.Logger,
@@ -119,6 +126,15 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/users/{id}/reset-traffic", s.handleResetUserTraffic)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-uuid", s.handleRegenerateUserUUID)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
+	}
+
+	if s.traffic != nil {
+		authed.HandleFunc("GET /api/users/{id}/traffic", s.handleUserTraffic)
+		authed.HandleFunc("GET /api/nodes/{id}/traffic", s.handleNodeTraffic)
+	}
+	if s.scheduler != nil {
+		authed.HandleFunc("POST /api/nodes/{id}/sync-traffic", longOperation(s.handleSyncNodeTraffic))
+		authed.HandleFunc("GET /api/traffic/status", s.handleTrafficStatus)
 	}
 	mux.Handle("/api/", s.requireAuth(authed))
 

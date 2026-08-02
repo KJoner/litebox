@@ -12,8 +12,9 @@
 * Phase 0 技术验证 —— 已完成,见 [`docs/Phase0-技术验证报告.md`](docs/Phase0-技术验证报告.md)
 * Phase 1 项目骨架 —— 已完成
 * Phase 2 节点能力 —— 已完成
-* **Phase 3 用户与配置生成 —— 已完成**
-* Phase 4 及之后 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
+* Phase 3 用户与配置生成 —— 已完成
+* **Phase 4 流量与额度 —— 已完成**
+* Phase 5 及之后 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
 
 Phase 1 交付:配置加载、主密钥与字段加密、SQLite 迁移框架与完整表结构、
 管理员登录与会话、登录失败限流、审计日志、REST API、Vue 3 前端骨架(登录页 +
@@ -27,6 +28,11 @@ sing-box 配置渲染与强校验、节点二进制分发与 systemd 单元安�
 Phase 3 交付:用户 CRUD 与不可复用的 user_code 分配、UUID 与订阅 Token 生成、
 节点分配、按状态过滤的配置生成(停用/过期/超额用户自动从节点配置中移除)、
 用户变更的合并部署协调器(连续变更只触发一次重启)、配置 diff。
+
+Phase 4 交付:V2Ray Stats gRPC 客户端、经 SSH 通道的流量采集、
+基线差值入账与幂等 ledger、三信号重启判定(启动时刻前移 / uptime 小于同步间隔 /
+计数器回退兜底)、每日聚合、额度与到期检查、超额自动停用并重新部署、
+月度流量重置、60 秒定时同步。部署事务的"重启前强制同步"至此真正生效。
 
 节点与用户管理目前只有 REST API,管理界面在 Phase 6 接入。
 

@@ -169,6 +169,14 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 	if s.users != nil {
 		summary["expiring_soon"] = s.expiringSoonCount(r)
 	}
+	if s.traffic != nil {
+		if today, err := s.traffic.TodayBytes(ctx); err == nil {
+			summary["traffic_today"] = today
+		}
+		if month, err := s.traffic.MonthBytes(ctx); err == nil {
+			summary["traffic_month"] = month
+		}
+	}
 
 	writeJSON(w, http.StatusOK, summary)
 }

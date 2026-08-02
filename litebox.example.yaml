@@ -41,6 +41,14 @@ node:
   # 持续不断的变更不能把部署无限推迟,这是兜底上限。
   deploy_max_delay: 30s
 
+traffic:
+  # 流量同步周期。
+  #
+  # 它同时决定了意外重启(OOM、宿主机重启、崩溃)的最大流量损失窗口:
+  # sing-box 的计数器是纯内存的,未同步部分随进程退出永久丢失,无补救手段。
+  # 面板自己触发的重启会先强制同步,不受此窗口影响。
+  sync_interval: 60s
+
 log:
   level: "info"   # debug / info / warn / error
   format: "text"  # text / json

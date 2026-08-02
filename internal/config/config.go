@@ -21,7 +21,17 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Security SecurityConfig `yaml:"security"`
 	Node     NodeConfig     `yaml:"node"`
+	Traffic  TrafficConfig  `yaml:"traffic"`
 	Log      LogConfig      `yaml:"log"`
+}
+
+type TrafficConfig struct {
+	// SyncInterval 是流量同步周期。
+	//
+	// 它同时决定了意外重启(OOM、宿主机重启、崩溃)的最大流量损失窗口:
+	// sing-box 的计数器是纯内存的,未同步部分随进程退出永久丢失,无补救手段。
+	// 面板自己触发的重启会先强制同步,不受此窗口影响。
+	SyncInterval time.Duration `yaml:"sync_interval"`
 }
 
 type NodeConfig struct {
@@ -107,6 +117,9 @@ func Default() Config {
 			DeployDebounce: 4 * time.Second,
 			DeployMaxDelay: 30 * time.Second,
 		},
+		Traffic: TrafficConfig{
+			SyncInterval: 60 * time.Second,
+		},
 		Log: LogConfig{
 			Level:  "info",
 			Format: "text",
@@ -149,6 +162,8 @@ func applyEnv(cfg *Config) {
 	envInt("LITEBOX_LOGIN_MAX_ATTEMPTS", &cfg.Security.LoginMaxAttempts)
 	envStr("LITEBOX_NODE_BINARY_DIR", &cfg.Node.BinaryDir)
 	envDuration("LITEBOX_DEPLOY_TIMEOUT", &cfg.Node.DeployTimeout)
+	envDuration("LITEBOX_DEPLOY_DEBOUNCE", &cfg.Node.DeployDebounce)
+	envDuration("LITEBOX_TRAFFIC_SYNC_INTERVAL", &cfg.Traffic.SyncInterval)
 	envStr("LITEBOX_LOG_LEVEL", &cfg.Log.Level)
 	envStr("LITEBOX_LOG_FORMAT", &cfg.Log.Format)
 }

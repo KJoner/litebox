@@ -98,6 +98,10 @@ func (d *Deployer) Deploy(ctx context.Context, req Request) (Result, error) {
 	}
 	result.ConfigSHA256 = rendered.SHA256
 
+	if err := d.syncBeforeRestart(ctx, req.NodeID, rec); err != nil {
+		return d.finish(result, rec, StatusFailed, err, ""), err
+	}
+
 	deployErr := d.pool.Do(ctx, req.NodeID, func(client *sshx.Client) error {
 		return d.runTransaction(ctx, client, req, rendered, rec, &result)
 	})
@@ -112,6 +116,61 @@ func (d *Deployer) Deploy(ctx context.Context, req Request) (Result, error) {
 	return d.finish(result, rec, StatusSuccess, nil, ""), nil
 }
 
+// syncBeforeRestart 在重启前强制同步一次流量。
+//
+// 必须在取得节点连接锁【之前】执行:同步本身也要经 pool.Do 读取节点的
+// V2Ray API,而 pool.Do 的节点级互斥锁不可重入,放进事务内部会自我死锁。
+//
+// 同步失败是否致命,取决于节点上的 sing-box 是否正在运行:
+//   - 正在运行:计数器里有尚未落库的流量,重启会让它永久丢失,必须中止部署;
+//   - 未在运行:计数器早已随进程消失,没有任何东西可救。此时若仍然中止,
+//     一个崩溃或从未部署过的节点将永远无法通过部署恢复 —— 那才是真正的故障。
+func (d *Deployer) syncBeforeRestart(ctx context.Context, nodeID int64, rec *stepRecorder) error {
+	if d.syncer == nil {
+		rec.skip("同步流量", "未配置流量同步")
+		return nil
+	}
+
+	syncErr := d.syncer.SyncNode(ctx, nodeID)
+	if syncErr == nil {
+		rec.steps = append(rec.steps, Step{
+			Name: "同步流量", Status: StepSuccess, Detail: "已同步",
+		})
+		return nil
+	}
+
+	if d.serviceRunning(ctx, nodeID) {
+		err := fmt.Errorf("同步失败且 sing-box 仍在运行,中止部署以避免流量丢失: %w", syncErr)
+		rec.steps = append(rec.steps, Step{
+			Name: "同步流量", Status: StepFailed, Detail: err.Error(),
+		})
+		return err
+	}
+
+	rec.skip("同步流量", "节点上的 sing-box 未运行,无待同步流量:"+syncErr.Error())
+	d.logger.Info("跳过重启前同步:节点服务未运行", "node_id", nodeID)
+	return nil
+}
+
+// serviceRunning 判断节点上的 sing-box 是否处于 active 状态。
+// 连不上节点时保守返回 false —— 连 SSH 都不通的话,后续步骤本来也会失败,
+// 不应该让这里的判断把错误伪装成"同步失败"。
+func (d *Deployer) serviceRunning(ctx context.Context, nodeID int64) bool {
+	if d.pool == nil {
+		return false
+	}
+	var active bool
+	err := d.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		result, err := client.Run(ctx, sshx.NewCommand("systemctl", "is-active", d.layout.ServiceName))
+		if err != nil {
+			return err
+		}
+		active = strings.TrimSpace(result.Stdout) == "active"
+		return nil
+	})
+	return err == nil && active
+}
+
 func (d *Deployer) runTransaction(
 	ctx context.Context,
 	client *sshx.Client,
@@ -120,22 +179,9 @@ func (d *Deployer) runTransaction(
 	rec *stepRecorder,
 	result *Result,
 ) error {
-	// 步骤 1:重启前强制同步流量。失败必须中止 —— 继续部署会导致重启,
-	// 未同步的流量随进程退出永久丢失。
-	if d.syncer != nil {
-		if err := rec.run("同步流量", func() (string, error) {
-			if err := d.syncer.SyncNode(ctx, req.NodeID); err != nil {
-				return "", fmt.Errorf("同步失败,中止部署以避免流量丢失: %w", err)
-			}
-			return "已同步", nil
-		}); err != nil {
-			return err
-		}
-	} else {
-		rec.skip("同步流量", "尚未接入流量同步(Phase 4)")
-	}
+	// 强制同步流量已在 Deploy 中于取锁前完成,此处直接进入配置下发。
 
-	// 步骤 2:确保目录存在并上传临时配置。
+	// 步骤 1:确保目录存在并上传临时配置。
 	tempPath := d.layout.tempConfigPath()
 	if err := rec.run("上传临时配置", func() (string, error) {
 		for _, dir := range []string{d.layout.BaseDir, d.layout.BackupDir} {
@@ -151,7 +197,7 @@ func (d *Deployer) runTransaction(
 		return err
 	}
 
-	// 步骤 3:sing-box check。失败必须中止且不得重启,当前服务不受影响。
+	// 步骤 2:sing-box check。失败必须中止且不得重启,当前服务不受影响。
 	if err := rec.run("sing-box check", func() (string, error) {
 		out, err := client.Run(ctx, sshx.NewCommand(d.layout.BinaryPath, "check", "-c", tempPath))
 		if err != nil {
@@ -170,7 +216,7 @@ func (d *Deployer) runTransaction(
 		return err
 	}
 
-	// 步骤 4:备份当前配置。首次部署时没有现存配置,记为跳过。
+	// 步骤 3:备份当前配置。首次部署时没有现存配置,记为跳过。
 	backupPath := d.layout.backupPath(req.Revision)
 	hasBackup := false
 	if err := rec.run("备份当前配置", func() (string, error) {
@@ -190,7 +236,7 @@ func (d *Deployer) runTransaction(
 		return err
 	}
 
-	// 步骤 5:原子替换。同目录 rename 是原子的,不会出现半截配置。
+	// 步骤 4:原子替换。同目录 rename 是原子的,不会出现半截配置。
 	if err := rec.run("原子替换配置", func() (string, error) {
 		_, err := client.RunCheck(ctx, sshx.NewCommand("mv", tempPath, d.layout.ConfigPath))
 		return d.layout.ConfigPath, err
@@ -198,7 +244,7 @@ func (d *Deployer) runTransaction(
 		return err
 	}
 
-	// 步骤 6:重启服务。
+	// 步骤 5:重启服务。
 	if err := rec.run("重启服务", func() (string, error) {
 		_, err := client.RunCheck(ctx, sshx.NewCommand("systemctl", "restart", d.layout.ServiceName))
 		if err != nil {
@@ -209,7 +255,7 @@ func (d *Deployer) runTransaction(
 		return d.rollback(ctx, client, req, rec, result, hasBackup, backupPath, err)
 	}
 
-	// 步骤 7~9:三步健康检查。
+	// 步骤 6~8:三步健康检查。
 	if err := rec.run("健康检查:systemd 状态", func() (string, error) {
 		return d.checkServiceActive(ctx, client)
 	}); err != nil {
@@ -234,7 +280,7 @@ func (d *Deployer) runTransaction(
 		}
 	}
 
-	// 步骤 10:清理过期备份。失败不影响部署结果。
+	// 步骤 9:清理过期备份。失败不影响部署结果。
 	if err := d.pruneBackups(ctx, client); err != nil {
 		d.logger.Warn("清理历史配置备份失败", "node_id", req.NodeID, "error", err)
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 	"github.com/litebox/litebox/web"
 )
@@ -227,12 +228,22 @@ func cmdServe(args []string) error {
 	pool := sshx.NewPool(node.NewResolver(nodeStore, logger), logger)
 	defer pool.CloseAll()
 
+	// 流量采集经 SSH 通道读取节点上只监听回环的 V2Ray API。
+	sampler := traffic.NewTunnelSampler(pool, func(ctx context.Context, nodeID int64) (string, error) {
+		n, err := nodeStore.Get(ctx, nodeID)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("127.0.0.1:%d", n.APIPort), nil
+	})
+	syncer := traffic.NewSyncer(db, sampler, logger)
+
 	deployer := deployment.NewDeployer(deployment.Options{
 		Pool:   pool,
 		Layout: layout,
-		// Syncer 为 nil:流量同步在 Phase 4 接入。
-		// 接入后必须在此注入,否则重启会丢失未同步的流量。
-		Syncer:      nil,
+		// 部署事务的第一步是强制同步流量,失败即中止部署:
+		// sing-box 的计数器是纯内存的,重启会让未同步部分永久丢失。
+		Syncer:      syncer,
 		Logger:      logger,
 		KeepBackups: 5,
 	})
@@ -259,17 +270,29 @@ func cmdServe(args []string) error {
 
 	userService := user.NewService(userStore, coordinator, logger)
 
-	server := httpapi.NewServer(httpapi.Options{
-		Config:   cfg,
+	scheduler := traffic.NewScheduler(traffic.SchedulerOptions{
 		DB:       db,
-		Auth:     authService,
-		Audit:    audit.NewRecorder(db, logger),
-		Nodes:    nodeService,
-		Users:    userService,
-		Pool:     pool,
-		Binaries: node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		Syncer:   syncer,
+		Enforcer: traffic.NewEnforcer(db, logger),
+		Trigger:  coordinator,
 		Logger:   logger,
-		Assets:   assets,
+		Interval: cfg.Traffic.SyncInterval,
+	})
+	go scheduler.Run(ctx)
+
+	server := httpapi.NewServer(httpapi.Options{
+		Config:    cfg,
+		DB:        db,
+		Auth:      authService,
+		Audit:     audit.NewRecorder(db, logger),
+		Nodes:     nodeService,
+		Users:     userService,
+		Traffic:   traffic.NewQuerier(db),
+		Scheduler: scheduler,
+		Pool:      pool,
+		Binaries:  node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		Logger:    logger,
+		Assets:    assets,
 	})
 
 	go cleanupLoop(ctx, authService, logger)
