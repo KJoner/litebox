@@ -1,0 +1,21 @@
+[Unit]
+Description=LiteBox 数据库备份
+After=litebox.service
+
+[Service]
+Type=oneshot
+User=litebox
+Group=litebox
+EnvironmentFile=/etc/litebox/litebox.env
+# 不传 --output,由 litebox 自己按时间戳落到 <数据目录>/backup/。
+ExecStart=/opt/litebox/litebox backup --config /etc/litebox/litebox.yaml
+# 只保留最近 14 份,备份文件不大但会一直积累。
+ExecStartPost=/bin/sh -c 'ls -1t /var/lib/litebox/backup/litebox-*.db 2>/dev/null | tail -n +15 | xargs -r rm -f'
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/litebox
+CapabilityBoundingSet=
+AmbientCapabilities=

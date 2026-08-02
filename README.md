@@ -15,8 +15,11 @@
 * Phase 3 用户与配置生成 —— 已完成
 * Phase 4 流量与额度 —— 已完成
 * Phase 5 订阅 —— 已完成
-* **Phase 6 管理页面 —— 已完成**
-* Phase 7 部署与加固 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
+* Phase 6 管理页面 —— 已完成
+* **Phase 7 部署与加固 —— 已完成**
+
+**V1 全部验收标准通过**,见 [`docs/V1-验收报告.md`](docs/V1-验收报告.md)。
+日常运维见 [`docs/运维手册.md`](docs/运维手册.md)。
 
 Phase 1 交付:配置加载、主密钥与字段加密、SQLite 迁移框架与完整表结构、
 管理员登录与会话、登录失败限流、审计日志、REST API、Vue 3 前端骨架(登录页 +
@@ -60,7 +63,33 @@ Phase 6 交付:仪表盘(用户/节点/今日与本月流量/告警卡片/最近
 **一台机器只能承载一个节点** —— 节点上的路径(`/opt/litebox`)与服务名
 (`litebox-singbox`)是固定的,两个节点记录指向同一主机会互相覆盖配置。
 
-## 快速开始
+## 生产部署
+
+在主控机器上以 root 执行:
+
+```bash
+# 1. 构建(在开发机上)
+make build-linux                  # 主控二进制
+bash scripts/build-singbox.sh     # 节点用的 sing-box
+
+# 2. 安装(把 bin/ 与 scripts/ 拷到主控机器上)
+sudo ./scripts/install.sh
+
+# 3. 立刻备份主密钥 —— 丢失后全部用户与节点凭据不可恢复
+sudo cat /etc/litebox/litebox.env
+
+# 4. 开启每日自动备份
+sudo cp deploy/systemd/litebox-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now litebox-backup.timer
+
+# 5. 为节点生成专用 SSH 密钥
+sudo ./scripts/setup-node-key.sh <节点IP> <SSH端口> root
+```
+
+升级用 `sudo ./scripts/upgrade.sh`(自动先备份、失败自动回退),
+恢复用 `sudo ./scripts/restore.sh <备份文件>`。
+
+## 本地开发
 
 需要 Go 1.26+ 与 Node.js 22+。
 

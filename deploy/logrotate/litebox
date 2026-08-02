@@ -1,0 +1,32 @@
+# LiteBox 日志轮转。
+#
+# 默认情况下 LiteBox 把日志写到 stdout,由 systemd-journald 接管,
+# 轮转与保留由 journald 自己管理(见 /etc/systemd/journald.conf 的
+# SystemMaxUse),这个文件用不上。
+#
+# 只有在把日志重定向到文件时(例如用 nohup 手工启动,或在
+# systemd 单元里加了 StandardOutput=append:...)才需要它。
+#
+# 安装:cp deploy/logrotate/litebox /etc/logrotate.d/litebox
+
+/var/log/litebox/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    # 日志文件含来源 IP 与订阅拉取记录,不应让其他用户读到。
+    create 0640 litebox litebox
+    su litebox litebox
+    copytruncate
+}
+
+# Nginx 侧的访问日志按 Nginx 自己的规则轮转(/etc/logrotate.d/nginx),
+# 这里不重复配置。注意订阅地址会完整出现在 Nginx 的 access_log 里 ——
+# 那等同于明文凭据。生产环境建议对 /sub/ 路径关闭访问日志:
+#
+#   location ~ ^/sub/ {
+#       access_log off;
+#       proxy_pass http://127.0.0.1:8080;
+#   }

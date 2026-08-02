@@ -1,0 +1,14 @@
+[Unit]
+Description=每日备份 LiteBox 数据库
+
+[Timer]
+OnCalendar=daily
+# 主控多半是单机,固定时间会和其他日常任务撞在一起;
+# 加一个随机延迟错开。
+RandomizedDelaySec=30m
+# 机器在计划时间处于关机状态时,开机后补做一次 ——
+# 否则关机一天就等于漏掉一天备份。
+Persistent=true
+
+[Install]
+WantedBy=timers.target

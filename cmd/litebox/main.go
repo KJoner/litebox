@@ -4,6 +4,8 @@
 //
 //	litebox serve            启动服务(默认)
 //	litebox migrate          只执行数据库迁移后退出
+//	litebox backup           生成一份 WAL 安全的数据库备份
+//	litebox check            数据库完整性与外键自检
 //	litebox genkey           生成主密钥
 //	litebox reset-password   重置管理员密码
 //	litebox version          打印版本
@@ -18,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -67,10 +70,14 @@ func run() error {
 		return cmdMigrate(args)
 	case "reset-password":
 		return cmdResetPassword(args)
+	case "backup":
+		return cmdBackup(args)
+	case "check":
+		return cmdCheck(args)
 	case "serve":
 		return cmdServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q(可用:serve migrate genkey reset-password version)", command)
+		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check genkey reset-password version)", command)
 	}
 }
 
@@ -181,6 +188,79 @@ func cmdResetPassword(args []string) error {
 	logger.Info("密码已重置,所有会话已失效", "username", *username)
 	fmt.Printf("\n新密码:%s\n\n", password)
 	return nil
+}
+
+func cmdBackup(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	output := fs.String("output", "", "备份文件路径(默认 <数据目录>/backup/litebox-<时间戳>.db)")
+	cfg, logger, db, err := setup(fs, args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	dest := *output
+	if dest == "" {
+		// 默认放到数据目录下的 backup 子目录,时间戳精确到秒避免覆盖。
+		dest = filepath.Join(cfg.DatabaseDir(), "backup",
+			fmt.Sprintf("litebox-%s.db", time.Now().UTC().Format("20060102-150405")))
+	}
+
+	size, err := database.Backup(context.Background(), db, dest)
+	if err != nil {
+		return err
+	}
+	logger.Info("备份完成", "path", dest, "bytes", size)
+
+	fmt.Printf("\n备份已生成:%s(%.1f KB)\n", dest, float64(size)/1024)
+	fmt.Println("\n重要:备份不包含主密钥。")
+	fmt.Println("主密钥丢失时,备份中的用户 UUID 与节点私钥全部无法还原,")
+	fmt.Println("请把 LITEBOX_MASTER_KEY 与备份文件分开保存,并确认都能取回。")
+	return nil
+}
+
+func cmdCheck(args []string) error {
+	fs := flag.NewFlagSet("check", flag.ExitOnError)
+	_, _, db, err := setup(fs, args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	result, err := database.Check(context.Background(), db)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("架构版本    : %d\n", result.SchemaVersion)
+	fmt.Printf("日志模式    : %s\n", result.JournalMode)
+	fmt.Printf("页数/空闲页 : %d / %d\n", result.PageCount, result.FreelistCount)
+	fmt.Printf("完整性检查  : %s\n", passFail(result.IntegrityOK))
+	fmt.Printf("外键检查    : %s\n", passFail(result.ForeignKeysOK))
+	fmt.Println("\n各表行数:")
+	for _, table := range []string{
+		"admin_users", "proxy_users", "nodes", "user_nodes",
+		"traffic_ledger", "traffic_daily", "deployments", "audit_logs",
+	} {
+		fmt.Printf("  %-16s %d\n", table, result.TableCounts[table])
+	}
+
+	if !result.OK() {
+		fmt.Println("\n发现问题:")
+		for _, p := range result.Problems {
+			fmt.Println("  " + p)
+		}
+		return fmt.Errorf("数据库自检未通过")
+	}
+	fmt.Println("\n自检通过")
+	return nil
+}
+
+func passFail(ok bool) string {
+	if ok {
+		return "通过"
+	}
+	return "未通过"
 }
 
 func cmdServe(args []string) error {

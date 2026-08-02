@@ -36,6 +36,10 @@ lint:
 tidy:
 	go mod tidy
 
+## singbox: 构建带 with_v2ray_api 的节点二进制到 assets/singbox
+singbox:
+	bash scripts/build-singbox.sh
+
 ## run: 本地启动后端(前端用 make dev 另开)
 run:
 	go run ./cmd/litebox serve --config litebox.yaml
