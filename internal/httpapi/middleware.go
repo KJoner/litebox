@@ -82,6 +82,27 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// LongOperationTimeout 是节点长操作(安装、部署、目标扫描)的超时上限。
+// 这些操作要跨洲传输二进制、重启服务、等待健康检查,远超普通请求。
+const LongOperationTimeout = 10 * time.Minute
+
+// longOperation 为耗时的节点操作放宽响应写入期限。
+//
+// http.Server 的 WriteTimeout 是全局的,按最慢的操作设置会让普通请求
+// 也失去超时保护。这里用 ResponseController 只给需要的处理器单独延长。
+func longOperation(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		deadline := time.Now().Add(LongOperationTimeout)
+		_ = rc.SetWriteDeadline(deadline)
+		_ = rc.SetReadDeadline(deadline)
+
+		ctx, cancel := context.WithTimeout(r.Context(), LongOperationTimeout)
+		defer cancel()
+		next(w, r.WithContext(ctx))
+	}
+}
+
 // requireAuth 校验会话 Cookie,并把管理员身份注入请求上下文。
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

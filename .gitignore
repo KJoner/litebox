@@ -16,6 +16,10 @@ web/dist/
 /phase0/statsprobe/statsprobe.exe
 /phase0/logs/
 
+# 要分发到节点的 sing-box 二进制(约 28MB,由 scripts/build-singbox.sh 生成)
+assets/singbox/sing-box-linux-*
+.build/
+
 # 依赖
 node_modules/
 

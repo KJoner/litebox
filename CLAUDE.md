@@ -86,6 +86,17 @@ make dev           # 启动前端开发服务器(API 代理到 127.0.0.1:8080)
 
 go run ./cmd/litebox genkey    # 生成主密钥
 go run ./cmd/litebox migrate   # 只执行迁移并做一致性检查
+
+bash scripts/build-singbox.sh  # 构建带 with_v2ray_api 的节点二进制到 assets/singbox
+```
+
+针对真实节点的集成测试(会重启节点服务,不要指向生产节点):
+
+```bash
+export LITEBOX_TEST_NODE_HOST=1.2.3.4
+export LITEBOX_TEST_NODE_PORT=22
+export LITEBOX_TEST_NODE_KEY=~/.ssh/id_ed25519
+go test ./internal/deployment/ -run TestIntegration -v -timeout 15m
 ```
 
 ## 已知依赖问题
@@ -97,8 +108,8 @@ go run ./cmd/litebox migrate   # 只执行迁移并做一致性检查
 
 * Phase 0 技术验证 —— 已完成,见 `docs/Phase0-技术验证报告.md`
 * Phase 1 项目骨架 —— 已完成(配置、加密、迁移、登录会话、审计、REST API、Vue 骨架、部署文件)
-* Phase 2 节点能力 —— 未开始,下一步
-* Phase 3 用户与配置生成 —— 未开始
+* Phase 2 节点能力 —— 已完成(SSH 连接池、节点探测、握手目标检测、配置渲染、部署事务、三步健康检查、自动回滚)
+* Phase 3 用户与配置生成 —— 未开始,下一步
 * Phase 4 流量与额度 —— 未开始
 * Phase 5 订阅 —— 未开始
 * Phase 6 管理页面 —— 未开始

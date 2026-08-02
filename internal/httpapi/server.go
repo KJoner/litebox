@@ -14,6 +14,8 @@ import (
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
+	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/sshx"
 )
 
 // Server 持有 HTTP 服务的全部依赖。
@@ -22,6 +24,9 @@ type Server struct {
 	db           *sql.DB
 	auth         *auth.Service
 	audit        *audit.Recorder
+	nodes        *node.Service
+	pool         *sshx.Pool
+	binaries     node.BinaryProvider
 	logger       *slog.Logger
 	assets       fs.FS
 	secureCookie bool
@@ -34,11 +39,14 @@ type Server struct {
 
 // Options 是构造 Server 所需的依赖。
 type Options struct {
-	Config config.Config
-	DB     *sql.DB
-	Auth   *auth.Service
-	Audit  *audit.Recorder
-	Logger *slog.Logger
+	Config   config.Config
+	DB       *sql.DB
+	Auth     *auth.Service
+	Audit    *audit.Recorder
+	Nodes    *node.Service
+	Pool     *sshx.Pool
+	Binaries node.BinaryProvider
+	Logger   *slog.Logger
 	// Assets 是前端构建产物的文件系统。为 nil 时只提供 API,
 	// 便于在前端尚未构建时启动后端。
 	Assets fs.FS
@@ -50,6 +58,9 @@ func NewServer(opts Options) *Server {
 		db:           opts.DB,
 		auth:         opts.Auth,
 		audit:        opts.Audit,
+		nodes:        opts.Nodes,
+		pool:         opts.Pool,
+		binaries:     opts.Binaries,
 		logger:       opts.Logger,
 		assets:       opts.Assets,
 		secureCookie: opts.Config.HTTP.SecureCookie,
@@ -73,6 +84,25 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	authed.HandleFunc("GET /api/dashboard/summary", s.handleDashboardSummary)
 	authed.HandleFunc("GET /api/audit-logs", s.handleAuditLogs)
+
+	if s.nodes != nil {
+		authed.HandleFunc("GET /api/nodes", s.handleListNodes)
+		authed.HandleFunc("POST /api/nodes", s.handleCreateNode)
+		authed.HandleFunc("GET /api/nodes/{id}", s.handleGetNode)
+		authed.HandleFunc("DELETE /api/nodes/{id}", s.handleDeleteNode)
+		authed.HandleFunc("POST /api/nodes/{id}/enabled", s.handleSetNodeEnabled)
+		authed.HandleFunc("POST /api/nodes/{id}/test-ssh", s.handleTestNodeSSH)
+		authed.HandleFunc("POST /api/nodes/{id}/probe", s.handleProbeNode)
+		authed.HandleFunc("POST /api/nodes/{id}/dest-check", longOperation(s.handleCheckNodeDest))
+		authed.HandleFunc("POST /api/nodes/{id}/dest-scan", longOperation(s.handleScanNodeDests))
+		authed.HandleFunc("POST /api/nodes/{id}/install", longOperation(s.handleInstallNode))
+		authed.HandleFunc("POST /api/nodes/{id}/deploy", longOperation(s.handleDeployNode))
+		authed.HandleFunc("POST /api/nodes/{id}/restart", longOperation(s.handleRestartNode))
+		authed.HandleFunc("POST /api/nodes/{id}/reset-host-key", s.handleResetNodeHostKey)
+		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
+		authed.HandleFunc("GET /api/deployments", s.handleRecentDeployments)
+		authed.HandleFunc("GET /api/dest-candidates", s.handleDestCandidates)
+	}
 	mux.Handle("/api/", s.requireAuth(authed))
 
 	// 前端静态资源

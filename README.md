@@ -10,12 +10,20 @@
 ## 当前状态
 
 * Phase 0 技术验证 —— 已完成,见 [`docs/Phase0-技术验证报告.md`](docs/Phase0-技术验证报告.md)
-* **Phase 1 项目骨架 —— 已完成**
-* Phase 2 及之后 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
+* Phase 1 项目骨架 —— 已完成
+* **Phase 2 节点能力 —— 已完成**
+* Phase 3 及之后 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
 
 Phase 1 交付:配置加载、主密钥与字段加密、SQLite 迁移框架与完整表结构、
 管理员登录与会话、登录失败限流、审计日志、REST API、Vue 3 前端骨架(登录页 +
 仪表盘 + 审计日志 + 设置)、systemd 与 Nginx 部署文件。
+
+Phase 2 交付:SSH 连接池(按节点复用长连接、主机密钥 TOFU 固定)、参数化远程命令、
+节点探测与构建标签断言、REALITY 密钥生成、从节点出口实测握手目标、
+sing-box 配置渲染与强校验、节点二进制分发与 systemd 单元安装、
+部署事务(同步→check→备份→原子替换→重启→三步健康检查→失败自动回滚)、部署记录。
+
+节点管理目前只有 REST API,管理界面在 Phase 6 接入。
 
 ## 快速开始
 

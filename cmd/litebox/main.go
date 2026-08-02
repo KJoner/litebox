@@ -27,7 +27,10 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/httpapi"
+	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/web"
 )
 
@@ -186,7 +189,8 @@ func cmdServe(args []string) error {
 	defer db.Close()
 
 	// 主密钥必须在启动时就验证可用,不能等到第一次加密用户 UUID 时才失败。
-	if _, err := crypto.NewCipher(cfg.Security.MasterKey); err != nil {
+	cipher, err := crypto.NewCipher(cfg.Security.MasterKey)
+	if err != nil {
 		return fmt.Errorf("主密钥校验失败: %w", err)
 	}
 
@@ -215,13 +219,43 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("加载前端资源: %w", err)
 	}
 
-	server := httpapi.NewServer(httpapi.Options{
-		Config: cfg,
-		DB:     db,
-		Auth:   authService,
-		Audit:  audit.NewRecorder(db, logger),
+	// 节点能力:存储 → 连接池 → 部署器 → 服务。
+	nodeStore := node.NewStore(db, cipher)
+	layout := deployment.DefaultLayout()
+
+	pool := sshx.NewPool(node.NewResolver(nodeStore, logger), logger)
+	defer pool.CloseAll()
+
+	deployer := deployment.NewDeployer(deployment.Options{
+		Pool:   pool,
+		Layout: layout,
+		// Syncer 为 nil:流量同步在 Phase 4 接入。
+		// 接入后必须在此注入,否则重启会丢失未同步的流量。
+		Syncer:      nil,
+		Logger:      logger,
+		KeepBackups: 5,
+	})
+	nodeService := node.NewService(node.ServiceOptions{
+		Store:       nodeStore,
+		Pool:        pool,
+		Deployer:    deployer,
+		DeployStore: deployment.NewStore(db),
+		// Users 为 nil:用户分配在 Phase 3 接入,当前部署空用户列表。
+		Users:  nil,
+		Layout: layout,
 		Logger: logger,
-		Assets: assets,
+	})
+
+	server := httpapi.NewServer(httpapi.Options{
+		Config:   cfg,
+		DB:       db,
+		Auth:     authService,
+		Audit:    audit.NewRecorder(db, logger),
+		Nodes:    nodeService,
+		Pool:     pool,
+		Binaries: node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		Logger:   logger,
+		Assets:   assets,
 	})
 
 	go cleanupLoop(ctx, authService, logger)

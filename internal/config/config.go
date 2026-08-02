@@ -20,7 +20,18 @@ type Config struct {
 	HTTP     HTTPConfig     `yaml:"http"`
 	Database DatabaseConfig `yaml:"database"`
 	Security SecurityConfig `yaml:"security"`
+	Node     NodeConfig     `yaml:"node"`
 	Log      LogConfig      `yaml:"log"`
+}
+
+type NodeConfig struct {
+	// BinaryDir 存放要分发到节点的 sing-box 二进制,
+	// 文件名形如 sing-box-linux-amd64。由 scripts/build-singbox.sh 生成。
+	BinaryDir string `yaml:"binary_dir"`
+	// SSHDialTimeout 是建立到节点 SSH 连接的超时。
+	SSHDialTimeout time.Duration `yaml:"ssh_dial_timeout"`
+	// DeployTimeout 是单次部署事务的整体超时。
+	DeployTimeout time.Duration `yaml:"deploy_timeout"`
 }
 
 type HTTPConfig struct {
@@ -83,6 +94,11 @@ func Default() Config {
 			LoginWindow:      15 * time.Minute,
 			LoginLockout:     15 * time.Minute,
 		},
+		Node: NodeConfig{
+			BinaryDir:      "assets/singbox",
+			SSHDialTimeout: 20 * time.Second,
+			DeployTimeout:  5 * time.Minute,
+		},
 		Log: LogConfig{
 			Level:  "info",
 			Format: "text",
@@ -123,6 +139,8 @@ func applyEnv(cfg *Config) {
 	envStr("LITEBOX_MASTER_KEY", &cfg.Security.MasterKey)
 	envDuration("LITEBOX_SESSION_TTL", &cfg.Security.SessionTTL)
 	envInt("LITEBOX_LOGIN_MAX_ATTEMPTS", &cfg.Security.LoginMaxAttempts)
+	envStr("LITEBOX_NODE_BINARY_DIR", &cfg.Node.BinaryDir)
+	envDuration("LITEBOX_DEPLOY_TIMEOUT", &cfg.Node.DeployTimeout)
 	envStr("LITEBOX_LOG_LEVEL", &cfg.Log.Level)
 	envStr("LITEBOX_LOG_FORMAT", &cfg.Log.Format)
 }
