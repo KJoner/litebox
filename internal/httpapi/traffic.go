@@ -85,6 +85,21 @@ func (s *Server) handleNodeTraffic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"node_id": id, "daily": daily})
 }
 
+// handleNodesTodayTraffic 一次性返回今日各节点流量,供节点列表使用。
+func (s *Server) handleNodesTodayTraffic(w http.ResponseWriter, r *http.Request) {
+	byNode, err := s.traffic.NodeTodayBytes(r.Context())
+	if err != nil {
+		s.logger.Error("查询节点今日流量失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	items := make([]map[string]any, 0, len(byNode))
+	for nodeID, bytes := range byNode {
+		items = append(items, map[string]any{"node_id": nodeID, "bytes": bytes})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 // handleTrafficStatus 返回同步调度的健康状况。
 func (s *Server) handleTrafficStatus(w http.ResponseWriter, r *http.Request) {
 	lastRun, failing := s.scheduler.Status()

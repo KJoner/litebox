@@ -128,7 +128,7 @@ go test ./internal/deployment/ -run TestIntegration -v -timeout 15m
 * Phase 3 用户与配置生成 —— 已完成(用户 CRUD、节点分配、合并部署协调器、配置 diff)
 * Phase 4 流量与额度 —— 已完成(Stats gRPC 客户端、SSH 通道采集、重启判定、ledger 入账、额度检查、定时调度)
 * Phase 5 订阅 —— 已完成(VLESS URI、sing-box 客户端配置、节点过滤、公开路由、访问记录)
-* Phase 6 管理页面 —— 未开始,下一步
-* Phase 7 部署与加固 —— 未开始
+* Phase 6 管理页面 —— 已完成(仪表盘、用户管理、节点管理、部署记录、审计日志、流量图表)
+* Phase 7 部署与加固 —— 未开始,下一步
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

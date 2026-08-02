@@ -142,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 	if s.traffic != nil {
 		authed.HandleFunc("GET /api/users/{id}/traffic", s.handleUserTraffic)
 		authed.HandleFunc("GET /api/nodes/{id}/traffic", s.handleNodeTraffic)
+		authed.HandleFunc("GET /api/traffic/nodes-today", s.handleNodesTodayTraffic)
 	}
 	if s.scheduler != nil {
 		authed.HandleFunc("POST /api/nodes/{id}/sync-traffic", longOperation(s.handleSyncNodeTraffic))

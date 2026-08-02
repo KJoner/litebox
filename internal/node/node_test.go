@@ -222,6 +222,28 @@ func TestDeleteIsSoftAndHidesNode(t *testing.T) {
 	}
 }
 
+// 删除节点后应当能用回同一个名字。
+// name 列有 UNIQUE 约束且不区分是否已删除,不处理的话名字会被永久占住。
+func TestDeleteFreesNodeName(t *testing.T) {
+	store, _ := newTestStore(t)
+
+	first, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(t.Context(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatalf("删除后应当能复用节点名称: %v", err)
+	}
+	if second.Name != defaultCreateParams().Name {
+		t.Errorf("新节点名称 = %q", second.Name)
+	}
+}
+
 func TestSetEnabledAndDeployStatus(t *testing.T) {
 	store, _ := newTestStore(t)
 	n, err := store.Create(t.Context(), defaultCreateParams())

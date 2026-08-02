@@ -182,9 +182,15 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	logs, err := s.audit.List(r.Context(), limit, offset)
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	logs, err := s.audit.ListFiltered(r.Context(), audit.ListFilter{
+		TargetType: q.Get("target_type"),
+		TargetID:   q.Get("target_id"),
+		Limit:      limit,
+		Offset:     offset,
+	})
 	if err != nil {
 		s.logger.Error("查询审计日志失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")

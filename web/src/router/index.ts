@@ -20,6 +20,24 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '仪表盘' },
       },
       {
+        path: 'users',
+        name: 'users',
+        component: () => import('@/views/UsersView.vue'),
+        meta: { title: '用户管理' },
+      },
+      {
+        path: 'nodes',
+        name: 'nodes',
+        component: () => import('@/views/NodesView.vue'),
+        meta: { title: '节点管理' },
+      },
+      {
+        path: 'deployments',
+        name: 'deployments',
+        component: () => import('@/views/DeploymentsView.vue'),
+        meta: { title: '部署记录' },
+      },
+      {
         path: 'audit-logs',
         name: 'audit-logs',
         component: () => import('@/views/AuditLogView.vue'),

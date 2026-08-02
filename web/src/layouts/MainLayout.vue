@@ -11,9 +11,11 @@ const route = useRoute()
 const selectedKeys = computed(() => [route.name as string])
 const collapsed = ref(false)
 
-// Phase 1 只有三个页面,用户与节点管理在 Phase 3/2 接入。
 const menuItems = [
   { key: 'dashboard', label: '仪表盘' },
+  { key: 'users', label: '用户管理' },
+  { key: 'nodes', label: '节点管理' },
+  { key: 'deployments', label: '部署记录' },
   { key: 'audit-logs', label: '审计日志' },
   { key: 'settings', label: '设置' },
 ]

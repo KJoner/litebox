@@ -128,6 +128,29 @@ func (q *Querier) TodayBytes(ctx context.Context) (int64, error) {
 	return q.TotalBytesSince(ctx, time.Now().UTC().Format("2006-01-02"))
 }
 
+// NodeTodayBytes 返回今日各节点的流量,供节点列表一次性取回。
+// 逐个节点单独查会让列表页发出 N 个请求。
+func (q *Querier) NodeTodayBytes(ctx context.Context) (map[int64]int64, error) {
+	rows, err := q.db.QueryContext(ctx, `
+		SELECT node_id, COALESCE(SUM(uplink + downlink), 0)
+		  FROM traffic_daily WHERE day = ? GROUP BY node_id`,
+		time.Now().UTC().Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64]int64)
+	for rows.Next() {
+		var nodeID, bytes int64
+		if err := rows.Scan(&nodeID, &bytes); err != nil {
+			return nil, err
+		}
+		result[nodeID] = bytes
+	}
+	return result, rows.Err()
+}
+
 // MonthBytes 返回本月(UTC)全站流量。
 func (q *Querier) MonthBytes(ctx context.Context) (int64, error) {
 	return q.TotalBytesSince(ctx, time.Now().UTC().Format("2006-01")+"-01")

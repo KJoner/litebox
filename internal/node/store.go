@@ -353,10 +353,17 @@ func (s *Store) SetEnabled(ctx context.Context, id int64, enabled bool) error {
 }
 
 // Delete 软删除节点。
+//
+// 同时给名称加上删除标记:name 列有 UNIQUE 约束且不区分是否已删除,
+// 不改名的话被删节点会永久占住这个名字,管理员再也无法用回它。
+// 加后缀而不是清空,是为了让残留在数据库里的行仍然可读。
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE nodes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE nodes
+		   SET deleted_at = ?, updated_at = ?,
+		       name = name || ' (已删除#' || id || ')'
+		 WHERE id = ? AND deleted_at IS NULL`,
 		now, now, id)
 	if err != nil {
 		return err

@@ -70,15 +70,45 @@ type Log struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+// ListFilter 限定审计日志的查询范围。零值表示不限。
+type ListFilter struct {
+	TargetType string
+	TargetID   string
+	Limit      int
+	Offset     int
+}
+
 // List 按时间倒序返回审计记录。
 func (r *Recorder) List(ctx context.Context, limit, offset int) ([]Log, error) {
+	return r.ListFiltered(ctx, ListFilter{Limit: limit, Offset: offset})
+}
+
+// ListFiltered 支持按操作目标过滤,用于在用户/节点详情页展示"最近操作记录"。
+func (r *Recorder) ListFiltered(ctx context.Context, f ListFilter) ([]Log, error) {
+	limit, offset := f.Limit, f.Offset
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, admin_user_id, action, target_type, target_id, detail,
-		        client_ip, succeeded, created_at
-		   FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if offset < 0 {
+		offset = 0
+	}
+
+	query := `SELECT id, admin_user_id, action, target_type, target_id, detail,
+	                 client_ip, succeeded, created_at
+	            FROM audit_logs`
+	args := []any{}
+	if f.TargetType != "" {
+		query += ` WHERE target_type = ?`
+		args = append(args, f.TargetType)
+		if f.TargetID != "" {
+			query += ` AND target_id = ?`
+			args = append(args, f.TargetID)
+		}
+	}
+	query += ` ORDER BY id DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
