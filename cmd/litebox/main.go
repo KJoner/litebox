@@ -31,6 +31,7 @@ import (
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 	"github.com/litebox/litebox/web"
@@ -287,6 +288,7 @@ func cmdServe(args []string) error {
 		Audit:     audit.NewRecorder(db, logger),
 		Nodes:     nodeService,
 		Users:     userService,
+		Subs:      subscription.NewService(db, userStore, cipher, cfg.Subscription.ClientMixedPort),
 		Traffic:   traffic.NewQuerier(db),
 		Scheduler: scheduler,
 		Pool:      pool,

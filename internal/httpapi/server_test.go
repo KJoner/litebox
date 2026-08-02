@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -24,6 +26,7 @@ type testEnv struct {
 	server   *httptest.Server
 	password string
 	client   *http.Client
+	db       *sql.DB
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -59,7 +62,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	// trigger 为 nil:HTTP 层测试只关心接口行为,
 	// 部署合并逻辑由 deployment 包的协调器测试覆盖。
-	userService := user.NewService(user.NewStore(db, cipher), nil, logger)
+	userStore := user.NewStore(db, cipher)
+	userService := user.NewService(userStore, nil, logger)
 
 	srv := NewServer(Options{
 		Config: cfg,
@@ -67,6 +71,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Auth:   authService,
 		Audit:  audit.NewRecorder(db, logger),
 		Users:  userService,
+		Subs:   subscription.NewService(db, userStore, cipher, 2080),
 		Logger: logger,
 	})
 
@@ -82,6 +87,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		server:   ts,
 		password: password,
 		client:   &http.Client{Jar: jar},
+		db:       db,
 	}
 }
 

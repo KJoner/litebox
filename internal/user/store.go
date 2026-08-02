@@ -67,6 +67,12 @@ type User struct {
 	NodeIDs   []int64 `json:"node_ids"`
 	CreatedAt string  `json:"created_at"`
 	UpdatedAt string  `json:"updated_at"`
+
+	// 订阅访问情况,用于回答"用户到底导入订阅了没有"。
+	SubLastAccessAt  *string `json:"sub_last_access_at"`
+	SubLastAccessIP  string  `json:"sub_last_access_ip"`
+	SubLastUserAgent string  `json:"sub_last_user_agent"`
+	SubAccessCount   int64   `json:"sub_access_count"`
 }
 
 // UsedTotal 返回累计已用流量。
@@ -107,14 +113,16 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 
 const userColumns = `id, user_code, display_name, remark, uuid_encrypted, sub_token_encrypted,
 	status, quota_bytes, used_uplink, used_downlink, expires_at,
-	reset_cycle, reset_day, last_reset_at, created_at, updated_at`
+	reset_cycle, reset_day, last_reset_at, created_at, updated_at,
+	sub_last_access_at, sub_last_access_ip, sub_last_user_agent, sub_access_count`
 
 func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	var u User
 	var uuidEnc, tokenEnc string
 	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &tokenEnc,
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
-		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt)
+		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount)
 	if err != nil {
 		return nil, err
 	}

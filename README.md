@@ -13,8 +13,9 @@
 * Phase 1 项目骨架 —— 已完成
 * Phase 2 节点能力 —— 已完成
 * Phase 3 用户与配置生成 —— 已完成
-* **Phase 4 流量与额度 —— 已完成**
-* Phase 5 及之后 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
+* Phase 4 流量与额度 —— 已完成
+* **Phase 5 订阅 —— 已完成**
+* Phase 6 及之后 —— 未开始,见 [`docs/LiteBox-Panel-V1-开发计划-v2.md`](docs/LiteBox-Panel-V1-开发计划-v2.md)
 
 Phase 1 交付:配置加载、主密钥与字段加密、SQLite 迁移框架与完整表结构、
 管理员登录与会话、登录失败限流、审计日志、REST API、Vue 3 前端骨架(登录页 +
@@ -34,7 +35,23 @@ Phase 4 交付:V2Ray Stats gRPC 客户端、经 SSH 通道的流量采集、
 计数器回退兜底)、每日聚合、额度与到期检查、超额自动停用并重新部署、
 月度流量重置、60 秒定时同步。部署事务的"重启前强制同步"至此真正生效。
 
+Phase 5 交付:VLESS 分享链接、sing-box 客户端配置、base64 聚合格式、
+公开订阅端点 `/sub/{token}`(免认证、不可缓存、按来源限流)、
+只下发已成功部署过的节点、`Subscription-Userinfo` 头(客户端显示流量与到期)、
+不可用用户返回可读原因而非空订阅、订阅访问记录。
+
+订阅格式:
+
+```
+GET /sub/{token}                  # base64,v2rayN/Shadowrocket 等通用格式
+GET /sub/{token}?format=uri       # 明文 VLESS URI,便于核对
+GET /sub/{token}?format=sing-box  # 完整 sing-box 客户端配置
+```
+
 节点与用户管理目前只有 REST API,管理界面在 Phase 6 接入。
+
+**一台机器只能承载一个节点** —— 节点上的路径(`/opt/litebox`)与服务名
+(`litebox-singbox`)是固定的,两个节点记录指向同一主机会互相覆盖配置。
 
 ## 快速开始
 

@@ -17,12 +17,18 @@ import (
 
 // Config 是 LiteBox 的完整运行配置。
 type Config struct {
-	HTTP     HTTPConfig     `yaml:"http"`
-	Database DatabaseConfig `yaml:"database"`
-	Security SecurityConfig `yaml:"security"`
-	Node     NodeConfig     `yaml:"node"`
-	Traffic  TrafficConfig  `yaml:"traffic"`
-	Log      LogConfig      `yaml:"log"`
+	HTTP         HTTPConfig         `yaml:"http"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Security     SecurityConfig     `yaml:"security"`
+	Node         NodeConfig         `yaml:"node"`
+	Traffic      TrafficConfig      `yaml:"traffic"`
+	Subscription SubscriptionConfig `yaml:"subscription"`
+	Log          LogConfig          `yaml:"log"`
+}
+
+type SubscriptionConfig struct {
+	// ClientMixedPort 是下发给 sing-box 客户端配置的本地混合入站端口。
+	ClientMixedPort int `yaml:"client_mixed_port"`
 }
 
 type TrafficConfig struct {
@@ -119,6 +125,9 @@ func Default() Config {
 		},
 		Traffic: TrafficConfig{
 			SyncInterval: 60 * time.Second,
+		},
+		Subscription: SubscriptionConfig{
+			ClientMixedPort: 2080,
 		},
 		Log: LogConfig{
 			Level:  "info",

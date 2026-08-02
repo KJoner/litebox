@@ -49,6 +49,10 @@ traffic:
   # 面板自己触发的重启会先强制同步,不受此窗口影响。
   sync_interval: 60s
 
+subscription:
+  # 下发给 sing-box 客户端配置的本地混合入站端口。
+  client_mixed_port: 2080
+
 log:
   level: "info"   # debug / info / warn / error
   format: "text"  # text / json

@@ -16,6 +16,7 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -28,6 +29,8 @@ type Server struct {
 	audit        *audit.Recorder
 	nodes        *node.Service
 	users        *user.Service
+	subs         *subscription.Service
+	subLimiter   *subRateLimiter
 	traffic      *traffic.Querier
 	scheduler    *traffic.Scheduler
 	pool         *sshx.Pool
@@ -50,6 +53,7 @@ type Options struct {
 	Audit     *audit.Recorder
 	Nodes     *node.Service
 	Users     *user.Service
+	Subs      *subscription.Service
 	Traffic   *traffic.Querier
 	Scheduler *traffic.Scheduler
 	Pool      *sshx.Pool
@@ -68,6 +72,8 @@ func NewServer(opts Options) *Server {
 		audit:        opts.Audit,
 		nodes:        opts.Nodes,
 		users:        opts.Users,
+		subs:         opts.Subs,
+		subLimiter:   newSubRateLimiter(30, time.Minute),
 		traffic:      opts.Traffic,
 		scheduler:    opts.Scheduler,
 		pool:         opts.Pool,
@@ -87,6 +93,11 @@ func (s *Server) Handler() http.Handler {
 	// 公开接口
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+
+	// 订阅端点不需要登录:凭据就是 URL 里的随机 Token。
+	if s.subs != nil {
+		mux.HandleFunc("GET /sub/{token}", s.handleSubscription)
+	}
 
 	// 需要登录的接口
 	authed := http.NewServeMux()
