@@ -1,0 +1,62 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "127.0.0.1",
+      "listen_port": 24443,
+      "users": [
+        {
+          "name": "user_000001",
+          "uuid": "419765e4-97f5-457e-a609-2c74d003a83b",
+          "flow": "xtls-rprx-vision"
+        },
+        {
+          "name": "user_000002",
+          "uuid": "58115919-159a-4e8f-9b6d-89941578b059",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.microsoft.com",
+            "server_port": 443
+          },
+          "private_key": "6GwqjbluYSk9sHbN6HXwz_xMxXku-sY6ONt7RksOsmw",
+          "short_id": [
+            "da98de2d36b94719"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "experimental": {
+    "v2ray_api": {
+      "listen": "127.0.0.1:28080",
+      "stats": {
+        "enabled": true,
+        "inbounds": [
+          "vless-in"
+        ],
+        "users": [
+          "user_000001",
+          "user_000002"
+        ]
+      }
+    }
+  }
+}

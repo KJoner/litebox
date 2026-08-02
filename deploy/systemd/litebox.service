@@ -1,0 +1,51 @@
+[Unit]
+Description=LiteBox Panel
+Documentation=https://github.com/litebox/litebox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=litebox
+Group=litebox
+WorkingDirectory=/opt/litebox
+ExecStart=/opt/litebox/litebox serve --config /etc/litebox/litebox.yaml
+
+# 主密钥通过环境变量文件提供,该文件权限应为 0600 且属主为 litebox。
+# 不要把主密钥写进本单元文件 —— systemctl show 会把它明文打印出来。
+EnvironmentFile=/etc/litebox/litebox.env
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# 只允许写入数据目录
+ReadWritePaths=/var/lib/litebox
+
+# 资源限制。主控需要为每个节点维持 SSH 长连接,句柄数不能太低。
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
