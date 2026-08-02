@@ -166,6 +166,10 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 	countInto(`SELECT COUNT(*) FROM proxy_users WHERE deleted_at IS NULL AND status='QUOTA_EXCEEDED'`, "quota_exceeded")
 	countInto(`SELECT COUNT(*) FROM deployments WHERE status='FAILED'`, "failed_deploys")
 
+	if s.users != nil {
+		summary["expiring_soon"] = s.expiringSoonCount(r)
+	}
+
 	writeJSON(w, http.StatusOK, summary)
 }
 

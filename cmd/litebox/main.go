@@ -31,6 +31,7 @@ import (
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/user"
 	"github.com/litebox/litebox/web"
 )
 
@@ -235,16 +236,28 @@ func cmdServe(args []string) error {
 		Logger:      logger,
 		KeepBackups: 5,
 	})
+	userStore := user.NewStore(db, cipher)
 	nodeService := node.NewService(node.ServiceOptions{
 		Store:       nodeStore,
 		Pool:        pool,
 		Deployer:    deployer,
 		DeployStore: deployment.NewStore(db),
-		// Users 为 nil:用户分配在 Phase 3 接入,当前部署空用户列表。
-		Users:  nil,
-		Layout: layout,
-		Logger: logger,
+		Users:       userStore,
+		Layout:      layout,
+		Logger:      logger,
 	})
+
+	// 用户变更不直接部署,而是标脏后由协调器合并 ——
+	// 连续编辑多个用户只会让同一节点重启一次。
+	coordinator := deployment.NewCoordinator(deployment.CoordinatorOptions{
+		Deployer: nodeService,
+		Logger:   logger,
+		Debounce: cfg.Node.DeployDebounce,
+		MaxDelay: cfg.Node.DeployMaxDelay,
+	})
+	go coordinator.Run(ctx)
+
+	userService := user.NewService(userStore, coordinator, logger)
 
 	server := httpapi.NewServer(httpapi.Options{
 		Config:   cfg,
@@ -252,6 +265,7 @@ func cmdServe(args []string) error {
 		Auth:     authService,
 		Audit:    audit.NewRecorder(db, logger),
 		Nodes:    nodeService,
+		Users:    userService,
 		Pool:     pool,
 		Binaries: node.NewDirBinaryProvider(cfg.Node.BinaryDir),
 		Logger:   logger,
@@ -278,6 +292,8 @@ func cmdServe(args []string) error {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("关闭 HTTP 服务: %w", err)
 	}
+	// 待部署的节点必须冲刷完再退出,否则数据库状态与节点实际配置会长期不一致。
+	coordinator.Wait(cfg.HTTP.ShutdownTimeout)
 	logger.Info("已关闭")
 	return nil
 }

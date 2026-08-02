@@ -32,6 +32,12 @@ type NodeConfig struct {
 	SSHDialTimeout time.Duration `yaml:"ssh_dial_timeout"`
 	// DeployTimeout 是单次部署事务的整体超时。
 	DeployTimeout time.Duration `yaml:"deploy_timeout"`
+	// DeployDebounce 是用户变更后合并部署的静默等待时长。
+	// 连续编辑多个用户时,同一节点只会在最后一次变更后重启一次。
+	DeployDebounce time.Duration `yaml:"deploy_debounce"`
+	// DeployMaxDelay 是标脏后必须部署的时间上限,
+	// 防止持续不断的变更把部署无限推迟。
+	DeployMaxDelay time.Duration `yaml:"deploy_max_delay"`
 }
 
 type HTTPConfig struct {
@@ -98,6 +104,8 @@ func Default() Config {
 			BinaryDir:      "assets/singbox",
 			SSHDialTimeout: 20 * time.Second,
 			DeployTimeout:  5 * time.Minute,
+			DeployDebounce: 4 * time.Second,
+			DeployMaxDelay: 30 * time.Second,
 		},
 		Log: LogConfig{
 			Level:  "info",

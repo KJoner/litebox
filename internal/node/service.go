@@ -170,6 +170,88 @@ func (s *Service) ScanHandshakeDests(ctx context.Context, nodeID int64) ([]DestC
 	return results, err
 }
 
+// ConfigDiffResult 是节点期望配置与节点上现有配置的差异。
+type ConfigDiffResult struct {
+	NodeID        int64        `json:"node_id"`
+	Revision      int64        `json:"revision"`
+	DesiredSHA256 string       `json:"desired_sha256"`
+	RemoteSHA256  string       `json:"remote_sha256"`
+	InSync        bool         `json:"in_sync"`
+	Diff          singbox.Diff `json:"diff"`
+	DesiredUsers  []string     `json:"desired_users"`
+}
+
+// ConfigDiff 比较数据库中的期望配置与节点上正在使用的配置。
+//
+// 读的是节点上的实际文件而不是数据库里记录的哈希:后者只反映
+// "上次部署写了什么",若有人手工改过节点配置就对不上了。
+func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResult, error) {
+	desired, err := s.desiredConfig(ctx, nodeID)
+	if err != nil {
+		return ConfigDiffResult{}, err
+	}
+	n, err := s.store.Get(ctx, nodeID)
+	if err != nil {
+		return ConfigDiffResult{}, err
+	}
+
+	result := ConfigDiffResult{
+		NodeID:        nodeID,
+		Revision:      n.ConfigRevision,
+		DesiredSHA256: desired.SHA256,
+	}
+	for _, u := range desired.Config.Inbounds[0].Users {
+		result.DesiredUsers = append(result.DesiredUsers, u.Name)
+	}
+
+	var remoteJSON []byte
+	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		var readErr error
+		remoteJSON, readErr = client.Download(ctx, s.layout.ConfigPath)
+		return readErr
+	})
+	if err != nil {
+		// 节点上还没有配置(未部署过)时,差异就是"全部用户都是新增的"。
+		result.Diff = singbox.Compare(singbox.Config{}, desired.Config)
+		result.Diff.Summary = "节点上尚无配置或读取失败:" + err.Error()
+		return result, nil
+	}
+
+	remoteCfg, err := singbox.Parse(remoteJSON)
+	if err != nil {
+		result.Diff = singbox.Compare(singbox.Config{}, desired.Config)
+		result.Diff.Summary = "节点上的配置无法解析:" + err.Error()
+		return result, nil
+	}
+	result.RemoteSHA256 = singbox.SHA256(remoteJSON)
+	result.Diff = singbox.Compare(remoteCfg, desired.Config)
+	result.InSync = !result.Diff.Changed
+	return result, nil
+}
+
+// desiredConfig 渲染节点当前应有的配置。
+func (s *Service) desiredConfig(ctx context.Context, nodeID int64) (singbox.Rendered, error) {
+	n, err := s.store.Get(ctx, nodeID)
+	if err != nil {
+		return singbox.Rendered{}, err
+	}
+	var users []singbox.User
+	if s.users != nil {
+		if users, err = s.users.UsersForNode(ctx, nodeID); err != nil {
+			return singbox.Rendered{}, err
+		}
+	}
+	return singbox.RenderJSON(singbox.NodeParams{
+		ProxyPort:         n.ProxyPort,
+		APIPort:           n.APIPort,
+		RealityDest:       n.RealityDest,
+		RealityPort:       n.RealityDestPort,
+		RealityPrivateKey: n.RealityPrivateKey,
+		ShortID:           n.RealityShortID,
+		Users:             users,
+	})
+}
+
 // Deploy 把节点当前的期望状态部署到节点。
 func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, error) {
 	n, err := s.store.Get(ctx, nodeID)

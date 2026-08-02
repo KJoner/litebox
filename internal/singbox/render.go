@@ -1,8 +1,6 @@
 package singbox
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 )
@@ -209,6 +207,5 @@ func RenderJSON(params NodeParams) (Rendered, error) {
 	if err != nil {
 		return Rendered{}, fmt.Errorf("序列化配置: %w", err)
 	}
-	sum := sha256.Sum256(data)
-	return Rendered{Config: cfg, JSON: data, SHA256: hex.EncodeToString(sum[:])}, nil
+	return Rendered{Config: cfg, JSON: data, SHA256: SHA256(data)}, nil
 }

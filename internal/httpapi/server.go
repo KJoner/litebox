@@ -16,6 +16,7 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/user"
 )
 
 // Server 持有 HTTP 服务的全部依赖。
@@ -25,6 +26,7 @@ type Server struct {
 	auth         *auth.Service
 	audit        *audit.Recorder
 	nodes        *node.Service
+	users        *user.Service
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
 	logger       *slog.Logger
@@ -44,6 +46,7 @@ type Options struct {
 	Auth     *auth.Service
 	Audit    *audit.Recorder
 	Nodes    *node.Service
+	Users    *user.Service
 	Pool     *sshx.Pool
 	Binaries node.BinaryProvider
 	Logger   *slog.Logger
@@ -59,6 +62,7 @@ func NewServer(opts Options) *Server {
 		auth:         opts.Auth,
 		audit:        opts.Audit,
 		nodes:        opts.Nodes,
+		users:        opts.Users,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
 		logger:       opts.Logger,
@@ -100,8 +104,21 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/restart", longOperation(s.handleRestartNode))
 		authed.HandleFunc("POST /api/nodes/{id}/reset-host-key", s.handleResetNodeHostKey)
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
+		authed.HandleFunc("GET /api/nodes/{id}/config-diff", longOperation(s.handleNodeConfigDiff))
 		authed.HandleFunc("GET /api/deployments", s.handleRecentDeployments)
 		authed.HandleFunc("GET /api/dest-candidates", s.handleDestCandidates)
+	}
+
+	if s.users != nil {
+		authed.HandleFunc("GET /api/users", s.handleListUsers)
+		authed.HandleFunc("POST /api/users", s.handleCreateUser)
+		authed.HandleFunc("GET /api/users/{id}", s.handleGetUser)
+		authed.HandleFunc("PATCH /api/users/{id}", s.handleUpdateUser)
+		authed.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
+		authed.HandleFunc("POST /api/users/{id}/enabled", s.handleSetUserEnabled)
+		authed.HandleFunc("POST /api/users/{id}/reset-traffic", s.handleResetUserTraffic)
+		authed.HandleFunc("POST /api/users/{id}/regenerate-uuid", s.handleRegenerateUserUUID)
+		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
 	}
 	mux.Handle("/api/", s.requireAuth(authed))
 

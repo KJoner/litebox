@@ -15,7 +15,9 @@ import (
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
+	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/user"
 )
 
 type testEnv struct {
@@ -50,11 +52,21 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cipher, err := crypto.NewCipher(cfg.Security.MasterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// trigger 为 nil:HTTP 层测试只关心接口行为,
+	// 部署合并逻辑由 deployment 包的协调器测试覆盖。
+	userService := user.NewService(user.NewStore(db, cipher), nil, logger)
+
 	srv := NewServer(Options{
 		Config: cfg,
 		DB:     db,
 		Auth:   authService,
 		Audit:  audit.NewRecorder(db, logger),
+		Users:  userService,
 		Logger: logger,
 	})
 

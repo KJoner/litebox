@@ -35,6 +35,11 @@ node:
   binary_dir: "/opt/litebox/assets/singbox"
   ssh_dial_timeout: 20s
   deploy_timeout: 5m
+  # 用户变更后的合并窗口:连续编辑多个用户时,同一节点只在最后一次变更
+  # 静默 deploy_debounce 后重启一次。每次重启都会中断在线连接,合并是必要的。
+  deploy_debounce: 4s
+  # 持续不断的变更不能把部署无限推迟,这是兜底上限。
+  deploy_max_delay: 30s
 
 log:
   level: "info"   # debug / info / warn / error

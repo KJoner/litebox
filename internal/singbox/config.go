@@ -1,6 +1,10 @@
 package singbox
 
-import "encoding/json"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
 
 // 以下结构体对应 sing-box 配置中本项目用到的子集。
 // 字段顺序即 JSON 输出顺序(encoding/json 按结构体字段顺序序列化),
@@ -84,4 +88,22 @@ func (c Config) MarshalIndent() ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+// Parse 解析节点上读回的配置,用于与期望配置做对比。
+//
+// 不使用 DisallowUnknownFields:节点上的配置可能被人手工加过字段,
+// 那不该导致 diff 直接失败 —— 恰恰相反,能读出来才能看出差异。
+func Parse(data []byte) (Config, error) {
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// SHA256 计算配置字节的哈希。
+func SHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
