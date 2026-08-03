@@ -11,6 +11,7 @@ import {
   type UserTraffic,
 } from '@/api/client'
 import { formatBytes, formatQuota, formatRelative, formatTime } from '@/utils/format'
+import { checkLoginUsername, checkPassword } from '@/utils/validate'
 import StatusTag from '@/components/StatusTag.vue'
 import TrafficChart from '@/components/TrafficChart.vue'
 
@@ -79,6 +80,20 @@ function openAccountForm() {
 
 async function submitAccount() {
   if (props.userId === null) return
+  const badName = checkLoginUsername(accountForm.username)
+  if (badName) {
+    message.warning(badName)
+    return
+  }
+  // 新建账号必须给密码;已有账号留空表示不改密码。
+  const isNew = !user.value?.portal_account
+  if (isNew || accountForm.password) {
+    const badPassword = checkPassword(accountForm.password)
+    if (badPassword) {
+      message.warning(isNew ? `初始密码${badPassword}` : badPassword)
+      return
+    }
+  }
   accountSubmitting.value = true
   const changedPassword = accountForm.password !== ''
   try {
@@ -398,7 +413,13 @@ function confirmRegenerateToken() {
     @ok="submitAccount"
   >
     <a-form layout="vertical">
-      <a-form-item label="登录账号" required extra="字母、数字、下划线、连字符与点,3~32 位">
+      <a-form-item
+        label="登录账号"
+        required
+        extra="字母、数字、下划线、连字符与点,3~32 位"
+        :validate-status="accountForm.username && checkLoginUsername(accountForm.username) ? 'error' : ''"
+        :help="accountForm.username ? checkLoginUsername(accountForm.username) : undefined"
+      >
         <a-input v-model:value="accountForm.username" autocomplete="off" />
       </a-form-item>
       <a-form-item
@@ -408,6 +429,8 @@ function confirmRegenerateToken() {
             ? '留空表示不修改密码。填写后该用户的全部登录会话会立即失效'
             : '至少 8 位,请通过安全渠道发给用户'
         "
+        :validate-status="accountForm.password && checkPassword(accountForm.password) ? 'error' : ''"
+        :help="accountForm.password ? checkPassword(accountForm.password) : undefined"
       >
         <a-input-password v-model:value="accountForm.password" autocomplete="new-password" />
       </a-form-item>

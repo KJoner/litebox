@@ -310,3 +310,100 @@ func TestPortalRegenerateSubToken(t *testing.T) {
 		t.Error("旧订阅地址仍然可用")
 	}
 }
+
+// 登录账号的格式问题必须在建用户之前拦住。
+//
+// 放过去的话会留下一个"用户建好了、登录账号没建成"的半成品:管理员以为
+// 开通了,用户拿账号去登录得到的却是「账号或密码错误」—— 门户对外不区分
+// "账号不存在"与"密码错误",于是这个半成品看起来完全就是密码打错了。
+// 而 user_code 不可复用,删掉重建等于烧掉一个号。
+func TestCreateUserRejectsBadLoginBeforeCreating(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+
+	cases := []struct {
+		name     string
+		username string
+		password string
+		want     string
+	}{
+		{"密码太短", "zhangsan", "short", "密码长度至少 8 位"},
+		{"密码为空", "zhangsan", "", "密码长度至少 8 位"},
+		{"账号名含中文", "张三", "correct-horse", "登录账号"},
+		{"账号名太短", "ab", "correct-horse", "登录账号"},
+		{"账号名含空格", "zhang san", "correct-horse", "登录账号"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := env.do(t, http.MethodPost, "/api/users", map[string]any{
+				"display_name":   "张三",
+				"login_username": c.username,
+				"login_password": c.password,
+			})
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("状态码 %d,期望 400:%s", resp.StatusCode, raw)
+			}
+			if !strings.Contains(string(raw), c.want) {
+				t.Errorf("错误信息 %s 里没有 %q", raw, c.want)
+			}
+		})
+	}
+
+	// 关键:一个用户都不应该被创建出来。
+	list := env.do(t, http.MethodGet, "/api/users", nil)
+	defer list.Body.Close()
+	var body struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+	}
+	json.NewDecoder(list.Body).Decode(&body)
+	if len(body.Items) != 0 {
+		t.Errorf("被拒绝的请求却创建了 %d 个用户 —— user_code 白白烧掉了", len(body.Items))
+	}
+}
+
+// 账号名被占用只有查库才知道,拦不住。这一条仍然保持"用户建好、
+// 登录账号没建成"并明确告知,而不是回滚用户。
+func TestCreateUserReportsUsernameConflict(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	env.createUserWithLogin(t, "张三", "zhangsan", "correct-horse")
+
+	resp := env.do(t, http.MethodPost, "/api/users", map[string]any{
+		"display_name":   "李四",
+		"login_username": "zhangsan",
+		"login_password": "another-pass1",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("状态码 %d,期望 201(用户仍应建成)", resp.StatusCode)
+	}
+	var out struct {
+		ID                 int64  `json:"id"`
+		PortalAccount      any    `json:"portal_account"`
+		PortalAccountError string `json:"portal_account_error"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out.ID == 0 {
+		t.Error("用户未创建")
+	}
+	if out.PortalAccount != nil {
+		t.Error("重名账号不应当建成")
+	}
+	if !strings.Contains(out.PortalAccountError, "占用") {
+		t.Errorf("没有说清失败原因:%q", out.PortalAccountError)
+	}
+}
+
+// 合法参数照常创建并能立刻登录 —— 前面几条拦截不能误伤正常流程。
+func TestCreateUserWithValidLoginWorks(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	env.createUserWithLogin(t, "张三", "zhangsan", "correct-horse")
+
+	client := env.newPortalClient(t)
+	env.portalLogin(t, client, "zhangsan", "correct-horse")
+}

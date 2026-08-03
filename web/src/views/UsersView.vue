@@ -11,6 +11,7 @@ import {
   type ProxyUser,
 } from '@/api/client'
 import { daysUntil, formatBytes, formatQuota, formatRelative, formatTime } from '@/utils/format'
+import { checkLoginUsername, checkPassword } from '@/utils/validate'
 import StatusTag from '@/components/StatusTag.vue'
 import UserDetailDrawer from '@/components/UserDetailDrawer.vue'
 
@@ -180,6 +181,15 @@ async function submit() {
     message.warning('请填写用户名称')
     return
   }
+  // 登录账号的格式在这里就拦住。放过去的话用户会被创建、登录账号不会,
+  // 而用户拿账号去登录得到的是「账号或密码错误」—— 看起来完全就是密码打错了。
+  if (editingId.value === null && form.login_username) {
+    const bad = checkLoginUsername(form.login_username) ?? checkPassword(form.login_password)
+    if (bad) {
+      message.warning(bad)
+      return
+    }
+  }
   submitting.value = true
   try {
     const quotaBytes = Math.round(form.quota_gb * 1024 ** 3)
@@ -207,7 +217,11 @@ async function submit() {
         // 否则管理员会以为整个操作失败而再建一个用户。
         Modal.warning({
           title: '用户已创建,但登录账号没有建成',
-          content: `${created.portal_account_error}\n\n可以在用户详情里单独开通门户登录。`,
+          content:
+            `${created.portal_account_error}\n\n` +
+            '该用户现在还无法登录用户中心 —— 他拿账号去登录只会得到' +
+            '「账号或密码错误」。请在用户详情里单独开通门户登录。',
+          width: 520,
           okText: '知道了',
         })
       } else {
@@ -567,7 +581,12 @@ onMounted(load)
       </a-form-item>
       <template v-if="editingId === null">
         <a-divider orientation="left" plain>门户登录（可选）</a-divider>
-        <a-form-item label="登录账号" extra="留空表示该用户只用订阅,不登录用户中心">
+        <a-form-item
+          label="登录账号"
+          extra="留空表示该用户只用订阅,不登录用户中心"
+          :validate-status="form.login_username && checkLoginUsername(form.login_username) ? 'error' : ''"
+          :help="form.login_username ? checkLoginUsername(form.login_username) : undefined"
+        >
           <a-input
             v-model:value="form.login_username"
             placeholder="字母、数字、下划线、连字符与点,3~32 位"
@@ -578,6 +597,8 @@ onMounted(load)
           v-if="form.login_username"
           label="初始密码"
           extra="至少 8 位,请通过安全渠道发给用户"
+          :validate-status="form.login_password && checkPassword(form.login_password) ? 'error' : ''"
+          :help="form.login_password ? checkPassword(form.login_password) : undefined"
         >
           <a-input-password v-model:value="form.login_password" autocomplete="new-password" />
         </a-form-item>

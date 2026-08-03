@@ -192,6 +192,26 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
+	// 登录账号的格式问题要在建用户之前拦住。
+	//
+	// 否则会留下一个"用户建好了、登录账号没建成"的半成品:管理员以为开通了,
+	// 用户拿账号去登录得到的却是「账号或密码错误」—— 门户对外不区分
+	// "账号不存在"与"密码错误"(防枚举),于是这个半成品看起来完全就是
+	// 密码打错了。而 user_code 不可复用,删掉重建等于烧掉一个号。
+	//
+	// 查库才知道的冲突(账号名被占用)拦不住,那条仍然走下面的
+	// portal_account_error 路径。
+	if req.LoginUsername != "" && s.portalAccts != nil {
+		if _, err := portal.ValidateUsername(req.LoginUsername); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(req.LoginPassword) < 8 {
+			writeError(w, http.StatusBadRequest, portal.ErrWeakPassword.Error())
+			return
+		}
+	}
+
 	u, err := s.users.Create(r.Context(), user.CreateParams{
 		DisplayName:  req.DisplayName,
 		Remark:       req.Remark,
