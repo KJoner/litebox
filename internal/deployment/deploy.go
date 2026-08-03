@@ -263,7 +263,7 @@ func (d *Deployer) runTransaction(
 	}
 
 	if err := rec.run("健康检查:端口监听", func() (string, error) {
-		return d.checkPortListening(ctx, client, req.Params.ProxyPort)
+		return d.checkPortListening(ctx, client, req.Params.ListenPort)
 	}); err != nil {
 		return d.rollback(ctx, client, req, rec, result, hasBackup, backupPath, err)
 	}
@@ -321,7 +321,7 @@ func (d *Deployer) rollback(
 		if _, err := d.checkServiceActive(rbCtx, client); err != nil {
 			return "", err
 		}
-		if _, err := d.checkPortListening(rbCtx, client, req.Params.ProxyPort); err != nil {
+		if _, err := d.checkPortListening(rbCtx, client, req.Params.ListenPort); err != nil {
 			return "", err
 		}
 		return "已恢复上一版本并通过基础健康检查", nil

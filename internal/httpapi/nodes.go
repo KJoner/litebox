@@ -13,6 +13,7 @@ import (
 // 节点相关的审计动作。
 const (
 	actionNodeCreate    = "node.create"
+	actionNodeUpdate    = "node.update"
 	actionNodeDelete    = "node.delete"
 	actionNodeEnable    = "node.enable"
 	actionNodeDisable   = "node.disable"
@@ -76,12 +77,15 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 }
 
 type createNodeRequest struct {
-	Name            string `json:"name"`
-	Host            string `json:"host"`
-	SSHPort         int    `json:"ssh_port"`
-	SSHUser         string `json:"ssh_user"`
-	SSHKey          string `json:"ssh_key"`
+	Name    string `json:"name"`
+	Host    string `json:"host"`
+	SSHPort int    `json:"ssh_port"`
+	SSHUser string `json:"ssh_user"`
+	SSHKey  string `json:"ssh_key"`
+	// ProxyPort 是客户端连接的公网端口;ListenPort 是节点上 sing-box 的监听端口,
+	// 留空表示无转发,与 ProxyPort 相同。
 	ProxyPort       int    `json:"proxy_port"`
+	ListenPort      int    `json:"listen_port"`
 	APIPort         int    `json:"api_port"`
 	RealityDest     string `json:"reality_dest"`
 	RealityDestPort int    `json:"reality_dest_port"`
@@ -102,6 +106,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		SSHUser:         strings.TrimSpace(req.SSHUser),
 		SSHKey:          req.SSHKey,
 		ProxyPort:       req.ProxyPort,
+		ListenPort:      req.ListenPort,
 		APIPort:         req.APIPort,
 		RealityDest:     strings.TrimSpace(req.RealityDest),
 		RealityDestPort: req.RealityDestPort,
@@ -122,6 +127,74 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		Detail: "新增节点 " + n.Name, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
 	writeJSON(w, http.StatusCreated, n)
+}
+
+type updateNodeRequest struct {
+	Name    string `json:"name"`
+	Host    string `json:"host"`
+	SSHPort int    `json:"ssh_port"`
+	SSHUser string `json:"ssh_user"`
+	// SSHKey 留空表示不更换私钥。
+	SSHKey     string `json:"ssh_key"`
+	ProxyPort  int    `json:"proxy_port"`
+	ListenPort int    `json:"listen_port"`
+	APIPort    int    `json:"api_port"`
+}
+
+// handleUpdateNode 修改节点配置。
+//
+// 不自动部署:改端口会重启 sing-box 踢掉全部在线连接,
+// 而端口切换通常要与 NAT 规则或 nginx 配置同时生效,时机只有管理员知道。
+// 需要重新部署时由 needs_deploy 告知前端。
+func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req updateNodeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	admin := adminFromContext(r.Context())
+
+	n, effect, err := s.nodes.Store().Update(r.Context(), id, node.UpdateParams{
+		Name:       strings.TrimSpace(req.Name),
+		Host:       strings.TrimSpace(req.Host),
+		SSHPort:    req.SSHPort,
+		SSHUser:    strings.TrimSpace(req.SSHUser),
+		SSHKey:     req.SSHKey,
+		ProxyPort:  req.ProxyPort,
+		ListenPort: req.ListenPort,
+		APIPort:    req.APIPort,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, node.ErrNotFound):
+			writeError(w, http.StatusNotFound, "节点不存在")
+		case errors.Is(err, node.ErrNameConflict):
+			writeError(w, http.StatusConflict, "节点名称已被占用")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	// 连接参数变了就必须丢弃长连接,否则后续操作仍走旧地址与旧密钥。
+	if effect.SSHChanged {
+		s.pool.Invalidate(id)
+	}
+
+	detail := strings.Join(effect.Changes, ";")
+	if detail == "" {
+		detail = "无实际变更"
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionNodeUpdate,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"node": n, "effect": effect})
 }
 
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {

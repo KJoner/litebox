@@ -3,6 +3,7 @@ package node
 import (
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,8 @@ func TestCreateNodeRejectsInvalidParams(t *testing.T) {
 		"代理端口为零":     func(p *CreateParams) { p.ProxyPort = 0 },
 		"代理端口超范围":    func(p *CreateParams) { p.ProxyPort = 99999 },
 		"代理与API端口相同": func(p *CreateParams) { p.APIPort = p.ProxyPort },
+		"主机端口超范围":    func(p *CreateParams) { p.ListenPort = 99999 },
+		"主机与API端口相同": func(p *CreateParams) { p.APIPort, p.ListenPort = 28080, 28080 },
 		"握手目标是IP":    func(p *CreateParams) { p.RealityDest = "8.8.8.8" },
 	}
 	for name, mutate := range cases {
@@ -382,5 +385,212 @@ func TestBinaryProviderRejectsUnknownArch(t *testing.T) {
 	_, err := p.Load("amd64")
 	if err == nil || !strings.Contains(err.Error(), "build-singbox.sh") {
 		t.Errorf("缺少二进制时的错误信息应指引构建方式:%v", err)
+	}
+}
+
+// 不填主机端口意味着"没有端口转发",此时它必须与公网端口一致 ——
+// 这是绝大多数节点的形态,也是本列加入之前全部存量节点的形态。
+func TestListenPortDefaultsToProxyPort(t *testing.T) {
+	store, _ := newTestStore(t)
+	p := defaultCreateParams()
+	p.ListenPort = 0
+	n, err := store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.ListenPort != p.ProxyPort {
+		t.Errorf("主机端口 = %d,应回落到公网端口 %d", n.ListenPort, p.ProxyPort)
+	}
+}
+
+// NAT 主机与自建 nginx 转发的形态:公网 443 -> 主机 20443。
+// 两个端口必须各自独立保存,合并成一个值就无法描述转发。
+func TestNATPortsStoredIndependently(t *testing.T) {
+	store, _ := newTestStore(t)
+	p := defaultCreateParams()
+	p.ProxyPort, p.ListenPort = 443, 20443
+	n, err := store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.ProxyPort != 443 || n.ListenPort != 20443 {
+		t.Fatalf("端口 = 公网 %d / 主机 %d,应为 443 / 20443", n.ProxyPort, n.ListenPort)
+	}
+
+	// 节点配置必须监听主机端口。渲染成公网端口会让 sing-box 监听在
+	// 转发链路另一端的号码上,NAT 转进来的流量无人接收。
+	cfg, err := singbox.Render(singbox.NodeParams{
+		ListenPort:        n.ListenPort,
+		APIPort:           n.APIPort,
+		RealityDest:       n.RealityDest,
+		RealityPort:       n.RealityDestPort,
+		RealityPrivateKey: n.RealityPrivateKey,
+		ShortID:           n.RealityShortID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Inbounds[0].ListenPort != 20443 {
+		t.Errorf("inbound.listen_port = %d,应为主机端口 20443", cfg.Inbounds[0].ListenPort)
+	}
+}
+
+func TestUpdateNodeReportsEffect(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 只改公网端口:订阅内容变了,但节点上跑的配置一个字节都没变。
+	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
+		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		ProxyPort: 443, ListenPort: n.ListenPort, APIPort: n.APIPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ProxyPort != 443 || updated.ListenPort != n.ListenPort {
+		t.Fatalf("端口 = 公网 %d / 主机 %d", updated.ProxyPort, updated.ListenPort)
+	}
+	if effect.NeedsDeploy {
+		t.Error("只改公网端口不该要求重新部署")
+	}
+	if effect.SSHChanged {
+		t.Error("未改连接参数却报告 SSH 变更")
+	}
+
+	// 改主机端口:进了节点配置,必须重新部署才生效。
+	_, effect, err = store.Update(t.Context(), n.ID, UpdateParams{
+		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		ProxyPort: 443, ListenPort: 20443, APIPort: n.APIPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !effect.NeedsDeploy {
+		t.Error("改主机端口后应要求重新部署")
+	}
+
+	// 改主机地址:连接池里的长连接指向旧地址,必须失效重连。
+	_, effect, err = store.Update(t.Context(), n.ID, UpdateParams{
+		Name: n.Name, Host: "192.0.2.99", SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		ProxyPort: 443, ListenPort: 20443, APIPort: n.APIPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !effect.SSHChanged {
+		t.Error("改主机地址后应报告 SSH 变更")
+	}
+	if effect.NeedsDeploy {
+		t.Error("改主机地址不影响节点配置,不该要求重新部署")
+	}
+}
+
+// 私钥不回显给前端,前端也就无法把原值提交回来:留空必须保持原私钥,
+// 否则每次改个端口都会把节点的 SSH 凭据清掉。
+func TestUpdateNodeKeepsSSHKeyWhenBlank(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _, err := store.Update(t.Context(), n.ID, UpdateParams{
+		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		SSHKey: "", ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SSHKey != testSSHKey {
+		t.Fatal("留空私钥时原私钥被清掉了")
+	}
+
+	const newKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nrotated\n-----END OPENSSH PRIVATE KEY-----"
+	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
+		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		SSHKey: newKey, ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SSHKey != newKey {
+		t.Error("换私钥未生效")
+	}
+	if !effect.SSHChanged {
+		t.Error("换私钥后应报告 SSH 变更")
+	}
+}
+
+func TestUpdateNodeRejectsBadParams(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.Create(t.Context(), func() CreateParams {
+		p := defaultCreateParams()
+		p.Name = "node-sg"
+		return p
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := UpdateParams{
+		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+	}
+	cases := map[string]func(*UpdateParams){
+		"名称为空":       func(p *UpdateParams) { p.Name = "" },
+		"主机为空":       func(p *UpdateParams) { p.Host = "" },
+		"公网端口为零":     func(p *UpdateParams) { p.ProxyPort = 0 },
+		"主机与API端口相同": func(p *UpdateParams) { p.ListenPort = p.APIPort },
+		"名称与其他节点重复":  func(p *UpdateParams) { p.Name = other.Name },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := base
+			mutate(&p)
+			if _, _, err := store.Update(t.Context(), n.ID, p); err == nil {
+				t.Error("应当被拒绝")
+			}
+		})
+	}
+
+	if _, _, err := store.Update(t.Context(), 9999, base); !errors.Is(err, ErrNotFound) {
+		t.Errorf("修改不存在的节点应返回 ErrNotFound,实际 %v", err)
+	}
+}
+
+// 无任何改动时 Changes 必须是空数组而不是 nil:nil 会序列化成 JSON 的 null,
+// 前端拿到 null 再取 .length 会直接抛异常。
+func TestUpdateNodeReturnsEmptyChangesNotNil(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
+		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effect.Changes == nil {
+		t.Fatal("Changes 是 nil,会序列化成 null")
+	}
+	if len(effect.Changes) != 0 {
+		t.Errorf("没有改动却报告了变更:%v", effect.Changes)
+	}
+	body, err := json.Marshal(effect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"changes":[]`) {
+		t.Errorf("序列化结果 = %s", body)
 	}
 }

@@ -111,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/nodes", s.handleListNodes)
 		authed.HandleFunc("POST /api/nodes", s.handleCreateNode)
 		authed.HandleFunc("GET /api/nodes/{id}", s.handleGetNode)
+		authed.HandleFunc("PUT /api/nodes/{id}", s.handleUpdateNode)
 		authed.HandleFunc("DELETE /api/nodes/{id}", s.handleDeleteNode)
 		authed.HandleFunc("POST /api/nodes/{id}/enabled", s.handleSetNodeEnabled)
 		authed.HandleFunc("POST /api/nodes/{id}/test-ssh", s.handleTestNodeSSH)

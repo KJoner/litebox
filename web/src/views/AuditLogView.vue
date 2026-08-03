@@ -16,6 +16,7 @@ const actionNames: Record<string, string> = {
   'admin.logout': '管理员注销',
   'admin.change_password': '修改密码',
   'node.create': '新增节点',
+  'node.update': '修改节点',
   'node.delete': '删除节点',
   'node.enable': '启用节点',
   'node.disable': '禁用节点',

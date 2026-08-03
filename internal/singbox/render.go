@@ -24,7 +24,9 @@ type User struct {
 // NodeParams 是渲染一份节点配置所需的全部输入。
 // 它是数据库状态的投影 —— 数据库是唯一期望状态,渲染不读取远端现状。
 type NodeParams struct {
-	ProxyPort         int
+	// ListenPort 是 sing-box 在节点上监听的端口,不一定等于客户端连接的公网端口
+	// —— NAT 主机与自建 nginx 转发时公网端口在转发链路的另一端,不属于节点配置。
+	ListenPort        int
 	APIPort           int
 	RealityDest       string
 	RealityPort       int
@@ -73,7 +75,7 @@ func Render(params NodeParams) (Config, error) {
 			Type:       "vless",
 			Tag:        InboundTag,
 			Listen:     ProxyListenAll,
-			ListenPort: params.ProxyPort,
+			ListenPort: params.ListenPort,
 			Users:      inboundUsers,
 			TLS: InboundTLS{
 				Enabled:    true,
@@ -146,7 +148,7 @@ func AssertStatsConsistent(cfg Config) error {
 }
 
 func validateParams(params NodeParams) error {
-	if err := ValidatePort(params.ProxyPort, "代理监听"); err != nil {
+	if err := ValidatePort(params.ListenPort, "代理监听"); err != nil {
 		return err
 	}
 	if err := ValidatePort(params.APIPort, "V2Ray API"); err != nil {
@@ -155,8 +157,8 @@ func validateParams(params NodeParams) error {
 	if err := ValidatePort(params.RealityPort, "握手目标"); err != nil {
 		return err
 	}
-	if params.ProxyPort == params.APIPort {
-		return fmt.Errorf("代理端口与 API 端口不能相同(均为 %d)", params.ProxyPort)
+	if params.ListenPort == params.APIPort {
+		return fmt.Errorf("代理端口与 API 端口不能相同(均为 %d)", params.ListenPort)
 	}
 	if err := ValidateHandshakeServer(params.RealityDest); err != nil {
 		return err

@@ -76,7 +76,7 @@ func TestCompareDetectsNodeAttributeChanges(t *testing.T) {
 
 	p := validParams()
 	p.Users = []User{userA}
-	p.ProxyPort = 25443
+	p.ListenPort = 25443
 	p.RealityDest = "www.cloudflare.com"
 	after, err := Render(p)
 	if err != nil {

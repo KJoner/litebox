@@ -132,7 +132,10 @@ export interface Node {
   host: string
   ssh_port: number
   ssh_user: string
+  /** 客户端连接的公网端口,写进订阅 */
   proxy_port: number
+  /** sing-box 在节点上监听的端口,NAT / nginx 转发时与 proxy_port 不同 */
+  listen_port: number
   api_port: number
   arch: string
   singbox_version: string
@@ -149,6 +152,14 @@ export interface Node {
   deployed_config_sha256: string
   created_at: string
   updated_at: string
+}
+
+export interface NodeUpdateEffect {
+  /** 连接参数变了,面板已丢弃该节点的 SSH 长连接 */
+  ssh_changed: boolean
+  /** 节点上跑的配置已与期望状态不一致,需要重新部署才生效 */
+  needs_deploy: boolean
+  changes: string[]
 }
 
 export interface ProbeResult {
@@ -317,6 +328,8 @@ export const api = {
   node: (id: number) => request<Node>(`/api/nodes/${id}`),
   createNode: (body: Record<string, unknown>) =>
     request<Node>('/api/nodes', { method: 'POST', body }),
+  updateNode: (id: number, body: Record<string, unknown>) =>
+    request<{ node: Node; effect: NodeUpdateEffect }>(`/api/nodes/${id}`, { method: 'PUT', body }),
   deleteNode: (id: number) =>
     request<{ message: string }>(`/api/nodes/${id}`, { method: 'DELETE' }),
   setNodeEnabled: (id: number, enabled: boolean) =>

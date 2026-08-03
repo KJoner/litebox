@@ -242,7 +242,7 @@ func (s *Service) desiredConfig(ctx context.Context, nodeID int64) (singbox.Rend
 		}
 	}
 	return singbox.RenderJSON(singbox.NodeParams{
-		ProxyPort:         n.ProxyPort,
+		ListenPort:        n.ListenPort,
 		APIPort:           n.APIPort,
 		RealityDest:       n.RealityDest,
 		RealityPort:       n.RealityDestPort,
@@ -277,7 +277,7 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	req := deployment.Request{
 		NodeID: nodeID,
 		Params: singbox.NodeParams{
-			ProxyPort:         n.ProxyPort,
+			ListenPort:        n.ListenPort,
 			APIPort:           n.APIPort,
 			RealityDest:       n.RealityDest,
 			RealityPort:       n.RealityDestPort,

@@ -147,7 +147,7 @@ func (e *integrationEnv) request(revision int64, users []singbox.User) Request {
 	return Request{
 		NodeID: 1,
 		Params: singbox.NodeParams{
-			ProxyPort:         e.proxyPort,
+			ListenPort:        e.proxyPort,
 			APIPort:           28080,
 			RealityDest:       e.dest,
 			RealityPort:       443,

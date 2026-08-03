@@ -150,7 +150,7 @@ func buildProbeConfig(req Request, user singbox.User, probePort int) ([]byte, er
 			"type":        "vless",
 			"tag":         "probe-out",
 			"server":      "127.0.0.1",
-			"server_port": req.Params.ProxyPort,
+			"server_port": req.Params.ListenPort,
 			"uuid":        user.UUID,
 			"flow":        singbox.FlowVision,
 			"tls": map[string]any{

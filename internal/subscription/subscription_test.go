@@ -542,3 +542,41 @@ func itoa(v int64) string {
 	}
 	return string(buf[i:])
 }
+
+// NAT 主机与自建 nginx 转发时,订阅里必须是公网端口。
+// 写成主机监听端口客户端会连到一个转发链路上不存在的号码,而且不会有任何报错 ——
+// 面板这边看起来一切正常,只有用户连不上。
+func TestSubscriptionUsesPublicPortNotListenPort(t *testing.T) {
+	env := newSubEnv(t)
+	res, err := env.db.Exec(`
+		INSERT INTO nodes (name, host, proxy_port, listen_port, api_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			status, deployed_config_sha256, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"NAT 节点", "192.0.2.7", 443, 20443, 28080,
+		"www.cloudflare.com", "enc", "pubkey123", "abcd1234",
+		"ONLINE", "deadbeef", "2026-08-03T00:00:00Z", "2026-08-03T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID, _ := res.LastInsertId()
+
+	u, err := env.store.Create(t.Context(), user.CreateParams{
+		DisplayName: "用户", NodeIDs: []int64{nodeID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := env.svc.Build(t.Context(), u.SubToken, FormatURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(result.Body)
+	if !strings.Contains(body, "192.0.2.7:443") {
+		t.Errorf("订阅里没有公网端口 443:%s", body)
+	}
+	if strings.Contains(body, "20443") {
+		t.Errorf("订阅里出现了主机监听端口 20443:%s", body)
+	}
+}

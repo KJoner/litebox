@@ -85,6 +85,14 @@
   否则受影响节点不会被标脏,数据库改了而节点没改;
 * **一台机器只能承载一个节点**:`deployment.Layout` 的路径(`/opt/litebox`)
   与服务名(`litebox-singbox`)是全局固定的,两个节点指向同一主机会互相覆盖配置;
+* **节点的两个端口含义不可混用**:`nodes.proxy_port` 是客户端连接的公网端口,
+  只写进订阅;`nodes.listen_port` 是 sing-box 的 `inbound.listen_port`,
+  端口监听检查与 VLESS 拨测查的也是它。NAT 主机与 nginx 转发时两者不同,
+  把公网端口渲染进节点配置会让 sing-box 监听在转发链路另一端的号码上 ——
+  `check`、systemd、健康检查全部通过,只有用户连不上。
+  `singbox.NodeParams` 里只有 `ListenPort`,公网端口不属于节点配置;
+* 节点的握手目标不走通用的 `Store.Update`,必须经 `ApplyHandshakeDest`
+  实测通过后写入,否则会绕过 8192 字节记录上限的校验;
 * 订阅 Token 同时保存 SHA-256 哈希与主密钥加密的密文:
   哈希供公开订阅路由查找(该路径不解密任何字段),密文供面板反复展示订阅地址;
 * 注释用中文,只写代码本身表达不了的约束与原因,不写"这行做什么"。

@@ -80,7 +80,8 @@ func compareNodeAttrs(old, new Config) []string {
 	oldIn, newIn := old.Inbounds[0], new.Inbounds[0]
 
 	if oldIn.ListenPort != newIn.ListenPort {
-		changes = append(changes, fmt.Sprintf("代理端口 %d → %d", oldIn.ListenPort, newIn.ListenPort))
+		// 写明"主机":节点上还有一个公网代理端口,它不进节点配置,这里的差异与它无关。
+		changes = append(changes, fmt.Sprintf("主机代理端口 %d → %d", oldIn.ListenPort, newIn.ListenPort))
 	}
 	if oldIn.TLS.ServerName != newIn.TLS.ServerName {
 		changes = append(changes, fmt.Sprintf("握手目标 %s → %s",

@@ -191,7 +191,13 @@ function confirmResetHostKey() {
           <a-descriptions-item label="SSH">
             {{ node.ssh_user }}@{{ node.host }}:{{ node.ssh_port }}
           </a-descriptions-item>
-          <a-descriptions-item label="代理端口">{{ node.proxy_port }}</a-descriptions-item>
+          <a-descriptions-item label="代理端口">
+            <template v-if="node.listen_port === node.proxy_port">{{ node.proxy_port }}</template>
+            <template v-else>
+              公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}
+              <div class="hint">需自行配置端口转发,面板只让 sing-box 监听主机端口</div>
+            </template>
+          </a-descriptions-item>
           <a-descriptions-item label="架构">{{ node.arch || '未探测' }}</a-descriptions-item>
           <a-descriptions-item label="sing-box">
             {{ node.singbox_version || '未安装' }}
@@ -336,6 +342,11 @@ function confirmResetHostKey() {
 <style scoped>
 .actions {
   margin: 16px 0;
+}
+
+.hint {
+  color: rgb(0 0 0 / 45%);
+  font-size: 12px;
 }
 
 .block {

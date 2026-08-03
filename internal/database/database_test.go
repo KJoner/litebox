@@ -177,3 +177,49 @@ func seedNode(t *testing.T, db *sql.DB) {
 		t.Fatalf("插入测试节点: %v", err)
 	}
 }
+
+// 0005 拆分公网端口与主机监听端口时,存量节点必须被回填成两者相等 ——
+// 漏了回填,升级后所有老节点的 listen_port 都是 0,配置渲染直接报端口非法,
+// 而且是在下一次部署时才炸,升级当下毫无征兆。
+func TestMigrateBackfillsListenPortForExistingNodes(t *testing.T) {
+	db := openTestDB(t)
+
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatal(err)
+	}
+
+	// 先把数据库推进到 0005 之前的状态,再插入一个"存量"节点。
+	var target Migration
+	for _, m := range migrations {
+		if m.Version >= 5 {
+			if m.Version == 5 {
+				target = m
+			}
+			continue
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("应用迁移 %d: %v", m.Version, err)
+		}
+	}
+	if target.Version != 5 {
+		t.Fatal("没有找到 0005 迁移")
+	}
+	seedNode(t, db)
+
+	if err := applyMigration(db, target); err != nil {
+		t.Fatalf("应用迁移 5: %v", err)
+	}
+
+	var proxyPort, listenPort int
+	if err := db.QueryRow(
+		`SELECT proxy_port, listen_port FROM nodes WHERE id = 1`).Scan(&proxyPort, &listenPort); err != nil {
+		t.Fatal(err)
+	}
+	if listenPort != proxyPort {
+		t.Errorf("存量节点的主机端口 = %d,应回填为公网端口 %d", listenPort, proxyPort)
+	}
+}

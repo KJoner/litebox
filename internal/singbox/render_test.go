@@ -9,7 +9,7 @@ import (
 
 func validParams() NodeParams {
 	return NodeParams{
-		ProxyPort:         24443,
+		ListenPort:        24443,
 		APIPort:           28080,
 		RealityDest:       "www.apple.com",
 		RealityPort:       443,
@@ -176,9 +176,9 @@ func TestRenderRejectsDuplicateUsers(t *testing.T) {
 
 func TestRenderRejectsBadNodeParams(t *testing.T) {
 	cases := map[string]func(*NodeParams){
-		"代理端口为零":     func(p *NodeParams) { p.ProxyPort = 0 },
-		"代理端口超范围":    func(p *NodeParams) { p.ProxyPort = 70000 },
-		"代理与API端口相同": func(p *NodeParams) { p.APIPort = p.ProxyPort },
+		"代理端口为零":     func(p *NodeParams) { p.ListenPort = 0 },
+		"代理端口超范围":    func(p *NodeParams) { p.ListenPort = 70000 },
+		"代理与API端口相同": func(p *NodeParams) { p.APIPort = p.ListenPort },
 		"握手目标为空":     func(p *NodeParams) { p.RealityDest = "" },
 		"握手目标是IP":    func(p *NodeParams) { p.RealityDest = "1.2.3.4" },
 		"私钥长度错误":     func(p *NodeParams) { p.RealityPrivateKey = "tooshort" },
