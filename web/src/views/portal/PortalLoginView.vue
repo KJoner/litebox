@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ApiError } from '@/api/client'
 import { usePortalStore } from '@/stores/portal'
@@ -68,7 +68,10 @@ async function onSubmit() {
         </a-button>
       </a-form>
 
-      <p class="hint">忘记密码请联系管理员重置。</p>
+      <p class="hint">
+        忘记密码请联系管理员重置。<br />
+        管理员请前往 <RouterLink to="/login">管理后台</RouterLink>
+      </p>
     </a-card>
   </div>
 </template>

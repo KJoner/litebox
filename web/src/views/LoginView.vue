@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -61,6 +61,16 @@ async function onSubmit() {
           登录
         </a-button>
       </a-form>
+
+      <!--
+        这里是管理员登录页,查的是管理员账号表。普通用户在这里输账号
+        只会得到「用户名或密码错误」,看起来完全就是密码发错了 ——
+        而管理员把面板首页发给用户是很自然的事。给一个明确的出口。
+      -->
+      <div class="portal-entry">
+        普通用户请前往
+        <RouterLink to="/user/login">用户中心</RouterLink>
+      </div>
     </a-card>
   </div>
 </template>
@@ -89,6 +99,13 @@ async function onSubmit() {
 .login-subtitle {
   margin: 4px 0 24px;
   text-align: center;
+  color: rgb(0 0 0 / 45%);
+}
+
+.portal-entry {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 12px;
   color: rgb(0 0 0 / 45%);
 }
 </style>
