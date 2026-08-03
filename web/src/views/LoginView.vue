@@ -69,7 +69,7 @@ async function onSubmit() {
       -->
       <div class="portal-entry">
         普通用户请前往
-        <RouterLink to="/user/login">用户中心</RouterLink>
+        <RouterLink to="/">用户中心</RouterLink>
       </div>
     </a-card>
   </div>
