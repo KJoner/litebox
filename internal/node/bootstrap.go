@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -63,28 +64,30 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 		return s.store.PinHostKey(context.WithoutCancel(ctx), nodeID, hostKey)
 	}
 
+	// 面板连的到底是谁,必须出现在每一条错误里。
+	// 公钥装错了用户、或者端口不是习惯的 22,是这里最常见的两种翻车方式,
+	// 而只说"登录不上"的话,人会一直盯着公钥内容找问题。
+	who := fmt.Sprintf("%s@%s:%d", n.SSHUser, n.Host, n.SSHPort)
+
 	// 先用面板密钥直接试一次。
 	//
 	// 它成立的场合比想象中多:节点上早就装过面板公钥(重复点「重新引导」)、
 	// 管理员照着设置页把公钥手工贴进了 authorized_keys。不先试这一下,
 	// 一台只允许密钥登录、又已经手工装好公钥的机器会走进死胡同 ——
 	// 口令登录被 sshd 拒,主控本机又没有能登它的私钥,而其实它本来就能连上。
-	if client, err := sshx.Dial(ctx, sshx.Target{
-		Host:          n.Host,
-		Port:          n.SSHPort,
-		User:          n.SSHUser,
-		PrivateKeyPEM: panelKey.PrivateKeyPEM,
-		KnownHostKey:  n.HostKey,
-		OnHostKey:     pinHostKey,
-	}, s.dialTimeout()); err == nil {
-		defer client.Close()
-		if _, err := client.RunCheck(ctx, sshx.NewCommand("true")); err == nil {
-			s.pool.Invalidate(nodeID)
-			result.Method = "panel-key"
-			result.AlreadyPresent = true
-			result.Detail = "面板密钥已经能登录该节点,无需重新装公钥。"
-			return result, nil
-		}
+	panelKeyErr := s.tryPanelKey(ctx, nodeID, n, panelKey.PrivateKeyPEM, pinHostKey)
+	switch {
+	case panelKeyErr == nil:
+		result.Method = "panel-key"
+		result.AlreadyPresent = true
+		result.Detail = "面板密钥已经能登录 " + who + ",无需重新装公钥。"
+		return result, nil
+	case errors.Is(panelKeyErr, sshx.ErrHostKeyMismatch):
+		// 主机密钥对不上时后面几条路也都会撞在同一堵墙上,而且这是需要人判断的安全事件,
+		// 不能让它混在"公钥没装"里被一眼带过。
+		return result, fmt.Errorf("%w。节点 %s 的主机密钥与面板记录的不一致。"+
+			"确认这台机器确实是你重装过的那台之后,点「重置主机密钥」再重新引导;"+
+			"若你没做过重装,请先停下来查清楚", panelKeyErr, who)
 	}
 
 	target := sshx.Target{
@@ -104,10 +107,15 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 		}
 		if len(keys) == 0 {
 			return result, fmt.Errorf(
-				"面板密钥登录不上该节点,你也没填节点密码,而主控本机没找到可用私钥(已查找 %s)。"+
-					"三条路任选:填写节点的登录密码;把一把能登录该节点的私钥放到上述目录并确保面板进程可读;"+
-					"或者手工把面板公钥追加到节点的 ~/.ssh/authorized_keys(公钥见「设置」页)后再点一次「重新引导」",
-				strings.Join(s.bootstrapKeyDirs(), "、"))
+				"面板密钥登录 %s 失败(%v),你也没填节点密码,而主控本机没找到可用私钥"+
+					"(以 %s 身份查找了 %s;主控上 root 的 ~/.ssh 面板读不到,那是另一个用户的目录)。"+
+					"两条路任选:填写节点的登录密码;"+
+					"或者在主控上用你现成的 root 密钥把面板公钥推过去,再点一次「重新引导」:\n"+
+					"  litebox ssh-key --config /etc/litebox/litebox.yaml | \\\n"+
+					"    ssh -p %d %s@%s 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && "+
+					"cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'",
+				who, panelKeyErr, processUser(), strings.Join(s.bootstrapKeyDirs(), "、"),
+				n.SSHPort, n.SSHUser, n.Host)
 		}
 		result.Method = "local-key"
 		target.ExtraPrivateKeys = keys
@@ -167,6 +175,36 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 		result.Detail = strings.TrimSpace(result.Detail + " 面板公钥已写入并验证通过。")
 	}
 	return result, nil
+}
+
+// tryPanelKey 用面板密钥试连一次。返回 nil 表示这个节点已经不需要引导了。
+//
+// 失败原因必须原样返回给调用方 —— 它是后续所有错误提示里最有信息量的一段:
+// "no supported methods remain" 是公钥没装,"connection refused" 是端口或防火墙,
+// 主机密钥不一致则是另一回事。吞掉它就只剩一句"登录不上",等于什么都没说。
+func (s *Service) tryPanelKey(
+	ctx context.Context, nodeID int64, n *Node, privateKey string,
+	pinHostKey func(string) error,
+) error {
+	client, err := sshx.Dial(ctx, sshx.Target{
+		Host:          n.Host,
+		Port:          n.SSHPort,
+		User:          n.SSHUser,
+		PrivateKeyPEM: privateKey,
+		KnownHostKey:  n.HostKey,
+		OnHostKey:     pinHostKey,
+	}, s.dialTimeout())
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if _, err := client.RunCheck(ctx, sshx.NewCommand("true")); err != nil {
+		return err
+	}
+	// 池里可能还缓存着引导前那条失败的连接,丢掉它。
+	s.pool.Invalidate(nodeID)
+	return nil
 }
 
 func methodLabel(method string) string {
@@ -269,6 +307,17 @@ func keyBody(line string) string {
 		return ""
 	}
 	return fields[0] + " " + fields[1]
+}
+
+// processUser 返回面板进程的运行身份,用于错误提示。
+//
+// 这一条几乎是"主控本机私钥"这条路唯一的翻车点:面板以专用的非 root 用户运行,
+// 而管理员想用的往往是 root 的 ~/.ssh —— 两个目录,提示里不写清楚谁也想不到。
+func processUser() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return "面板进程"
 }
 
 // bootstrapKeyDirs 返回搜索主控本机私钥的目录清单。
