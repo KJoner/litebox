@@ -47,14 +47,52 @@ func listeningScript(port int) string {
 		port, port)
 }
 
+// portListenTimeout 是等待代理端口进入监听状态的上限。
+//
+// 取值只需覆盖"进程已起来但还没 bind"这段窗口。sing-box 实测约 100ms 就绑上,
+// 给到 15 秒是留给慢盘、冷启动与 DNS 解析卡顿的余量;真绑不上时无非是
+// 多等十几秒才报错,而误判的代价是把一个健康的节点回滚掉。
+const portListenTimeout = 15 * time.Second
+
 // checkPortListening 是健康检查第二步:代理端口确实在监听。
+//
+// 必须轮询而不是采一次样。systemd 的 Type=simple 在进程 exec 出来那一刻就算
+// "已启动",此时端口还没 bind;OpenRC 的 supervise-daemon 同理。
+// 单次瞬时采样在低延迟链路上会稳定失败 —— 主控离节点越近,从重启返回到发出
+// 这次检查的间隔越短,越容易抢在 bind 之前。实测主控与节点同区域时,
+// 两者相距不到 100ms,而 bind 恰好也要 100ms 左右,于是每次部署都判失败并回滚。
+//
+// 轮询在节点上一次完成,不是每秒一个往返 —— 跨洲链路上后者本身就要几百毫秒。
 func (d *Deployer) checkPortListening(ctx context.Context, client *sshx.Client, port int) (string, error) {
-	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c", listeningScript(port)))
+	attempts := int(portListenTimeout / time.Second)
+	script := fmt.Sprintf(`i=0
+while [ $i -lt %d ]; do
+  if [ "$(%s)" = listening ]; then echo "listening $i"; exit 0; fi
+  i=$((i+1)); sleep 1
+done
+echo missing`, attempts, listeningScript(port))
+
+	// 远端要循环等待,超时必须留出余量,否则命令自己先被掐断。
+	runCtx, cancel := context.WithTimeout(ctx, portListenTimeout+20*time.Second)
+	defer cancel()
+
+	result, err := client.Run(runCtx, sshx.NewCommand("sh", "-c", script))
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(result.Stdout) != "listening" {
-		return "", fmt.Errorf("端口 %d 未处于监听状态", port)
+	return parseListenResult(result.Stdout, port)
+}
+
+// parseListenResult 解析轮询脚本的输出:"listening <等待秒数>" 或 "missing"。
+func parseListenResult(out string, port int) (string, error) {
+	fields := strings.Fields(out)
+	if len(fields) == 0 || fields[0] != "listening" {
+		return "", fmt.Errorf("端口 %d 在 %s 内未进入监听状态", port, portListenTimeout)
+	}
+	// 等待秒数不为零时写进详情:部署记录里看到"等待 8 秒"就该去查节点为什么起得慢,
+	// 而不是等它某天真的超过 15 秒变成部署失败才反应过来。
+	if len(fields) > 1 && fields[1] != "0" {
+		return fmt.Sprintf("端口 %d 正在监听(等待 %s 秒)", port, fields[1]), nil
 	}
 	return fmt.Sprintf("端口 %d 正在监听", port), nil
 }
