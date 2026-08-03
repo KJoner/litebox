@@ -122,8 +122,14 @@ sudo ./scripts/install.sh
 * **主控本机私钥** —— 用主控上已有的私钥去装,适合禁用了密码登录的节点;
 * **手工指定私钥** —— 给这个节点单配一把。
 
-之后所有操作都走面板专用密钥。公钥可在「设置」页复制,或用
-`litebox ssh-key` 打印。
+之后所有操作都走面板专用密钥。公钥可在「设置」页复制,或在主控上打印:
+
+```bash
+sudo -u litebox env "$(grep '^LITEBOX_MASTER_KEY=' /etc/litebox/litebox.env)" \
+  /opt/litebox/litebox ssh-key --config /etc/litebox/litebox.yaml
+```
+
+主密钥在 `/etc/litebox/litebox.env` 而不是配置文件里,手工执行子命令要自己带上。
 
 ## 本地开发
 

@@ -232,8 +232,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("database.path 不能为空")
 	}
 	if c.Security.MasterKey == "" {
-		return fmt.Errorf("未配置主密钥,请设置环境变量 LITEBOX_MASTER_KEY " +
-			"(可用 litebox genkey 生成)")
+		// 主密钥刻意不写进 yaml,而是放在 systemd 的 EnvironmentFile 里。
+		// 于是手工敲子命令时必然撞上这个错误 —— 直接把可用的命令给出来,
+		// 否则每次都要去翻单元文件才知道该从哪儿取。
+		return fmt.Errorf("未配置主密钥。标准安装下它在 /etc/litebox/litebox.env,"+
+			"服务通过 systemd 的 EnvironmentFile 读取,手工执行子命令时要自己带上:\n"+
+			"  sudo -u litebox env \"$(grep '^LITEBOX_MASTER_KEY=' /etc/litebox/litebox.env)\" \\\n"+
+			"    %s <子命令> --config /etc/litebox/litebox.yaml\n"+
+			"全新部署可用 litebox genkey 生成一把", executablePath())
 	}
 	switch strings.ToLower(c.Log.Level) {
 	case "debug", "info", "warn", "error":
@@ -252,6 +258,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("security.login_max_attempts 必须大于 0")
 	}
 	return nil
+}
+
+// executablePath 返回当前二进制的路径,用于把错误提示里的命令写成能直接粘贴的形式。
+func executablePath() string {
+	if p, err := os.Executable(); err == nil && p != "" {
+		return p
+	}
+	return "/opt/litebox/litebox"
 }
 
 // DatabaseDir 返回数据库文件所在目录,启动时需要确保其存在。
