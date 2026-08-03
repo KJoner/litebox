@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
@@ -438,6 +439,7 @@ func cmdServe(args []string) error {
 		Metrics:   metricsStore,
 		Monitor:   monitor,
 		Settings:  settingsStore,
+		Tiers:     access.NewStore(db),
 		Pool:      pool,
 		Binaries:  node.NewDirBinaryProvider(cfg.Node.BinaryDir),
 		Logger:    logger,

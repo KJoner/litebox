@@ -26,9 +26,12 @@ func NewService(store *Store, trigger DeployTrigger, logger *slog.Logger) *Servi
 
 func (s *Service) Store() *Store { return s.store }
 
-// markNodes 触发部署。传入的是变更前后节点集合的并集 ——
+// markNodes 触发部署。传入的是变更前后有效节点集合的并集 ——
 // 只标记变更后的节点会漏掉"用户被从某节点移除"的情况:
 // 那个节点也必须重新生成配置才能真正踢掉该用户。
+//
+// 一律用 EffectiveNodeIDs 而不是 NodeIDs:改访问等级不动 user_nodes,
+// 按额外授权标脏时那次变更会一个节点都标不到,数据库改了而节点全没改。
 func (s *Service) markNodes(nodeSets ...[]int64) {
 	if s.trigger == nil {
 		return
@@ -53,7 +56,7 @@ func (s *Service) Create(ctx context.Context, p CreateParams) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.NodeIDs)
+	s.markNodes(u.EffectiveNodeIDs)
 	return u, nil
 }
 
@@ -66,7 +69,7 @@ func (s *Service) Update(ctx context.Context, id int64, p UpdateParams) (*User, 
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(before.NodeIDs, after.NodeIDs)
+	s.markNodes(before.EffectiveNodeIDs, after.EffectiveNodeIDs)
 	return after, nil
 }
 
@@ -75,7 +78,7 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) (*User
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.NodeIDs)
+	s.markNodes(u.EffectiveNodeIDs)
 	return u, nil
 }
 
@@ -85,7 +88,7 @@ func (s *Service) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.NodeIDs)
+	s.markNodes(u.EffectiveNodeIDs)
 	return u, nil
 }
 
@@ -94,7 +97,7 @@ func (s *Service) RegenerateUUID(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.NodeIDs)
+	s.markNodes(u.EffectiveNodeIDs)
 	return u, nil
 }
 

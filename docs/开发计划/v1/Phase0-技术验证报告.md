@@ -90,7 +90,7 @@ if handshakeLen > int(realitySize) { // too long
   建议同时要求 ALPN 支持 h2;
 - 内置一份默认可用目标清单,并在保存节点前强制校验通过。
 
-本次已实现该检测工具(`phase0/statsprobe/destcheck.go`),可直接移植进 Phase 2。
+本次已实现该检测工具(`../../../phase0/statsprobe/destcheck.go`),可直接移植进 Phase 2。
 
 ### 3.2 `sing-box check` 的校验范围远小于预期(严重)
 

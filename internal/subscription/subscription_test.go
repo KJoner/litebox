@@ -18,7 +18,7 @@ import (
 
 func testNode() Node {
 	return Node{
-		Name:             "洛杉矶 01",
+		DisplayName:      "洛杉矶 01",
 		Host:             "192.0.2.10",
 		Port:             24443,
 		RealityDest:      "www.cloudflare.com",
@@ -64,7 +64,7 @@ func TestVLESSURIContainsAllRealityParams(t *testing.T) {
 // 节点名含中文与空格时必须编码,否则链接会被截断。
 func TestVLESSURIEscapesNodeName(t *testing.T) {
 	node := testNode()
-	node.Name = "洛杉矶 01 #主力"
+	node.DisplayName = "洛杉矶 01 #主力"
 	raw := VLESSURI(testUUID, node)
 
 	if strings.Count(raw, "#") != 1 {
@@ -78,8 +78,8 @@ func TestVLESSURIEscapesNodeName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("片段无法解码: %v", err)
 	}
-	if decoded != node.Name {
-		t.Errorf("解码后的节点名 = %q,期望 %q", decoded, node.Name)
+	if decoded != node.DisplayName {
+		t.Errorf("解码后的节点名 = %q,期望 %q", decoded, node.DisplayName)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestVLESSURIKeepsDomainHostAsIs(t *testing.T) {
 
 func TestSingBoxClientConfigStructure(t *testing.T) {
 	nodes := []Node{testNode(), {
-		Name: "东京 01", Host: "192.0.2.20", Port: 24443,
+		DisplayName: "东京 01", Host: "192.0.2.20", Port: 24443,
 		RealityDest: "www.apple.com", RealityPublicKey: "abc", RealityShortID: "1234",
 	}}
 
@@ -181,10 +181,10 @@ func TestSingBoxClientConfigStructure(t *testing.T) {
 // sing-box 遇到重复 tag 会直接拒绝启动。
 func TestSingBoxClientConfigTagsAreUnique(t *testing.T) {
 	nodes := []Node{
-		{Name: "节点", Host: "192.0.2.1", Port: 443},
-		{Name: "节点", Host: "192.0.2.2", Port: 443},
-		{Name: "!!!", Host: "192.0.2.3", Port: 443},
-		{Name: "", Host: "192.0.2.4", Port: 443},
+		{DisplayName: "节点", Host: "192.0.2.1", Port: 443},
+		{DisplayName: "节点", Host: "192.0.2.2", Port: 443},
+		{DisplayName: "!!!", Host: "192.0.2.3", Port: 443},
+		{DisplayName: "", Host: "192.0.2.4", Port: 443},
 	}
 	raw, err := SingBoxClientConfig(testUUID, nodes, 2080)
 	if err != nil {
@@ -245,18 +245,38 @@ func newSubEnv(t *testing.T) *subEnv {
 }
 
 // addNode 插入一个节点。deployed 为 false 表示尚未成功部署过。
+// 内部名称与展示名称默认相同,需要区分两者的用例走 addNodeFull。
 func (e *subEnv) addNode(t *testing.T, name, status string, deployed bool) int64 {
 	t.Helper()
+	return e.addNodeFull(t, nodeFixture{Name: name, DisplayName: name, Status: status,
+		Deployed: deployed, SubEnabled: true, TierID: 1})
+}
+
+type nodeFixture struct {
+	Name        string
+	DisplayName string
+	Status      string
+	Deployed    bool
+	SubEnabled  bool
+	TierID      int64
+	SortOrder   int
+}
+
+func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
+	t.Helper()
 	sha := ""
-	if deployed {
+	if f.Deployed {
 		sha = "deadbeef"
 	}
 	res, err := e.db.Exec(`
-		INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted,
-			reality_pubkey, reality_short_id, status, deployed_config_sha256, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		name, "192.0.2.1", 24443, "www.cloudflare.com", "enc", "pubkey123", "abcd1234",
-		status, sha, "2026-08-02T00:00:00Z", "2026-08-02T00:00:00Z")
+		INSERT INTO nodes (name, display_name, host, proxy_port, reality_dest,
+			reality_privkey_encrypted, reality_pubkey, reality_short_id, status,
+			deployed_config_sha256, access_tier_id, sort_order, subscription_enabled,
+			created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		f.Name, f.DisplayName, "192.0.2.1", 24443, "www.cloudflare.com", "enc",
+		"pubkey123", "abcd1234", f.Status, sha, f.TierID, f.SortOrder, f.SubEnabled,
+		"2026-08-02T00:00:00Z", "2026-08-02T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,5 +598,123 @@ func TestSubscriptionUsesPublicPortNotListenPort(t *testing.T) {
 	}
 	if strings.Contains(body, "20443") {
 		t.Errorf("订阅里出现了主机监听端口 20443:%s", body)
+	}
+}
+
+// ---------- V2:展示名称与访问等级 ----------
+
+// 核心验收标准 12:所有订阅格式只显示展示名称。
+// 内部名称上写的是机房、供应商与到期日,发到用户设备上等于把运维信息公开。
+func TestSubscriptionUsesDisplayNameOnly(t *testing.T) {
+	env := newSubEnv(t)
+	nodeID := env.addNodeFull(t, nodeFixture{
+		Name: "LAX-cn2gia-到期20261201", DisplayName: "洛杉矶 01",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 1,
+	})
+	u, err := env.store.Create(t.Context(), user.CreateParams{
+		DisplayName: "用户", NodeIDs: []int64{nodeID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, format := range []Format{FormatURI, FormatBase64, FormatSingBox} {
+		t.Run(string(format), func(t *testing.T) {
+			result, err := env.svc.Build(t.Context(), u.SubToken, format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(result.Body)
+			if format == FormatBase64 {
+				decoded, err := base64.StdEncoding.DecodeString(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = string(decoded)
+			}
+			if strings.Contains(body, "cn2gia") || strings.Contains(body, "LAX-") {
+				t.Errorf("订阅里泄漏了内部名称:%s", body)
+			}
+			if !strings.Contains(body, "洛杉矶") && !strings.Contains(body, url.PathEscape("洛杉矶 01")) {
+				t.Errorf("订阅里没有展示名称:%s", body)
+			}
+		})
+	}
+}
+
+// 节点进维护时关掉 subscription_enabled 即从新订阅中移除,
+// 节点记录、历史流量与部署记录都保留。
+func TestSubscriptionSkipsDisabledSubscriptionNodes(t *testing.T) {
+	env := newSubEnv(t)
+	on := env.addNodeFull(t, nodeFixture{Name: "在架", DisplayName: "在架",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 1})
+	off := env.addNodeFull(t, nodeFixture{Name: "维护中", DisplayName: "维护中",
+		Status: "ONLINE", Deployed: true, SubEnabled: false, TierID: 1})
+
+	u, _ := env.store.Create(t.Context(), user.CreateParams{
+		DisplayName: "用户", NodeIDs: []int64{on, off},
+	})
+	result, err := env.svc.Build(t.Context(), u.SubToken, FormatURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NodeCount != 1 {
+		t.Fatalf("节点数 = %d,期望 1", result.NodeCount)
+	}
+	if strings.Contains(string(result.Body), url.PathEscape("维护中")) {
+		t.Error("已下架的节点仍出现在订阅中")
+	}
+}
+
+// 订阅顺序由 sort_order 决定,让管理员能把主力节点排在最前。
+func TestSubscriptionRespectsSortOrder(t *testing.T) {
+	env := newSubEnv(t)
+	// 先插入的排序值更大,只有真的按 sort_order 排才会反过来。
+	env.addNodeFull(t, nodeFixture{Name: "备用", DisplayName: "备用",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 1, SortOrder: 20})
+	env.addNodeFull(t, nodeFixture{Name: "主力", DisplayName: "主力",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 1, SortOrder: 10})
+
+	u, _ := env.store.Create(t.Context(), user.CreateParams{DisplayName: "用户"})
+	result, err := env.svc.Build(t.Context(), u.SubToken, FormatURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(result.Body)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("节点数 = %d", len(lines))
+	}
+	if !strings.Contains(lines[0], url.PathEscape("主力")) {
+		t.Errorf("排序未生效,第一个是:%s", lines[0])
+	}
+}
+
+// 订阅里的节点必须与配置生成用的是同一份归属定义:
+// VIP 用户不必在 user_nodes 里有任何一行,也应当拿到普通组与 VIP 组节点。
+func TestSubscriptionFollowsTierInheritance(t *testing.T) {
+	env := newSubEnv(t)
+	env.addNodeFull(t, nodeFixture{Name: "普通", DisplayName: "普通",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 1})
+	env.addNodeFull(t, nodeFixture{Name: "VIP", DisplayName: "VIP",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 2})
+	env.addNodeFull(t, nodeFixture{Name: "ROOT", DisplayName: "ROOT",
+		Status: "ONLINE", Deployed: true, SubEnabled: true, TierID: 3})
+
+	vip, err := env.store.Create(t.Context(), user.CreateParams{
+		DisplayName: "VIP 用户", AccessTierID: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.svc.Build(t.Context(), vip.SubToken, FormatURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(result.Body)
+	if result.NodeCount != 2 {
+		t.Fatalf("VIP 用户的节点数 = %d,期望 2:\n%s", result.NodeCount, body)
+	}
+	if strings.Contains(body, url.PathEscape("ROOT")) {
+		t.Error("VIP 用户拿到了 ROOT 节点")
 	}
 }

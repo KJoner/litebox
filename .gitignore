@@ -31,3 +31,4 @@ litebox.local.yaml
 # IDE
 .idea/
 .vscode/
+/docs/开发计划/

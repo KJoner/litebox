@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type Node, type NodeMetrics } from '@/api/client'
+import { api, ApiError, type AccessTier, type Node, type NodeMetrics } from '@/api/client'
 import { formatBytes, formatRelative } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import NodeDetailDrawer from '@/components/NodeDetailDrawer.vue'
@@ -12,8 +12,11 @@ const metrics = ref<Record<number, NodeMetrics>>({})
 const loading = ref(false)
 const detailId = ref<number | null>(null)
 
+const tiers = ref<AccessTier[]>([])
+
 const columns = [
-  { title: '节点', key: 'name', width: 210 },
+  { title: '节点', key: 'name', width: 230 },
+  { title: '访问等级', key: 'tier', width: 130 },
   { title: '状态', key: 'status', width: 110 },
   { title: 'sing-box', key: 'version', width: 170 },
   { title: '资源', key: 'resource', width: 150 },
@@ -27,19 +30,28 @@ async function load() {
   loading.value = true
   try {
     // 资源采样是可选能力(可以在配置里关掉),取不到不能拖垮整个列表。
-    const [n, t, m] = await Promise.all([
+    const [n, t, m, tr] = await Promise.all([
       api.nodes(),
       api.nodesTodayTraffic(),
       api.nodeMetricsLatest().catch(() => ({ items: [] as NodeMetrics[] })),
+      api.accessTiers(),
     ])
     nodes.value = n.items
     todayTraffic.value = Object.fromEntries(t.items.map((x) => [x.node_id, x.bytes]))
     metrics.value = Object.fromEntries(m.items.map((x) => [x.node_id, x]))
+    tiers.value = tr.items
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载节点列表失败')
   } finally {
     loading.value = false
   }
+}
+
+// 等级配色按"能用到的节点越多颜色越重"排,让越权配置在列表里一眼看得出来。
+function tierColor(code: string): string {
+  if (code === 'root') return 'red'
+  if (code === 'vip') return 'gold'
+  return 'default'
 }
 
 function memPercent(m: NodeMetrics): number {
@@ -69,6 +81,7 @@ const accessMode = ref<AccessMode>('password')
 
 const form = reactive({
   name: '',
+  display_name: '',
   host: '',
   ssh_port: 22,
   ssh_user: 'root',
@@ -77,6 +90,11 @@ const form = reactive({
   proxy_port: 443,
   listen_port: 0,
   api_port: 28080,
+  access_tier_id: 1,
+  sort_order: 0,
+  subscription_enabled: true,
+  public_remark: '',
+  maintenance_message: '',
 })
 
 function openCreate() {
@@ -84,6 +102,7 @@ function openCreate() {
   accessMode.value = 'password'
   Object.assign(form, {
     name: '',
+    display_name: '',
     host: '',
     ssh_port: 22,
     ssh_user: 'root',
@@ -92,6 +111,11 @@ function openCreate() {
     proxy_port: 443,
     listen_port: 0,
     api_port: 28080,
+    access_tier_id: 1,
+    sort_order: 0,
+    subscription_enabled: true,
+    public_remark: '',
+    maintenance_message: '',
   })
   formOpen.value = true
 }
@@ -101,6 +125,7 @@ function openEdit(n: Node) {
   accessMode.value = 'manual'
   Object.assign(form, {
     name: n.name,
+    display_name: n.display_name,
     host: n.host,
     ssh_port: n.ssh_port,
     ssh_user: n.ssh_user,
@@ -111,6 +136,11 @@ function openEdit(n: Node) {
     // 与公网端口相同时按"未配置转发"展示,免得看起来像特意填了两个一样的值。
     listen_port: n.listen_port === n.proxy_port ? 0 : n.listen_port,
     api_port: n.api_port,
+    access_tier_id: n.access_tier_id,
+    sort_order: n.sort_order,
+    subscription_enabled: n.subscription_enabled,
+    public_remark: n.public_remark,
+    maintenance_message: n.maintenance_message,
   })
   formOpen.value = true
 }
@@ -123,6 +153,9 @@ async function submit() {
       // 也只有 password 会带口令,不能把两者一起发过去。
       const result = await api.createNode({
         name: form.name,
+        display_name: form.display_name,
+        access_tier_id: form.access_tier_id,
+        sort_order: form.sort_order,
         host: form.host,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
@@ -156,6 +189,7 @@ async function submit() {
       // (DisallowUnknownFields),整个提交会以"请求格式错误"失败。
       const { effect } = await api.updateNode(id, {
         name: form.name,
+        display_name: form.display_name,
         host: form.host,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
@@ -163,10 +197,21 @@ async function submit() {
         proxy_port: form.proxy_port,
         listen_port: form.listen_port,
         api_port: form.api_port,
+        access_tier_id: form.access_tier_id,
+        sort_order: form.sort_order,
+        subscription_enabled: form.subscription_enabled,
+        public_remark: form.public_remark,
+        maintenance_message: form.maintenance_message,
       })
       formOpen.value = false
       await load()
-      if (effect.needs_deploy) {
+      if (effect.tier_changed) {
+        // 等级变更由面板自动标脏,不需要管理员再挑时机 —— 拖着不部署
+        // 等于被移出的用户还能继续用,提示里要把这一点说清楚。
+        message.success(
+          `已保存:${effect.changes.join(';')}。访问等级变了,受影响节点已排入自动重新部署。`,
+        )
+      } else if (effect.needs_deploy) {
         Modal.confirm({
           title: '配置已保存,但尚未在节点上生效',
           content: `${effect.changes.join(';')}。这些改动进入了节点配置,需要重新部署才生效,部署会重启 sing-box 并断开当前在线连接。`,
@@ -260,12 +305,22 @@ onMounted(load)
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <a @click="detailId = record.id">{{ record.name }}</a>
+          <!-- 内部名称与展示名称不同时两个都列出来:管理员按内部名称找机器,
+               用户报的却是展示名称,只显示一个必然对不上号。 -->
+          <div v-if="record.display_name !== record.name" class="display-name">
+            对外:{{ record.display_name }}
+          </div>
           <div class="node-host">
             {{ record.host }}:{{ record.proxy_port }}
             <span v-if="record.listen_port !== record.proxy_port">
               → 主机 {{ record.listen_port }}
             </span>
           </div>
+        </template>
+
+        <template v-else-if="column.key === 'tier'">
+          <a-tag :color="tierColor(record.access_tier_code)">{{ record.access_tier_name }}</a-tag>
+          <div v-if="!record.subscription_enabled" class="off-sub">已停发订阅</div>
         </template>
 
         <template v-else-if="column.key === 'status'">
@@ -350,9 +405,42 @@ onMounted(load)
     @ok="submit"
   >
     <a-form layout="vertical">
-      <a-form-item label="节点名称" required extra="会显示在用户的客户端里">
-        <a-input v-model:value="form.name" placeholder="例如:洛杉矶 01" />
+      <a-form-item label="内部名称" required extra="只在管理后台出现,可以写机房、供应商、到期日">
+        <a-input v-model:value="form.name" placeholder="例如:LAX-cn2gia-到期20261201" />
       </a-form-item>
+      <a-form-item
+        label="展示名称"
+        extra="用户订阅与门户里显示的就是它,留空则与内部名称相同"
+      >
+        <a-input v-model:value="form.display_name" placeholder="例如:洛杉矶 01" />
+      </a-form-item>
+      <a-row :gutter="12">
+        <a-col :span="12">
+          <a-form-item label="访问等级" extra="等级不高于用户等级的节点会被自动继承">
+            <a-select v-model:value="form.access_tier_id">
+              <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">
+                {{ t.name }}
+              </a-select-option>
+            </a-select>
+          </a-form-item>
+        </a-col>
+        <a-col :span="12">
+          <a-form-item label="排序" extra="数值小的排在订阅前面">
+            <a-input-number v-model:value="form.sort_order" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <template v-if="editingId !== null">
+        <a-form-item extra="关掉后不再进入新生成的订阅,节点、历史流量与部署记录都保留">
+          <a-checkbox v-model:checked="form.subscription_enabled">下发到用户订阅</a-checkbox>
+        </a-form-item>
+        <a-form-item label="公开备注" extra="用户门户可见,例如「晚高峰限速」">
+          <a-input v-model:value="form.public_remark" :maxlength="128" />
+        </a-form-item>
+        <a-form-item label="维护说明" extra="节点维护时给用户看的提示,留空表示无">
+          <a-input v-model:value="form.maintenance_message" :maxlength="128" />
+        </a-form-item>
+      </template>
       <a-form-item label="主机地址" required extra="面板用它连 SSH,客户端也用它连代理">
         <a-input v-model:value="form.host" placeholder="IP 或域名" />
       </a-form-item>
@@ -482,6 +570,16 @@ onMounted(load)
   color: rgb(0 0 0 / 45%);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.display-name {
+  color: rgb(0 0 0 / 65%);
+  font-size: 12px;
+}
+
+.off-sub {
+  color: #d46b08;
+  font-size: 12px;
 }
 
 .version {

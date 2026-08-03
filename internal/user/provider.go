@@ -4,21 +4,26 @@ import (
 	"context"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
 // UsersForNode 返回应当出现在该节点配置中的用户。
 //
-// 实现 node.UserProvider。过滤条件是 User.Serviceable:
-// 只有 ACTIVE 且未过期未超额的用户才下发。被停用、过期或超额的用户
-// 从配置中消失,重启后其 UUID 立即失效 —— 这就是"停用即断线"的实现方式。
+// 实现 node.UserProvider。归属关系走 access 的有效节点视图
+// (等级继承 + 额外授权),不再直接查 user_nodes ——
+// 只查后者会让 VIP/ROOT 用户在节点上没有凭据,而订阅里却有这个节点。
+//
+// 过滤条件是 User.Serviceable:只有 ACTIVE 且未过期未超额的用户才下发。
+// 被停用、过期或超额的用户从配置中消失,重启后其 UUID 立即失效 ——
+// 这就是"停用即断线"的实现方式。
 func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.user_code, u.uuid_encrypted, u.status, u.quota_bytes,
 		       u.used_uplink, u.used_downlink, u.expires_at
 		  FROM proxy_users u
-		  JOIN user_nodes un ON un.proxy_user_id = u.id
-		 WHERE un.node_id = ? AND u.deleted_at IS NULL
+		  JOIN `+access.EffectiveNodesView+` en ON en.proxy_user_id = u.id
+		 WHERE en.node_id = ? AND u.deleted_at IS NULL
 		 ORDER BY u.user_code`, nodeID)
 	if err != nil {
 		return nil, err
@@ -51,15 +56,15 @@ func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User,
 	return users, rows.Err()
 }
 
-// NodesForUser 返回某用户已分配且未删除的节点 ID。
+// NodesForUser 返回某用户当前可用的节点 ID(等级继承 + 额外授权)。
 func (s *Store) NodesForUser(ctx context.Context, userID int64) ([]int64, error) {
-	return s.nodeIDs(ctx, userID)
+	return access.NodesForUser(ctx, s.db, userID)
 }
 
 // AffectedNodes 返回用户变更需要重新部署的节点集合。
 // 用于把一次用户操作翻译成"要重新生成配置的节点"。
 func (s *Store) AffectedNodes(ctx context.Context, userID int64) ([]int64, error) {
-	return s.nodeIDs(ctx, userID)
+	return access.NodesForUser(ctx, s.db, userID)
 }
 
 // ExpiringSoon 返回在给定时间点之前到期且仍处于 ACTIVE 的用户数。

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type Node, type ProxyUser } from '@/api/client'
+import { api, ApiError, type AccessTier, type Node, type ProxyUser } from '@/api/client'
 import { daysUntil, formatBytes, formatQuota, formatTime } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import UserDetailDrawer from '@/components/UserDetailDrawer.vue'
@@ -11,14 +11,29 @@ const nodes = ref<Node[]>([])
 const loading = ref(false)
 const detailId = ref<number | null>(null)
 
+const tiers = ref<AccessTier[]>([])
+
+// 额外授权的候选项里标出节点自己的等级:管理员挑节点时得知道
+// 这个节点本来归谁用,否则会给普通用户重复授权他早就继承到的节点。
 const nodeOptions = computed(() =>
-  nodes.value.map((n) => ({ label: `${n.name} (${n.host})`, value: n.id })),
+  nodes.value.map((n) => ({
+    label: `${n.name}（${n.access_tier_name}·${n.host}）`,
+    value: n.id,
+  })),
 )
+
+// 等级配色按"能用到的节点越多颜色越重"排,让越权配置在列表里一眼看得出来。
+function tierColor(code: string): string {
+  if (code === 'root') return 'red'
+  if (code === 'vip') return 'gold'
+  return 'default'
+}
 
 const columns = [
   { title: '用户', key: 'name', width: 200 },
+  { title: '访问等级', key: 'tier', width: 110 },
   { title: '状态', key: 'status', width: 110 },
-  { title: '节点', key: 'nodes', width: 90 },
+  { title: '节点', key: 'nodes', width: 110 },
   { title: '已用流量', key: 'used', width: 180 },
   { title: '到期时间', key: 'expires', width: 160 },
   { title: '操作', key: 'actions', width: 200 },
@@ -27,9 +42,10 @@ const columns = [
 async function load() {
   loading.value = true
   try {
-    const [u, n] = await Promise.all([api.users(), api.nodes()])
+    const [u, n, t] = await Promise.all([api.users(), api.nodes(), api.accessTiers()])
     users.value = u.items
     nodes.value = n.items
+    tiers.value = t.items
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载用户列表失败')
   } finally {
@@ -49,6 +65,7 @@ const form = reactive({
   expires_at: '',
   reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
   reset_day: 1,
+  access_tier_id: 1,
   node_ids: [] as number[],
 })
 
@@ -61,6 +78,7 @@ function openCreate() {
     expires_at: '',
     reset_cycle: 'NONE',
     reset_day: 1,
+    access_tier_id: 1,
     node_ids: [],
   })
   formOpen.value = true
@@ -76,6 +94,9 @@ function openEdit(u: ProxyUser) {
     expires_at: u.expires_at ? u.expires_at.slice(0, 10) : '',
     reset_cycle: u.reset_cycle,
     reset_day: u.reset_day,
+    access_tier_id: u.access_tier_id,
+    // 只回填额外授权:等级继承来的节点不在这里改,
+    // 把它们塞进多选框会让管理员一保存就把继承关系固化成手工授权。
     node_ids: [...u.node_ids],
   })
   formOpen.value = true
@@ -100,6 +121,7 @@ async function submit() {
         expires_at: expiresAt || undefined,
         reset_cycle: form.reset_cycle,
         reset_day: form.reset_day,
+        access_tier_id: form.access_tier_id,
         node_ids: form.node_ids,
       })
       message.success('用户已创建,受影响节点将在数秒内自动部署')
@@ -111,6 +133,7 @@ async function submit() {
         ...(expiresAt ? { expires_at: expiresAt } : { clear_expiry: true }),
         reset_cycle: form.reset_cycle,
         reset_day: form.reset_day,
+        access_tier_id: form.access_tier_id,
         node_ids: form.node_ids,
       })
       message.success('已保存')
@@ -207,12 +230,21 @@ onMounted(load)
           <div class="user-code">{{ record.user_code }}</div>
         </template>
 
+        <template v-else-if="column.key === 'tier'">
+          <a-tag :color="tierColor(record.access_tier_code)">{{ record.access_tier_name }}</a-tag>
+        </template>
+
         <template v-else-if="column.key === 'status'">
           <StatusTag :status="record.status" kind="user" />
         </template>
 
         <template v-else-if="column.key === 'nodes'">
-          {{ record.node_ids.length }}
+          <!-- 显示实际可用节点数。只显示额外授权数的话,纯靠等级继承的用户
+               永远是 0,看起来像"没分配节点"。 -->
+          <span class="tabular">{{ record.effective_node_ids.length }}</span>
+          <span v-if="record.node_ids.length" class="extra-grant">
+            (含追加 {{ record.node_ids.length }})
+          </span>
         </template>
 
         <template v-else-if="column.key === 'used'">
@@ -264,6 +296,13 @@ onMounted(load)
       <a-form-item label="备注">
         <a-input v-model:value="form.remark" />
       </a-form-item>
+      <a-form-item label="访问等级" extra="等级不高于该等级的节点会自动可用,不必逐个勾选">
+        <a-select v-model:value="form.access_tier_id">
+          <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">
+            {{ t.name }} —— {{ t.description }}
+          </a-select-option>
+        </a-select>
+      </a-form-item>
       <a-form-item label="流量额度(GB)" extra="填 0 表示不限量">
         <a-input-number v-model:value="form.quota_gb" :min="0" :step="1" style="width: 100%" />
       </a-form-item>
@@ -279,12 +318,15 @@ onMounted(load)
       <a-form-item v-if="form.reset_cycle === 'MONTHLY'" label="重置日" extra="1~28 日">
         <a-input-number v-model:value="form.reset_day" :min="1" :max="28" style="width: 100%" />
       </a-form-item>
-      <a-form-item label="分配节点">
+      <a-form-item
+        label="额外授权节点"
+        extra="在访问等级之外单独追加的节点。等级已经覆盖的节点不必在这里勾选"
+      >
         <a-select
           v-model:value="form.node_ids"
           mode="multiple"
           :options="nodeOptions"
-          placeholder="选择该用户可用的节点"
+          placeholder="通常留空"
           style="width: 100%"
         />
       </a-form-item>
@@ -300,6 +342,16 @@ onMounted(load)
 </template>
 
 <style scoped>
+.extra-grant {
+  margin-left: 4px;
+  color: rgb(0 0 0 / 45%);
+  font-size: 12px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
 .hint {
   margin-bottom: 16px;
 }

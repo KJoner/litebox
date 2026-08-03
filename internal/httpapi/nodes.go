@@ -79,11 +79,16 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 }
 
 type createNodeRequest struct {
-	Name    string `json:"name"`
-	Host    string `json:"host"`
-	SSHPort int    `json:"ssh_port"`
-	SSHUser string `json:"ssh_user"`
-	SSHKey  string `json:"ssh_key"`
+	Name string `json:"name"`
+	// DisplayName 留空表示与内部名称相同。
+	DisplayName string `json:"display_name"`
+	// AccessTierID 留 0 表示普通组。
+	AccessTierID int64  `json:"access_tier_id"`
+	SortOrder    int    `json:"sort_order"`
+	Host         string `json:"host"`
+	SSHPort      int    `json:"ssh_port"`
+	SSHUser      string `json:"ssh_user"`
+	SSHKey       string `json:"ssh_key"`
 	// ProxyPort 是客户端连接的公网端口;ListenPort 是节点上 sing-box 的监听端口,
 	// 留空表示无转发,与 ProxyPort 相同。
 	ProxyPort       int    `json:"proxy_port"`
@@ -106,6 +111,9 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 
 	n, err := s.nodes.Store().Create(r.Context(), node.CreateParams{
 		Name:            strings.TrimSpace(req.Name),
+		DisplayName:     strings.TrimSpace(req.DisplayName),
+		AccessTierID:    req.AccessTierID,
+		SortOrder:       req.SortOrder,
 		Host:            strings.TrimSpace(req.Host),
 		SSHPort:         req.SSHPort,
 		SSHUser:         strings.TrimSpace(req.SSHUser),
@@ -205,15 +213,25 @@ func (s *Server) handlePanelPublicKey(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateNodeRequest struct {
-	Name    string `json:"name"`
-	Host    string `json:"host"`
-	SSHPort int    `json:"ssh_port"`
-	SSHUser string `json:"ssh_user"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Host        string `json:"host"`
+	SSHPort     int    `json:"ssh_port"`
+	SSHUser     string `json:"ssh_user"`
 	// SSHKey 留空表示不更换私钥。
 	SSHKey     string `json:"ssh_key"`
 	ProxyPort  int    `json:"proxy_port"`
 	ListenPort int    `json:"listen_port"`
 	APIPort    int    `json:"api_port"`
+
+	// AccessTierID 为 0、SubscriptionEnabled 为 null 时保持原值。
+	// 这两个字段漏传的后果是静默的(节点被降级 / 从所有订阅里消失),
+	// 不能用零值当"用户的意思"。
+	AccessTierID        int64  `json:"access_tier_id"`
+	SortOrder           int    `json:"sort_order"`
+	SubscriptionEnabled *bool  `json:"subscription_enabled"`
+	PublicRemark        string `json:"public_remark"`
+	MaintenanceMessage  string `json:"maintenance_message"`
 }
 
 // handleUpdateNode 修改节点配置。
@@ -234,14 +252,20 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	n, effect, err := s.nodes.Store().Update(r.Context(), id, node.UpdateParams{
-		Name:       strings.TrimSpace(req.Name),
-		Host:       strings.TrimSpace(req.Host),
-		SSHPort:    req.SSHPort,
-		SSHUser:    strings.TrimSpace(req.SSHUser),
-		SSHKey:     req.SSHKey,
-		ProxyPort:  req.ProxyPort,
-		ListenPort: req.ListenPort,
-		APIPort:    req.APIPort,
+		Name:                strings.TrimSpace(req.Name),
+		DisplayName:         strings.TrimSpace(req.DisplayName),
+		Host:                strings.TrimSpace(req.Host),
+		SSHPort:             req.SSHPort,
+		SSHUser:             strings.TrimSpace(req.SSHUser),
+		SSHKey:              req.SSHKey,
+		ProxyPort:           req.ProxyPort,
+		ListenPort:          req.ListenPort,
+		APIPort:             req.APIPort,
+		AccessTierID:        req.AccessTierID,
+		SortOrder:           req.SortOrder,
+		SubscriptionEnabled: req.SubscriptionEnabled,
+		PublicRemark:        strings.TrimSpace(req.PublicRemark),
+		MaintenanceMessage:  strings.TrimSpace(req.MaintenanceMessage),
 	})
 	if err != nil {
 		switch {
@@ -258,6 +282,12 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	// 连接参数变了就必须丢弃长连接,否则后续操作仍走旧地址与旧密钥。
 	if effect.SSHChanged {
 		s.pool.Invalidate(id)
+	}
+	// 访问等级变了意味着节点上该有的用户集合变了,立刻标脏。
+	// 与端口变更不同,这里没有任何需要管理员挑时机的外部依赖,
+	// 而拖着不部署等于权限没真正收回。
+	if effect.TierChanged && s.users != nil {
+		s.users.SyncNode(id)
 	}
 
 	detail := strings.Join(effect.Changes, ";")

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/litebox/litebox/internal/access"
 )
 
 // StatusChange 记录一次用户状态迁移。
@@ -106,7 +108,9 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 			c.to, nowStr, c.id); err != nil {
 			return result, err
 		}
-		nodes, err := nodesForUser(ctx, tx, c.id)
+		// 有效节点必须在同一个事务里查:状态已经改成 EXPIRED/QUOTA_EXCEEDED,
+		// 但归属关系不受状态影响,漏取会让这些用户的凭据留在节点上继续可用。
+		nodes, err := access.NodesForUser(ctx, tx, c.id)
 		if err != nil {
 			return result, err
 		}
@@ -230,25 +234,4 @@ func shouldReset(now time.Time, resetDay int, lastResetAt *string, createdAt str
 		return false
 	}
 	return last.UTC().Before(windowStart)
-}
-
-func nodesForUser(ctx context.Context, tx *sql.Tx, userID int64) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT un.node_id FROM user_nodes un
-		  JOIN nodes n ON n.id = un.node_id AND n.deleted_at IS NULL
-		 WHERE un.proxy_user_id = ?`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }

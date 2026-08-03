@@ -47,7 +47,7 @@ func SingBoxClientConfig(uuid string, nodes []Node, mixedPort int) ([]byte, erro
 	}
 
 	for i, node := range nodes {
-		tag := uniqueTag(node.Name, i, used)
+		tag := uniqueTag(node.DisplayName, i, used)
 		tags = append(tags, tag)
 		outbounds = append(outbounds, vlessOutbound(tag, uuid, node))
 	}

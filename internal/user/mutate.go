@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
 )
 
@@ -19,7 +20,11 @@ type UpdateParams struct {
 	ExpiresAt   **string // 双层指针:外层 nil 不改,内层 nil 清除到期时间
 	ResetCycle  *ResetCycle
 	ResetDay    *int
-	NodeIDs     *[]int64
+	// AccessTierID 改变后,该用户继承到的节点集合整体变化,
+	// 调用方必须按变更前后的有效节点并集标脏。
+	AccessTierID *int64
+	// NodeIDs 覆盖额外授权,不影响等级继承来的节点。
+	NodeIDs *[]int64
 }
 
 // Update 编辑用户。user_code 与 UUID 不在可编辑字段内。
@@ -79,6 +84,12 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*User, er
 			return nil, errors.New("重置日必须在 1~28 之间")
 		}
 		add("reset_day = ?", *p.ResetDay)
+	}
+	if p.AccessTierID != nil {
+		if err := access.NewStore(s.db).Validate(ctx, *p.AccessTierID); err != nil {
+			return nil, err
+		}
+		add("access_tier_id = ?", *p.AccessTierID)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -293,10 +304,14 @@ func (s *Store) RegenerateSubToken(ctx context.Context, id int64) (*User, error)
 	return s.Get(ctx, id)
 }
 
-// Delete 软删除用户,并清除其节点分配。
+// Delete 软删除用户,并清除其额外节点授权。
 //
-// 分配关系必须真删:用户被软删除后不应再出现在任何节点配置里,
-// 而配置是按 user_nodes 生成的。user_code 不回收,traffic_ledger 保持完整。
+// 额外授权必须真删:用户被软删除后不应再出现在任何节点配置里。
+// user_code 不回收,traffic_ledger 保持完整。
+//
+// 返回的受影响节点必须在删除之前取,而且取的是有效节点而非 user_nodes ——
+// 打上 deleted_at 之后视图里就查不到这个用户了,而按等级继承拿到节点的用户
+// 在 user_nodes 里本来就一行都没有,漏取会让他的凭据永远留在节点上。
 func (s *Store) Delete(ctx context.Context, id int64) ([]int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -304,22 +319,8 @@ func (s *Store) Delete(ctx context.Context, id int64) ([]int64, error) {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.QueryContext(ctx,
-		`SELECT node_id FROM user_nodes WHERE proxy_user_id = ?`, id)
+	affectedNodes, err := access.NodesForUser(ctx, tx, id)
 	if err != nil {
-		return nil, err
-	}
-	var affectedNodes []int64
-	for rows.Next() {
-		var nodeID int64
-		if err := rows.Scan(&nodeID); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		affectedNodes = append(affectedNodes, nodeID)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 

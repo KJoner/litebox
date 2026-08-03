@@ -1,7 +1,7 @@
 # LiteBox Panel V1 详细开发计划(v2,经 Phase 0 验证修订)
 
 修订日期:2026-08-02
-依据:`docs/Phase0-技术验证报告.md`
+依据:`Phase0-技术验证报告.md`
 状态:Phase 0 已通过,可进入 Phase 1
 
 本文档取代 `LiteBox-Panel-V1-开发计划.md`。原文档的目标、约束、页面范围保持不变,
@@ -73,7 +73,7 @@ litebox/
 └── README.md
 ```
 
-相比原计划,`ssh` 相关能力独立为 `internal/sshx`(连接池是 Phase 0 明确的需求)。
+相比原计划,`ssh` 相关能力独立为 `../../../internal/sshx`(连接池是 Phase 0 明确的需求)。
 
 ---
 
@@ -385,7 +385,7 @@ REALITY 在窃取目标站证书时要求目标返回的**每一个 TLS 记录�
 
 内置默认可用目标清单,保存节点前强制校验通过,并把实测值写入数据库。
 
-Phase 0 已实现该检测工具(`phase0/statsprobe/destcheck.go`),可直接移植。
+Phase 0 已实现该检测工具(`../../../phase0/statsprobe/destcheck.go`),可直接移植。
 
 ---
 
@@ -418,8 +418,8 @@ Token 只存 SHA-256 哈希。需要缓存控制与访问日志。
 
 ### Phase 0:技术验证 —— 已完成
 
-十项验证全部通过,详见 `docs/Phase0-技术验证报告.md`。
-产物在 `phase0/` 目录,其中 `statsprobe/` 下的 Go 原型可直接移植进正式项目。
+十项验证全部通过,详见 `Phase0-技术验证报告.md`。
+产物在 `../../../phase0` 目录,其中 `statsprobe/` 下的 Go 原型可直接移植进正式项目。
 
 ### Phase 1:项目骨架
 
@@ -435,7 +435,7 @@ Token 只存 SHA-256 哈希。需要缓存控制与访问日志。
 
 ### Phase 2:节点能力
 
-* `internal/sshx`:SSH 连接池(按节点复用长连接)、健康检查、自动重连、SFTP;
+* `../../../internal/sshx`:SSH 连接池(按节点复用长连接)、健康检查、自动重连、SFTP;
 * 远程命令执行(参数化,禁止字符串拼接);
 * 节点探测:架构、内核、sing-box 版本与构建标签断言;
 * **握手目标检测**(移植 `destcheck.go`,通过 SSH 在节点本机执行);

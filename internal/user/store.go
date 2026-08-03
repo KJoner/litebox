@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
 )
 
@@ -64,9 +65,21 @@ type User struct {
 	ResetDay     int        `json:"reset_day"`
 	LastResetAt  *string    `json:"last_reset_at"`
 
-	NodeIDs   []int64 `json:"node_ids"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
+	// AccessTier* 是该用户的访问等级。等级决定他自动继承哪些节点。
+	AccessTierID    int64  `json:"access_tier_id"`
+	AccessTierCode  string `json:"access_tier_code"`
+	AccessTierName  string `json:"access_tier_name"`
+	AccessTierLevel int    `json:"access_tier_level"`
+
+	// NodeIDs 是管理员单独追加的节点(user_nodes),编辑页面改的就是它。
+	NodeIDs []int64 `json:"node_ids"`
+	// EffectiveNodeIDs 是等级继承与额外授权合并后的实际可用节点。
+	// 配置生成、订阅与部署脏标记一律看这个,不看 NodeIDs ——
+	// 只按额外授权标脏会漏掉"改等级"带来的全部变化。
+	EffectiveNodeIDs []int64 `json:"effective_node_ids"`
+
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 
 	// 订阅访问情况,用于回答"用户到底导入订阅了没有"。
 	SubLastAccessAt  *string `json:"sub_last_access_at"`
@@ -111,10 +124,15 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 	return &Store{db: db, cipher: cipher}
 }
 
-const userColumns = `id, user_code, display_name, remark, uuid_encrypted, sub_token_encrypted,
-	status, quota_bytes, used_uplink, used_downlink, expires_at,
-	reset_cycle, reset_day, last_reset_at, created_at, updated_at,
-	sub_last_access_at, sub_last_access_ip, sub_last_user_agent, sub_access_count`
+const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypted, u.sub_token_encrypted,
+	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
+	u.reset_cycle, u.reset_day, u.last_reset_at, u.created_at, u.updated_at,
+	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
+	u.access_tier_id, t.code, t.name, t.level`
+
+// userFrom 固定带上等级表:等级是用户的必备属性,分两次查会出现
+// "列表里有等级、详情里没有"这种前端只能靠猜的差异。
+const userFrom = ` FROM proxy_users u JOIN access_tiers t ON t.id = u.access_tier_id `
 
 func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	var u User
@@ -122,7 +140,8 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &tokenEnc,
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
 		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
-		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount)
+		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
+		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel)
 	if err != nil {
 		return nil, err
 	}
@@ -145,12 +164,21 @@ type CreateParams struct {
 	ExpiresAt   *string
 	ResetCycle  ResetCycle
 	ResetDay    int
-	NodeIDs     []int64
+	// AccessTierID 留 0 表示普通组。
+	AccessTierID int64
+	// NodeIDs 是额外授权节点,不含等级继承来的那些。
+	NodeIDs []int64
 }
 
 // Create 新增用户,自动分配 user_code、UUID 与订阅 Token。
 func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	if err := validateCreate(&p); err != nil {
+		return nil, err
+	}
+	// 迁移里没给 access_tier_id 写外键(SQLite 的 ADD COLUMN 限制),
+	// 这道校验就是唯一的拦截点 —— 指向不存在的等级会让用户从有效节点视图里
+	// 整个消失(INNER JOIN),表现为他一个节点都拿不到而系统不报错。
+	if err := access.NewStore(s.db).Validate(ctx, p.AccessTierID); err != nil {
 		return nil, err
 	}
 
@@ -186,10 +214,10 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO proxy_users
 		  (user_code, display_name, remark, uuid_encrypted, sub_token_encrypted, sub_token_hash,
-		   status, quota_bytes, expires_at, reset_cycle, reset_day, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   status, quota_bytes, expires_at, reset_cycle, reset_day, access_tier_id, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		userCode, p.DisplayName, p.Remark, uuidEnc, tokenEnc, crypto.HashToken(token),
-		StatusActive, p.QuotaBytes, p.ExpiresAt, p.ResetCycle, p.ResetDay, now, now)
+		StatusActive, p.QuotaBytes, p.ExpiresAt, p.ResetCycle, p.ResetDay, p.AccessTierID, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
@@ -267,12 +295,15 @@ func validateCreate(p *CreateParams) error {
 			return fmt.Errorf("到期时间格式非法,应为 RFC3339: %w", err)
 		}
 	}
+	if p.AccessTierID == 0 {
+		p.AccessTierID = access.TierNormalID
+	}
 	return nil
 }
 
 func (s *Store) Get(ctx context.Context, id int64) (*User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+userColumns+` FROM proxy_users WHERE id = ? AND deleted_at IS NULL`, id)
+		`SELECT `+userColumns+userFrom+`WHERE u.id = ? AND u.deleted_at IS NULL`, id)
 	u, err := s.scanUser(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -280,17 +311,27 @@ func (s *Store) Get(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.NodeIDs, err = s.nodeIDs(ctx, id); err != nil {
+	if err := s.loadNodes(ctx, u); err != nil {
 		return nil, err
 	}
 	return u, nil
+}
+
+// loadNodes 填充额外授权与有效节点两个集合。
+func (s *Store) loadNodes(ctx context.Context, u *User) error {
+	var err error
+	if u.NodeIDs, err = s.nodeIDs(ctx, u.ID); err != nil {
+		return err
+	}
+	u.EffectiveNodeIDs, err = access.NodesForUser(ctx, s.db, u.ID)
+	return err
 }
 
 // GetBySubTokenHash 按订阅 Token 的哈希查找用户,供公开订阅路由使用。
 // 该路径不解密任何字段,只做哈希比对。
 func (s *Store) GetBySubTokenHash(ctx context.Context, tokenHash string) (*User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+userColumns+` FROM proxy_users WHERE sub_token_hash = ? AND deleted_at IS NULL`,
+		`SELECT `+userColumns+userFrom+`WHERE u.sub_token_hash = ? AND u.deleted_at IS NULL`,
 		tokenHash)
 	u, err := s.scanUser(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -299,7 +340,7 @@ func (s *Store) GetBySubTokenHash(ctx context.Context, tokenHash string) (*User,
 	if err != nil {
 		return nil, err
 	}
-	if u.NodeIDs, err = s.nodeIDs(ctx, u.ID); err != nil {
+	if err := s.loadNodes(ctx, u); err != nil {
 		return nil, err
 	}
 	return u, nil
@@ -307,7 +348,7 @@ func (s *Store) GetBySubTokenHash(ctx context.Context, tokenHash string) (*User,
 
 func (s *Store) List(ctx context.Context) ([]*User, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+userColumns+` FROM proxy_users WHERE deleted_at IS NULL ORDER BY id`)
+		`SELECT `+userColumns+userFrom+`WHERE u.deleted_at IS NULL ORDER BY u.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -330,15 +371,24 @@ func (s *Store) List(ctx context.Context) ([]*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	effective, err := access.NodesByUser(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
 	for _, u := range users {
 		u.NodeIDs = assignments[u.ID]
 		if u.NodeIDs == nil {
 			u.NodeIDs = []int64{}
 		}
+		u.EffectiveNodeIDs = effective[u.ID]
+		if u.EffectiveNodeIDs == nil {
+			u.EffectiveNodeIDs = []int64{}
+		}
 	}
 	return users, nil
 }
 
+// nodeIDs 只返回额外授权(user_nodes),不含等级继承来的节点。
 func (s *Store) nodeIDs(ctx context.Context, userID int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT un.node_id FROM user_nodes un

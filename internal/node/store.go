@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/singbox"
 )
@@ -32,13 +33,16 @@ const (
 // Node 是一个节点的完整记录。敏感字段在这里已是明文,
 // 加解密由 Store 在读写边界处理。
 type Node struct {
-	ID      int64  `json:"id"`
-	Name    string `json:"name"`
-	Host    string `json:"host"`
-	SSHPort int    `json:"ssh_port"`
-	SSHUser string `json:"ssh_user"`
-	SSHKey  string `json:"-"` // PEM 私钥,永不出现在 API 响应中
-	HostKey string `json:"-"`
+	ID int64 `json:"id"`
+	// Name 是内部名称,只在管理后台出现;DisplayName 才是发给用户与订阅的名字。
+	// 内部名称上通常写着机房、供应商、到期日甚至 IP 段,属于运维信息。
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Host        string `json:"host"`
+	SSHPort     int    `json:"ssh_port"`
+	SSHUser     string `json:"ssh_user"`
+	SSHKey      string `json:"-"` // PEM 私钥,永不出现在 API 响应中
+	HostKey     string `json:"-"`
 	// ProxyPort 是客户端连接的公网端口,只写进订阅;
 	// ListenPort 是 sing-box 在节点上实际监听的端口。
 	// NAT 主机或自建 nginx 转发时两者不同(公网 443 -> 主机 20443)。
@@ -59,6 +63,19 @@ type Node struct {
 	HandshakeMaxRecordSize int     `json:"handshake_max_record_size"`
 	HandshakeCheckedAt     *string `json:"handshake_checked_at"`
 
+	// AccessTier* 是节点所属访问等级:等级不高于用户等级的节点会被自动继承。
+	AccessTierID    int64  `json:"access_tier_id"`
+	AccessTierCode  string `json:"access_tier_code"`
+	AccessTierName  string `json:"access_tier_name"`
+	AccessTierLevel int    `json:"access_tier_level"`
+
+	SortOrder int `json:"sort_order"`
+	// SubscriptionEnabled 为假时不再下发到新生成的订阅,
+	// 但节点、历史流量与部署记录全部保留 —— 这是"进维护"而不是"删节点"。
+	SubscriptionEnabled bool   `json:"subscription_enabled"`
+	PublicRemark        string `json:"public_remark"`
+	MaintenanceMessage  string `json:"maintenance_message"`
+
 	Status               Status  `json:"status"`
 	LastHeartbeatAt      *string `json:"last_heartbeat_at"`
 	ConfigRevision       int64   `json:"config_revision"`
@@ -78,21 +95,30 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 	return &Store{db: db, cipher: cipher}
 }
 
-const nodeColumns = `id, name, host, ssh_port, ssh_user, ssh_key_encrypted, ssh_host_key,
-	proxy_port, listen_port, api_port, arch, singbox_version, singbox_build_tags,
-	reality_dest, reality_dest_port, reality_privkey_encrypted, reality_pubkey, reality_short_id,
-	handshake_max_record_size, handshake_checked_at,
-	status, last_heartbeat_at, config_revision, deployed_config_sha256,
-	created_at, updated_at`
+const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ssh_port, n.ssh_user,
+	n.ssh_key_encrypted, n.ssh_host_key,
+	n.proxy_port, n.listen_port, n.api_port, n.arch, n.singbox_version, n.singbox_build_tags,
+	n.reality_dest, n.reality_dest_port, n.reality_privkey_encrypted, n.reality_pubkey,
+	n.reality_short_id, n.handshake_max_record_size, n.handshake_checked_at,
+	n.access_tier_id, t.code, t.name, t.level,
+	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
+	n.status, n.last_heartbeat_at, n.config_revision, n.deployed_config_sha256,
+	n.created_at, n.updated_at`
+
+// nodeFrom 固定带上等级表。等级是节点的必备属性,分两次查会出现
+// "列表里有、详情里没有"这种前端只能靠猜的差异。
+const nodeFrom = ` FROM nodes n JOIN access_tiers t ON t.id = n.access_tier_id `
 
 func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
 	var sshKeyEnc, realityKeyEnc string
 	err := scan(
-		&n.ID, &n.Name, &n.Host, &n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
+		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.Arch, &n.SingBoxVersion, &n.BuildTags,
-		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey, &n.RealityShortID,
-		&n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
+		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey,
+		&n.RealityShortID, &n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
+		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
+		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.Status, &n.LastHeartbeatAt, &n.ConfigRevision, &n.DeployedConfigSHA256,
 		&n.CreatedAt, &n.UpdatedAt,
 	)
@@ -114,11 +140,17 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 
 // CreateParams 是新增节点所需的参数。
 type CreateParams struct {
-	Name    string
-	Host    string
-	SSHPort int
-	SSHUser string
-	SSHKey  string
+	Name string
+	// DisplayName 留空时复制 Name。订阅里的节点名不能为空:
+	// 客户端拿它识别条目,空名字会让用户面对一列无法区分的节点。
+	DisplayName string
+	Host        string
+	SSHPort     int
+	SSHUser     string
+	SSHKey      string
+	// AccessTierID 留 0 表示普通组。
+	AccessTierID int64
+	SortOrder    int
 	// ProxyPort 是客户端连接的公网端口,必填。
 	// ListenPort 是 sing-box 在主机上监听的端口,留空表示不做端口转发,与 ProxyPort 相同。
 	ProxyPort  int
@@ -132,6 +164,12 @@ type CreateParams struct {
 // Create 新增节点,同时生成 REALITY 密钥对与 short_id。
 func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	if err := validateCreate(&p); err != nil {
+		return nil, err
+	}
+	// 迁移里没给 access_tier_id 写外键(SQLite 的 ADD COLUMN 限制),
+	// 这道校验就是唯一的拦截点 —— 指向不存在的等级会让节点从所有
+	// 有效节点查询里消失(视图是 INNER JOIN),表现为"节点在,但谁都用不到"。
+	if err := access.NewStore(s.db).Validate(ctx, p.AccessTierID); err != nil {
 		return nil, err
 	}
 
@@ -159,15 +197,15 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO nodes (name, host, ssh_port, ssh_user, ssh_key_encrypted, ssh_host_key,
-			proxy_port, listen_port, api_port, reality_dest, reality_dest_port,
+		INSERT INTO nodes (name, display_name, host, ssh_port, ssh_user, ssh_key_encrypted,
+			ssh_host_key, proxy_port, listen_port, api_port, reality_dest, reality_dest_port,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			status, created_at, updated_at)
-		VALUES (?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?)`,
-		p.Name, p.Host, p.SSHPort, p.SSHUser, sshKeyEnc,
+			access_tier_id, sort_order, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		p.Name, p.DisplayName, p.Host, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.RealityDest, p.RealityDestPort,
 		realityKeyEnc, keys.PublicKey, shortID,
-		StatusPending, now, now)
+		p.AccessTierID, p.SortOrder, StatusPending, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
@@ -184,6 +222,12 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 func validateCreate(p *CreateParams) error {
 	if err := validateIdentity(p.Name, p.Host); err != nil {
 		return err
+	}
+	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
+		return err
+	}
+	if p.AccessTierID == 0 {
+		p.AccessTierID = access.TierNormalID
 	}
 	if err := normalizeSSH(&p.SSHPort, &p.SSHUser); err != nil {
 		return err
@@ -214,6 +258,18 @@ func validateIdentity(name, host string) error {
 	}
 	if host == "" {
 		return errors.New("主机地址不能为空")
+	}
+	return nil
+}
+
+// normalizeDisplayName 让展示名称留空时回落到内部名称。
+func normalizeDisplayName(name string, displayName *string) error {
+	*displayName = strings.TrimSpace(*displayName)
+	if *displayName == "" {
+		*displayName = name
+	}
+	if len([]rune(*displayName)) > 64 {
+		return errors.New("展示名称不能超过 64 个字符")
 	}
 	return nil
 }
@@ -262,7 +318,7 @@ func normalizePorts(proxyPort, listenPort, apiPort *int) error {
 
 func (s *Store) Get(ctx context.Context, id int64) (*Node, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE id = ? AND deleted_at IS NULL`, id)
+		`SELECT `+nodeColumns+nodeFrom+`WHERE n.id = ? AND n.deleted_at IS NULL`, id)
 	n, err := s.scanNode(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -272,7 +328,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Node, error) {
 
 func (s *Store) List(ctx context.Context) ([]*Node, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE deleted_at IS NULL ORDER BY id`)
+		`SELECT `+nodeColumns+nodeFrom+`WHERE n.deleted_at IS NULL ORDER BY n.sort_order, n.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -297,14 +353,26 @@ func (s *Store) List(ctx context.Context) ([]*Node, error) {
 // (CDN 按地域下发不同证书链,记录大小超过 8192 字节就静默握手失败),
 // 修改它请走 ApplyHandshakeDest;从这里直接改会绕过那道实测。
 type UpdateParams struct {
-	Name       string
-	Host       string
-	SSHPort    int
-	SSHUser    string
-	SSHKey     string
-	ProxyPort  int
-	ListenPort int
-	APIPort    int
+	Name        string
+	DisplayName string
+	Host        string
+	SSHPort     int
+	SSHUser     string
+	SSHKey      string
+	ProxyPort   int
+	ListenPort  int
+	APIPort     int
+
+	// AccessTierID 为 0 表示保持原等级。不回落到普通组:
+	// 前端漏传这个字段时把 VIP 节点悄悄降成普通组,等于给全体用户开门,
+	// 而且不报任何错。
+	AccessTierID int64
+	SortOrder    int
+	// SubscriptionEnabled 为 nil 表示保持原值,理由同上 ——
+	// 漏传会把节点从所有人的订阅里摘掉,只有用户来反馈才会发现。
+	SubscriptionEnabled *bool
+	PublicRemark        string
+	MaintenanceMessage  string
 }
 
 // UpdateEffect 描述一次修改带来的后果,调用方据此决定后续动作。
@@ -312,9 +380,13 @@ type UpdateEffect struct {
 	// SSHChanged 为真时必须丢弃连接池中该节点的长连接,否则后续操作仍走旧地址。
 	SSHChanged bool `json:"ssh_changed"`
 	// NeedsDeploy 为真时节点上正在运行的配置已与期望状态不一致,需要重新部署。
-	// 面板不自动部署:部署会重启 sing-box 踢掉全部在线连接,
+	// 端口类变更不自动部署:部署会重启 sing-box 踢掉全部在线连接,
 	// 何时切换由管理员配合 NAT/nginx 的改动决定。
-	NeedsDeploy bool     `json:"needs_deploy"`
+	NeedsDeploy bool `json:"needs_deploy"`
+	// TierChanged 为真时节点上的用户集合已经变了,必须自动标脏重新部署。
+	// 这一条不能交给管理员挑时机:等级调高后,被移出的用户凭据还留在节点上,
+	// 拖多久就多能用多久 —— 那是权限没有真正收回。
+	TierChanged bool     `json:"tier_changed"`
 	Changes     []string `json:"changes"`
 }
 
@@ -331,11 +403,30 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if err := validateIdentity(p.Name, p.Host); err != nil {
 		return nil, effect, err
 	}
+	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
+		return nil, effect, err
+	}
 	if err := normalizeSSH(&p.SSHPort, &p.SSHUser); err != nil {
 		return nil, effect, err
 	}
 	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
 		return nil, effect, err
+	}
+	if p.AccessTierID == 0 {
+		p.AccessTierID = old.AccessTierID
+	}
+	if err := access.NewStore(s.db).Validate(ctx, p.AccessTierID); err != nil {
+		return nil, effect, err
+	}
+	subEnabled := old.SubscriptionEnabled
+	if p.SubscriptionEnabled != nil {
+		subEnabled = *p.SubscriptionEnabled
+	}
+	if len([]rune(p.PublicRemark)) > 128 {
+		return nil, effect, errors.New("公开备注不能超过 128 个字符")
+	}
+	if len([]rune(p.MaintenanceMessage)) > 128 {
+		return nil, effect, errors.New("维护说明不能超过 128 个字符")
 	}
 
 	sshKeyEnc := ""
@@ -351,12 +442,19 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		}
 	}
 	track("节点名称", old.Name != p.Name, old.Name, p.Name)
+	track("展示名称", old.DisplayName != p.DisplayName, old.DisplayName, p.DisplayName)
 	track("主机地址", old.Host != p.Host, old.Host, p.Host)
 	track("SSH 端口", old.SSHPort != p.SSHPort, old.SSHPort, p.SSHPort)
 	track("SSH 用户", old.SSHUser != p.SSHUser, old.SSHUser, p.SSHUser)
 	track("公网代理端口", old.ProxyPort != p.ProxyPort, old.ProxyPort, p.ProxyPort)
 	track("主机代理端口", old.ListenPort != p.ListenPort, old.ListenPort, p.ListenPort)
 	track("API 端口", old.APIPort != p.APIPort, old.APIPort, p.APIPort)
+	track("访问等级", old.AccessTierID != p.AccessTierID, old.AccessTierID, p.AccessTierID)
+	track("排序", old.SortOrder != p.SortOrder, old.SortOrder, p.SortOrder)
+	track("下发订阅", old.SubscriptionEnabled != subEnabled, old.SubscriptionEnabled, subEnabled)
+	track("公开备注", old.PublicRemark != p.PublicRemark, old.PublicRemark, p.PublicRemark)
+	track("维护说明", old.MaintenanceMessage != p.MaintenanceMessage,
+		old.MaintenanceMessage, p.MaintenanceMessage)
 	if sshKeyEnc != "" {
 		effect.Changes = append(effect.Changes, "已更换 SSH 私钥")
 	}
@@ -365,18 +463,28 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		old.SSHUser != p.SSHUser || sshKeyEnc != ""
 	// 只有进入节点配置的字段才需要重新部署。公网端口与节点名只影响订阅内容,
 	// 主机地址只影响 SSH 与订阅,改了它们重启 sing-box 没有意义。
-	effect.NeedsDeploy = old.ListenPort != p.ListenPort || old.APIPort != p.APIPort
+	//
+	// 访问等级是例外:它不写进配置文件,却决定哪些用户会出现在这个节点上。
+	// 等级调低会有一批用户凭空获得访问权(但节点上还没有他们的凭据),
+	// 调高则会有一批用户的凭据滞留在节点上继续可用 —— 后者是安全问题。
+	effect.TierChanged = old.AccessTierID != p.AccessTierID
+	effect.NeedsDeploy = old.ListenPort != p.ListenPort || old.APIPort != p.APIPort ||
+		effect.TierChanged
 
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE nodes
-		   SET name = ?, host = ?, ssh_port = ?, ssh_user = ?,
+		   SET name = ?, display_name = ?, host = ?, ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
-		       proxy_port = ?, listen_port = ?, api_port = ?, updated_at = ?
+		       proxy_port = ?, listen_port = ?, api_port = ?,
+		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
+		       public_remark = ?, maintenance_message = ?, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
-		p.Name, p.Host, p.SSHPort, p.SSHUser,
+		p.Name, p.DisplayName, p.Host, p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort,
+		p.AccessTierID, p.SortOrder, subEnabled,
+		p.PublicRemark, p.MaintenanceMessage,
 		time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		if isUniqueViolation(err) {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
@@ -37,6 +38,7 @@ type Server struct {
 	metrics      *node.MetricsStore
 	monitor      *node.Monitor
 	settings     *settings.Store
+	tiers        *access.Store
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
 	logger       *slog.Logger
@@ -63,6 +65,7 @@ type Options struct {
 	Metrics   *node.MetricsStore
 	Monitor   *node.Monitor
 	Settings  *settings.Store
+	Tiers     *access.Store
 	Pool      *sshx.Pool
 	Binaries  node.BinaryProvider
 	Logger    *slog.Logger
@@ -86,6 +89,7 @@ func NewServer(opts Options) *Server {
 		metrics:      opts.Metrics,
 		monitor:      opts.Monitor,
 		settings:     opts.Settings,
+		tiers:        opts.Tiers,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
 		logger:       opts.Logger,
@@ -173,6 +177,10 @@ func (s *Server) Handler() http.Handler {
 	if s.settings != nil {
 		authed.HandleFunc("GET /api/settings", s.handleGetSettings)
 		authed.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	}
+	if s.tiers != nil {
+		authed.HandleFunc("GET /api/access-tiers", s.handleListTiers)
+		authed.HandleFunc("PUT /api/access-tiers/{id}", s.handleUpdateTier)
 	}
 	mux.Handle("/api/", s.requireAuth(authed))
 

@@ -119,7 +119,10 @@ type createUserRequest struct {
 	ExpiresAt   *string `json:"expires_at"`
 	ResetCycle  string  `json:"reset_cycle"`
 	ResetDay    int     `json:"reset_day"`
-	NodeIDs     []int64 `json:"node_ids"`
+	// AccessTierID 留 0 表示普通组。
+	AccessTierID int64 `json:"access_tier_id"`
+	// NodeIDs 是额外授权节点,不含等级继承来的那些。
+	NodeIDs []int64 `json:"node_ids"`
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -131,13 +134,14 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	u, err := s.users.Create(r.Context(), user.CreateParams{
-		DisplayName: req.DisplayName,
-		Remark:      req.Remark,
-		QuotaBytes:  req.QuotaBytes,
-		ExpiresAt:   req.ExpiresAt,
-		ResetCycle:  user.ResetCycle(req.ResetCycle),
-		ResetDay:    req.ResetDay,
-		NodeIDs:     req.NodeIDs,
+		DisplayName:  req.DisplayName,
+		Remark:       req.Remark,
+		QuotaBytes:   req.QuotaBytes,
+		ExpiresAt:    req.ExpiresAt,
+		ResetCycle:   user.ResetCycle(req.ResetCycle),
+		ResetDay:     req.ResetDay,
+		AccessTierID: req.AccessTierID,
+		NodeIDs:      req.NodeIDs,
 	})
 	if err != nil {
 		if errors.Is(err, user.ErrNameConflict) || errors.Is(err, user.ErrNodeNotFound) {
@@ -165,6 +169,9 @@ type updateUserRequest struct {
 	ResetCycle  *string  `json:"reset_cycle"`
 	ResetDay    *int     `json:"reset_day"`
 	NodeIDs     *[]int64 `json:"node_ids"`
+	// AccessTierID 为 nil 表示不改等级。改了它会让该用户可用的节点集合整体变化,
+	// user.Service 会按变更前后的并集标脏。
+	AccessTierID *int64 `json:"access_tier_id"`
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -180,11 +187,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	params := user.UpdateParams{
-		DisplayName: req.DisplayName,
-		Remark:      req.Remark,
-		QuotaBytes:  req.QuotaBytes,
-		ResetDay:    req.ResetDay,
-		NodeIDs:     req.NodeIDs,
+		DisplayName:  req.DisplayName,
+		Remark:       req.Remark,
+		QuotaBytes:   req.QuotaBytes,
+		ResetDay:     req.ResetDay,
+		NodeIDs:      req.NodeIDs,
+		AccessTierID: req.AccessTierID,
 	}
 	// clear_expiry 与 expires_at 分开表达:JSON 里的 null 无法区分
 	// "不修改"和"清除到期时间"。

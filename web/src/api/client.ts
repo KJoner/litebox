@@ -115,11 +115,28 @@ export type UserStatus =
   | 'DEPLOY_PENDING'
   | 'DEPLOY_FAILED'
 
+export interface AccessTier {
+  id: number
+  /** normal / vip / root,程序内一律用它判断,不要用 name */
+  code: string
+  name: string
+  /** 节点 level <= 用户 level 即可用 */
+  level: number
+  description: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 export interface ProxyUser {
   id: number
   user_code: string
   display_name: string
   remark: string
+  access_tier_id: number
+  access_tier_code: string
+  access_tier_name: string
+  access_tier_level: number
   status: UserStatus
   quota_bytes: number
   used_uplink: number
@@ -129,7 +146,10 @@ export interface ProxyUser {
   reset_cycle: 'NONE' | 'MONTHLY'
   reset_day: number
   last_reset_at: string | null
+  /** 管理员单独追加的节点,编辑页面改的就是它 */
   node_ids: number[]
+  /** 等级继承 + 额外授权合并后的实际可用节点 */
+  effective_node_ids: number[]
   created_at: string
   updated_at: string
   sub_last_access_at: string | null
@@ -146,7 +166,19 @@ export type NodeStatus = 'PENDING' | 'ONLINE' | 'OFFLINE' | 'DISABLED' | 'DEPLOY
 
 export interface Node {
   id: number
+  /** 内部名称,只在管理后台出现 */
   name: string
+  /** 对用户与订阅展示的名称 */
+  display_name: string
+  access_tier_id: number
+  access_tier_code: string
+  access_tier_name: string
+  access_tier_level: number
+  sort_order: number
+  /** 关掉后不再下发到新生成的订阅,节点与历史数据保留 */
+  subscription_enabled: boolean
+  public_remark: string
+  maintenance_message: string
   host: string
   ssh_port: number
   ssh_user: string
@@ -219,6 +251,8 @@ export interface NodeUpdateEffect {
   ssh_changed: boolean
   /** 节点上跑的配置已与期望状态不一致,需要重新部署才生效 */
   needs_deploy: boolean
+  /** 访问等级变了,面板已自动标脏并会尽快重新部署 */
+  tier_changed: boolean
   changes: string[]
 }
 
@@ -458,6 +492,11 @@ export const api = {
   collectNodeMetrics: (id: number) =>
     request<NodeMetrics>(`/api/nodes/${id}/collect-metrics`, { method: 'POST' }),
   monitorStatus: () => request<MonitorStatus>('/api/metrics/status'),
+
+  // 访问等级
+  accessTiers: () => request<{ items: AccessTier[] }>('/api/access-tiers'),
+  updateAccessTier: (id: number, body: Record<string, unknown>) =>
+    request<AccessTier>(`/api/access-tiers/${id}`, { method: 'PUT', body }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),

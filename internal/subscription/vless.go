@@ -14,8 +14,11 @@ import (
 )
 
 // Node 是订阅里的一个节点。字段已是明文,由调用方从数据库解密后传入。
+//
+// 刻意只有 DisplayName 而没有内部名称:订阅是发到用户设备上的东西,
+// 结构体里根本不存在内部名称,就不可能有哪条代码路径不小心把它写进去。
 type Node struct {
-	Name             string
+	DisplayName      string
 	Host             string
 	Port             int
 	RealityDest      string
@@ -50,7 +53,7 @@ func VLESSURI(uuid string, node Node) string {
 	}
 
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s",
-		uuid, host, node.Port, query.Encode(), url.PathEscape(node.Name))
+		uuid, host, node.Port, query.Encode(), url.PathEscape(node.DisplayName))
 }
 
 // clientOutbound 是 sing-box 客户端配置中的一个 VLESS 出站。

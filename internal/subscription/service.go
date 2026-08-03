@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -129,9 +130,13 @@ func uriList(uuid string, nodes []Node) []string {
 
 // nodesFor 返回该用户订阅中应当出现的节点。
 //
-// 过滤条件:
-//   - 已分配给该用户且节点未被软删除;
+// 归属关系走 access 的有效节点视图(等级继承 + 额外授权),与节点配置生成
+// 用的是同一份定义 —— 两处一旦分叉,用户会拿到一个节点上并没有他凭据的条目。
+//
+// 附加过滤条件:
+//   - 节点未被软删除;
 //   - 节点未被管理员禁用;
+//   - subscription_enabled 为真(节点进维护时管理员可临时下架);
 //   - 节点至少成功部署过一次(deployed_config_sha256 非空)。
 //
 // 最后一条是关键:未部署过的节点上根本没有该用户的凭据,
@@ -139,16 +144,21 @@ func uriList(uuid string, nodes []Node) []string {
 //
 // 刻意不排除 OFFLINE 状态的节点 —— 那多半是一次同步失败造成的瞬时状态,
 // 把它从订阅里摘掉会让客户端在节点恢复后仍然缺少该节点。
+//
+// 只取 display_name:内部名称往往写着机房、供应商与到期日,
+// 那是运维信息,不该随订阅发到用户设备上。
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.name, n.host, n.proxy_port, n.reality_dest, n.reality_pubkey, n.reality_short_id
+		SELECT n.display_name, n.host, n.proxy_port,
+		       n.reality_dest, n.reality_pubkey, n.reality_short_id
 		  FROM nodes n
-		  JOIN user_nodes un ON un.node_id = n.id
-		 WHERE un.proxy_user_id = ?
+		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
+		 WHERE en.proxy_user_id = ?
 		   AND n.deleted_at IS NULL
 		   AND n.status != 'DISABLED'
+		   AND n.subscription_enabled = 1
 		   AND n.deployed_config_sha256 != ''
-		 ORDER BY n.id`, userID)
+		 ORDER BY n.sort_order, n.id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +167,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	nodes := make([]Node, 0)
 	for rows.Next() {
 		var n Node
-		if err := rows.Scan(&n.Name, &n.Host, &n.Port,
+		if err := rows.Scan(&n.DisplayName, &n.Host, &n.Port,
 			&n.RealityDest, &n.RealityPublicKey, &n.RealityShortID); err != nil {
 			return nil, err
 		}
