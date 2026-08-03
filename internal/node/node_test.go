@@ -621,21 +621,22 @@ func TestCreateNodeAllowsEmptySSHKey(t *testing.T) {
 }
 
 func TestParseMetrics(t *testing.T) {
-	out := `cpu_total_delta 1000
-cpu_idle_delta 750
-net_rx_delta 2048
-net_tx_delta 1024
-mem_total 2048000
-mem_available 1024000
+	// 用真机量级的计数器:一台跑了几个月的机器,CPU jiffies 与网卡累计字节数
+	// 都远超 6 位有效数字。这正是本地全新容器上测不出来的那一档。
+	out := `cpu_a 11031991837 9814835801
+net_a 9814712345 4501234567
+cpu_b 11031992037 9814835951
+net_b 9814714393 4501235591
+mem 2048000 1024000
 load1 0.42
 uptime 86400
-disk_total 20971520
-disk_used 5242880
+disk 20971520 5242880
 `
 	m, err := parseMetrics(out)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 200 jiffies 里 150 空闲 -> 忙 25%。
 	if m.CPUPercent != 25 {
 		t.Errorf("CPU = %v,应为 25", m.CPUPercent)
 	}
@@ -653,20 +654,40 @@ disk_used 5242880
 	if m.Load1 != 0.42 || m.UptimeSeconds != 86400 {
 		t.Errorf("负载/uptime = %v/%d", m.Load1, m.UptimeSeconds)
 	}
-	if m.DiskUsedKB != 5242880 {
-		t.Errorf("磁盘已用 = %d", m.DiskUsedKB)
+	if m.DiskTotalKB != 20971520 || m.DiskUsedKB != 5242880 {
+		t.Errorf("磁盘 = %d/%d", m.DiskTotalKB, m.DiskUsedKB)
 	}
 }
 
-// 计数器回绕、网卡重置、CPU 采样间隔为零时不能产出荒谬的数值:
+// 大计数器必须逐字节精确,不能被浮点或格式化削掉精度。
+// 网卡累计值差 1KB 在这里就是 1KB/s 的误差,趋势图上一眼可见。
+func TestParseMetricsKeepsLargeCountersExact(t *testing.T) {
+	m, err := parseMetrics(`cpu_a 11031991837 9814835801
+cpu_b 11031991937 9814835901
+net_a 9007199254730000 1
+net_b 9007199254740000 2
+mem 1024 512
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.NetRxBps != 10000 {
+		t.Errorf("大计数器差值 = %d,应为 10000", m.NetRxBps)
+	}
+	// 100 jiffies 全部空闲 -> 0%。
+	if m.CPUPercent != 0 {
+		t.Errorf("CPU = %v", m.CPUPercent)
+	}
+}
+
+// 计数器回绕、网卡重置、采样间隔为零时不能产出荒谬的数值:
 // 一个假的 GB/s 尖峰会把整张趋势图压扁,真实波动全看不见了。
 func TestParseMetricsClampsAbnormalDeltas(t *testing.T) {
-	m, err := parseMetrics(`cpu_total_delta 0
-cpu_idle_delta 0
-net_rx_delta -999999
-net_tx_delta -1
-mem_total 1024
-mem_available 512
+	m, err := parseMetrics(`cpu_a 100 50
+cpu_b 100 50
+net_a 999999 5
+net_b 1 1
+mem 1024 512
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -683,9 +704,31 @@ mem_available 512
 	}
 }
 
+// idle 增量大于 total 增量(不同 CPU 核数下的舍入)时不能算出负数或超过 100。
+func TestParseMetricsClampsCPUToRange(t *testing.T) {
+	m, err := parseMetrics(`cpu_a 100 10
+cpu_b 200 200
+mem 1024 512
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.CPUPercent < 0 || m.CPUPercent > 100 {
+		t.Errorf("CPU = %v,超出 0~100", m.CPUPercent)
+	}
+}
+
 func TestParseMetricsRejectsGarbage(t *testing.T) {
-	if _, err := parseMetrics("sh: awk: not found\n"); err == nil {
-		t.Error("无法解析的输出应当报错,而不是静默返回全零采样")
+	// 远端 shell 报错(缺 awk、脚本被截断)时输出不含 mem 行,
+	// 必须报错而不是静默返回一条全零采样 —— 后者会在图上画出一条假的"零负载"。
+	for _, bad := range []string{
+		"sh: awk: not found\n",
+		"",
+		"cpu_a 1 2\nnet_a 3 4\n",
+	} {
+		if _, err := parseMetrics(bad); err == nil {
+			t.Errorf("输出 %q 应当被拒绝", bad)
+		}
 	}
 }
 
@@ -706,5 +749,34 @@ func TestContainsAuthorizedKeyIgnoresComment(t *testing.T) {
 	}
 	if containsAuthorizedKey(existing, "格式不对") {
 		t.Error("非法公钥不应匹配到任何行")
+	}
+}
+
+// x/crypto/ssh 的认证失败原文是 "attempted methods [none], no supported methods remain",
+// 字面上看像是客户端没带凭据,实际是服务端没开放我们能提供的认证方式。
+// 不翻译的话,一台 PasswordAuthentication=no 的机器会让人一直以为是密码打错了。
+func TestExplainAuthFailure(t *testing.T) {
+	authErr := errors.New(
+		"ssh: handshake failed: ssh: unable to authenticate, attempted methods [none], no supported methods remain")
+
+	pwd := explainAuthFailure(authErr, "password")
+	if !strings.Contains(pwd, "PasswordAuthentication") {
+		t.Errorf("口令方式的提示没点出 sshd 配置:%q", pwd)
+	}
+	if !strings.Contains(pwd, "authorized_keys") {
+		t.Errorf("口令方式的提示没给出可行的下一步:%q", pwd)
+	}
+
+	key := explainAuthFailure(authErr, "local-key")
+	if key == "" || key == pwd {
+		t.Errorf("私钥方式应当有自己的提示:%q", key)
+	}
+
+	// 与认证无关的错误(网络不通、超时)不该被安上"认证方式不对"的解释。
+	if got := explainAuthFailure(errors.New("dial tcp 192.0.2.1:22: i/o timeout"), "password"); got != "" {
+		t.Errorf("非认证错误不应附加提示:%q", got)
+	}
+	if got := explainAuthFailure(nil, "password"); got != "" {
+		t.Errorf("nil 错误不应附加提示:%q", got)
 	}
 }

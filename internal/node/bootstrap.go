@@ -58,15 +58,41 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 		return result, errors.New("面板公钥含换行,拒绝写入 authorized_keys")
 	}
 
+	pinHostKey := func(hostKey string) error {
+		// 引导阶段同样走 TOFU,固定下来的密钥后续继续用。
+		return s.store.PinHostKey(context.WithoutCancel(ctx), nodeID, hostKey)
+	}
+
+	// 先用面板密钥直接试一次。
+	//
+	// 它成立的场合比想象中多:节点上早就装过面板公钥(重复点「重新引导」)、
+	// 管理员照着设置页把公钥手工贴进了 authorized_keys。不先试这一下,
+	// 一台只允许密钥登录、又已经手工装好公钥的机器会走进死胡同 ——
+	// 口令登录被 sshd 拒,主控本机又没有能登它的私钥,而其实它本来就能连上。
+	if client, err := sshx.Dial(ctx, sshx.Target{
+		Host:          n.Host,
+		Port:          n.SSHPort,
+		User:          n.SSHUser,
+		PrivateKeyPEM: panelKey.PrivateKeyPEM,
+		KnownHostKey:  n.HostKey,
+		OnHostKey:     pinHostKey,
+	}, s.dialTimeout()); err == nil {
+		defer client.Close()
+		if _, err := client.RunCheck(ctx, sshx.NewCommand("true")); err == nil {
+			s.pool.Invalidate(nodeID)
+			result.Method = "panel-key"
+			result.AlreadyPresent = true
+			result.Detail = "面板密钥已经能登录该节点,无需重新装公钥。"
+			return result, nil
+		}
+	}
+
 	target := sshx.Target{
 		Host:         n.Host,
 		Port:         n.SSHPort,
 		User:         n.SSHUser,
 		KnownHostKey: n.HostKey,
-		OnHostKey: func(hostKey string) error {
-			// 引导阶段同样走 TOFU,固定下来的密钥后续继续用。
-			return s.store.PinHostKey(context.WithoutCancel(ctx), nodeID, hostKey)
-		},
+		OnHostKey:    pinHostKey,
 	}
 	if password != "" {
 		result.Method = "password"
@@ -78,8 +104,9 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 		}
 		if len(keys) == 0 {
 			return result, fmt.Errorf(
-				"未填写 root 密码,且在主控本机没找到可用私钥(已查找 %s)。"+
-					"请填写节点的 root 密码,或把一把能登录该节点的私钥放到上述目录并确保面板进程可读",
+				"面板密钥登录不上该节点,你也没填节点密码,而主控本机没找到可用私钥(已查找 %s)。"+
+					"三条路任选:填写节点的登录密码;把一把能登录该节点的私钥放到上述目录并确保面板进程可读;"+
+					"或者手工把面板公钥追加到节点的 ~/.ssh/authorized_keys(公钥见「设置」页)后再点一次「重新引导」",
 				strings.Join(s.bootstrapKeyDirs(), "、"))
 		}
 		result.Method = "local-key"
@@ -90,7 +117,8 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 	// 引导连接是一次性的,不进连接池 —— 池里按节点缓存的必须是面板密钥那条长连接。
 	client, err := sshx.Dial(ctx, target, s.dialTimeout())
 	if err != nil {
-		return result, fmt.Errorf("以%s方式连接节点失败: %w", methodLabel(result.Method), err)
+		return result, fmt.Errorf("以%s方式连接节点失败: %w%s",
+			methodLabel(result.Method), err, explainAuthFailure(err, result.Method))
 	}
 	defer client.Close()
 
@@ -146,6 +174,24 @@ func methodLabel(method string) string {
 		return "口令"
 	}
 	return "本机私钥"
+}
+
+// explainAuthFailure 把 x/crypto/ssh 的认证失败补成能照着做的提示。
+//
+// 原文形如 "unable to authenticate, attempted methods [none], no supported methods remain",
+// 它的意思是"服务端允许的认证方式里没有一个是我们能提供的",但字面上完全看不出来 ——
+// 尤其 [none] 会让人以为是客户端没带凭据,实际是服务端根本没开放对应方式。
+func explainAuthFailure(err error, method string) string {
+	if err == nil || !strings.Contains(err.Error(), "unable to authenticate") {
+		return ""
+	}
+	if method == "password" {
+		return "。节点不接受口令登录,多半是 sshd 里 PasswordAuthentication 设成了 no。" +
+			"改用「主控本机私钥」,或先手工把面板公钥追加到节点的 ~/.ssh/authorized_keys" +
+			"(公钥见「设置」页)再点一次「重新引导」"
+	}
+	return "。节点不接受这几把私钥。确认其中至少一把能登录该节点,或改填节点密码," +
+		"或先手工把面板公钥追加到节点的 ~/.ssh/authorized_keys(公钥见「设置」页)再点一次「重新引导」"
 }
 
 // installAuthorizedKey 把公钥追加进远端的 authorized_keys。

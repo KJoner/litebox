@@ -10,6 +10,20 @@ export class ApiError extends Error {
   }
 }
 
+// describeNonJSON 把一个非 JSON 响应翻译成能直接照着排查的话。
+function describeNonJSON(response: Response, text: string): string {
+  const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 120)
+  const where = `HTTP ${response.status} ${response.headers.get('content-type') ?? '无 Content-Type'}`
+
+  if (response.status === 404 && /404 page not found/i.test(text)) {
+    return `接口不存在(${where})。这通常是前端比后端新 —— 页面上有这个按钮,但正在运行的 litebox 里没有这个接口。请重启/升级主控服务后刷新页面。`
+  }
+  if (response.status === 502 || response.status === 503 || response.status === 504) {
+    return `反向代理没能拿到面板的响应(${where})。可能是主控服务崩了或超时,看 journalctl -u litebox -n 50。`
+  }
+  return `服务器返回了非 JSON 响应(${where}):${snippet || '(空)'}`
+}
+
 interface RequestOptions {
   method?: string
   body?: unknown
@@ -44,7 +58,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     try {
       payload = JSON.parse(text)
     } catch {
-      throw new ApiError(response.status, '服务器返回了无法解析的响应')
+      // 面板自己的所有响应(含错误)都是 JSON,走到这里说明响应根本不是面板发的:
+      // 404 纯文本(路由不存在,通常是前后端版本不一致)、反代的 HTML 错误页,
+      // 或者被中间设备拦了。状态码和响应体开头是唯一的线索,必须带出去 ——
+      // 只说一句"无法解析"等于把排查所需的信息全丢了。
+      throw new ApiError(response.status, describeNonJSON(response, text))
     }
   }
 
