@@ -37,7 +37,7 @@ type adminResponse struct {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	if req.Username == "" || req.Password == "" {
@@ -103,7 +103,7 @@ type changePasswordRequest struct {
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var req changePasswordRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	admin := adminFromContext(r.Context())

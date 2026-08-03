@@ -36,6 +36,20 @@ func decodeJSON(r *http.Request, dst any) error {
 	return dec.Decode(dst)
 }
 
+// badRequest 把解析失败的原因回给前端。
+//
+// 只说"请求格式错误"会把最关键的一句藏掉:DisallowUnknownFields 的报错原文是
+// `json: unknown field "xxx"`,它直接点名了是哪个字段对不上 ——
+// 前后端字段不一致时,有没有这句话是"一眼看出"和"逐个接口试"的区别。
+// 这是登录后的管理接口,回显解析错误不会泄露给外部。
+func badRequest(w http.ResponseWriter, err error) {
+	msg := "请求格式错误"
+	if err != nil {
+		msg += ":" + err.Error()
+	}
+	writeError(w, http.StatusBadRequest, msg)
+}
+
 // clientIP 提取客户端地址。仅在存在可信反代时才采信 X-Forwarded-For,
 // 由 trustProxy 控制;否则一律使用 RemoteAddr,防止伪造头绕过登录限流。
 func clientIP(r *http.Request, trustProxy bool) string {

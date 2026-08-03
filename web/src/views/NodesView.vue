@@ -121,12 +121,17 @@ async function submit() {
     if (editingId.value === null) {
       // 接入方式决定后端走哪条引导路径:只有 manual 会带私钥,
       // 也只有 password 会带口令,不能把两者一起发过去。
-      const payload: Record<string, unknown> = {
-        ...form,
+      const result = await api.createNode({
+        name: form.name,
+        host: form.host,
+        ssh_port: form.ssh_port,
+        ssh_user: form.ssh_user,
+        proxy_port: form.proxy_port,
+        listen_port: form.listen_port,
+        api_port: form.api_port,
         ssh_key: accessMode.value === 'manual' ? form.ssh_key : '',
         root_password: accessMode.value === 'password' ? form.root_password : '',
-      }
-      const result = await api.createNode(payload)
+      })
       formOpen.value = false
       // 口令只在这一次请求里用到,立刻从内存里抹掉,免得留在表单状态里。
       form.root_password = ''
@@ -146,7 +151,19 @@ async function submit() {
     } else {
       // 先取出 id:确认框是异步的,期间 editingId 可能已被下一次开表单改掉。
       const id = editingId.value
-      const { effect } = await api.updateNode(id, { ...form })
+      // 逐字段列出而不是 { ...form }:表单是新增与编辑共用的,里面有
+      // root_password 这类只属于新增的字段,而更新接口对未知字段是拒绝的
+      // (DisallowUnknownFields),整个提交会以"请求格式错误"失败。
+      const { effect } = await api.updateNode(id, {
+        name: form.name,
+        host: form.host,
+        ssh_port: form.ssh_port,
+        ssh_user: form.ssh_user,
+        ssh_key: form.ssh_key,
+        proxy_port: form.proxy_port,
+        listen_port: form.listen_port,
+        api_port: form.api_port,
+      })
       formOpen.value = false
       await load()
       if (effect.needs_deploy) {

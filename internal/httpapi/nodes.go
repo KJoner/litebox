@@ -99,7 +99,7 @@ type createNodeRequest struct {
 func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	var req createNodeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	admin := adminFromContext(r.Context())
@@ -174,7 +174,7 @@ func (s *Server) handleBootstrapNode(w http.ResponseWriter, r *http.Request) {
 	}
 	var req bootstrapNodeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	admin := adminFromContext(r.Context())
@@ -228,7 +228,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	var req updateNodeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	admin := adminFromContext(r.Context())
@@ -302,7 +302,7 @@ func (s *Server) handleSetNodeEnabled(w http.ResponseWriter, r *http.Request) {
 	}
 	var req setEnabledRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	admin := adminFromContext(r.Context())
@@ -369,7 +369,7 @@ func (s *Server) handleCheckNodeDest(w http.ResponseWriter, r *http.Request) {
 	}
 	var req destCheckRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		badRequest(w, err)
 		return
 	}
 	admin := adminFromContext(r.Context())
