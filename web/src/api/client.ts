@@ -160,6 +160,8 @@ export interface ProxyUser {
   portal_account: PortalAccount | null
   /** 仅新建用户时可能出现:用户已建好但登录账号没建成 */
   portal_account_error?: string
+  /** 最近一次加流量或延期限的时间,空串表示从未续期 */
+  last_renewal_at: string
   // 仅详情接口返回
   uuid?: string
   sub_token?: string
@@ -379,6 +381,66 @@ export interface TrafficStatus {
   failing_nodes: { node_id: number; error: string }[]
 }
 
+// ---------- 续期与调整 ----------
+
+export type AdjustAction =
+  | 'ADD_QUOTA'
+  | 'SET_QUOTA'
+  | 'RESET_TRAFFIC'
+  | 'EXTEND_EXPIRY'
+  | 'SET_EXPIRY'
+  | 'CHANGE_TIER'
+  | 'ENABLE_USER'
+  | 'DISABLE_USER'
+
+export interface AdjustmentRecord {
+  id: number
+  proxy_user_id: number
+  action: AdjustAction
+  action_text: string
+  quota_delta_bytes: number
+  expiry_delta_days: number
+  before_json: string
+  after_json: string
+  remark: string
+  admin_user_id: number | null
+  created_at: string
+}
+
+/** 用户门户能看到的版本:没有管理员 ID,也没有前后 JSON */
+export interface PublicAdjustment {
+  action: AdjustAction
+  action_text: string
+  quota_delta_bytes: number
+  expiry_delta_days: number
+  remark: string
+  created_at: string
+}
+
+export interface AdjustPayload {
+  action: AdjustAction
+  quota_delta_bytes?: number
+  quota_bytes?: number
+  expiry_delta_days?: number
+  expires_at?: string
+  access_tier_id?: number
+  remark?: string
+}
+
+export interface BatchAdjustResult {
+  total: number
+  succeeded: number
+  items: { user_id: number; ok: boolean; error?: string }[]
+}
+
+export interface DashboardAlert {
+  level: 'warning' | 'error'
+  category: 'user' | 'node'
+  target: string
+  target_id: number
+  message: string
+}
+
 // ---------- 用户门户 ----------
 
 export interface PortalAccount {
@@ -511,6 +573,7 @@ export const portalApi = {
   subscription: () => request<PortalSubscription>('/api/portal/subscription'),
   regenerateSubscription: () =>
     request<PortalSubscription>('/api/portal/subscription/regenerate', { method: 'POST' }),
+  adjustments: () => request<{ items: PublicAdjustment[] }>('/api/portal/adjustments'),
 }
 
 // ---------- 接口 ----------
@@ -527,6 +590,7 @@ export const api = {
     }),
 
   dashboardSummary: () => request<DashboardSummary>('/api/dashboard/summary'),
+  dashboardAlerts: () => request<{ items: DashboardAlert[] }>('/api/dashboard/alerts'),
 
   auditLogs: (params: { limit?: number; targetType?: string; targetId?: string } = {}) =>
     request<{ items: AuditLog[] }>('/api/audit-logs', {
@@ -630,6 +694,17 @@ export const api = {
   collectNodeMetrics: (id: number) =>
     request<NodeMetrics>(`/api/nodes/${id}/collect-metrics`, { method: 'POST' }),
   monitorStatus: () => request<MonitorStatus>('/api/metrics/status'),
+
+  // 续期与额度调整
+  adjustUser: (id: number, body: AdjustPayload) =>
+    request<ProxyUser>(`/api/users/${id}/adjust`, { method: 'POST', body }),
+  userAdjustments: (id: number, limit = 50) =>
+    request<{ items: AdjustmentRecord[] }>(`/api/users/${id}/adjustments`, { query: { limit } }),
+  batchAdjust: (userIds: number[], body: AdjustPayload) =>
+    request<BatchAdjustResult>('/api/users/batch-adjust', {
+      method: 'POST',
+      body: { user_ids: userIds, ...body },
+    }),
 
   // 用户门户账号(管理端)
   setPortalAccount: (

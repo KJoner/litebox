@@ -1,16 +1,23 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { portalApi, ApiError, type PortalDashboard } from '@/api/client'
+import { portalApi, ApiError, type PortalDashboard, type PublicAdjustment } from '@/api/client'
 import { formatBytes, formatQuota, formatTime } from '@/utils/format'
 
 const data = ref<PortalDashboard | null>(null)
+const adjustments = ref<PublicAdjustment[]>([])
 const loading = ref(false)
 
 async function load() {
   loading.value = true
   try {
-    data.value = await portalApi.dashboard()
+    const [d, adj] = await Promise.all([
+      portalApi.dashboard(),
+      // 调整记录是附加信息,取不到不该让整个首页空着。
+      portalApi.adjustments().catch(() => ({ items: [] as PublicAdjustment[] })),
+    ])
+    data.value = d
+    adjustments.value = adj.items
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载失败')
   } finally {
@@ -108,6 +115,23 @@ onMounted(load)
           <a-descriptions-item label="用户编号">{{ data.user_code }}</a-descriptions-item>
         </a-descriptions>
       </a-card>
+      <a-card v-if="adjustments.length > 0" title="最近调整" class="card">
+        <a-timeline>
+          <a-timeline-item v-for="(a, i) in adjustments" :key="i">
+            <div class="adj-head">
+              <span>{{ a.action_text }}</span>
+              <span v-if="a.quota_delta_bytes" class="adj-delta">
+                {{ a.quota_delta_bytes > 0 ? '+' : '-' }}{{ formatBytes(Math.abs(a.quota_delta_bytes)) }}
+              </span>
+              <span v-else-if="a.expiry_delta_days" class="adj-delta">
+                {{ a.expiry_delta_days > 0 ? '+' : '' }}{{ a.expiry_delta_days }} 天
+              </span>
+            </div>
+            <div v-if="a.remark" class="adj-remark">{{ a.remark }}</div>
+            <div class="adj-time">{{ formatTime(a.created_at) }}</div>
+          </a-timeline-item>
+        </a-timeline>
+      </a-card>
     </template>
   </a-spin>
 </template>
@@ -145,6 +169,27 @@ onMounted(load)
 
 .progress {
   margin-top: 12px;
+}
+
+.adj-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.adj-delta {
+  color: #389e0d;
+  font-variant-numeric: tabular-nums;
+}
+
+.adj-remark {
+  color: rgb(0 0 0 / 65%);
+  font-size: 13px;
+}
+
+.adj-time {
+  color: rgb(0 0 0 / 45%);
+  font-size: 12px;
 }
 
 .detail {

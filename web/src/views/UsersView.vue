@@ -1,8 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node, type ProxyUser } from '@/api/client'
-import { daysUntil, formatBytes, formatQuota, formatTime } from '@/utils/format'
+import {
+  api,
+  ApiError,
+  type AccessTier,
+  type AdjustAction,
+  type AdjustPayload,
+  type Node,
+  type ProxyUser,
+} from '@/api/client'
+import { daysUntil, formatBytes, formatQuota, formatRelative, formatTime } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import UserDetailDrawer from '@/components/UserDetailDrawer.vue'
 
@@ -29,6 +37,61 @@ function tierColor(code: string): string {
   return 'default'
 }
 
+// 筛选在前端做。用户规模是 10 人量级,把条件推到 SQL 只会多出一层
+// 查询拼装代码,而它自己就是一处要维护的复杂度。
+const filters = reactive({
+  keyword: '',
+  tierID: undefined as number | undefined,
+  status: undefined as string | undefined,
+  loginEnabled: undefined as 'yes' | 'no' | 'none' | undefined,
+  expiringSoon: false,
+  nearQuota: false,
+})
+
+const filteredUsers = computed(() =>
+  users.value.filter((u) => {
+    const kw = filters.keyword.trim().toLowerCase()
+    if (kw) {
+      const hay = [u.display_name, u.user_code, u.remark, u.portal_account?.username ?? '']
+        .join(' ')
+        .toLowerCase()
+      if (!hay.includes(kw)) return false
+    }
+    if (filters.tierID !== undefined && u.access_tier_id !== filters.tierID) return false
+    if (filters.status !== undefined && u.status !== filters.status) return false
+    if (filters.loginEnabled === 'none' && u.portal_account) return false
+    if (filters.loginEnabled === 'yes' && !u.portal_account?.login_enabled) return false
+    if (filters.loginEnabled === 'no' && u.portal_account?.login_enabled !== false) return false
+    if (filters.expiringSoon) {
+      const days = daysUntil(u.expires_at)
+      if (days === null || days > 7) return false
+    }
+    if (filters.nearQuota) {
+      // 不限量的用户永远不算"接近上限":没有上限可接近。
+      if (u.quota_bytes <= 0) return false
+      if (u.used_total / u.quota_bytes < 0.8) return false
+    }
+    return true
+  }),
+)
+
+function resetFilters() {
+  filters.keyword = ''
+  filters.tierID = undefined
+  filters.status = undefined
+  filters.loginEnabled = undefined
+  filters.expiringSoon = false
+  filters.nearQuota = false
+}
+
+const selectedIDs = ref<number[]>([])
+const rowSelection = computed(() => ({
+  selectedRowKeys: selectedIDs.value,
+  onChange: (keys: (string | number)[]) => {
+    selectedIDs.value = keys.map(Number)
+  },
+}))
+
 const columns = [
   { title: '用户', key: 'name', width: 200 },
   { title: '访问等级', key: 'tier', width: 110 },
@@ -37,6 +100,7 @@ const columns = [
   { title: '节点', key: 'nodes', width: 110 },
   { title: '已用流量', key: 'used', width: 180 },
   { title: '到期时间', key: 'expires', width: 160 },
+  { title: '最近续期', key: 'renewal', width: 120 },
   { title: '操作', key: 'actions', width: 200 },
 ]
 
@@ -171,6 +235,105 @@ async function submit() {
   }
 }
 
+// ---------- 续期与额度调整 ----------
+
+const adjustOpen = ref(false)
+const adjustSubmitting = ref(false)
+// 非 null 表示调整单个用户;null 表示对当前勾选的用户批量调整。
+const adjustTarget = ref<ProxyUser | null>(null)
+
+const adjustForm = reactive({
+  action: 'ADD_QUOTA' as AdjustAction,
+  quota_gb: 10,
+  expiry_days: 30,
+  expires_at: '',
+  access_tier_id: 1,
+  remark: '',
+})
+
+const adjustActions: { value: AdjustAction; label: string }[] = [
+  { value: 'ADD_QUOTA', label: '增加流量' },
+  { value: 'SET_QUOTA', label: '设置流量额度' },
+  { value: 'EXTEND_EXPIRY', label: '延长有效期' },
+  { value: 'SET_EXPIRY', label: '设置到期时间' },
+  { value: 'RESET_TRAFFIC', label: '重置已用流量' },
+  { value: 'CHANGE_TIER', label: '调整访问等级' },
+  { value: 'ENABLE_USER', label: '启用账号' },
+  { value: 'DISABLE_USER', label: '停用账号' },
+]
+
+function openAdjust(user: ProxyUser | null) {
+  adjustTarget.value = user
+  adjustForm.action = 'ADD_QUOTA'
+  adjustForm.quota_gb = 10
+  adjustForm.expiry_days = 30
+  adjustForm.expires_at = ''
+  adjustForm.access_tier_id = user?.access_tier_id ?? 1
+  adjustForm.remark = ''
+  adjustOpen.value = true
+}
+
+function adjustPayload(): AdjustPayload {
+  const body: AdjustPayload = { action: adjustForm.action, remark: adjustForm.remark }
+  switch (adjustForm.action) {
+    case 'ADD_QUOTA':
+      body.quota_delta_bytes = Math.round(adjustForm.quota_gb * 1024 ** 3)
+      break
+    case 'SET_QUOTA':
+      body.quota_bytes = Math.round(adjustForm.quota_gb * 1024 ** 3)
+      break
+    case 'EXTEND_EXPIRY':
+      body.expiry_delta_days = adjustForm.expiry_days
+      break
+    case 'SET_EXPIRY':
+      // 日期输入只有年月日,补成当天结束的 UTC 时刻;留空表示改为不过期。
+      body.expires_at = adjustForm.expires_at ? `${adjustForm.expires_at}T23:59:59Z` : ''
+      break
+    case 'CHANGE_TIER':
+      body.access_tier_id = adjustForm.access_tier_id
+      break
+  }
+  return body
+}
+
+async function submitAdjust() {
+  adjustSubmitting.value = true
+  try {
+    if (adjustTarget.value) {
+      await api.adjustUser(adjustTarget.value.id, adjustPayload())
+      message.success('已调整')
+    } else {
+      const result = await api.batchAdjust(selectedIDs.value, adjustPayload())
+      if (result.succeeded === result.total) {
+        message.success(`已处理 ${result.succeeded} 个用户`)
+      } else {
+        // 部分失败必须逐条说清楚是谁、为什么 —— 只报一个数字的话,
+        // 管理员既不知道漏了谁,也不知道要不要重来一遍。
+        const failed = result.items.filter((i) => !i.ok)
+        Modal.warning({
+          title: `${result.total} 个用户中 ${result.succeeded} 个成功`,
+          content: failed
+            .map((i) => `${userName(i.user_id)}:${i.error ?? '未知原因'}`)
+            .join('\n'),
+          width: 560,
+          okText: '知道了',
+        })
+      }
+      selectedIDs.value = []
+    }
+    adjustOpen.value = false
+    await load()
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '调整失败')
+  } finally {
+    adjustSubmitting.value = false
+  }
+}
+
+function userName(id: number): string {
+  return users.value.find((u) => u.id === id)?.display_name ?? `用户 ${id}`
+}
+
 // ---------- 行内操作 ----------
 
 async function toggleEnabled(u: ProxyUser) {
@@ -239,14 +402,58 @@ onMounted(load)
       description="用户需要分配到节点才能使用。请先在节点管理中添加并部署节点。"
     />
 
+    <div class="filters">
+      <a-input-search
+        v-model:value="filters.keyword"
+        placeholder="名称 / 编号 / 备注 / 登录账号"
+        allow-clear
+        style="width: 240px"
+      />
+      <a-select
+        v-model:value="filters.tierID"
+        placeholder="访问等级"
+        allow-clear
+        style="width: 130px"
+      >
+        <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
+      </a-select>
+      <a-select v-model:value="filters.status" placeholder="状态" allow-clear style="width: 140px">
+        <a-select-option value="ACTIVE">正常</a-select-option>
+        <a-select-option value="DISABLED">已停用</a-select-option>
+        <a-select-option value="EXPIRED">已到期</a-select-option>
+        <a-select-option value="QUOTA_EXCEEDED">流量用完</a-select-option>
+      </a-select>
+      <a-select
+        v-model:value="filters.loginEnabled"
+        placeholder="门户登录"
+        allow-clear
+        style="width: 130px"
+      >
+        <a-select-option value="yes">已启用</a-select-option>
+        <a-select-option value="no">已停用</a-select-option>
+        <a-select-option value="none">未开通</a-select-option>
+      </a-select>
+      <a-checkbox v-model:checked="filters.expiringSoon">7 天内到期</a-checkbox>
+      <a-checkbox v-model:checked="filters.nearQuota">流量超 80%</a-checkbox>
+      <a @click="resetFilters">重置</a>
+      <span class="filter-count">{{ filteredUsers.length }} / {{ users.length }}</span>
+    </div>
+
+    <div v-if="selectedIDs.length > 0" class="batch-bar">
+      <span>已选 {{ selectedIDs.length }} 个用户</span>
+      <a-button size="small" type="primary" @click="openAdjust(null)">批量调整</a-button>
+      <a @click="selectedIDs = []">取消选择</a>
+    </div>
+
     <a-table
       :columns="columns"
-      :data-source="users"
+      :data-source="filteredUsers"
       :loading="loading"
+      :row-selection="rowSelection"
       row-key="id"
       size="middle"
       :pagination="false"
-      :scroll="{ x: 940 }"
+      :scroll="{ x: 1120 }"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -302,10 +509,15 @@ onMounted(load)
           </span>
         </template>
 
+        <template v-else-if="column.key === 'renewal'">
+          <span class="muted">{{ record.last_renewal_at ? formatRelative(record.last_renewal_at) : '从未' }}</span>
+        </template>
+
         <template v-else-if="column.key === 'actions'">
           <a-space size="small">
             <a @click="detailId = record.id">详情</a>
             <a @click="openEdit(record)">编辑</a>
+            <a @click="openAdjust(record)">续期</a>
             <a @click="toggleEnabled(record)">
               {{ record.status === 'DISABLED' ? '启用' : '停用' }}
             </a>
@@ -392,6 +604,65 @@ onMounted(load)
     </a-form>
   </a-modal>
 
+  <a-modal
+    v-model:open="adjustOpen"
+    :title="adjustTarget ? `续期 / 调整 · ${adjustTarget.display_name}` : `批量调整 ${selectedIDs.length} 个用户`"
+    :confirm-loading="adjustSubmitting"
+    ok-text="执行"
+    cancel-text="取消"
+    @ok="submitAdjust"
+  >
+    <a-form layout="vertical">
+      <a-form-item label="操作">
+        <a-select v-model:value="adjustForm.action" :options="adjustActions" />
+      </a-form-item>
+
+      <a-form-item
+        v-if="adjustForm.action === 'ADD_QUOTA'"
+        label="增加流量(GB)"
+        extra="填负数表示扣减。不限量的用户请改用「设置流量额度」"
+      >
+        <a-input-number v-model:value="adjustForm.quota_gb" :step="1" style="width: 100%" />
+      </a-form-item>
+      <a-form-item
+        v-else-if="adjustForm.action === 'SET_QUOTA'"
+        label="流量额度(GB)"
+        extra="填 0 表示不限量"
+      >
+        <a-input-number v-model:value="adjustForm.quota_gb" :min="0" :step="1" style="width: 100%" />
+      </a-form-item>
+      <a-form-item
+        v-else-if="adjustForm.action === 'EXTEND_EXPIRY'"
+        label="延长天数"
+        extra="已过期的用户从今天起算,未到期的从原到期日起算"
+      >
+        <a-input-number v-model:value="adjustForm.expiry_days" :step="30" style="width: 100%" />
+      </a-form-item>
+      <a-form-item
+        v-else-if="adjustForm.action === 'SET_EXPIRY'"
+        label="到期时间"
+        extra="留空表示改为不过期"
+      >
+        <a-input v-model:value="adjustForm.expires_at" type="date" style="width: 100%" />
+      </a-form-item>
+      <a-form-item v-else-if="adjustForm.action === 'CHANGE_TIER'" label="访问等级">
+        <a-select v-model:value="adjustForm.access_tier_id">
+          <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
+        </a-select>
+      </a-form-item>
+      <a-alert
+        v-else-if="adjustForm.action === 'RESET_TRAFFIC'"
+        type="info"
+        message="已用流量清零,历史流水与节点计数器基线保持不变。此前因超额被停的用户会自动恢复。"
+        class="adjust-hint"
+      />
+
+      <a-form-item label="备注" extra="这句话会展示给用户,不要写内部说明">
+        <a-input v-model:value="adjustForm.remark" :maxlength="128" placeholder="例如:2026 年 8 月续费" />
+      </a-form-item>
+    </a-form>
+  </a-modal>
+
   <UserDetailDrawer
     :user-id="detailId"
     :nodes="nodes"
@@ -401,6 +672,35 @@ onMounted(load)
 </template>
 
 <style scoped>
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.filter-count {
+  margin-left: auto;
+  color: rgb(0 0 0 / 45%);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #e6f4ff;
+  border-radius: 6px;
+}
+
+.adjust-hint {
+  margin-bottom: 16px;
+}
+
 .login-name {
   font-size: 13px;
 }

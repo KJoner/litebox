@@ -2,14 +2,23 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { api, ApiError, type DashboardSummary, type DeploymentRecord, type TrafficStatus } from '@/api/client'
+import {
+  api,
+  ApiError,
+  type DashboardAlert,
+  type DashboardSummary,
+  type DeploymentRecord,
+  type TrafficStatus,
+} from '@/api/client'
 import { formatBytes, formatTime } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
+import NodeStatusCards from '@/components/NodeStatusCards.vue'
 
 const router = useRouter()
 const summary = ref<DashboardSummary | null>(null)
 const failedDeploys = ref<DeploymentRecord[]>([])
 const trafficStatus = ref<TrafficStatus | null>(null)
+const detailedAlerts = ref<DashboardAlert[]>([])
 const loading = ref(true)
 
 // 需要提醒的指标单独拎出来:数字为 0 时保持中性,不要满屏红色。
@@ -27,12 +36,14 @@ const alerts = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [s, deploys, status] = await Promise.all([
+    const [s, deploys, status, alertList] = await Promise.all([
       api.dashboardSummary(),
       api.deployments(20),
       api.trafficStatus(),
+      api.dashboardAlerts(),
     ])
     summary.value = s
+    detailedAlerts.value = alertList.items
     failedDeploys.value = deploys.items
       .filter((d) => d.status === 'FAILED' || d.status === 'ROLLED_BACK')
       .slice(0, 5)
@@ -83,6 +94,28 @@ onMounted(load)
         </a-card>
       </a-col>
     </a-row>
+
+    <a-card v-if="detailedAlerts.length > 0" title="预警" size="small" class="section">
+      <template #extra>
+        <span class="alert-count">{{ detailedAlerts.length }} 条</span>
+      </template>
+      <a-list :data-source="detailedAlerts" size="small">
+        <template #renderItem="{ item }">
+          <a-list-item class="alert-item" @click="router.push(item.category === 'user' ? '/users' : '/nodes')">
+            <a-tag :color="item.level === 'error' ? 'red' : 'orange'">
+              {{ item.category === 'user' ? '用户' : '节点' }}
+            </a-tag>
+            <span class="alert-target">{{ item.target }}</span>
+            <span class="alert-message">{{ item.message }}</span>
+          </a-list-item>
+        </template>
+      </a-list>
+    </a-card>
+
+    <!-- 节点卡片自己刷新自己(60 秒),不跟着整个仪表盘的 loading 转 -->
+    <div class="section">
+      <NodeStatusCards />
+    </div>
 
     <a-row :gutter="[16, 16]" class="section">
       <a-col :xs="24" :lg="14">
@@ -141,6 +174,25 @@ onMounted(load)
 </template>
 
 <style scoped>
+.alert-count {
+  color: rgb(0 0 0 / 45%);
+  font-size: 12px;
+}
+
+.alert-item {
+  cursor: pointer;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.alert-target {
+  font-weight: 500;
+}
+
+.alert-message {
+  color: rgb(0 0 0 / 65%);
+}
+
 .section {
   margin-top: 16px;
 }

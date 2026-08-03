@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/adjustment"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
@@ -81,6 +82,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),
 		PortalData:  portal.NewQuerier(db, userStore),
+		Adjustments: adjustment.NewStore(db),
 		Logger:      logger,
 	})
 

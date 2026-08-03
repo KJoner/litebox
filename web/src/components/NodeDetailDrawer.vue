@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import {
   api,
@@ -15,6 +15,7 @@ import {
 import { formatBytes, formatRelative, formatTime, shortHash } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import TrafficChart from '@/components/TrafficChart.vue'
+import MetricsChart from '@/components/MetricsChart.vue'
 import DeployStepList from '@/components/DeployStepList.vue'
 
 const props = defineProps<{ nodeId: number | null }>()
@@ -242,10 +243,14 @@ function confirmUninstall() {
 
 const metrics = ref<NodeMetrics | null>(null)
 const metricsHistory = ref<NodeMetrics[]>([])
+// 趋势区间。默认 6 小时,更长的区间用于回看"昨晚是不是 OOM 过"。
+// 上限 168 小时(7 天)与后端的默认保留期一致 —— 给一个更长的选项,
+// 只会让用户看到一段被清理掉的空白。
+const metricsHours = ref(6)
 
 async function loadMetrics(id: number) {
   try {
-    const r = await api.nodeMetricsHistory(id, 6)
+    const r = await api.nodeMetricsHistory(id, metricsHours.value)
     metricsHistory.value = r.items
     metrics.value = r.items.length > 0 ? r.items[r.items.length - 1] : null
   } catch {
@@ -253,6 +258,43 @@ async function loadMetrics(id: number) {
     metricsHistory.value = []
     metrics.value = null
   }
+}
+
+watch(metricsHours, () => {
+  if (props.nodeId !== null) loadMetrics(props.nodeId)
+})
+
+const metricLabels = computed(() => metricsHistory.value.map((m) => m.collected_at))
+
+const cpuSeries = computed(() => [
+  {
+    name: 'CPU',
+    color: '#2a78d6',
+    values: metricsHistory.value.map((m) => m.cpu_percent),
+  },
+])
+
+const memSeries = computed(() => [
+  {
+    name: '内存',
+    color: '#7d3fc0',
+    values: metricsHistory.value.map((m) => memPercent(m)),
+  },
+])
+
+// 上下行画在同一张图上:分成两张就看不出"下行涨的时候上行有没有跟着涨",
+// 而那正是判断链路是否正常的第一眼依据。
+const netSeries = computed(() => [
+  { name: '下行', color: '#2a78d6', values: metricsHistory.value.map((m) => m.net_rx_bps) },
+  { name: '上行', color: '#d46b08', values: metricsHistory.value.map((m) => m.net_tx_bps) },
+])
+
+function formatPercent(v: number): string {
+  return `${v.toFixed(0)}%`
+}
+
+function formatRate(v: number): string {
+  return `${formatBytes(v)}/s`
 }
 
 async function doCollectMetrics() {
@@ -424,9 +466,42 @@ function formatUptime(seconds: number): string {
             </a-descriptions-item>
             <a-descriptions-item label="采样时间">
               {{ formatRelative(metrics.collected_at) }}
-              <span class="hint">(近 6 小时共 {{ metricsHistory.length }} 次)</span>
+              <span class="hint">(区间内共 {{ metricsHistory.length }} 次)</span>
             </a-descriptions-item>
           </a-descriptions>
+
+          <div class="section-title">
+            资源趋势
+            <a-radio-group v-model:value="metricsHours" size="small" class="hours">
+              <a-radio-button :value="6">6 小时</a-radio-button>
+              <a-radio-button :value="24">24 小时</a-radio-button>
+              <a-radio-button :value="72">3 天</a-radio-button>
+              <a-radio-button :value="168">7 天</a-radio-button>
+            </a-radio-group>
+          </div>
+          <div class="chart-label">CPU 使用率</div>
+          <MetricsChart
+            :series="cpuSeries"
+            :labels="metricLabels"
+            :format="formatPercent"
+            :max-override="100"
+            :height="140"
+          />
+          <div class="chart-label">内存使用率</div>
+          <MetricsChart
+            :series="memSeries"
+            :labels="metricLabels"
+            :format="formatPercent"
+            :max-override="100"
+            :height="140"
+          />
+          <div class="chart-label">网络速率</div>
+          <MetricsChart
+            :series="netSeries"
+            :labels="metricLabels"
+            :format="formatRate"
+            :height="140"
+          />
         </template>
 
         <a-alert
@@ -555,6 +630,16 @@ function formatUptime(seconds: number): string {
 </template>
 
 <style scoped>
+.chart-label {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  color: rgb(0 0 0 / 45%);
+}
+
+.hours {
+  margin-left: auto;
+}
+
 .actions {
   margin: 16px 0;
 }
@@ -586,6 +671,9 @@ function formatUptime(seconds: number): string {
 .section-title {
   margin: 20px 0 8px;
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .mono {

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/adjustment"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
@@ -452,6 +453,7 @@ func cmdServe(args []string) error {
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),
 		PortalData:  portal.NewQuerier(db, userStore),
+		Adjustments: adjustment.NewStore(db),
 
 		Pool:     pool,
 		Binaries: node.NewDirBinaryProvider(cfg.Node.BinaryDir),

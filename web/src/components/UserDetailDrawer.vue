@@ -4,6 +4,7 @@ import { message, Modal } from 'ant-design-vue'
 import {
   api,
   ApiError,
+  type AdjustmentRecord,
   type AuditLog,
   type Node,
   type ProxyUser,
@@ -19,6 +20,7 @@ const emit = defineEmits<{ close: []; changed: [] }>()
 const user = ref<ProxyUser | null>(null)
 const traffic = ref<UserTraffic | null>(null)
 const logs = ref<AuditLog[]>([])
+const adjustments = ref<AdjustmentRecord[]>([])
 const loading = ref(false)
 const revealUUID = ref(false)
 
@@ -34,12 +36,14 @@ async function load(id: number) {
   try {
     const u = await api.user(id)
     user.value = u
-    const [t, l] = await Promise.all([
+    const [t, l, adj] = await Promise.all([
       api.userTraffic(id, 30),
       api.auditLogs({ targetType: 'user', targetId: u.user_code, limit: 20 }),
+      api.userAdjustments(id, 20),
     ])
     traffic.value = t
     logs.value = l.items
+    adjustments.value = adj.items
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载用户详情失败')
   } finally {
@@ -55,6 +59,7 @@ watch(
       user.value = null
       traffic.value = null
       logs.value = []
+      adjustments.value = []
     }
   },
   { immediate: true },
@@ -324,6 +329,41 @@ function confirmRegenerateToken() {
           </div>
         </div>
 
+        <div class="section-title">续期与调整记录</div>
+        <a-empty v-if="adjustments.length === 0" description="暂无调整记录" :image="undefined" />
+        <a-table
+          v-else
+          :columns="[
+            { title: '时间', key: 'time', width: 130 },
+            { title: '操作', key: 'action', width: 110 },
+            { title: '变化', key: 'delta', width: 110 },
+            { title: '备注', key: 'remark' },
+          ]"
+          :data-source="adjustments"
+          row-key="id"
+          size="small"
+          :pagination="false"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'time'">
+              <span class="log-time">{{ formatTime(record.created_at) }}</span>
+            </template>
+            <template v-else-if="column.key === 'action'">{{ record.action_text }}</template>
+            <template v-else-if="column.key === 'delta'">
+              <span v-if="record.quota_delta_bytes" class="tabular">
+                {{ record.quota_delta_bytes > 0 ? '+' : '' }}{{ formatBytes(Math.abs(record.quota_delta_bytes)) }}
+              </span>
+              <span v-else-if="record.expiry_delta_days" class="tabular">
+                {{ record.expiry_delta_days > 0 ? '+' : '' }}{{ record.expiry_delta_days }} 天
+              </span>
+              <span v-else class="muted">—</span>
+            </template>
+            <template v-else-if="column.key === 'remark'">
+              {{ record.remark || '—' }}
+            </template>
+          </template>
+        </a-table>
+
         <div class="section-title">最近操作记录</div>
         <a-empty v-if="logs.length === 0" description="暂无记录" :image="undefined" />
         <a-timeline v-else class="log-timeline">
@@ -401,6 +441,14 @@ function confirmRegenerateToken() {
 .sub-formats {
   margin-top: 6px;
   font-size: 12px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: rgb(0 0 0 / 45%);
 }
 
 .hint-line {

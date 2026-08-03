@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/adjustment"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
@@ -43,6 +44,7 @@ type Server struct {
 	portal       *portal.Service
 	portalAccts  *portal.Store
 	portalData   *portal.Querier
+	adjustments  *adjustment.Store
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
 	logger       *slog.Logger
@@ -75,6 +77,7 @@ type Options struct {
 	Portal      *portal.Service
 	PortalAccts *portal.Store
 	PortalData  *portal.Querier
+	Adjustments *adjustment.Store
 	Pool        *sshx.Pool
 	Binaries    node.BinaryProvider
 	Logger      *slog.Logger
@@ -102,6 +105,7 @@ func NewServer(opts Options) *Server {
 		portal:       opts.Portal,
 		portalAccts:  opts.PortalAccts,
 		portalData:   opts.PortalData,
+		adjustments:  opts.Adjustments,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
 		logger:       opts.Logger,
@@ -174,6 +178,12 @@ func (s *Server) Handler() http.Handler {
 			authed.HandleFunc("POST /api/users/{id}/portal-login-enabled", s.handleSetPortalLoginEnabled)
 			authed.HandleFunc("POST /api/users/{id}/revoke-portal-sessions", s.handleRevokePortalSessions)
 		}
+		if s.adjustments != nil {
+			authed.HandleFunc("POST /api/users/{id}/adjust", s.handleAdjustUser)
+			authed.HandleFunc("GET /api/users/{id}/adjustments", s.handleUserAdjustments)
+			authed.HandleFunc("POST /api/users/batch-adjust", s.handleBatchAdjust)
+		}
+		authed.HandleFunc("GET /api/dashboard/alerts", s.handleDashboardAlerts)
 	}
 
 	if s.traffic != nil {
@@ -223,6 +233,9 @@ func (s *Server) Handler() http.Handler {
 		if s.users != nil {
 			portalMux.HandleFunc("POST /api/portal/subscription/regenerate",
 				s.handlePortalRegenerateSubToken)
+		}
+		if s.adjustments != nil {
+			portalMux.HandleFunc("GET /api/portal/adjustments", s.handlePortalAdjustments)
 		}
 		mux.Handle("/api/portal/", s.requirePortalAuth(portalMux))
 	}

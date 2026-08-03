@@ -38,6 +38,8 @@ type userResponse struct {
 	// 用同一个响应结构告知,而不是换一种形状 —— 前端不必为一个分支
 	// 准备两套解析。
 	PortalAccountError string `json:"portal_account_error,omitempty"`
+	// LastRenewalAt 是最近一次加流量或延期限的时间,空串表示从未续期。
+	LastRenewalAt string `json:"last_renewal_at"`
 	// 以下两项仅详情接口填充。
 	UUID            string `json:"uuid,omitempty"`
 	SubToken        string `json:"sub_token,omitempty"`
@@ -71,6 +73,13 @@ func (s *Server) portalAccountOf(ctx context.Context, proxyUserID int64) *portal
 func (s *Server) toDetailResponse(ctx context.Context, u *user.User) userResponse {
 	resp := toResponse(u)
 	resp.PortalAccount = s.portalAccountOf(ctx, u.ID)
+	if s.adjustments != nil {
+		if at, err := s.adjustments.LastRenewalOf(ctx, u.ID); err != nil {
+			s.logger.Error("查询续期记录失败", "error", err)
+		} else {
+			resp.LastRenewalAt = at
+		}
+	}
 	resp.UUID = u.UUID
 	resp.SubToken = u.SubToken
 	if u.SubToken != "" {
@@ -127,10 +136,19 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			accounts = loaded
 		}
 	}
+	renewals := map[int64]string{}
+	if s.adjustments != nil {
+		if loaded, err := s.adjustments.LastRenewalByUser(r.Context()); err != nil {
+			s.logger.Error("查询续期记录失败", "error", err)
+		} else {
+			renewals = loaded
+		}
+	}
 	items := make([]userResponse, 0, len(users))
 	for _, u := range users {
 		resp := toResponse(u)
 		resp.PortalAccount = accounts[u.ID]
+		resp.LastRenewalAt = renewals[u.ID]
 		items = append(items, resp)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
