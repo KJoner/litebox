@@ -29,6 +29,15 @@ const revealUUID = ref(false)
 // 不回显、不保留在组件状态里。
 const accountOpen = ref(false)
 const accountSubmitting = ref(false)
+
+// 门户登录地址。取当前页面的 origin 而不是订阅用的 base_url ——
+// 管理员正是在这个地址上操作的,它一定对;而 base_url 是给代理客户端用的,
+// 完全可能是另一个域名。
+//
+// 之所以要把完整地址摆出来:管理员开通账号后要把地址发给用户,
+// 手边没有就会顺手发面板首页,而那是管理员登录页 —— 用户在那儿输账号
+// 只会得到「用户名或密码错误」,看起来完全就是密码发错了。
+const portalLoginURL = `${window.location.origin}/user/login`
 const accountForm = reactive({ username: '', password: '', must_change_password: true })
 
 async function load(id: number) {
@@ -104,8 +113,21 @@ async function submitAccount() {
       must_change_password: accountForm.must_change_password,
     })
     accountOpen.value = false
+    const username = accountForm.username.trim().toLowerCase()
     accountForm.password = ''
-    message.success(changedPassword ? '已保存,旧会话已全部失效' : '已保存')
+    if (isNew) {
+      // 新开通时用 Modal 而不是一闪而过的 toast:这一刻正是管理员要把
+      // 地址与账号发给用户的时候,手边没有就会顺手发面板首页,
+      // 而那是管理员登录页。
+      Modal.success({
+        title: '已开通用户中心登录',
+        content: `请把下面两项发给用户:\n\n登录地址:${portalLoginURL}\n登录账号:${username}\n\n注意这不是面板首页 —— 首页是管理员登录页,用户在那里输账号会失败。`,
+        width: 520,
+        okText: '知道了',
+      })
+    } else {
+      message.success(changedPassword ? '已保存,旧会话已全部失效' : '已保存')
+    }
     emit('changed')
     await load(props.userId)
   } catch (err) {
@@ -295,6 +317,16 @@ function confirmRegenerateToken() {
           </a-descriptions-item>
           <a-descriptions-item label="在线会话">
             {{ user.portal_account.session_count }} 个
+          </a-descriptions-item>
+          <a-descriptions-item label="登录地址" :span="2">
+            <a-input-group compact class="copy-row">
+              <a-input :value="portalLoginURL" readonly style="width: calc(100% - 80px)" />
+              <a-button @click="copy(portalLoginURL, '登录地址')">复制</a-button>
+            </a-input-group>
+            <div class="hint-line">
+              这是用户中心的地址,不是面板首页 —— 首页是管理员登录页,
+              用户在那里输账号只会得到「用户名或密码错误」。
+            </div>
           </a-descriptions-item>
           <a-descriptions-item label="操作">
             <a-space size="small">

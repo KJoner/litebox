@@ -22,6 +22,10 @@ const detailId = ref<number | null>(null)
 
 const tiers = ref<AccessTier[]>([])
 
+// 门户登录地址取当前页面的 origin:管理员正是在这个地址上操作的,它一定对。
+// 订阅用的 base_url 是给代理客户端的,完全可能是另一个域名,不能拿来当登录地址。
+const portalLoginURL = `${window.location.origin}/user/login`
+
 // 额外授权的候选项里标出节点自己的等级:管理员挑节点时得知道
 // 这个节点本来归谁用,否则会给普通用户重复授权他早就继承到的节点。
 const nodeOptions = computed(() =>
@@ -221,6 +225,17 @@ async function submit() {
             `${created.portal_account_error}\n\n` +
             '该用户现在还无法登录用户中心 —— 他拿账号去登录只会得到' +
             '「账号或密码错误」。请在用户详情里单独开通门户登录。',
+          width: 520,
+          okText: '知道了',
+        })
+      } else if (created.portal_account) {
+        Modal.success({
+          title: '用户已创建,门户登录已开通',
+          content:
+            `请把下面两项发给用户:\n\n登录地址:${portalLoginURL}\n` +
+            `登录账号:${created.portal_account.username}\n\n` +
+            '注意这不是面板首页 —— 首页是管理员登录页,用户在那里输账号会失败。\n' +
+            '受影响节点将在数秒内自动部署。',
           width: 520,
           okText: '知道了',
         })
