@@ -22,8 +22,11 @@ type ProbeResult struct {
 	SingBoxVersion string   `json:"singbox_version"`
 	BuildTags      []string `json:"build_tags"`
 	HasV2RayAPI    bool     `json:"has_v2ray_api"`
-	SystemdVersion string   `json:"systemd_version"`
-	Problems       []string `json:"problems"`
+	// InitSystem 是节点的服务管理器:systemd 或 openrc,都没有则为空。
+	InitSystem string `json:"init_system"`
+	// InitVersion 是它的版本串,只用于展示。
+	InitVersion string   `json:"init_version"`
+	Problems    []string `json:"problems"`
 }
 
 // Probe 采集节点的基础信息并校验 sing-box 是否满足要求。
@@ -47,12 +50,10 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 		sshx.NewCommand("sh", "-c", "awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo")); err == nil {
 		fmt.Sscanf(mem, "%d", &result.MemTotalMB)
 	}
-	if sd, err := runTrimmed(ctx, client,
-		sshx.NewCommand("sh", "-c", "systemctl --version 2>/dev/null | head -1")); err == nil {
-		result.SystemdVersion = sd
-	}
-	if result.SystemdVersion == "" {
-		result.Problems = append(result.Problems, systemdMissingHint(ctx, client))
+	result.InitSystem, result.InitVersion = probeInit(ctx, client)
+	if result.InitSystem == "" {
+		result.Problems = append(result.Problems,
+			"未检测到 systemd 或 OpenRC,面板需要其中之一来安装服务、重启与做健康检查")
 	}
 
 	versionOut, err := client.Run(ctx, sshx.NewCommand(singboxPath, "version"))
@@ -87,34 +88,21 @@ func (r ProbeResult) Usable() bool {
 	return len(r.Problems) == 0
 }
 
-// HasSystemd 报告节点是否具备 systemd。
+// probeInit 识别节点的 init 系统并取其版本。
 //
-// 面板通过 systemd 单元管理节点上的 sing-box:安装、重启、健康检查、
-// 部署失败回滚全都建立在 systemctl 之上,缺了它整条链路无从谈起。
-func (r ProbeResult) HasSystemd() bool {
-	return r.SystemdVersion != ""
-}
-
-// systemdMissingHint 在缺少 systemd 时说清楚这台机器用的是什么,以及能怎么办。
-//
-// 只说"未检测到 systemd"会让人以为是探测出了问题。实际最常见的情形是
-// Alpine —— 它用 OpenRC,而 Alpine 又恰恰是 NAT 小鸡的常见镜像,
-// 正好落在本项目瞄准的低配节点区间里,所以这条提示必须指名道姓。
-func systemdMissingHint(ctx context.Context, client *sshx.Client) string {
-	const base = "未检测到 systemd,无法以服务方式管理 sing-box"
-
-	if out, err := runTrimmed(ctx, client,
-		sshx.NewCommand("sh", "-c", "command -v rc-update >/dev/null 2>&1 && echo openrc")); err == nil &&
-		out == "openrc" {
-		osName, _ := runTrimmed(ctx, client,
-			sshx.NewCommand("sh", "-c", ". /etc/os-release 2>/dev/null && printf %s \"$NAME\""))
-		if osName == "" {
-			osName = "这台机器"
-		}
-		return base + ":" + osName + " 用的是 OpenRC。" +
-			"面板目前只支持 systemd 节点,请换一个带 systemd 的镜像(Debian、Ubuntu、Rocky 等)"
+// 先看 systemd 后看 OpenRC:同时装了两套的机器上,实际接管 PID 1 的
+// 几乎总是 systemd,而这里的判断必须与 deployment.DetectInit 一致,
+// 否则探测说一套、部署做另一套。
+func probeInit(ctx context.Context, client *sshx.Client) (string, string) {
+	if v, err := runTrimmed(ctx, client,
+		sshx.NewCommand("sh", "-c", "systemctl --version 2>/dev/null | head -1")); err == nil && v != "" {
+		return "systemd", v
 	}
-	return base + "。面板需要 systemd 来安装单元、重启服务与做健康检查"
+	if v, err := runTrimmed(ctx, client, sshx.NewCommand("sh", "-c",
+		"command -v rc-service >/dev/null 2>&1 && (openrc --version 2>/dev/null | head -1 || echo OpenRC)")); err == nil && v != "" {
+		return "openrc", v
+	}
+	return "", ""
 }
 
 // parseVersionOutput 解析 `sing-box version` 的输出:

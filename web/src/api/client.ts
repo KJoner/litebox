@@ -231,7 +231,9 @@ export interface ProbeResult {
   singbox_version: string
   build_tags: string[]
   has_v2ray_api: boolean
-  systemd_version: string
+  /** systemd 或 openrc,两者都没有则为空 */
+  init_system: string
+  init_version: string
   problems: string[]
 }
 
@@ -406,7 +408,14 @@ export const api = {
     request<{ ok: boolean; uname: string }>(`/api/nodes/${id}/test-ssh`, { method: 'POST' }),
   probeNode: (id: number) => request<ProbeResult>(`/api/nodes/${id}/probe`, { method: 'POST' }),
   installNode: (id: number) =>
-    request<{ binary_path: string; binary_sha256: string; service_name: string; installed: boolean; detail: string }>(
+    request<{
+      binary_path: string
+      binary_sha256: string
+      service_name: string
+      init_system: string
+      installed: boolean
+      detail: string
+    }>(
       `/api/nodes/${id}/install`,
       { method: 'POST' },
     ),

@@ -161,12 +161,12 @@ func (d *Deployer) serviceRunning(ctx context.Context, nodeID int64) bool {
 	}
 	var active bool
 	err := d.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
-		result, err := client.Run(ctx, sshx.NewCommand("systemctl", "is-active", d.layout.ServiceName))
+		init, err := DetectInit(ctx, client)
 		if err != nil {
 			return err
 		}
-		active = strings.TrimSpace(result.Stdout) == "active"
-		return nil
+		active, _, err = init.IsActive(ctx, client, d.layout)
+		return err
 	})
 	return err == nil && active
 }
@@ -180,6 +180,15 @@ func (d *Deployer) runTransaction(
 	result *Result,
 ) error {
 	// 强制同步流量已在 Deploy 中于取锁前完成,此处直接进入配置下发。
+
+	// init 系统在事务开头探测一次,后续步骤复用。
+	// 每步各探一次要多花五六个往返,而一次部署里它不可能中途变化。
+	init, err := DetectInit(ctx, client)
+	if err != nil {
+		rec.steps = append(rec.steps, Step{
+			Name: "探测 init 系统", Status: StepFailed, Detail: err.Error()})
+		return err
+	}
 
 	// 步骤 1:确保目录存在并上传临时配置。
 	tempPath := d.layout.tempConfigPath()
@@ -246,26 +255,25 @@ func (d *Deployer) runTransaction(
 
 	// 步骤 5:重启服务。
 	if err := rec.run("重启服务", func() (string, error) {
-		_, err := client.RunCheck(ctx, sshx.NewCommand("systemctl", "restart", d.layout.ServiceName))
-		if err != nil {
+		if err := init.Restart(ctx, client, d.layout); err != nil {
 			return "", err
 		}
-		return "已重启", nil
+		return "已重启(" + init.Name() + ")", nil
 	}); err != nil {
-		return d.rollback(ctx, client, req, rec, result, hasBackup, backupPath, err)
+		return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 	}
 
 	// 步骤 6~8:三步健康检查。
-	if err := rec.run("健康检查:systemd 状态", func() (string, error) {
-		return d.checkServiceActive(ctx, client)
+	if err := rec.run("健康检查:服务状态", func() (string, error) {
+		return d.checkServiceActive(ctx, client, init)
 	}); err != nil {
-		return d.rollback(ctx, client, req, rec, result, hasBackup, backupPath, err)
+		return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 	}
 
 	if err := rec.run("健康检查:端口监听", func() (string, error) {
 		return d.checkPortListening(ctx, client, req.Params.ListenPort)
 	}); err != nil {
-		return d.rollback(ctx, client, req, rec, result, hasBackup, backupPath, err)
+		return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 	}
 
 	if len(req.Params.Users) == 0 {
@@ -276,7 +284,7 @@ func (d *Deployer) runTransaction(
 		if err := rec.run("健康检查:VLESS 拨测", func() (string, error) {
 			return d.checkVLESSDial(ctx, client, req)
 		}); err != nil {
-			return d.rollback(ctx, client, req, rec, result, hasBackup, backupPath, err)
+			return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 		}
 	}
 
@@ -294,6 +302,7 @@ func (d *Deployer) rollback(
 	req Request,
 	rec *stepRecorder,
 	result *Result,
+	init InitSystem,
 	hasBackup bool,
 	backupPath string,
 	cause error,
@@ -315,10 +324,10 @@ func (d *Deployer) rollback(
 		if _, err := client.RunCheck(rbCtx, sshx.NewCommand("cp", backupPath, d.layout.ConfigPath)); err != nil {
 			return "", err
 		}
-		if _, err := client.RunCheck(rbCtx, sshx.NewCommand("systemctl", "restart", d.layout.ServiceName)); err != nil {
+		if err := init.Restart(rbCtx, client, d.layout); err != nil {
 			return "", err
 		}
-		if _, err := d.checkServiceActive(rbCtx, client); err != nil {
+		if _, err := d.checkServiceActive(rbCtx, client, init); err != nil {
 			return "", err
 		}
 		if _, err := d.checkPortListening(rbCtx, client, req.Params.ListenPort); err != nil {

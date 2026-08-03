@@ -356,16 +356,21 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 // 常规的用户变更必须走 Deploy。
 func (s *Service) RestartService(ctx context.Context, nodeID int64) error {
 	return s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
-		if _, err := client.RunCheck(ctx, sshx.NewCommand("systemctl", "restart", s.layout.ServiceName)); err != nil {
-			return err
-		}
-		time.Sleep(2 * time.Second)
-		result, err := client.Run(ctx, sshx.NewCommand("systemctl", "is-active", s.layout.ServiceName))
+		init, err := deployment.DetectInit(ctx, client)
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(result.Stdout) != "active" {
-			return fmt.Errorf("重启后服务状态为 %q", strings.TrimSpace(result.Stdout))
+		if err := init.Restart(ctx, client, s.layout); err != nil {
+			return err
+		}
+		time.Sleep(2 * time.Second)
+		active, state, err := init.IsActive(ctx, client, s.layout)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return fmt.Errorf("重启后服务状态为 %q,最近日志:\n%s",
+				state, init.RecentLogs(ctx, client, s.layout, 20))
 		}
 		return nil
 	})

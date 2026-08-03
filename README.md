@@ -3,7 +3,7 @@
 面向个人使用的轻量级 sing-box 管理面板。
 
 * 最多 10 个用户,支持多台 Linux VPS;
-* 节点只需 sing-box + systemd,无 Docker、无数据库、无常驻 Agent;
+* 节点只需 sing-box + systemd 或 OpenRC(Alpine 可用),无 Docker、无数据库、无常驻 Agent;
 * 节点内存低至 128MB 可用(Phase 0 已实测);
 * V1 支持 VLESS + REALITY + XTLS Vision,含用户级流量统计、额度限制与到期停用。
 

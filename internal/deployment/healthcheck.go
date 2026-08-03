@@ -16,27 +16,40 @@ import (
 	"github.com/litebox/litebox/internal/sshx"
 )
 
-// checkServiceActive 是健康检查第一步:systemd 认为服务在运行。
-func (d *Deployer) checkServiceActive(ctx context.Context, client *sshx.Client) (string, error) {
-	result, err := client.Run(ctx, sshx.NewCommand("systemctl", "is-active", d.layout.ServiceName))
+// checkServiceActive 是健康检查第一步:init 系统认为服务在运行。
+func (d *Deployer) checkServiceActive(ctx context.Context, client *sshx.Client, init InitSystem) (string, error) {
+	active, state, err := init.IsActive(ctx, client, d.layout)
 	if err != nil {
 		return "", err
 	}
-	state := strings.TrimSpace(result.Stdout)
-	if state != "active" {
+	if !active {
 		// 附上最近日志,否则排查时还要再连一次机器。
-		logs, _ := client.Run(ctx, sshx.NewCommand(
-			"journalctl", "-u", d.layout.ServiceName, "-n", "20", "--no-pager", "-o", "cat"))
-		return "", fmt.Errorf("服务状态为 %q,最近日志:\n%s", state, strings.TrimSpace(logs.Stdout))
+		logs := init.RecentLogs(ctx, client, d.layout, 20)
+		if logs == "" {
+			logs = "(取不到日志)"
+		}
+		return "", fmt.Errorf("服务状态为 %q,最近日志:\n%s", state, logs)
 	}
-	return "active", nil
+	return state, nil
+}
+
+// listeningScript 生成"某端口是否在监听"的判断脚本。
+//
+// 优先 ss、回落 netstat:ss 属于 iproute2,Alpine 这类最小镜像常常不装,
+// 而 busybox 自带 netstat。只用 ss 的话,那种节点上每次健康检查都会
+// 判定为"端口未监听",部署因此永远失败并回滚 —— 而服务其实是好的。
+//
+// 两者的输出格式都随版本变化,这里只做存在性判断,不解析字段。
+func listeningScript(port int) string {
+	return fmt.Sprintf(
+		`if command -v ss >/dev/null 2>&1; then ss -tln 2>/dev/null | grep -q ':%d '; `+
+			`else netstat -tln 2>/dev/null | grep -q ':%d '; fi && echo listening || echo missing`,
+		port, port)
 }
 
 // checkPortListening 是健康检查第二步:代理端口确实在监听。
 func (d *Deployer) checkPortListening(ctx context.Context, client *sshx.Client, port int) (string, error) {
-	// ss 的输出格式随版本变化,这里只做存在性判断而不解析字段。
-	script := fmt.Sprintf("ss -tln 2>/dev/null | grep -q ':%d ' && echo listening || echo missing", port)
-	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c", script))
+	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c", listeningScript(port)))
 	if err != nil {
 		return "", err
 	}
@@ -96,19 +109,51 @@ func (d *Deployer) checkVLESSDial(ctx context.Context, client *sshx.Client, req 
 		return "", err
 	}
 
-	banner, err := dialThroughProxy(ctx, client, probePort, req.SSHPort)
+	banner, err := dialThroughProxy(ctx, client, probePort, probeTargetPort(ctx, client, req.SSHPort))
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("用户 %s 拨测成功(经代理读到 %q)", probeUser.Code, banner), nil
 }
 
+// probeTargetPort 返回节点本机可连的 sshd 端口。
+//
+// 不能直接用面板连节点时填的那个 SSH 端口:NAT 小鸡上它是服务商映射出来的
+// 外部端口,节点自己的 127.0.0.1 上没有任何东西监听它。拿它当拨测目标会一律
+// 读到 EOF —— 而那看起来完全就是"VLESS 链路不通",于是一个健康的节点被判为
+// 部署失败并回滚,且每次重试都一样。
+//
+// sshd 会在会话环境里给出 "客户端IP 客户端端口 服务端IP 服务端端口",
+// 第四段就是节点本机真正监听的那个端口。取不到时回落到调用方给的值:
+// 直连节点上两者本来就相同。
+func probeTargetPort(ctx context.Context, client *sshx.Client, fallback int) int {
+	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c", `printf %s "$SSH_CONNECTION"`))
+	if err != nil {
+		return fallback
+	}
+	fields := strings.Fields(result.Stdout)
+	if len(fields) < 4 {
+		return fallback
+	}
+	port, err := strconv.Atoi(fields[3])
+	if err != nil || port < 1 || port > 65535 {
+		return fallback
+	}
+	return port
+}
+
 var errNoProbeUser = errors.New("配置中没有用户,无法进行 VLESS 拨测")
 
 // pickProbePort 在节点上找一个空闲的回环端口给探测客户端用。
 func (d *Deployer) pickProbePort(ctx context.Context, client *sshx.Client) (int, error) {
-	// 在 39000~39999 中挑一个当前没被监听的端口。
-	script := `for p in $(seq 39000 39050); do ss -tln 2>/dev/null | grep -q ":$p " || { echo $p; exit 0; }; done; exit 1`
+	// 在 39000~39050 中挑一个当前没被监听的端口。
+	// 同样要兼容没有 ss 的最小镜像,监听表只取一次以免每个端口都起一个进程。
+	script := `listen=$(if command -v ss >/dev/null 2>&1; then ss -tln 2>/dev/null; ` +
+		`else netstat -tln 2>/dev/null; fi)
+for p in $(seq 39000 39050); do
+  echo "$listen" | grep -q ":$p " || { echo $p; exit 0; }
+done
+exit 1`
 	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c", script))
 	if err != nil {
 		return 0, err
@@ -124,8 +169,10 @@ func (d *Deployer) pickProbePort(ctx context.Context, client *sshx.Client) (int,
 }
 
 func waitPortReady(ctx context.Context, client *sshx.Client, port int) error {
+	// busybox 的 sleep 支持小数,但为稳妥起见这里退到整秒轮询。
 	script := fmt.Sprintf(
-		`for i in $(seq 1 30); do ss -tln 2>/dev/null | grep -q ':%d ' && exit 0; sleep 0.2; done; exit 1`, port)
+		`for i in $(seq 1 15); do [ "$(%s)" = listening ] && exit 0; sleep 1; done; exit 1`,
+		listeningScript(port))
 	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c", script))
 	if err != nil {
 		return err

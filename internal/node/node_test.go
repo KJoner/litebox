@@ -329,7 +329,7 @@ CGO: disabled
 
 // 缺少 with_v2ray_api 的节点必须被判为不可用 —— 否则流量统计会静默失效。
 func TestProbeResultRequiresV2RayAPI(t *testing.T) {
-	usable := ProbeResult{HasV2RayAPI: true, SystemdVersion: "systemd 252"}
+	usable := ProbeResult{HasV2RayAPI: true, InitSystem: "systemd", InitVersion: "systemd 252"}
 	if !usable.Usable() {
 		t.Error("满足条件的探测结果应当可用")
 	}

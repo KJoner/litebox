@@ -12,7 +12,7 @@
 
 * 不引入 MySQL、PostgreSQL、Redis 或消息队列,只用 SQLite;
 * 不引入微服务,保持 Go 单体;
-* 不在节点运行常驻自研 Agent,节点只有 sing-box + systemd;
+* 不在节点运行常驻自研 Agent,节点只有 sing-box + init 系统(systemd 或 OpenRC);
 * 节点不依赖 Docker、数据库或 Node.js;
 * 不增加商业机场功能(注册、套餐、订单、支付、优惠券、邀请、工单);
 * 不以未来扩展为理由提前引入复杂框架。
@@ -93,6 +93,20 @@
   `singbox.NodeParams` 里只有 `ListenPort`,公网端口不属于节点配置;
 * 节点的握手目标不走通用的 `Store.Update`,必须经 `ApplyHandshakeDest`
   实测通过后写入,否则会绕过 8192 字节记录上限的校验;
+* **节点服务的一切操作必须经 `deployment.InitSystem`,不得直接写 `systemctl`**。
+  节点可能是 systemd,也可能是 OpenRC(Alpine 是 NAT 小鸡最常见的镜像,
+  正落在本项目瞄准的 128MB 区间)。init 系统在部署事务开头探测一次即可,
+  不要落库 —— 节点重装换系统后数据库里的值就是错的;
+* **OpenRC 脚本必须用 `supervisor="supervise-daemon"`**。默认的
+  start-stop-daemon 不会在进程退出后拉起它,而 128MB 机器上 OOM 是常态,
+  少了它节点崩一次就再也不会自己恢复(systemd 侧对应 `Restart=on-failure`);
+* **端口监听检查不得只依赖 `ss`**。ss 属于 iproute2,Alpine 这类最小镜像不装,
+  而 busybox 自带 netstat。只用 ss 会让那种节点每次健康检查都判定"端口未监听",
+  部署永远失败并回滚 —— 而服务其实是好的;
+* **VLESS 拨测的目标端口必须取自节点上的 `$SSH_CONNECTION` 第四段,
+  不能用节点记录里的 SSH 端口**。NAT 小鸡上后者是服务商映射的外部端口,
+  节点本机的 127.0.0.1 上没有东西监听它,拨测一律读到 EOF ——
+  看起来完全就是"VLESS 链路不通",健康节点因此被判失败并回滚;
 * **节点 root 口令只用于把面板公钥装进节点的那一次连接,绝不落库、
   不写日志、不进审计详情**;面板已经持有节点 root 权限,再存一份口令
   只会放大爆炸半径。持久访问一律用面板专用密钥(`settings.KeyManager`,

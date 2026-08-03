@@ -88,6 +88,20 @@ async function doTestSSH() {
   }
 }
 
+async function doInstall() {
+  running.value = '安装'
+  try {
+    const r = await api.installNode(props.nodeId!)
+    message.success(`sing-box 与 ${r.init_system} 服务定义已就绪`)
+    emit('changed')
+    if (props.nodeId !== null) await load(props.nodeId)
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '安装失败')
+  } finally {
+    running.value = ''
+  }
+}
+
 async function doProbe() {
   running.value = '探测'
   try {
@@ -214,7 +228,7 @@ function confirmUninstall() {
   Modal.confirm({
     title: '卸载节点上的 sing-box?',
     content:
-      '会停止并删除 litebox-singbox 服务、systemd 单元与 /opt/litebox 目录,' +
+      '会停止并删除 litebox-singbox 服务、它的 systemd 单元或 OpenRC 脚本,以及 /opt/litebox 目录,' +
       '不触碰机器上的其他服务。用户会立刻断线。节点记录保留,重新「安装」「部署」即可恢复。',
     okText: '卸载',
     okType: 'danger',
@@ -335,7 +349,7 @@ function formatUptime(seconds: number): string {
             <a-button size="small" @click="doProbe">探测</a-button>
             <a-button
               size="small"
-              @click="run('安装', () => api.installNode(nodeId!), 'sing-box 与 systemd 单元已就绪')"
+              @click="doInstall"
             >
               安装 sing-box
             </a-button>
@@ -430,7 +444,13 @@ function formatUptime(seconds: number): string {
           <a-descriptions-item label="系统">{{ probe.os_name }}</a-descriptions-item>
           <a-descriptions-item label="内核">{{ probe.kernel }}</a-descriptions-item>
           <a-descriptions-item label="内存">{{ probe.mem_total_mb }} MB</a-descriptions-item>
-          <a-descriptions-item label="systemd">{{ probe.systemd_version }}</a-descriptions-item>
+          <a-descriptions-item label="init 系统">
+            <template v-if="probe.init_system">
+              {{ probe.init_system }}
+              <span class="hint">{{ probe.init_version }}</span>
+            </template>
+            <span v-else class="hint">未检测到</span>
+          </a-descriptions-item>
           <a-descriptions-item label="含 v2ray_api" :span="2">
             {{ probe.has_v2ray_api ? '是' : '否 —— 流量统计将无法工作' }}
           </a-descriptions-item>
