@@ -15,6 +15,7 @@ import (
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/traffic"
@@ -33,6 +34,9 @@ type Server struct {
 	subLimiter   *subRateLimiter
 	traffic      *traffic.Querier
 	scheduler    *traffic.Scheduler
+	metrics      *node.MetricsStore
+	monitor      *node.Monitor
+	settings     *settings.Store
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
 	logger       *slog.Logger
@@ -56,6 +60,9 @@ type Options struct {
 	Subs      *subscription.Service
 	Traffic   *traffic.Querier
 	Scheduler *traffic.Scheduler
+	Metrics   *node.MetricsStore
+	Monitor   *node.Monitor
+	Settings  *settings.Store
 	Pool      *sshx.Pool
 	Binaries  node.BinaryProvider
 	Logger    *slog.Logger
@@ -76,6 +83,9 @@ func NewServer(opts Options) *Server {
 		subLimiter:   newSubRateLimiter(30, time.Minute),
 		traffic:      opts.Traffic,
 		scheduler:    opts.Scheduler,
+		metrics:      opts.Metrics,
+		monitor:      opts.Monitor,
+		settings:     opts.Settings,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
 		logger:       opts.Logger,
@@ -118,7 +128,10 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/probe", s.handleProbeNode)
 		authed.HandleFunc("POST /api/nodes/{id}/dest-check", longOperation(s.handleCheckNodeDest))
 		authed.HandleFunc("POST /api/nodes/{id}/dest-scan", longOperation(s.handleScanNodeDests))
+		authed.HandleFunc("POST /api/nodes/{id}/bootstrap", longOperation(s.handleBootstrapNode))
 		authed.HandleFunc("POST /api/nodes/{id}/install", longOperation(s.handleInstallNode))
+		authed.HandleFunc("POST /api/nodes/{id}/uninstall", longOperation(s.handleUninstallNode))
+		authed.HandleFunc("GET /api/panel-key", s.handlePanelPublicKey)
 		authed.HandleFunc("POST /api/nodes/{id}/deploy", longOperation(s.handleDeployNode))
 		authed.HandleFunc("POST /api/nodes/{id}/restart", longOperation(s.handleRestartNode))
 		authed.HandleFunc("POST /api/nodes/{id}/reset-host-key", s.handleResetNodeHostKey)
@@ -148,6 +161,18 @@ func (s *Server) Handler() http.Handler {
 	if s.scheduler != nil {
 		authed.HandleFunc("POST /api/nodes/{id}/sync-traffic", longOperation(s.handleSyncNodeTraffic))
 		authed.HandleFunc("GET /api/traffic/status", s.handleTrafficStatus)
+	}
+	if s.metrics != nil {
+		authed.HandleFunc("GET /api/metrics/nodes-latest", s.handleNodeMetricsLatest)
+		authed.HandleFunc("GET /api/nodes/{id}/metrics", s.handleNodeMetricsHistory)
+	}
+	if s.monitor != nil {
+		authed.HandleFunc("POST /api/nodes/{id}/collect-metrics", longOperation(s.handleCollectNodeMetrics))
+		authed.HandleFunc("GET /api/metrics/status", s.handleMonitorStatus)
+	}
+	if s.settings != nil {
+		authed.HandleFunc("GET /api/settings", s.handleGetSettings)
+		authed.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	}
 	mux.Handle("/api/", s.requireAuth(authed))
 

@@ -7,6 +7,7 @@
 //	litebox backup           生成一份 WAL 安全的数据库备份
 //	litebox check            数据库完整性与外键自检
 //	litebox genkey           生成主密钥
+//	litebox ssh-key          打印面板专用的节点访问公钥
 //	litebox reset-password   重置管理员密码
 //	litebox version          打印版本
 package main
@@ -33,6 +34,7 @@ import (
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/traffic"
@@ -74,11 +76,50 @@ func run() error {
 		return cmdBackup(args)
 	case "check":
 		return cmdCheck(args)
+	case "ssh-key":
+		return cmdSSHKey(args)
 	case "serve":
 		return cmdServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check genkey reset-password version)", command)
+		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check genkey ssh-key reset-password version)", command)
 	}
+}
+
+// cmdSSHKey 打印面板专用的节点访问公钥,不存在时生成一把。
+//
+// 装机脚本用它把公钥展示给管理员:节点接入首选让面板自己用一次性口令去装,
+// 但也有些机器只允许密钥登录,那就得先手工把这行贴进节点的 authorized_keys。
+func cmdSSHKey(args []string) error {
+	fs := flag.NewFlagSet("ssh-key", flag.ExitOnError)
+	rotate := fs.Bool("rotate", false, "重新生成密钥(旧公钥在所有节点上立即失效)")
+	cfg, _, db, err := setup(fs, args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	cipher, err := crypto.NewCipher(cfg.Security.MasterKey)
+	if err != nil {
+		return fmt.Errorf("主密钥校验失败: %w", err)
+	}
+	mgr := settings.NewKeyManager(settings.NewStore(db, cipher))
+
+	var key settings.PanelKey
+	if *rotate {
+		key, err = mgr.Rotate(context.Background())
+	} else {
+		key, err = mgr.Ensure(context.Background())
+	}
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(key.PublicKey)
+	if *rotate {
+		fmt.Fprintln(os.Stderr,
+			"\n密钥已轮换。旧公钥在所有节点上立即失效,必须逐个节点重新引导,否则面板连不上它们。")
+	}
+	return nil
 }
 
 func cmdGenKey() error {
@@ -306,7 +347,11 @@ func cmdServe(args []string) error {
 	nodeStore := node.NewStore(db, cipher)
 	layout := deployment.DefaultLayout()
 
-	pool := sshx.NewPool(node.NewResolver(nodeStore, logger), logger)
+	// 面板专用密钥懒生成:首次需要连节点时才建,升级上来的旧库不会平白多出一把。
+	settingsStore := settings.NewStore(db, cipher)
+	panelKeys := settings.NewKeyManager(settingsStore)
+
+	pool := sshx.NewPool(node.NewResolver(nodeStore, panelKeys, logger), logger)
 	defer pool.CloseAll()
 
 	// 流量采集经 SSH 通道读取节点上只监听回环的 V2Ray API。
@@ -330,13 +375,16 @@ func cmdServe(args []string) error {
 	})
 	userStore := user.NewStore(db, cipher)
 	nodeService := node.NewService(node.ServiceOptions{
-		Store:       nodeStore,
-		Pool:        pool,
-		Deployer:    deployer,
-		DeployStore: deployment.NewStore(db),
-		Users:       userStore,
-		Layout:      layout,
-		Logger:      logger,
+		Store:            nodeStore,
+		Pool:             pool,
+		Deployer:         deployer,
+		DeployStore:      deployment.NewStore(db),
+		Users:            userStore,
+		Keys:             panelKeys,
+		Layout:           layout,
+		Logger:           logger,
+		BootstrapKeyDirs: cfg.Node.BootstrapKeyDirs,
+		SSHDialTimeout:   cfg.Node.SSHDialTimeout,
 	})
 
 	// 用户变更不直接部署,而是标脏后由协调器合并 ——
@@ -361,6 +409,22 @@ func cmdServe(args []string) error {
 	})
 	go scheduler.Run(ctx)
 
+	// 节点资源监控。间隔为负表示关闭 —— 极端受限的节点上宁可不采。
+	metricsStore := node.NewMetricsStore(db)
+	var monitor *node.Monitor
+	if cfg.Node.MetricsInterval >= 0 {
+		monitor = node.NewMonitor(node.MonitorOptions{
+			Service:   nodeService,
+			Store:     metricsStore,
+			Logger:    logger,
+			Interval:  cfg.Node.MetricsInterval,
+			Retention: cfg.Node.MetricsRetention,
+		})
+		go monitor.Run(ctx)
+	} else {
+		logger.Info("节点资源监控已关闭(node.metrics_interval 为负)")
+	}
+
 	server := httpapi.NewServer(httpapi.Options{
 		Config:    cfg,
 		DB:        db,
@@ -371,6 +435,9 @@ func cmdServe(args []string) error {
 		Subs:      subscription.NewService(db, userStore, cipher, cfg.Subscription.ClientMixedPort),
 		Traffic:   traffic.NewQuerier(db),
 		Scheduler: scheduler,
+		Metrics:   metricsStore,
+		Monitor:   monitor,
+		Settings:  settingsStore,
 		Pool:      pool,
 		Binaries:  node.NewDirBinaryProvider(cfg.Node.BinaryDir),
 		Logger:    logger,

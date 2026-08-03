@@ -6,7 +6,8 @@
 http:
   # 默认只监听回环,由 Nginx 反代对外提供服务。
   listen: "127.0.0.1:8080"
-  # 用于生成订阅地址,必须与实际对外域名一致。
+  # 生成订阅地址用的站点根。这只是首次启动的默认值 ——
+  # 面板启动后可以在「设置 → 订阅地址」里改,改完立即生效,以数据库里的为准。
   base_url: "https://panel.example.com"
   # 经 HTTPS 反代时必须为 true;本地 HTTP 调试时置 false,否则浏览器不保存 Cookie。
   secure_cookie: true
@@ -40,6 +41,19 @@ node:
   deploy_debounce: 4s
   # 持续不断的变更不能把部署无限推迟,这是兜底上限。
   deploy_max_delay: 30s
+  # 节点资源采集(CPU、内存、网速、磁盘)间隔。
+  #
+  # 刻意比流量同步宽得多:资源指标只用来看趋势,而每次采集要占用节点连接锁
+  # 一秒多,采得越勤越容易和部署、流量同步抢锁,对 128MB 的小机器不友好。
+  # 置为负数彻底关闭采集。
+  metrics_interval: 5m
+  # 采样保留期。这不是计费数据,丢了不影响任何结算,过期即删。
+  metrics_retention: 168h
+  # 新增节点时若未填节点密码,面板从这些目录里找一把能登录节点的私钥,
+  # 用它把面板专用公钥装进节点。留空则用默认清单:
+  # 面板进程的 $HOME/.ssh 与 /etc/litebox/keys。
+  # 注意面板以 litebox 用户运行,读不到 /root/.ssh。
+  bootstrap_key_dirs: []
 
 traffic:
   # 流量同步周期。

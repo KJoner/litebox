@@ -22,7 +22,9 @@ const actionNames: Record<string, string> = {
   'node.disable': '禁用节点',
   'node.probe': '探测节点',
   'node.dest_check': '检测握手目标',
+  'node.bootstrap': '引导节点接入',
   'node.install': '安装 sing-box',
+  'node.uninstall': '卸载节点服务',
   'node.deploy': '部署节点',
   'node.restart': '重启节点服务',
   'node.reset_host_key': '重置主机密钥',
@@ -35,6 +37,7 @@ const actionNames: Record<string, string> = {
   'user.regenerate_sub_token': '重新生成订阅地址',
   'user.delete': '删除用户',
   'traffic.sync': '同步流量',
+  'settings.update': '修改面板设置',
 }
 
 const columns = [

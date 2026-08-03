@@ -1,36 +1,57 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type Node } from '@/api/client'
+import { api, ApiError, type Node, type NodeMetrics } from '@/api/client'
 import { formatBytes, formatRelative } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import NodeDetailDrawer from '@/components/NodeDetailDrawer.vue'
 
 const nodes = ref<Node[]>([])
 const todayTraffic = ref<Record<number, number>>({})
+const metrics = ref<Record<number, NodeMetrics>>({})
 const loading = ref(false)
 const detailId = ref<number | null>(null)
 
 const columns = [
-  { title: '节点', key: 'name', width: 200 },
+  { title: '节点', key: 'name', width: 210 },
   { title: '状态', key: 'status', width: 110 },
-  { title: 'sing-box', key: 'version', width: 200 },
-  { title: '今日流量', key: 'traffic', width: 120 },
-  { title: '最后心跳', key: 'heartbeat', width: 130 },
+  { title: 'sing-box', key: 'version', width: 170 },
+  { title: '资源', key: 'resource', width: 150 },
+  { title: '网速', key: 'net', width: 130 },
+  { title: '今日流量', key: 'traffic', width: 110 },
+  { title: '最后心跳', key: 'heartbeat', width: 120 },
   { title: '操作', key: 'actions', width: 260 },
 ]
 
 async function load() {
   loading.value = true
   try {
-    const [n, t] = await Promise.all([api.nodes(), api.nodesTodayTraffic()])
+    // 资源采样是可选能力(可以在配置里关掉),取不到不能拖垮整个列表。
+    const [n, t, m] = await Promise.all([
+      api.nodes(),
+      api.nodesTodayTraffic(),
+      api.nodeMetricsLatest().catch(() => ({ items: [] as NodeMetrics[] })),
+    ])
     nodes.value = n.items
     todayTraffic.value = Object.fromEntries(t.items.map((x) => [x.node_id, x.bytes]))
+    metrics.value = Object.fromEntries(m.items.map((x) => [x.node_id, x]))
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载节点列表失败')
   } finally {
     loading.value = false
   }
+}
+
+function memPercent(m: NodeMetrics): number {
+  return m.mem_total_kb > 0 ? (m.mem_used_kb / m.mem_total_kb) * 100 : 0
+}
+
+// 使用率的着色阈值。绿到 70%、黄到 90%、再上红 —— 128MB 的小机器上,
+// 内存曲线本来就贴着高位走,阈值定得太低会天天报警,反而没人看。
+function usageColor(percent: number): string {
+  if (percent >= 90) return '#cf1322'
+  if (percent >= 70) return '#d46b08'
+  return '#389e0d'
 }
 
 // ---------- 新增 / 编辑节点 ----------
@@ -39,12 +60,20 @@ const formOpen = ref(false)
 const submitting = ref(false)
 // 非 null 表示编辑该节点,null 表示新增。
 const editingId = ref<number | null>(null)
+// 节点接入方式。面板持有一把专用密钥,这三种方式都只是"怎么把它的公钥装进节点"。
+//   password  —— 填节点口令,面板用一次,不保存;
+//   local-key —— 用主控本机 ~/.ssh 里的私钥去装;
+//   manual    —— 管理员已经自己装好了公钥,或者要给这个节点单配一把私钥。
+type AccessMode = 'password' | 'local-key' | 'manual'
+const accessMode = ref<AccessMode>('password')
+
 const form = reactive({
   name: '',
   host: '',
   ssh_port: 22,
   ssh_user: 'root',
   ssh_key: '',
+  root_password: '',
   proxy_port: 443,
   listen_port: 0,
   api_port: 28080,
@@ -52,12 +81,14 @@ const form = reactive({
 
 function openCreate() {
   editingId.value = null
+  accessMode.value = 'password'
   Object.assign(form, {
     name: '',
     host: '',
     ssh_port: 22,
     ssh_user: 'root',
     ssh_key: '',
+    root_password: '',
     proxy_port: 443,
     listen_port: 0,
     api_port: 28080,
@@ -67,6 +98,7 @@ function openCreate() {
 
 function openEdit(n: Node) {
   editingId.value = n.id
+  accessMode.value = 'manual'
   Object.assign(form, {
     name: n.name,
     host: n.host,
@@ -74,6 +106,7 @@ function openEdit(n: Node) {
     ssh_user: n.ssh_user,
     // 私钥不回显,留空即保持原值。
     ssh_key: '',
+    root_password: '',
     proxy_port: n.proxy_port,
     // 与公网端口相同时按"未配置转发"展示,免得看起来像特意填了两个一样的值。
     listen_port: n.listen_port === n.proxy_port ? 0 : n.listen_port,
@@ -86,11 +119,30 @@ async function submit() {
   submitting.value = true
   try {
     if (editingId.value === null) {
-      const node = await api.createNode({ ...form })
-      message.success('节点已创建,请依次执行「探测」「安装」')
+      // 接入方式决定后端走哪条引导路径:只有 manual 会带私钥,
+      // 也只有 password 会带口令,不能把两者一起发过去。
+      const payload: Record<string, unknown> = {
+        ...form,
+        ssh_key: accessMode.value === 'manual' ? form.ssh_key : '',
+        root_password: accessMode.value === 'password' ? form.root_password : '',
+      }
+      const result = await api.createNode(payload)
       formOpen.value = false
+      // 口令只在这一次请求里用到,立刻从内存里抹掉,免得留在表单状态里。
+      form.root_password = ''
+      form.ssh_key = ''
       await load()
-      detailId.value = node.id
+      if (result.bootstrap_error) {
+        Modal.error({
+          title: '节点已创建,但公钥没能装上去',
+          content: `${result.bootstrap_error}\n\n节点记录已保留,处理好之后可以在节点详情里点「重新引导」重试。`,
+          width: 620,
+          okText: '知道了',
+        })
+      } else {
+        message.success('节点已创建,请依次执行「探测」「安装」')
+      }
+      detailId.value = result.node.id
     } else {
       // 先取出 id:确认框是异步的,期间 editingId 可能已被下一次开表单改掉。
       const id = editingId.value
@@ -186,7 +238,7 @@ onMounted(load)
       row-key="id"
       size="middle"
       :pagination="false"
-      :scroll="{ x: 980 }"
+      :scroll="{ x: 1260 }"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -209,6 +261,39 @@ onMounted(load)
           <template v-else>
             <div class="version">{{ record.singbox_version }}</div>
             <div class="arch">{{ record.arch }}</div>
+          </template>
+        </template>
+
+        <template v-else-if="column.key === 'resource'">
+          <span v-if="!metrics[record.id]" class="muted">—</span>
+          <template v-else>
+            <div class="metric">
+              <span class="metric-label">CPU</span>
+              <span
+                class="tabular"
+                :style="{ color: usageColor(metrics[record.id].cpu_percent) }"
+              >
+                {{ metrics[record.id].cpu_percent.toFixed(0) }}%
+              </span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">内存</span>
+              <span class="tabular" :style="{ color: usageColor(memPercent(metrics[record.id])) }">
+                {{ memPercent(metrics[record.id]).toFixed(0) }}%
+              </span>
+              <span class="metric-sub">
+                {{ formatBytes(metrics[record.id].mem_used_kb * 1024) }} /
+                {{ formatBytes(metrics[record.id].mem_total_kb * 1024) }}
+              </span>
+            </div>
+          </template>
+        </template>
+
+        <template v-else-if="column.key === 'net'">
+          <span v-if="!metrics[record.id]" class="muted">—</span>
+          <template v-else>
+            <div class="metric tabular">↓ {{ formatBytes(metrics[record.id].net_rx_bps) }}/s</div>
+            <div class="metric tabular">↑ {{ formatBytes(metrics[record.id].net_tx_bps) }}/s</div>
           </template>
         </template>
 
@@ -266,14 +351,55 @@ onMounted(load)
           </a-form-item>
         </a-col>
       </a-row>
+      <template v-if="editingId === null">
+        <a-form-item label="接入方式" extra="面板有一把自己的专用密钥,这里选的是怎么把它的公钥装进节点">
+          <a-radio-group v-model:value="accessMode" button-style="solid">
+            <a-radio-button value="password">节点密码</a-radio-button>
+            <a-radio-button value="local-key">主控本机私钥</a-radio-button>
+            <a-radio-button value="manual">手工指定私钥</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+
+        <a-form-item
+          v-if="accessMode === 'password'"
+          label="节点登录密码"
+          required
+          extra="只用于把面板公钥装进节点的那一次连接,用完即弃,不会保存,也不会写进日志"
+        >
+          <a-input-password
+            v-model:value="form.root_password"
+            autocomplete="new-password"
+            placeholder="该节点 root 的密码"
+          />
+        </a-form-item>
+
+        <a-alert
+          v-else-if="accessMode === 'local-key'"
+          type="info"
+          show-icon
+          class="mode-hint"
+          message="用主控本机的私钥去装公钥"
+          description="面板会在自己进程的 ~/.ssh 与 /etc/litebox/keys 下找一把能登录该节点的私钥。找不到或登录不上时,改用「节点密码」。"
+        />
+
+        <a-form-item
+          v-else
+          label="SSH 私钥"
+          required
+          extra="给这个节点单配一把私钥,用主密钥加密后存储,不会再次显示"
+        >
+          <a-textarea
+            v-model:value="form.ssh_key"
+            :rows="5"
+            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+          />
+        </a-form-item>
+      </template>
+
       <a-form-item
+        v-else
         label="SSH 私钥"
-        :required="editingId === null"
-        :extra="
-          editingId === null
-            ? '用主密钥加密后存储,不会再次显示'
-            : '留空表示保持原私钥不变;填入新私钥即完成轮换'
-        "
+        extra="留空表示保持不变(用面板专用密钥的节点请一直留空);填入新私钥则给这个节点单独换一把"
       >
         <a-textarea
           v-model:value="form.ssh_key"
@@ -356,6 +482,26 @@ onMounted(load)
 .busy {
   color: #1677ff;
   font-size: 12px;
+}
+
+.metric {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.metric-label {
+  display: inline-block;
+  width: 30px;
+  color: rgb(0 0 0 / 45%);
+}
+
+.metric-sub {
+  margin-left: 6px;
+  color: rgb(0 0 0 / 45%);
+}
+
+.mode-hint {
+  margin-bottom: 24px;
 }
 
 .port-hint {

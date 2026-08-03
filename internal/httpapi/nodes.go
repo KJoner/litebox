@@ -20,6 +20,8 @@ const (
 	actionNodeProbe     = "node.probe"
 	actionNodeDestCheck = "node.dest_check"
 	actionNodeInstall   = "node.install"
+	actionNodeUninstall = "node.uninstall"
+	actionNodeBootstrap = "node.bootstrap"
 	actionNodeDeploy    = "node.deploy"
 	actionNodeRestart   = "node.restart"
 	actionNodeResetKey  = "node.reset_host_key"
@@ -89,6 +91,9 @@ type createNodeRequest struct {
 	APIPort         int    `json:"api_port"`
 	RealityDest     string `json:"reality_dest"`
 	RealityDestPort int    `json:"reality_dest_port"`
+	// RootPassword 是节点的登录口令,只用于把面板公钥装进节点的那一次连接,
+	// 用完即弃,不落库也不写日志。留空则改用主控本机上的私钥去装。
+	RootPassword string `json:"root_password"`
 }
 
 func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +131,77 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		TargetType: "node", TargetID: strconv.FormatInt(n.ID, 10),
 		Detail: "新增节点 " + n.Name, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusCreated, n)
+
+	// 没有单独提供私钥时,立即用一次性口令或本机私钥把面板公钥装进节点。
+	//
+	// 引导失败不回滚节点记录:失败原因几乎都是地址、口令、sshd 配置这类
+	// 需要人来看一眼的问题,把记录删掉只会让管理员重填一遍表单。
+	// 节点留在 PENDING,详情页可以单独重试引导。
+	response := map[string]any{"node": n}
+	if req.SSHKey == "" {
+		result, bootErr := s.nodes.Bootstrap(r.Context(), n.ID, req.RootPassword)
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionNodeBootstrap,
+			TargetType: "node", TargetID: strconv.FormatInt(n.ID, 10),
+			Detail:   bootstrapDetail(result, bootErr),
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: bootErr == nil,
+		})
+		response["bootstrap"] = result
+		if bootErr != nil {
+			response["bootstrap_error"] = bootErr.Error()
+		}
+	}
+	writeJSON(w, http.StatusCreated, response)
+}
+
+// bootstrapDetail 生成审计详情。绝不能把口令写进去 —— 审计日志会被导出、备份。
+func bootstrapDetail(result node.BootstrapResult, err error) string {
+	if err != nil {
+		return "引导失败:" + err.Error()
+	}
+	return "认证方式 " + result.Method + ";" + result.Detail
+}
+
+type bootstrapNodeRequest struct {
+	RootPassword string `json:"root_password"`
+}
+
+// handleBootstrapNode 单独重试节点接入引导。
+func (s *Server) handleBootstrapNode(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req bootstrapNodeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	admin := adminFromContext(r.Context())
+
+	result, err := s.nodes.Bootstrap(r.Context(), id, req.RootPassword)
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionNodeBootstrap,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail:   bootstrapDetail(result, err),
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
+	})
+	if err != nil {
+		s.writeNodeError(w, err, "引导节点失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handlePanelPublicKey 返回面板专用公钥,供管理员手工安装到节点。
+func (s *Server) handlePanelPublicKey(w http.ResponseWriter, r *http.Request) {
+	key, err := s.nodes.PanelPublicKey(r.Context())
+	if err != nil {
+		s.logger.Error("读取面板公钥失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"public_key": key})
 }
 
 type updateNodeRequest struct {
@@ -380,6 +455,33 @@ func (s *Server) handleInstallNode(w http.ResponseWriter, r *http.Request) {
 		Detail: result.Detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleUninstallNode 卸载节点上的 LiteBox 托管服务。
+//
+// 只动 litebox- 前缀的单元与 /opt/litebox 目录。节点记录本身保留 ——
+// 卸载和"不再管理这台机器"是两件事,后者请删除节点。
+func (s *Server) handleUninstallNode(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	admin := adminFromContext(r.Context())
+
+	err := s.nodes.Uninstall(r.Context(), id)
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionNodeUninstall,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail:   "停止并移除节点上的 sing-box 服务与 /opt/litebox",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
+	})
+	if err != nil {
+		s.writeNodeError(w, err, "卸载节点服务失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "节点上的 sing-box 服务与配置已移除,节点记录仍保留",
+	})
 }
 
 func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {

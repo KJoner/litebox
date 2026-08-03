@@ -122,7 +122,6 @@ func TestCreateNodeRejectsInvalidParams(t *testing.T) {
 	cases := map[string]func(*CreateParams){
 		"名称为空":       func(p *CreateParams) { p.Name = "" },
 		"主机为空":       func(p *CreateParams) { p.Host = "" },
-		"私钥为空":       func(p *CreateParams) { p.SSHKey = "" },
 		"代理端口为零":     func(p *CreateParams) { p.ProxyPort = 0 },
 		"代理端口超范围":    func(p *CreateParams) { p.ProxyPort = 99999 },
 		"代理与API端口相同": func(p *CreateParams) { p.APIPort = p.ProxyPort },
@@ -592,5 +591,120 @@ func TestUpdateNodeReturnsEmptyChangesNotNil(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"changes":[]`) {
 		t.Errorf("序列化结果 = %s", body)
+	}
+}
+
+// 私钥留空是新节点的常态:它表示"用面板专用密钥",
+// 由 Bootstrap 把面板公钥装进节点。留空必须真的存空串 ——
+// 存成"加密后的空串"就不为空了,读取侧会把它当成一把解不开的私钥。
+func TestCreateNodeAllowsEmptySSHKey(t *testing.T) {
+	store, db := newTestStore(t)
+	p := defaultCreateParams()
+	p.SSHKey = ""
+
+	n, err := store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatalf("私钥留空应当允许: %v", err)
+	}
+	if n.SSHKey != "" {
+		t.Errorf("读回的私钥应为空,得到 %q", n.SSHKey)
+	}
+
+	var stored string
+	if err := db.QueryRow(
+		`SELECT ssh_key_encrypted FROM nodes WHERE id = ?`, n.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "" {
+		t.Errorf("空私钥应当存空串而不是密文,得到 %q", stored)
+	}
+}
+
+func TestParseMetrics(t *testing.T) {
+	out := `cpu_total_delta 1000
+cpu_idle_delta 750
+net_rx_delta 2048
+net_tx_delta 1024
+mem_total 2048000
+mem_available 1024000
+load1 0.42
+uptime 86400
+disk_total 20971520
+disk_used 5242880
+`
+	m, err := parseMetrics(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.CPUPercent != 25 {
+		t.Errorf("CPU = %v,应为 25", m.CPUPercent)
+	}
+	// 用 MemAvailable 而不是 MemTotal-MemFree:后者把页缓存算成已用,
+	// 小内存机器上会常年显示接近满载。
+	if m.MemUsedKB != 1024000 {
+		t.Errorf("已用内存 = %d", m.MemUsedKB)
+	}
+	if m.MemPercent() != 50 {
+		t.Errorf("内存占比 = %v", m.MemPercent())
+	}
+	if m.NetRxBps != 2048 || m.NetTxBps != 1024 {
+		t.Errorf("网速 = %d/%d", m.NetRxBps, m.NetTxBps)
+	}
+	if m.Load1 != 0.42 || m.UptimeSeconds != 86400 {
+		t.Errorf("负载/uptime = %v/%d", m.Load1, m.UptimeSeconds)
+	}
+	if m.DiskUsedKB != 5242880 {
+		t.Errorf("磁盘已用 = %d", m.DiskUsedKB)
+	}
+}
+
+// 计数器回绕、网卡重置、CPU 采样间隔为零时不能产出荒谬的数值:
+// 一个假的 GB/s 尖峰会把整张趋势图压扁,真实波动全看不见了。
+func TestParseMetricsClampsAbnormalDeltas(t *testing.T) {
+	m, err := parseMetrics(`cpu_total_delta 0
+cpu_idle_delta 0
+net_rx_delta -999999
+net_tx_delta -1
+mem_total 1024
+mem_available 512
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.CPUPercent != 0 {
+		t.Errorf("采样间隔为零时 CPU 应为 0,得到 %v", m.CPUPercent)
+	}
+	if m.NetRxBps != 0 || m.NetTxBps != 0 {
+		t.Errorf("负增量应归零,得到 %d/%d", m.NetRxBps, m.NetTxBps)
+	}
+	// 内存总量为零时不能除零。
+	if (Metrics{}).MemPercent() != 0 {
+		t.Error("空采样的内存占比应为 0")
+	}
+}
+
+func TestParseMetricsRejectsGarbage(t *testing.T) {
+	if _, err := parseMetrics("sh: awk: not found\n"); err == nil {
+		t.Error("无法解析的输出应当报错,而不是静默返回全零采样")
+	}
+}
+
+// 同一把公钥换个注释仍然是同一把,不能重复追加 ——
+// 每次引导都追加一行会让 authorized_keys 无限膨胀。
+func TestContainsAuthorizedKeyIgnoresComment(t *testing.T) {
+	const body = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample"
+	existing := []byte("ssh-rsa AAAAB3other other@host\n" + body + " some-other-comment\n")
+
+	if !containsAuthorizedKey(existing, body+" litebox-panel") {
+		t.Error("同一把密钥换注释后应被识别为已存在")
+	}
+	if containsAuthorizedKey(existing, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIdifferent litebox-panel") {
+		t.Error("不同的密钥被误判为已存在")
+	}
+	if containsAuthorizedKey(nil, body+" litebox-panel") {
+		t.Error("空文件里不应找到任何密钥")
+	}
+	if containsAuthorizedKey(existing, "格式不对") {
+		t.Error("非法公钥不应匹配到任何行")
 	}
 }

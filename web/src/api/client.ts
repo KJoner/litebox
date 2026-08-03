@@ -154,6 +154,48 @@ export interface Node {
   updated_at: string
 }
 
+export interface NodeMetrics {
+  node_id: number
+  cpu_percent: number
+  mem_total_kb: number
+  mem_used_kb: number
+  net_rx_bps: number
+  net_tx_bps: number
+  load1: number
+  uptime_seconds: number
+  disk_total_kb: number
+  disk_used_kb: number
+  collected_at: string
+}
+
+export interface MonitorStatus {
+  interval_seconds: number
+  retention_hours: number
+  last_run_at: string
+  errors: Record<number, string>
+}
+
+export interface BootstrapResult {
+  node_id: number
+  /** password 或 local-key */
+  method: string
+  already_present: boolean
+  authorized_keys_path: string
+  detail: string
+}
+
+export interface CreateNodeResult {
+  node: Node
+  bootstrap?: BootstrapResult
+  bootstrap_error?: string
+}
+
+export interface PanelSettings {
+  subscription_base_url: string
+  config_base_url: string
+  panel_public_key: string
+}
+
 export interface NodeUpdateEffect {
   /** 连接参数变了,面板已丢弃该节点的 SSH 长连接 */
   ssh_changed: boolean
@@ -327,7 +369,15 @@ export const api = {
   nodes: () => request<{ items: Node[] }>('/api/nodes'),
   node: (id: number) => request<Node>(`/api/nodes/${id}`),
   createNode: (body: Record<string, unknown>) =>
-    request<Node>('/api/nodes', { method: 'POST', body }),
+    request<CreateNodeResult>('/api/nodes', { method: 'POST', body }),
+  bootstrapNode: (id: number, rootPassword: string) =>
+    request<BootstrapResult>(`/api/nodes/${id}/bootstrap`, {
+      method: 'POST',
+      body: { root_password: rootPassword },
+    }),
+  uninstallNode: (id: number) =>
+    request<{ message: string }>(`/api/nodes/${id}/uninstall`, { method: 'POST' }),
+  panelKey: () => request<{ public_key: string }>('/api/panel-key'),
   updateNode: (id: number, body: Record<string, unknown>) =>
     request<{ node: Node; effect: NodeUpdateEffect }>(`/api/nodes/${id}`, { method: 'PUT', body }),
   deleteNode: (id: number) =>
@@ -371,6 +421,21 @@ export const api = {
   syncNodeTraffic: (id: number) =>
     request<SyncResult>(`/api/nodes/${id}/sync-traffic`, { method: 'POST' }),
   trafficStatus: () => request<TrafficStatus>('/api/traffic/status'),
+
+  // 节点资源监控
+  nodeMetricsLatest: () => request<{ items: NodeMetrics[] }>('/api/metrics/nodes-latest'),
+  nodeMetricsHistory: (id: number, hours = 6) =>
+    request<{ items: NodeMetrics[]; hours: number }>(`/api/nodes/${id}/metrics`, {
+      query: { hours },
+    }),
+  collectNodeMetrics: (id: number) =>
+    request<NodeMetrics>(`/api/nodes/${id}/collect-metrics`, { method: 'POST' }),
+  monitorStatus: () => request<MonitorStatus>('/api/metrics/status'),
+
+  // 面板设置
+  settings: () => request<PanelSettings>('/api/settings'),
+  updateSettings: (body: Record<string, unknown>) =>
+    request<PanelSettings>('/api/settings', { method: 'PUT', body }),
   nodesTodayTraffic: () =>
     request<{ items: { node_id: number; bytes: number }[] }>('/api/traffic/nodes-today'),
 }

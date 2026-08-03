@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -39,14 +40,26 @@ func toResponse(u *user.User) userResponse {
 	return userResponse{User: u, UsedTotal: u.UsedTotal()}
 }
 
-func (s *Server) toDetailResponse(u *user.User) userResponse {
-	r := toResponse(u)
-	r.UUID = u.UUID
-	r.SubToken = u.SubToken
+// toDetailResponse 组装含敏感字段的用户详情。
+//
+// 订阅地址的站点根优先取页面上设置的那份,配置文件里的值只作为回落 ——
+// 管理员在设置页改了域名之后,这里必须立刻跟着变,否则复制出去的订阅地址还是旧的。
+func (s *Server) toDetailResponse(ctx context.Context, u *user.User) userResponse {
+	resp := toResponse(u)
+	resp.UUID = u.UUID
+	resp.SubToken = u.SubToken
 	if u.SubToken != "" {
-		r.SubscriptionURL = strings.TrimRight(s.cfg.HTTP.BaseURL, "/") + "/sub/" + u.SubToken
+		resp.SubscriptionURL = s.baseURL(ctx) + "/sub/" + u.SubToken
 	}
-	return r
+	return resp
+}
+
+// baseURL 返回订阅地址的站点根,已去掉结尾斜杠。
+func (s *Server) baseURL(ctx context.Context) string {
+	if s.settings == nil {
+		return strings.TrimRight(s.cfg.HTTP.BaseURL, "/")
+	}
+	return s.settings.BaseURL(ctx, s.cfg.HTTP.BaseURL)
 }
 
 func (s *Server) userIDFromPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -96,7 +109,7 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		s.writeUserError(w, err, "查询用户失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toDetailResponse(u))
+	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
 }
 
 type createUserRequest struct {
@@ -140,7 +153,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		TargetType: "user", TargetID: u.UserCode,
 		Detail: "新增用户 " + u.DisplayName, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusCreated, s.toDetailResponse(u))
+	writeJSON(w, http.StatusCreated, s.toDetailResponse(r.Context(), u))
 }
 
 type updateUserRequest struct {
@@ -202,7 +215,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		TargetType: "user", TargetID: u.UserCode,
 		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusOK, s.toDetailResponse(u))
+	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
 }
 
 func (s *Server) handleSetUserEnabled(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +282,7 @@ func (s *Server) handleRegenerateUserUUID(w http.ResponseWriter, r *http.Request
 		TargetType: "user", TargetID: u.UserCode,
 		Detail: "旧 UUID 将在下次部署后失效", ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusOK, s.toDetailResponse(u))
+	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
 }
 
 func (s *Server) handleRegenerateSubToken(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +301,7 @@ func (s *Server) handleRegenerateSubToken(w http.ResponseWriter, r *http.Request
 		TargetType: "user", TargetID: u.UserCode,
 		Detail: "旧订阅地址立即失效", ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusOK, s.toDetailResponse(u))
+	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {

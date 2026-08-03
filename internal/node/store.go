@@ -144,9 +144,13 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 		return nil, err
 	}
 
-	sshKeyEnc, err := s.cipher.Encrypt(p.SSHKey)
-	if err != nil {
-		return nil, fmt.Errorf("加密 SSH 私钥: %w", err)
+	// 空私钥直接存空串而不是加密后的空串:读取侧用"是否为空"判断
+	// 该节点是否用面板密钥,加密后的空串不为空,会被当成一把解不开的私钥。
+	sshKeyEnc := ""
+	if p.SSHKey != "" {
+		if sshKeyEnc, err = s.cipher.Encrypt(p.SSHKey); err != nil {
+			return nil, fmt.Errorf("加密 SSH 私钥: %w", err)
+		}
 	}
 	realityKeyEnc, err := s.cipher.Encrypt(keys.PrivateKey)
 	if err != nil {
@@ -184,9 +188,8 @@ func validateCreate(p *CreateParams) error {
 	if err := normalizeSSH(&p.SSHPort, &p.SSHUser); err != nil {
 		return err
 	}
-	if p.SSHKey == "" {
-		return errors.New("SSH 私钥不能为空")
-	}
+	// SSH 私钥可以留空:留空表示这个节点用面板专用密钥,
+	// 由 Service.Bootstrap 在创建后把面板公钥装进节点。
 	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
 		return err
 	}

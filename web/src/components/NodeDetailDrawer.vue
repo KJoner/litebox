@@ -9,9 +9,10 @@ import {
   type DeploymentRecord,
   type DestCheckResult,
   type Node,
+  type NodeMetrics,
   type ProbeResult,
 } from '@/api/client'
-import { formatRelative, formatTime, shortHash } from '@/utils/format'
+import { formatBytes, formatRelative, formatTime, shortHash } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import TrafficChart from '@/components/TrafficChart.vue'
 import DeployStepList from '@/components/DeployStepList.vue'
@@ -39,6 +40,7 @@ async function load(id: number) {
     node.value = n
     deployments.value = d.items
     daily.value = t.daily
+    await loadMetrics(id)
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载节点详情失败')
   } finally {
@@ -52,6 +54,8 @@ watch(
     probe.value = null
     diff.value = null
     destResults.value = []
+    metrics.value = null
+    metricsHistory.value = []
     if (id !== null) load(id)
     else node.value = null
   },
@@ -170,6 +174,108 @@ function confirmResetHostKey() {
     onOk: () => run('重置主机密钥', () => api.resetNodeHostKey(props.nodeId!), '已重置'),
   })
 }
+
+// ---------- 重新引导 ----------
+
+const bootstrapOpen = ref(false)
+const bootstrapPassword = ref('')
+
+function openBootstrap() {
+  bootstrapPassword.value = ''
+  bootstrapOpen.value = true
+}
+
+async function doBootstrap() {
+  const id = props.nodeId!
+  const password = bootstrapPassword.value
+  bootstrapOpen.value = false
+  // 口令用完立刻抹掉,不留在组件状态里。
+  bootstrapPassword.value = ''
+
+  running.value = '引导'
+  try {
+    const r = await api.bootstrapNode(id, password)
+    message.success(r.already_present ? '节点上已有面板公钥,连接正常' : '面板公钥已装入并验证通过')
+    emit('changed')
+    await load(id)
+  } catch (err) {
+    Modal.error({
+      title: '引导失败',
+      content: err instanceof ApiError ? err.message : '引导失败',
+      width: 620,
+      okText: '知道了',
+    })
+  } finally {
+    running.value = ''
+  }
+}
+
+function confirmUninstall() {
+  Modal.confirm({
+    title: '卸载节点上的 sing-box?',
+    content:
+      '会停止并删除 litebox-singbox 服务、systemd 单元与 /opt/litebox 目录,' +
+      '不触碰机器上的其他服务。用户会立刻断线。节点记录保留,重新「安装」「部署」即可恢复。',
+    okText: '卸载',
+    okType: 'danger',
+    cancelText: '取消',
+    width: 520,
+    onOk: () => run('卸载', () => api.uninstallNode(props.nodeId!), '节点上的服务与配置已移除'),
+  })
+}
+
+// ---------- 资源监控 ----------
+
+const metrics = ref<NodeMetrics | null>(null)
+const metricsHistory = ref<NodeMetrics[]>([])
+
+async function loadMetrics(id: number) {
+  try {
+    const r = await api.nodeMetricsHistory(id, 6)
+    metricsHistory.value = r.items
+    metrics.value = r.items.length > 0 ? r.items[r.items.length - 1] : null
+  } catch {
+    // 监控可以在配置里整个关掉,取不到就当没有,不打扰其他信息的展示。
+    metricsHistory.value = []
+    metrics.value = null
+  }
+}
+
+async function doCollectMetrics() {
+  running.value = '采集资源'
+  try {
+    metrics.value = await api.collectNodeMetrics(props.nodeId!)
+    await loadMetrics(props.nodeId!)
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '采集失败')
+  } finally {
+    running.value = ''
+  }
+}
+
+function memPercent(m: NodeMetrics): number {
+  return m.mem_total_kb > 0 ? (m.mem_used_kb / m.mem_total_kb) * 100 : 0
+}
+
+function diskPercent(m: NodeMetrics): number {
+  return m.disk_total_kb > 0 ? (m.disk_used_kb / m.disk_total_kb) * 100 : 0
+}
+
+function usageStatus(percent: number): 'normal' | 'exception' | 'active' {
+  if (percent >= 90) return 'exception'
+  if (percent >= 70) return 'active'
+  return 'normal'
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds <= 0) return '—'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days} 天 ${hours} 小时`
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`
+  return `${minutes} 分`
+}
 </script>
 
 <template>
@@ -225,6 +331,7 @@ function confirmResetHostKey() {
         <div class="actions">
           <a-space wrap>
             <a-button size="small" @click="doTestSSH">测试 SSH</a-button>
+            <a-button size="small" @click="openBootstrap">重新引导</a-button>
             <a-button size="small" @click="doProbe">探测</a-button>
             <a-button
               size="small"
@@ -241,10 +348,72 @@ function confirmResetHostKey() {
             >
               同步流量
             </a-button>
+            <a-button size="small" @click="doCollectMetrics">采集资源</a-button>
             <a-button size="small" danger @click="confirmRestart">重启服务</a-button>
             <a-button size="small" danger @click="confirmResetHostKey">重置主机密钥</a-button>
+            <a-button size="small" danger @click="confirmUninstall">卸载服务</a-button>
           </a-space>
         </div>
+
+        <div class="section-title">资源</div>
+        <a-empty
+          v-if="!metrics"
+          :image="undefined"
+          description="还没有采样。采集按固定间隔在后台进行,也可以点上面的「采集资源」立刻取一次。"
+        />
+        <template v-else>
+          <a-row :gutter="16" class="metric-row">
+            <a-col :span="8">
+              <div class="metric-title">CPU</div>
+              <a-progress
+                :percent="Math.round(metrics.cpu_percent)"
+                :status="usageStatus(metrics.cpu_percent)"
+                size="small"
+              />
+            </a-col>
+            <a-col :span="8">
+              <div class="metric-title">内存</div>
+              <a-progress
+                :percent="Math.round(memPercent(metrics))"
+                :status="usageStatus(memPercent(metrics))"
+                size="small"
+              />
+              <div class="hint tabular">
+                {{ formatBytes(metrics.mem_used_kb * 1024) }} /
+                {{ formatBytes(metrics.mem_total_kb * 1024) }}
+              </div>
+            </a-col>
+            <a-col :span="8">
+              <div class="metric-title">磁盘(根分区)</div>
+              <a-progress
+                :percent="Math.round(diskPercent(metrics))"
+                :status="usageStatus(diskPercent(metrics))"
+                size="small"
+              />
+              <div class="hint tabular">
+                {{ formatBytes(metrics.disk_used_kb * 1024) }} /
+                {{ formatBytes(metrics.disk_total_kb * 1024) }}
+              </div>
+            </a-col>
+          </a-row>
+          <a-descriptions :column="2" size="small" bordered class="block">
+            <a-descriptions-item label="网络速率">
+              <span class="tabular">
+                ↓ {{ formatBytes(metrics.net_rx_bps) }}/s ↑ {{ formatBytes(metrics.net_tx_bps) }}/s
+              </span>
+            </a-descriptions-item>
+            <a-descriptions-item label="1 分钟负载">
+              <span class="tabular">{{ metrics.load1.toFixed(2) }}</span>
+            </a-descriptions-item>
+            <a-descriptions-item label="已运行">
+              {{ formatUptime(metrics.uptime_seconds) }}
+            </a-descriptions-item>
+            <a-descriptions-item label="采样时间">
+              {{ formatRelative(metrics.collected_at) }}
+              <span class="hint">(近 6 小时共 {{ metricsHistory.length }} 次)</span>
+            </a-descriptions-item>
+          </a-descriptions>
+        </template>
 
         <a-alert
           v-if="probe && probe.problems.length > 0"
@@ -337,6 +506,32 @@ function confirmResetHostKey() {
       </template>
     </a-spin>
   </a-drawer>
+
+  <a-modal
+    v-model:open="bootstrapOpen"
+    title="重新引导节点"
+    ok-text="开始引导"
+    cancel-text="取消"
+    width="560"
+    @ok="doBootstrap"
+  >
+    <p class="modal-text">
+      把面板专用公钥装进节点的 authorized_keys,装完会用它真连一次做验证。
+      节点上已经有这把公钥时不会重复追加。
+    </p>
+    <a-form layout="vertical">
+      <a-form-item
+        label="节点登录密码"
+        extra="留空则改用主控本机 ~/.ssh 与 /etc/litebox/keys 下的私钥去装。密码只用这一次,不会保存。"
+      >
+        <a-input-password
+          v-model:value="bootstrapPassword"
+          autocomplete="new-password"
+          placeholder="留空表示用主控本机私钥"
+        />
+      </a-form-item>
+    </a-form>
+  </a-modal>
 </template>
 
 <style scoped>
@@ -347,6 +542,21 @@ function confirmResetHostKey() {
 .hint {
   color: rgb(0 0 0 / 45%);
   font-size: 12px;
+}
+
+.metric-row {
+  margin: 8px 0 4px;
+}
+
+.metric-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: rgb(0 0 0 / 65%);
+}
+
+.modal-text {
+  margin: 0 0 16px;
+  color: rgb(0 0 0 / 65%);
 }
 
 .block {

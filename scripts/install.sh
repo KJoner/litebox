@@ -77,7 +77,8 @@ else
     cat > "$CONFIG_FILE" <<EOF
 http:
   listen: "127.0.0.1:8080"
-  # 改成你的实际对外域名,订阅地址由它生成。
+  # 订阅地址的站点根。这只是首次启动的默认值,
+  # 装完之后在面板「设置 → 订阅地址」里改就行,不用动这个文件。
   base_url: "http://127.0.0.1:8080"
   # 经 HTTPS 反代时必须改成 true,否则会话 Cookie 不带 Secure。
   secure_cookie: false
@@ -87,6 +88,9 @@ database:
 
 node:
   binary_dir: "$INSTALL_DIR/assets/singbox"
+  # 节点资源采集间隔。放得比流量同步宽,避免和部署抢节点连接锁;负数则关闭。
+  metrics_interval: 5m
+  metrics_retention: 168h
 
 traffic:
   sync_interval: 60s
@@ -172,8 +176,8 @@ cat <<EOF
 
 后续步骤:
   1. 查看初始管理员密码:journalctl -u litebox | grep 初始密码
-  2. 编辑 $CONFIG_FILE,把 base_url 改成实际域名
-     经 HTTPS 反代时把 secure_cookie 改成 true
+  2. 登录后在「设置 → 订阅地址」里填实际域名
+     经 HTTPS 反代时还要把 $CONFIG_FILE 里的 secure_cookie 改成 true
   3. 构建节点用的 sing-box 并放到 $INSTALL_DIR/assets/singbox/
      (见 scripts/build-singbox.sh)
   4. 配置 Nginx 反代,示例见 deploy/nginx/litebox.conf

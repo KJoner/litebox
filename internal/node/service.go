@@ -2,12 +2,14 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/litebox/litebox/internal/deployment"
+	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
 )
@@ -18,6 +20,11 @@ type UserProvider interface {
 	UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User, error)
 }
 
+// PanelKeyProvider 返回面板专用的节点访问密钥。由 settings.KeyManager 实现。
+type PanelKeyProvider interface {
+	Ensure(ctx context.Context) (settings.PanelKey, error)
+}
+
 // Service 组合节点存储、SSH 连接池与部署器,对外提供节点操作。
 type Service struct {
 	store       *Store
@@ -25,8 +32,12 @@ type Service struct {
 	deployer    *deployment.Deployer
 	deployStore *deployment.Store
 	users       UserProvider
+	keys        PanelKeyProvider
 	layout      deployment.Layout
 	logger      *slog.Logger
+
+	bootstrapDirs  []string
+	sshDialTimeout time.Duration
 }
 
 type ServiceOptions struct {
@@ -35,38 +46,69 @@ type ServiceOptions struct {
 	Deployer    *deployment.Deployer
 	DeployStore *deployment.Store
 	Users       UserProvider
+	Keys        PanelKeyProvider
 	Layout      deployment.Layout
 	Logger      *slog.Logger
+	// BootstrapKeyDirs 是引导新节点时搜索主控本机私钥的目录。
+	// 为空时用默认清单($HOME/.ssh 与 /etc/litebox/keys)。
+	BootstrapKeyDirs []string
+	SSHDialTimeout   time.Duration
 }
 
 func NewService(opts ServiceOptions) *Service {
 	return &Service{
-		store:       opts.Store,
-		pool:        opts.Pool,
-		deployer:    opts.Deployer,
-		deployStore: opts.DeployStore,
-		users:       opts.Users,
-		layout:      opts.Layout,
-		logger:      opts.Logger,
+		store:          opts.Store,
+		pool:           opts.Pool,
+		deployer:       opts.Deployer,
+		deployStore:    opts.DeployStore,
+		users:          opts.Users,
+		keys:           opts.Keys,
+		layout:         opts.Layout,
+		logger:         opts.Logger,
+		bootstrapDirs:  opts.BootstrapKeyDirs,
+		sshDialTimeout: opts.SSHDialTimeout,
 	}
+}
+
+// PanelPublicKey 返回面板公钥,供页面展示与手工安装。
+func (s *Service) PanelPublicKey(ctx context.Context) (string, error) {
+	if s.keys == nil {
+		return "", errors.New("未配置面板密钥管理器")
+	}
+	key, err := s.keys.Ensure(ctx)
+	return key.PublicKey, err
 }
 
 func (s *Service) Store() *Store { return s.store }
 
 // NewResolver 构造供 sshx.Pool 使用的连接参数解析函数。
-// 它只依赖 Store,因此可以在 Service 之前构造 —— 连接池是 Service 的依赖,
-// 若 Resolver 挂在 Service 上就会形成构造期的循环引用。
-func NewResolver(store *Store, logger *slog.Logger) sshx.TargetResolver {
+// 它只依赖 Store 与密钥管理器,因此可以在 Service 之前构造 ——
+// 连接池是 Service 的依赖,若 Resolver 挂在 Service 上就会形成构造期的循环引用。
+//
+// 节点没有单独配置私钥时用面板专用密钥。这是新节点的常态:
+// 引导阶段把面板公钥装进了节点,密钥本身只存一份,轮换时不必逐个节点改。
+func NewResolver(store *Store, keys PanelKeyProvider, logger *slog.Logger) sshx.TargetResolver {
 	return func(ctx context.Context, nodeID int64) (sshx.Target, error) {
 		n, err := store.Get(ctx, nodeID)
 		if err != nil {
 			return sshx.Target{}, err
 		}
+		privateKey := n.SSHKey
+		if privateKey == "" {
+			if keys == nil {
+				return sshx.Target{}, fmt.Errorf("节点 %d 未配置 SSH 私钥,且面板密钥不可用", nodeID)
+			}
+			panelKey, err := keys.Ensure(ctx)
+			if err != nil {
+				return sshx.Target{}, err
+			}
+			privateKey = panelKey.PrivateKeyPEM
+		}
 		return sshx.Target{
 			Host:          n.Host,
 			Port:          n.SSHPort,
 			User:          n.SSHUser,
-			PrivateKeyPEM: n.SSHKey,
+			PrivateKeyPEM: privateKey,
 			KnownHostKey:  n.HostKey,
 			OnHostKey: func(hostKey string) error {
 				// 首次连接时固定主机密钥(TOFU)。

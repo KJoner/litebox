@@ -93,6 +93,19 @@
   `singbox.NodeParams` 里只有 `ListenPort`,公网端口不属于节点配置;
 * 节点的握手目标不走通用的 `Store.Update`,必须经 `ApplyHandshakeDest`
   实测通过后写入,否则会绕过 8192 字节记录上限的校验;
+* **节点 root 口令只用于把面板公钥装进节点的那一次连接,绝不落库、
+  不写日志、不进审计详情**;面板已经持有节点 root 权限,再存一份口令
+  只会放大爆炸半径。持久访问一律用面板专用密钥(`settings.KeyManager`,
+  私钥主密钥加密存 `system_settings`);
+* `nodes.ssh_key_encrypted` 为空串表示"该节点用面板专用密钥"。
+  空私钥必须存空串而不是加密后的空串 —— 后者不为空,会被当成一把解不开的私钥;
+* **引导装完公钥后必须用面板密钥真连一次做验证**。只写不验的话,
+  sshd 的 `AuthorizedKeysFile` 指向别处、或家目录权限过宽被 sshd 忽略这类问题,
+  要等到第一次部署才暴露,而那时管理员已经以为节点接好了;
+* 节点资源采集走 `pool.Do`,与部署、流量同步共用节点级互斥锁,
+  且每次采集要在节点上 sleep 一秒。采集间隔默认 5 分钟,不要为了"实时"调小;
+* 运行期可改的设置(订阅站点根)存 `system_settings` 并优先于配置文件,
+  读取一律经 `settings.Store`,不要直接读 `cfg.HTTP.BaseURL`;
 * 订阅 Token 同时保存 SHA-256 哈希与主密钥加密的密文:
   哈希供公开订阅路由查找(该路径不解密任何字段),密文供面板反复展示订阅地址;
 * 注释用中文,只写代码本身表达不了的约束与原因,不写"这行做什么"。
@@ -110,6 +123,7 @@ make dev           # 启动前端开发服务器(API 代理到 127.0.0.1:8080)
 
 go run ./cmd/litebox genkey    # 生成主密钥
 go run ./cmd/litebox migrate   # 只执行迁移并做一致性检查
+go run ./cmd/litebox ssh-key   # 打印面板专用的节点访问公钥
 
 bash scripts/build-singbox.sh  # 构建带 with_v2ray_api 的节点二进制到 assets/singbox
 ```

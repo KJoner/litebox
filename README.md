@@ -71,32 +71,59 @@ Phase 6 交付:仪表盘(用户/节点/今日与本月流量/告警卡片/最近
 
 ## 生产部署
 
-完整的从零部署与使用说明见 **[`docs/部署与使用指南.md`](docs/部署与使用指南.md)** ——
-含主控安装、Nginx 与 HTTPS、添加节点、添加用户、客户端使用与常见问题。
+### 一键安装
 
-速览版,在主控机器上以 root 执行:
+在主控机器上以 root 执行:
 
 ```bash
-# 1. 构建(在开发机上)
-make build-linux                  # 主控二进制
-bash scripts/build-singbox.sh     # 节点用的 sing-box
+bash <(wget -qO- https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
+```
 
-# 2. 安装(把 bin/ 与 scripts/ 拷到主控机器上)
-sudo ./scripts/install.sh
+自动补齐 make / Node.js 22+ / Go 1.26+,拉源码,构建主控与节点用的 sing-box,
+安装 systemd 服务并启动,最后打印初始密码与面板 SSH 公钥。
+**再跑一遍就是升级**,依赖不重装,数据库与主密钥不动,升级前自动备份。
 
-# 3. 立刻备份主密钥 —— 丢失后全部用户与节点凭据不可恢复
+装完记得:
+
+```bash
+# 1. 立刻备份主密钥 —— 丢失后全部用户与节点凭据不可恢复
 sudo cat /etc/litebox/litebox.env
 
-# 4. 开启每日自动备份
+# 2. 开启每日自动备份
 sudo cp deploy/systemd/litebox-backup.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now litebox-backup.timer
+```
 
-# 5. 为节点生成专用 SSH 密钥
-sudo ./scripts/setup-node-key.sh <节点IP> <SSH端口> root
+订阅域名在页面「设置 → 订阅地址」里填,不用改配置文件。
+
+### 手工安装
+
+完整说明见 **[`docs/部署与使用指南.md`](docs/部署与使用指南.md)** ——
+含主控安装、Nginx 与 HTTPS、添加节点、添加用户、客户端使用与常见问题。
+
+```bash
+# 开发机上构建
+make build-linux                  # 主控二进制(含前端)
+bash scripts/build-singbox.sh     # 节点用的 sing-box
+
+# 主控机器上(把 bin/ scripts/ assets/ deploy/ 保持目录结构拷过去)
+sudo ./scripts/install.sh
 ```
 
 升级用 `sudo ./scripts/upgrade.sh`(自动先备份、失败自动回退),
 恢复用 `sudo ./scripts/restore.sh <备份文件>`。
+
+### 节点接入
+
+面板持有**一把自己的 SSH 密钥**(首次用到时生成,主密钥加密存库)。
+新增节点时有三种方式把它的公钥装进节点:
+
+* **节点密码** —— 填一次节点 root 口令,面板用完即弃,不落库、不写日志;
+* **主控本机私钥** —— 用主控上已有的私钥去装,适合禁用了密码登录的节点;
+* **手工指定私钥** —— 给这个节点单配一把。
+
+之后所有操作都走面板专用密钥。公钥可在「设置」页复制,或用
+`litebox ssh-key` 打印。
 
 ## 本地开发
 
@@ -137,7 +164,10 @@ make lint   # go vet + gofmt
 ```bash
 litebox serve            # 启动服务(默认)
 litebox migrate          # 只执行迁移并做一致性检查
+litebox backup           # 生成 WAL 安全的数据库备份
+litebox check            # 数据库完整性与外键自检
 litebox genkey           # 生成主密钥
+litebox ssh-key          # 打印面板专用的节点访问公钥(--rotate 轮换)
 litebox reset-password   # 重置管理员密码(会使所有会话失效)
 litebox version          # 打印版本
 ```

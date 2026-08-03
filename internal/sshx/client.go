@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -26,7 +27,13 @@ type Target struct {
 	Port int
 	User string
 	// PrivateKeyPEM 是 PEM 编码的私钥明文。调用方负责先用主密钥解密。
+	// 可以给多把:引导新节点时主控本机可能有若干候选私钥,逐把试。
 	PrivateKeyPEM string
+	// ExtraPrivateKeys 是额外的候选私钥,与 PrivateKeyPEM 一起按顺序尝试。
+	ExtraPrivateKeys []string
+	// Password 是口令认证。只用于把面板公钥装进新节点的那一次连接,
+	// 绝不落库 —— 面板持有节点 root 权限,存下口令等于把爆炸半径又放大一圈。
+	Password string
 	// KnownHostKey 是已固定的节点主机公钥(base64 的 wire 格式)。
 	// 为空表示首次连接,采用 TOFU:接受本次密钥并通过 OnHostKey 回传固定。
 	KnownHostKey string
@@ -46,14 +53,14 @@ type Client struct {
 
 // Dial 建立一条新的 SSH 连接。
 func Dial(ctx context.Context, target Target, timeout time.Duration) (*Client, error) {
-	signer, err := ssh.ParsePrivateKey([]byte(target.PrivateKeyPEM))
+	auth, err := authMethods(target)
 	if err != nil {
-		return nil, fmt.Errorf("解析 SSH 私钥: %w", err)
+		return nil, err
 	}
 
 	cfg := &ssh.ClientConfig{
 		User:            target.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            auth,
 		HostKeyCallback: hostKeyCallback(target),
 		Timeout:         timeout,
 	}
@@ -71,6 +78,60 @@ func Dial(ctx context.Context, target Target, timeout time.Duration) (*Client, e
 		return nil, fmt.Errorf("SSH 握手 %s: %w", target.address(), err)
 	}
 	return &Client{target: target, ssh: ssh.NewClient(sshConn, chans, reqs)}, nil
+}
+
+// authMethods 组装认证方式:先公钥后口令。
+//
+// 口令同时注册 password 与 keyboard-interactive 两种方法 ——
+// 相当一部分 sshd 只开了后者(PAM 走 keyboard-interactive),
+// 只注册 password 会在那些机器上直接认证失败,而报错看起来像密码错了。
+func authMethods(target Target) ([]ssh.AuthMethod, error) {
+	var signers []ssh.Signer
+	var parseErrs []string
+
+	keys := make([]string, 0, 1+len(target.ExtraPrivateKeys))
+	if target.PrivateKeyPEM != "" {
+		keys = append(keys, target.PrivateKeyPEM)
+	}
+	keys = append(keys, target.ExtraPrivateKeys...)
+
+	for i, pem := range keys {
+		if strings.TrimSpace(pem) == "" {
+			continue
+		}
+		signer, err := ssh.ParsePrivateKey([]byte(pem))
+		if err != nil {
+			parseErrs = append(parseErrs, fmt.Sprintf("第 %d 把: %v", i+1, err))
+			continue
+		}
+		signers = append(signers, signer)
+	}
+
+	var methods []ssh.AuthMethod
+	if len(signers) > 0 {
+		methods = append(methods, ssh.PublicKeys(signers...))
+	}
+	if target.Password != "" {
+		password := target.Password
+		methods = append(methods,
+			ssh.Password(password),
+			ssh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range answers {
+					answers[i] = password
+				}
+				return answers, nil
+			}),
+		)
+	}
+
+	if len(methods) == 0 {
+		if len(parseErrs) > 0 {
+			return nil, fmt.Errorf("没有可用的 SSH 私钥(%s)", strings.Join(parseErrs, ";"))
+		}
+		return nil, errors.New("未提供任何 SSH 认证方式(私钥或口令)")
+	}
+	return methods, nil
 }
 
 // hostKeyCallback 实现 TOFU:首次连接固定密钥,之后严格比对。

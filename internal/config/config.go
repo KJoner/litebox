@@ -54,6 +54,18 @@ type NodeConfig struct {
 	// DeployMaxDelay 是标脏后必须部署的时间上限,
 	// 防止持续不断的变更把部署无限推迟。
 	DeployMaxDelay time.Duration `yaml:"deploy_max_delay"`
+	// MetricsInterval 是节点资源采集间隔。
+	//
+	// 默认放得比流量同步宽得多:资源指标只用来看趋势,而每次采集要占用
+	// 节点连接锁一秒多。采得越勤,和部署、流量同步抢锁的概率越高。
+	// 置为负数可完全关闭采集。
+	MetricsInterval time.Duration `yaml:"metrics_interval"`
+	// MetricsRetention 是资源采样的保留期。这不是计费数据,丢了不影响任何结算。
+	MetricsRetention time.Duration `yaml:"metrics_retention"`
+	// BootstrapKeyDirs 是新增节点时搜索主控本机私钥的目录。
+	// 未填写节点 root 密码时,面板从这些目录里找一把能登录节点的私钥,
+	// 用它把面板专用公钥装进节点。留空则用默认清单($HOME/.ssh、/etc/litebox/keys)。
+	BootstrapKeyDirs []string `yaml:"bootstrap_key_dirs"`
 }
 
 type HTTPConfig struct {
@@ -117,11 +129,13 @@ func Default() Config {
 			LoginLockout:     15 * time.Minute,
 		},
 		Node: NodeConfig{
-			BinaryDir:      "assets/singbox",
-			SSHDialTimeout: 20 * time.Second,
-			DeployTimeout:  5 * time.Minute,
-			DeployDebounce: 4 * time.Second,
-			DeployMaxDelay: 30 * time.Second,
+			BinaryDir:        "assets/singbox",
+			SSHDialTimeout:   20 * time.Second,
+			DeployTimeout:    5 * time.Minute,
+			DeployDebounce:   4 * time.Second,
+			DeployMaxDelay:   30 * time.Second,
+			MetricsInterval:  5 * time.Minute,
+			MetricsRetention: 7 * 24 * time.Hour,
 		},
 		Traffic: TrafficConfig{
 			SyncInterval: 60 * time.Second,
@@ -173,6 +187,7 @@ func applyEnv(cfg *Config) {
 	envDuration("LITEBOX_DEPLOY_TIMEOUT", &cfg.Node.DeployTimeout)
 	envDuration("LITEBOX_DEPLOY_DEBOUNCE", &cfg.Node.DeployDebounce)
 	envDuration("LITEBOX_TRAFFIC_SYNC_INTERVAL", &cfg.Traffic.SyncInterval)
+	envDuration("LITEBOX_NODE_METRICS_INTERVAL", &cfg.Node.MetricsInterval)
 	envStr("LITEBOX_LOG_LEVEL", &cfg.Log.Level)
 	envStr("LITEBOX_LOG_FORMAT", &cfg.Log.Format)
 }
