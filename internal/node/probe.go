@@ -52,7 +52,7 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 		result.SystemdVersion = sd
 	}
 	if result.SystemdVersion == "" {
-		result.Problems = append(result.Problems, "未检测到 systemd,无法以服务方式管理 sing-box")
+		result.Problems = append(result.Problems, systemdMissingHint(ctx, client))
 	}
 
 	versionOut, err := client.Run(ctx, sshx.NewCommand(singboxPath, "version"))
@@ -85,6 +85,36 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 // Usable 表示该节点满足运行要求。
 func (r ProbeResult) Usable() bool {
 	return len(r.Problems) == 0
+}
+
+// HasSystemd 报告节点是否具备 systemd。
+//
+// 面板通过 systemd 单元管理节点上的 sing-box:安装、重启、健康检查、
+// 部署失败回滚全都建立在 systemctl 之上,缺了它整条链路无从谈起。
+func (r ProbeResult) HasSystemd() bool {
+	return r.SystemdVersion != ""
+}
+
+// systemdMissingHint 在缺少 systemd 时说清楚这台机器用的是什么,以及能怎么办。
+//
+// 只说"未检测到 systemd"会让人以为是探测出了问题。实际最常见的情形是
+// Alpine —— 它用 OpenRC,而 Alpine 又恰恰是 NAT 小鸡的常见镜像,
+// 正好落在本项目瞄准的低配节点区间里,所以这条提示必须指名道姓。
+func systemdMissingHint(ctx context.Context, client *sshx.Client) string {
+	const base = "未检测到 systemd,无法以服务方式管理 sing-box"
+
+	if out, err := runTrimmed(ctx, client,
+		sshx.NewCommand("sh", "-c", "command -v rc-update >/dev/null 2>&1 && echo openrc")); err == nil &&
+		out == "openrc" {
+		osName, _ := runTrimmed(ctx, client,
+			sshx.NewCommand("sh", "-c", ". /etc/os-release 2>/dev/null && printf %s \"$NAME\""))
+		if osName == "" {
+			osName = "这台机器"
+		}
+		return base + ":" + osName + " 用的是 OpenRC。" +
+			"面板目前只支持 systemd 节点,请换一个带 systemd 的镜像(Debian、Ubuntu、Rocky 等)"
+	}
+	return base + "。面板需要 systemd 来安装单元、重启服务与做健康检查"
 }
 
 // parseVersionOutput 解析 `sing-box version` 的输出:

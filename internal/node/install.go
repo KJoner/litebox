@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -79,6 +80,15 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 	result.BinarySHA256 = hex.EncodeToString(sum[:])
 
 	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		// systemd 必须在传二进制之前就确认存在。
+		//
+		// 装到一半才失败是最坏的结果:28MB 已经过完跨洲链路,节点上留下一个
+		// 半成品,而报错停在 "命令 systemctl daemon-reload 退出码 127" ——
+		// 完全看不出真正的原因是这台机器根本没有 systemd。
+		if err := requireSystemd(ctx, client); err != nil {
+			return err
+		}
+
 		for _, dir := range []string{layout.BaseDir, layout.BackupDir} {
 			if _, err := client.RunCheck(ctx, sshx.NewCommand("mkdir", "-p", dir)); err != nil {
 				return err
@@ -130,6 +140,19 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 			strings.Join(probe.BuildTags, ","), probe.Usable())
 	})
 	return result, err
+}
+
+// requireSystemd 在节点缺少 systemd 时给出可读的错误。
+func requireSystemd(ctx context.Context, client *sshx.Client) error {
+	result, err := client.Run(ctx, sshx.NewCommand("sh", "-c",
+		"command -v systemctl >/dev/null 2>&1 && echo yes || echo no"))
+	if err != nil {
+		return fmt.Errorf("检查节点 init 系统: %w", err)
+	}
+	if strings.TrimSpace(result.Stdout) == "yes" {
+		return nil
+	}
+	return errors.New(systemdMissingHint(ctx, client))
 }
 
 func remoteSHA256(ctx context.Context, client *sshx.Client, path string) (string, error) {
