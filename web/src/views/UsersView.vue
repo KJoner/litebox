@@ -32,6 +32,7 @@ function tierColor(code: string): string {
 const columns = [
   { title: '用户', key: 'name', width: 200 },
   { title: '访问等级', key: 'tier', width: 110 },
+  { title: '登录账号', key: 'login', width: 150 },
   { title: '状态', key: 'status', width: 110 },
   { title: '节点', key: 'nodes', width: 110 },
   { title: '已用流量', key: 'used', width: 180 },
@@ -67,6 +68,11 @@ const form = reactive({
   reset_day: 1,
   access_tier_id: 1,
   node_ids: [] as number[],
+  // 门户登录账号,仅新增时使用。已有用户的登录账号在详情抽屉里管理 ——
+  // 那里才有"重设密码会踢掉全部会话"这类需要当场说明的后果。
+  login_username: '',
+  login_password: '',
+  must_change_password: true,
 })
 
 function openCreate() {
@@ -80,6 +86,9 @@ function openCreate() {
     reset_day: 1,
     access_tier_id: 1,
     node_ids: [],
+    login_username: '',
+    login_password: '',
+    must_change_password: true,
   })
   formOpen.value = true
 }
@@ -114,7 +123,7 @@ async function submit() {
     const expiresAt = form.expires_at ? `${form.expires_at}T23:59:59Z` : ''
 
     if (editingId.value === null) {
-      await api.createUser({
+      const created = await api.createUser({
         display_name: form.display_name,
         remark: form.remark,
         quota_bytes: quotaBytes,
@@ -123,8 +132,23 @@ async function submit() {
         reset_day: form.reset_day,
         access_tier_id: form.access_tier_id,
         node_ids: form.node_ids,
+        login_username: form.login_username,
+        login_password: form.login_password,
+        must_change_password: form.must_change_password,
       })
-      message.success('用户已创建,受影响节点将在数秒内自动部署')
+      // 口令只在这一次请求里用到,立刻从表单状态里抹掉。
+      form.login_password = ''
+      if (created.portal_account_error) {
+        // 用户已经建好了,只是登录账号没建成。这两件事必须分开说,
+        // 否则管理员会以为整个操作失败而再建一个用户。
+        Modal.warning({
+          title: '用户已创建,但登录账号没有建成',
+          content: `${created.portal_account_error}\n\n可以在用户详情里单独开通门户登录。`,
+          okText: '知道了',
+        })
+      } else {
+        message.success('用户已创建,受影响节点将在数秒内自动部署')
+      }
     } else {
       await api.updateUser(editingId.value, {
         display_name: form.display_name,
@@ -234,6 +258,17 @@ onMounted(load)
           <a-tag :color="tierColor(record.access_tier_code)">{{ record.access_tier_name }}</a-tag>
         </template>
 
+        <template v-else-if="column.key === 'login'">
+          <span v-if="!record.portal_account" class="muted">未开通</span>
+          <template v-else>
+            <div class="login-name">{{ record.portal_account.username }}</div>
+            <div v-if="!record.portal_account.login_enabled" class="login-off">已停用</div>
+            <div v-else-if="record.portal_account.must_change_password" class="login-warn">
+              待改初始密码
+            </div>
+          </template>
+        </template>
+
         <template v-else-if="column.key === 'status'">
           <StatusTag :status="record.status" kind="user" />
         </template>
@@ -318,6 +353,30 @@ onMounted(load)
       <a-form-item v-if="form.reset_cycle === 'MONTHLY'" label="重置日" extra="1~28 日">
         <a-input-number v-model:value="form.reset_day" :min="1" :max="28" style="width: 100%" />
       </a-form-item>
+      <template v-if="editingId === null">
+        <a-divider orientation="left" plain>门户登录（可选）</a-divider>
+        <a-form-item label="登录账号" extra="留空表示该用户只用订阅,不登录用户中心">
+          <a-input
+            v-model:value="form.login_username"
+            placeholder="字母、数字、下划线、连字符与点,3~32 位"
+            autocomplete="off"
+          />
+        </a-form-item>
+        <a-form-item
+          v-if="form.login_username"
+          label="初始密码"
+          extra="至少 8 位,请通过安全渠道发给用户"
+        >
+          <a-input-password v-model:value="form.login_password" autocomplete="new-password" />
+        </a-form-item>
+        <a-form-item v-if="form.login_username">
+          <a-checkbox v-model:checked="form.must_change_password">
+            要求用户首次登录后修改密码
+          </a-checkbox>
+        </a-form-item>
+        <a-divider />
+      </template>
+
       <a-form-item
         label="额外授权节点"
         extra="在访问等级之外单独追加的节点。等级已经覆盖的节点不必在这里勾选"
@@ -342,6 +401,24 @@ onMounted(load)
 </template>
 
 <style scoped>
+.login-name {
+  font-size: 13px;
+}
+
+.login-off {
+  color: #cf1322;
+  font-size: 12px;
+}
+
+.login-warn {
+  color: #d46b08;
+  font-size: 12px;
+}
+
+.muted {
+  color: rgb(0 0 0 / 45%);
+}
+
 .extra-grant {
   margin-left: 4px;
   color: rgb(0 0 0 / 45%);

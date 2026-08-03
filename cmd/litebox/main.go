@@ -35,6 +35,7 @@ import (
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
@@ -426,6 +427,13 @@ func cmdServe(args []string) error {
 		logger.Info("节点资源监控已关闭(node.metrics_interval 为负)")
 	}
 
+	// 门户认证与管理员认证是两套独立实现,共用同一个会话时长与限流配置即可。
+	portalService := portal.NewService(db, portal.Options{
+		SessionTTL:  cfg.Security.SessionTTL,
+		MaxAttempts: cfg.Security.LoginMaxAttempts,
+		LoginWindow: cfg.Security.LoginWindow,
+	})
+
 	server := httpapi.NewServer(httpapi.Options{
 		Config:    cfg,
 		DB:        db,
@@ -440,13 +448,18 @@ func cmdServe(args []string) error {
 		Monitor:   monitor,
 		Settings:  settingsStore,
 		Tiers:     access.NewStore(db),
-		Pool:      pool,
-		Binaries:  node.NewDirBinaryProvider(cfg.Node.BinaryDir),
-		Logger:    logger,
-		Assets:    assets,
+
+		Portal:      portalService,
+		PortalAccts: portal.NewStore(db),
+		PortalData:  portal.NewQuerier(db, userStore),
+
+		Pool:     pool,
+		Binaries: node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		Logger:   logger,
+		Assets:   assets,
 	})
 
-	go cleanupLoop(ctx, authService, logger)
+	go cleanupLoop(ctx, authService, portalService, logger)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Start() }()
@@ -473,12 +486,17 @@ func cmdServe(args []string) error {
 }
 
 // cleanupLoop 定期清理过期会话与陈旧的登录尝试记录。
-func cleanupLoop(ctx context.Context, authService *auth.Service, logger *slog.Logger) {
+// 管理员与门户是两套表,两边都要清 —— 只清一边会让另一边无节制增长。
+func cleanupLoop(ctx context.Context, authService *auth.Service,
+	portalService *portal.Service, logger *slog.Logger) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
 		if err := authService.CleanupExpired(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("清理过期会话失败", "error", err)
+			logger.Error("清理过期管理员会话失败", "error", err)
+		}
+		if err := portalService.CleanupExpired(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("清理过期门户会话失败", "error", err)
 		}
 		select {
 		case <-ctx.Done():

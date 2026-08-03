@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -30,6 +31,13 @@ const (
 type userResponse struct {
 	*user.User
 	UsedTotal int64 `json:"used_total"`
+	// PortalAccount 为 nil 表示该用户还没有门户登录账号。
+	// 结构体里没有密码哈希,不存在漏掉字段过滤的可能。
+	PortalAccount *portal.Account `json:"portal_account"`
+	// PortalAccountError 只在新建用户时出现:用户已建好,但登录账号没建成。
+	// 用同一个响应结构告知,而不是换一种形状 —— 前端不必为一个分支
+	// 准备两套解析。
+	PortalAccountError string `json:"portal_account_error,omitempty"`
 	// 以下两项仅详情接口填充。
 	UUID            string `json:"uuid,omitempty"`
 	SubToken        string `json:"sub_token,omitempty"`
@@ -40,12 +48,29 @@ func toResponse(u *user.User) userResponse {
 	return userResponse{User: u, UsedTotal: u.UsedTotal()}
 }
 
+// portalAccountOf 取用户的门户账号,没有或查询失败时返回 nil。
+// 门户账号是附加信息,取不到不应该让整个用户接口失败。
+func (s *Server) portalAccountOf(ctx context.Context, proxyUserID int64) *portal.Account {
+	if s.portalAccts == nil {
+		return nil
+	}
+	account, err := s.portalAccts.GetByProxyUser(ctx, proxyUserID)
+	if err != nil {
+		if !errors.Is(err, portal.ErrAccountNotFound) {
+			s.logger.Error("查询门户登录账号失败", "error", err, "proxy_user_id", proxyUserID)
+		}
+		return nil
+	}
+	return account
+}
+
 // toDetailResponse 组装含敏感字段的用户详情。
 //
 // 订阅地址的站点根优先取页面上设置的那份,配置文件里的值只作为回落 ——
 // 管理员在设置页改了域名之后,这里必须立刻跟着变,否则复制出去的订阅地址还是旧的。
 func (s *Server) toDetailResponse(ctx context.Context, u *user.User) userResponse {
 	resp := toResponse(u)
+	resp.PortalAccount = s.portalAccountOf(ctx, u.ID)
 	resp.UUID = u.UUID
 	resp.SubToken = u.SubToken
 	if u.SubToken != "" {
@@ -92,9 +117,21 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+	// 账号一次查完:逐个查会在 10 个用户的列表上打出 10 次额外查询,
+	// 而列表页是刷得最勤的一页。
+	accounts := map[int64]*portal.Account{}
+	if s.portalAccts != nil {
+		if loaded, err := s.portalAccts.ByProxyUsers(r.Context()); err != nil {
+			s.logger.Error("查询门户登录账号失败", "error", err)
+		} else {
+			accounts = loaded
+		}
+	}
 	items := make([]userResponse, 0, len(users))
 	for _, u := range users {
-		items = append(items, toResponse(u))
+		resp := toResponse(u)
+		resp.PortalAccount = accounts[u.ID]
+		items = append(items, resp)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -123,6 +160,10 @@ type createUserRequest struct {
 	AccessTierID int64 `json:"access_tier_id"`
 	// NodeIDs 是额外授权节点,不含等级继承来的那些。
 	NodeIDs []int64 `json:"node_ids"`
+	// 门户登录账号。留空表示这个用户不开通门户登录,只用订阅。
+	LoginUsername      string `json:"login_username"`
+	LoginPassword      string `json:"login_password"`
+	MustChangePassword bool   `json:"must_change_password"`
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +198,37 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		TargetType: "user", TargetID: u.UserCode,
 		Detail: "新增用户 " + u.DisplayName, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusCreated, s.toDetailResponse(r.Context(), u))
+
+	resp := s.toDetailResponse(r.Context(), u)
+	// 登录账号在用户建好之后单独创建。失败不回滚用户 ——
+	// 失败原因几乎都是"账号名被占用"这类需要人改一下的问题,
+	// 把刚建好的用户连同 user_code 一起丢掉,代价远大于让管理员补一步。
+	// user_code 不可复用,回滚等于白白烧掉一个号。
+	if req.LoginUsername != "" && s.portalAccts != nil {
+		account, err := s.portalAccts.Upsert(r.Context(), u.ID, portal.SetCredentialsParams{
+			Username:           req.LoginUsername,
+			Password:           req.LoginPassword,
+			MustChangePassword: req.MustChangePassword,
+		})
+		if err != nil {
+			s.audit.Record(r.Context(), audit.Entry{
+				AdminUserID: &admin.ID, Action: actionPortalAccountSet,
+				TargetType: "user", TargetID: u.UserCode,
+				Detail:   "创建登录账号失败:" + err.Error(),
+				ClientIP: clientIP(r, s.trustProxy), Succeeded: false,
+			})
+			resp.PortalAccountError = err.Error()
+			writeJSON(w, http.StatusCreated, resp)
+			return
+		}
+		resp.PortalAccount = account
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionPortalAccountSet,
+			TargetType: "user", TargetID: u.UserCode,
+			Detail: "登录账号 " + account.Username, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+		})
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 type updateUserRequest struct {

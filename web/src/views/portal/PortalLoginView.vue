@@ -1,0 +1,109 @@
+<script setup lang="ts">
+import { reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
+import { ApiError } from '@/api/client'
+import { usePortalStore } from '@/stores/portal'
+
+const portal = usePortalStore()
+const router = useRouter()
+const route = useRoute()
+
+const form = reactive({ username: '', password: '' })
+const loading = ref(false)
+
+async function onSubmit() {
+  loading.value = true
+  try {
+    await portal.login(form.username, form.password)
+    // 强制改密的用户直接送到安全设置页,不必先看一眼概览再被挡回来。
+    if (portal.identity?.must_change_password) {
+      await router.replace({ name: 'portal-security' })
+      return
+    }
+    const redirect =
+      typeof route.query.redirect === 'string' ? route.query.redirect : '/user/dashboard'
+    await router.replace(redirect)
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '登录失败,请稍后重试')
+  } finally {
+    loading.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="login-page">
+    <a-card class="login-card" :bordered="false">
+      <h1 class="login-title">LiteBox</h1>
+      <p class="login-subtitle">用户中心</p>
+
+      <a-form layout="vertical" @submit.prevent="onSubmit">
+        <a-form-item label="登录账号">
+          <a-input
+            v-model:value="form.username"
+            placeholder="管理员分配的账号"
+            autocomplete="username"
+            size="large"
+          />
+        </a-form-item>
+        <a-form-item label="密码">
+          <a-input-password
+            v-model:value="form.password"
+            placeholder="请输入密码"
+            autocomplete="current-password"
+            size="large"
+            @press-enter="onSubmit"
+          />
+        </a-form-item>
+        <a-button
+          type="primary"
+          size="large"
+          block
+          :loading="loading"
+          :disabled="!form.username || !form.password"
+          @click="onSubmit"
+        >
+          登录
+        </a-button>
+      </a-form>
+
+      <p class="hint">忘记密码请联系管理员重置。</p>
+    </a-card>
+  </div>
+</template>
+
+<style scoped>
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0f2f5;
+}
+
+.login-card {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 2px 12px rgb(0 0 0 / 8%);
+}
+
+.login-title {
+  margin: 0;
+  font-size: 28px;
+  text-align: center;
+}
+
+.login-subtitle {
+  margin: 4px 0 24px;
+  text-align: center;
+  color: rgb(0 0 0 / 45%);
+}
+
+.hint {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: rgb(0 0 0 / 45%);
+}
+</style>

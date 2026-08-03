@@ -156,6 +156,10 @@ export interface ProxyUser {
   sub_last_access_ip: string
   sub_last_user_agent: string
   sub_access_count: number
+  /** 门户登录账号,为 null 表示该用户未开通门户登录 */
+  portal_account: PortalAccount | null
+  /** 仅新建用户时可能出现:用户已建好但登录账号没建成 */
+  portal_account_error?: string
   // 仅详情接口返回
   uuid?: string
   sub_token?: string
@@ -375,6 +379,140 @@ export interface TrafficStatus {
   failing_nodes: { node_id: number; error: string }[]
 }
 
+// ---------- 用户门户 ----------
+
+export interface PortalAccount {
+  id: number
+  proxy_user_id: number
+  username: string
+  login_enabled: boolean
+  must_change_password: boolean
+  last_login_at: string | null
+  last_login_ip: string
+  session_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface PortalIdentity {
+  username: string
+  display_name: string
+  must_change_password: boolean
+}
+
+export interface PortalAlert {
+  level: 'info' | 'warning' | 'error'
+  message: string
+}
+
+export interface PortalDashboard {
+  display_name: string
+  user_code: string
+  tier_name: string
+  tier_code: string
+  status: UserStatus
+  status_text: string
+  serviceable: boolean
+  reason: string
+  used_uplink: number
+  used_downlink: number
+  used_total: number
+  quota_bytes: number
+  remaining: number
+  /** 不限量时为 null,前端据此显示「不限量」而不是 0% */
+  used_percent: number | null
+  expires_at: string | null
+  remaining_days: number | null
+  last_reset_at: string | null
+  next_reset_at: string | null
+  node_count: number
+  alerts: PortalAlert[]
+}
+
+export interface PortalNode {
+  id: number
+  display_name: string
+  tier_name: string
+  tier_code: string
+  status: 'normal' | 'maintenance' | 'disabled'
+  protocol: string
+  public_port: number
+  public_remark: string
+  maintenance_message: string
+  in_subscription: boolean
+  today_bytes: number
+  month_bytes: number
+  total_bytes: number
+  last_seen_at: string | null
+}
+
+export interface PortalNodeShare {
+  node_id: number
+  display_name: string
+  uplink: number
+  downlink: number
+  total: number
+  percent: number
+}
+
+export interface PortalTraffic {
+  days: number
+  daily: DailyPoint[]
+  by_node: PortalNodeShare[]
+  total: number
+  uplink: number
+  downlink: number
+}
+
+export interface PortalSubscription {
+  available: boolean
+  reason: string
+  base_url: string
+  url_base64: string
+  url_uri: string
+  url_singbox: string
+  node_count: number
+  last_access_at: string | null
+  access_count: number
+}
+
+export interface PortalSession {
+  id: number
+  created_at: string
+  expires_at: string
+  last_seen_at: string
+  client_ip: string
+  user_agent: string
+  current: boolean
+}
+
+export const portalApi = {
+  login: (username: string, password: string) =>
+    request<PortalIdentity>('/api/portal/auth/login', {
+      method: 'POST',
+      body: { username, password },
+    }),
+  logout: () => request<{ message: string }>('/api/portal/auth/logout', { method: 'POST' }),
+  me: () => request<PortalIdentity>('/api/portal/auth/me'),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    request<{ message: string }>('/api/portal/auth/password', {
+      method: 'POST',
+      body: { old_password: oldPassword, new_password: newPassword },
+    }),
+  sessions: () => request<{ items: PortalSession[] }>('/api/portal/auth/sessions'),
+  revokeSession: (id: number) =>
+    request<{ message: string }>(`/api/portal/auth/sessions/${id}`, { method: 'DELETE' }),
+  logoutAll: () =>
+    request<{ message: string }>('/api/portal/auth/logout-all', { method: 'POST' }),
+
+  dashboard: () => request<PortalDashboard>('/api/portal/dashboard'),
+  nodes: () => request<{ items: PortalNode[] }>('/api/portal/nodes'),
+  traffic: (days = 30) => request<PortalTraffic>('/api/portal/traffic', { query: { days } }),
+  subscription: () => request<PortalSubscription>('/api/portal/subscription'),
+  regenerateSubscription: () =>
+    request<PortalSubscription>('/api/portal/subscription/regenerate', { method: 'POST' }),
+}
+
 // ---------- 接口 ----------
 
 export const api = {
@@ -492,6 +630,21 @@ export const api = {
   collectNodeMetrics: (id: number) =>
     request<NodeMetrics>(`/api/nodes/${id}/collect-metrics`, { method: 'POST' }),
   monitorStatus: () => request<MonitorStatus>('/api/metrics/status'),
+
+  // 用户门户账号(管理端)
+  setPortalAccount: (
+    id: number,
+    body: { username: string; password?: string; must_change_password?: boolean },
+  ) => request<PortalAccount>(`/api/users/${id}/portal-account`, { method: 'PUT', body }),
+  deletePortalAccount: (id: number) =>
+    request<{ message: string }>(`/api/users/${id}/portal-account`, { method: 'DELETE' }),
+  setPortalLoginEnabled: (id: number, enabled: boolean) =>
+    request<PortalAccount>(`/api/users/${id}/portal-login-enabled`, {
+      method: 'POST',
+      body: { enabled },
+    }),
+  revokePortalSessions: (id: number) =>
+    request<{ message: string }>(`/api/users/${id}/revoke-portal-sessions`, { method: 'POST' }),
 
   // 访问等级
   accessTiers: () => request<{ items: AccessTier[] }>('/api/access-tiers'),

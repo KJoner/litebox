@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import {
   api,
@@ -21,6 +21,12 @@ const traffic = ref<UserTraffic | null>(null)
 const logs = ref<AuditLog[]>([])
 const loading = ref(false)
 const revealUUID = ref(false)
+
+// 门户登录账号。密码只在这里输入一次,提交后立刻清空 ——
+// 不回显、不保留在组件状态里。
+const accountOpen = ref(false)
+const accountSubmitting = ref(false)
+const accountForm = reactive({ username: '', password: '', must_change_password: true })
 
 async function load(id: number) {
   loading.value = true
@@ -56,6 +62,88 @@ watch(
 
 function nodeName(id: number): string {
   return props.nodes.find((n) => n.id === id)?.name ?? `节点 ${id}`
+}
+
+function openAccountForm() {
+  accountForm.username = user.value?.portal_account?.username ?? ''
+  accountForm.password = ''
+  // 已有账号时默认不强制改密:管理员多半只是改个账号名。
+  accountForm.must_change_password = !user.value?.portal_account
+  accountOpen.value = true
+}
+
+async function submitAccount() {
+  if (props.userId === null) return
+  accountSubmitting.value = true
+  const changedPassword = accountForm.password !== ''
+  try {
+    await api.setPortalAccount(props.userId, {
+      username: accountForm.username,
+      // 留空表示不改密码。这一点必须显式表达,不能让后端把空串当成新密码。
+      password: accountForm.password || undefined,
+      must_change_password: accountForm.must_change_password,
+    })
+    accountOpen.value = false
+    accountForm.password = ''
+    message.success(changedPassword ? '已保存,旧会话已全部失效' : '已保存')
+    emit('changed')
+    await load(props.userId)
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '保存登录账号失败')
+  } finally {
+    accountSubmitting.value = false
+  }
+}
+
+async function toggleLogin() {
+  if (props.userId === null || !user.value?.portal_account) return
+  const enable = !user.value.portal_account.login_enabled
+  try {
+    await api.setPortalLoginEnabled(props.userId, enable)
+    message.success(enable ? '已允许登录' : '已停用登录,在线会话已全部踢出')
+    await load(props.userId)
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '操作失败')
+  }
+}
+
+function confirmRevokeSessions() {
+  Modal.confirm({
+    title: '撤销该用户的全部登录会话?',
+    content: '所有已登录的设备都会被踢出,需要重新登录。代理连接不受影响。',
+    okText: '撤销',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        await api.revokePortalSessions(props.userId!)
+        message.success('已撤销全部会话')
+        await load(props.userId!)
+      } catch (err) {
+        message.error(err instanceof ApiError ? err.message : '操作失败')
+      }
+    },
+  })
+}
+
+function confirmDeleteAccount() {
+  Modal.confirm({
+    title: '删除门户登录账号?',
+    content: '该用户将无法再登录用户中心,但代理服务与订阅不受影响。',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        await api.deletePortalAccount(props.userId!)
+        message.success('已删除登录账号')
+        emit('changed')
+        await load(props.userId!)
+      } catch (err) {
+        message.error(err instanceof ApiError ? err.message : '操作失败')
+      }
+    },
+  })
 }
 
 async function copy(text: string, label: string) {
@@ -146,11 +234,59 @@ function confirmRegenerateToken() {
           </a-descriptions-item>
         </a-descriptions>
 
-        <div class="section-title">节点分配</div>
-        <a-space v-if="user.node_ids.length > 0" wrap>
-          <a-tag v-for="id in user.node_ids" :key="id">{{ nodeName(id) }}</a-tag>
+        <div class="section-title">可用节点</div>
+        <a-space v-if="user.effective_node_ids.length > 0" wrap>
+          <a-tag
+            v-for="id in user.effective_node_ids"
+            :key="id"
+            :color="user.node_ids.includes(id) ? 'blue' : undefined"
+          >
+            {{ nodeName(id) }}
+          </a-tag>
         </a-space>
-        <a-empty v-else description="未分配节点" :image="undefined" />
+        <a-empty v-else description="没有可用节点" :image="undefined" />
+        <div class="hint-line">
+          蓝色为单独追加的授权,其余由访问等级「{{ user.access_tier_name }}」继承。
+        </div>
+
+        <div class="section-title">
+          门户登录
+          <a class="reveal" @click="openAccountForm">
+            {{ user.portal_account ? '修改' : '开通' }}
+          </a>
+        </div>
+        <a-descriptions v-if="user.portal_account" :column="2" size="small" bordered>
+          <a-descriptions-item label="登录账号">
+            {{ user.portal_account.username }}
+          </a-descriptions-item>
+          <a-descriptions-item label="登录状态">
+            <a-tag :color="user.portal_account.login_enabled ? 'green' : 'red'">
+              {{ user.portal_account.login_enabled ? '已启用' : '已停用' }}
+            </a-tag>
+            <a-tag v-if="user.portal_account.must_change_password" color="orange">
+              待改初始密码
+            </a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="最后登录">
+            {{ formatRelative(user.portal_account.last_login_at) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="最后登录 IP">
+            {{ user.portal_account.last_login_ip || '—' }}
+          </a-descriptions-item>
+          <a-descriptions-item label="在线会话">
+            {{ user.portal_account.session_count }} 个
+          </a-descriptions-item>
+          <a-descriptions-item label="操作">
+            <a-space size="small">
+              <a @click="toggleLogin">
+                {{ user.portal_account.login_enabled ? '停用登录' : '允许登录' }}
+              </a>
+              <a @click="confirmRevokeSessions">踢出全部</a>
+              <a class="danger" @click="confirmDeleteAccount">删除账号</a>
+            </a-space>
+          </a-descriptions-item>
+        </a-descriptions>
+        <a-empty v-else description="未开通门户登录" :image="undefined" />
 
         <div class="section-title">订阅地址</div>
         <a-input-group compact class="copy-row">
@@ -212,6 +348,36 @@ function confirmRegenerateToken() {
       </a-space>
     </template>
   </a-drawer>
+
+  <a-modal
+    v-model:open="accountOpen"
+    :title="user?.portal_account ? '修改登录账号' : '开通门户登录'"
+    :confirm-loading="accountSubmitting"
+    ok-text="保存"
+    cancel-text="取消"
+    @ok="submitAccount"
+  >
+    <a-form layout="vertical">
+      <a-form-item label="登录账号" required extra="字母、数字、下划线、连字符与点,3~32 位">
+        <a-input v-model:value="accountForm.username" autocomplete="off" />
+      </a-form-item>
+      <a-form-item
+        :label="user?.portal_account ? '新密码' : '初始密码'"
+        :extra="
+          user?.portal_account
+            ? '留空表示不修改密码。填写后该用户的全部登录会话会立即失效'
+            : '至少 8 位,请通过安全渠道发给用户'
+        "
+      >
+        <a-input-password v-model:value="accountForm.password" autocomplete="new-password" />
+      </a-form-item>
+      <a-form-item>
+        <a-checkbox v-model:checked="accountForm.must_change_password">
+          要求用户首次登录后修改密码
+        </a-checkbox>
+      </a-form-item>
+    </a-form>
+  </a-modal>
 </template>
 
 <style scoped>
@@ -235,6 +401,16 @@ function confirmRegenerateToken() {
 .sub-formats {
   margin-top: 6px;
   font-size: 12px;
+}
+
+.hint-line {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgb(0 0 0 / 45%);
+}
+
+.danger {
+  color: #cf1322;
 }
 
 .by-node {

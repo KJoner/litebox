@@ -13,11 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -65,14 +67,21 @@ func newTestEnv(t *testing.T) *testEnv {
 	userStore := user.NewStore(db, cipher)
 	userService := user.NewService(userStore, nil, logger)
 
+	portalService := portal.NewService(db, portal.Options{
+		SessionTTL: cfg.Security.SessionTTL, MaxAttempts: 20, LoginWindow: time.Minute,
+	})
 	srv := NewServer(Options{
-		Config: cfg,
-		DB:     db,
-		Auth:   authService,
-		Audit:  audit.NewRecorder(db, logger),
-		Users:  userService,
-		Subs:   subscription.NewService(db, userStore, cipher, 2080),
-		Logger: logger,
+		Config:      cfg,
+		DB:          db,
+		Auth:        authService,
+		Audit:       audit.NewRecorder(db, logger),
+		Users:       userService,
+		Subs:        subscription.NewService(db, userStore, cipher, 2080),
+		Tiers:       access.NewStore(db),
+		Portal:      portalService,
+		PortalAccts: portal.NewStore(db),
+		PortalData:  portal.NewQuerier(db, userStore),
+		Logger:      logger,
 	})
 
 	ts := httptest.NewServer(srv.Handler())

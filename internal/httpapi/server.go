@@ -16,6 +16,7 @@ import (
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
@@ -39,6 +40,9 @@ type Server struct {
 	monitor      *node.Monitor
 	settings     *settings.Store
 	tiers        *access.Store
+	portal       *portal.Service
+	portalAccts  *portal.Store
+	portalData   *portal.Querier
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
 	logger       *slog.Logger
@@ -66,9 +70,14 @@ type Options struct {
 	Monitor   *node.Monitor
 	Settings  *settings.Store
 	Tiers     *access.Store
-	Pool      *sshx.Pool
-	Binaries  node.BinaryProvider
-	Logger    *slog.Logger
+	// Portal 三件套一起提供或一起省略。省略时门户路由整体不注册,
+	// 前端访问 /user/* 会拿到 404 —— 好过注册了半套接口再在运行时空指针。
+	Portal      *portal.Service
+	PortalAccts *portal.Store
+	PortalData  *portal.Querier
+	Pool        *sshx.Pool
+	Binaries    node.BinaryProvider
+	Logger      *slog.Logger
 	// Assets 是前端构建产物的文件系统。为 nil 时只提供 API,
 	// 便于在前端尚未构建时启动后端。
 	Assets fs.FS
@@ -90,6 +99,9 @@ func NewServer(opts Options) *Server {
 		monitor:      opts.Monitor,
 		settings:     opts.Settings,
 		tiers:        opts.Tiers,
+		portal:       opts.Portal,
+		portalAccts:  opts.PortalAccts,
+		portalData:   opts.PortalData,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
 		logger:       opts.Logger,
@@ -155,6 +167,13 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/users/{id}/reset-traffic", s.handleResetUserTraffic)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-uuid", s.handleRegenerateUserUUID)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
+
+		if s.portalAccts != nil && s.portal != nil {
+			authed.HandleFunc("PUT /api/users/{id}/portal-account", s.handleSetPortalAccount)
+			authed.HandleFunc("DELETE /api/users/{id}/portal-account", s.handleDeletePortalAccount)
+			authed.HandleFunc("POST /api/users/{id}/portal-login-enabled", s.handleSetPortalLoginEnabled)
+			authed.HandleFunc("POST /api/users/{id}/revoke-portal-sessions", s.handleRevokePortalSessions)
+		}
 	}
 
 	if s.traffic != nil {
@@ -183,6 +202,30 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("PUT /api/access-tiers/{id}", s.handleUpdateTier)
 	}
 	mux.Handle("/api/", s.requireAuth(authed))
+
+	// 门户接口。必须挂在 /api/portal/ 这个更长的前缀上,由 ServeMux 的
+	// 最长匹配把它从管理员中间件下分流出去 —— 两套认证不共享任何会话表,
+	// 拿门户 Cookie 走管理接口只会得到"未登录"。
+	if s.portal != nil && s.portalData != nil {
+		mux.HandleFunc("POST /api/portal/auth/login", s.handlePortalLogin)
+
+		portalMux := http.NewServeMux()
+		portalMux.HandleFunc("POST /api/portal/auth/logout", s.handlePortalLogout)
+		portalMux.HandleFunc("GET /api/portal/auth/me", s.handlePortalMe)
+		portalMux.HandleFunc("POST /api/portal/auth/password", s.handlePortalChangePassword)
+		portalMux.HandleFunc("GET /api/portal/auth/sessions", s.handlePortalSessions)
+		portalMux.HandleFunc("DELETE /api/portal/auth/sessions/{id}", s.handlePortalRevokeSession)
+		portalMux.HandleFunc("POST /api/portal/auth/logout-all", s.handlePortalLogoutAll)
+		portalMux.HandleFunc("GET /api/portal/dashboard", s.handlePortalDashboard)
+		portalMux.HandleFunc("GET /api/portal/nodes", s.handlePortalNodes)
+		portalMux.HandleFunc("GET /api/portal/traffic", s.handlePortalTraffic)
+		portalMux.HandleFunc("GET /api/portal/subscription", s.handlePortalSubscription)
+		if s.users != nil {
+			portalMux.HandleFunc("POST /api/portal/subscription/regenerate",
+				s.handlePortalRegenerateSubToken)
+		}
+		mux.Handle("/api/portal/", s.requirePortalAuth(portalMux))
+	}
 
 	// 前端静态资源
 	if s.assets != nil {
