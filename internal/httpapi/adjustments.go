@@ -99,7 +99,7 @@ func (s *Server) applyAdjustment(ctx context.Context, id int64, req adjustReques
 		// 不限量的用户加流量没有意义:0 + N 会把他从"不限"变成"只有 N",
 		// 这与管理员点这个按钮的意图正好相反。
 		if before.QuotaBytes == 0 {
-			return nil, params, errors.New("该用户当前是不限量,请改用「设置额度」")
+			return nil, params, errors.New("该用户当前是不限量,请改用「设置流量额度」")
 		}
 		next := before.QuotaBytes + req.QuotaDeltaBytes
 		if next < 0 {
