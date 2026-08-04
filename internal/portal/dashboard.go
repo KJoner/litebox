@@ -72,6 +72,9 @@ type Node struct {
 	PublicRemark       string `json:"public_remark"`
 	MaintenanceMessage string `json:"maintenance_message"`
 	InSubscription     bool   `json:"in_subscription"`
+	// SupportsIPv6 只说明订阅里会多出一条 IPv6 条目,不给出地址本身 ——
+	// 这个 DTO 是白名单,节点地址从来不在里面。
+	SupportsIPv6 bool `json:"supports_ipv6"`
 
 	TodayBytes int64   `json:"today_bytes"`
 	MonthBytes int64   `json:"month_bytes"`
@@ -242,7 +245,8 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 	rows, err := q.db.QueryContext(ctx, `
 		SELECT n.id, n.display_name, t.name, t.code, n.status,
 		       n.proxy_port, n.public_remark, n.maintenance_message,
-		       n.subscription_enabled, n.deployed_config_sha256
+		       n.subscription_enabled, n.deployed_config_sha256,
+		       n.ipv6_address != ''
 		  FROM nodes n
 		  JOIN access_tiers t ON t.id = n.access_tier_id
 		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
@@ -260,7 +264,7 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		var subEnabled bool
 		if err := rows.Scan(&n.ID, &n.DisplayName, &n.TierName, &n.TierCode, &status,
 			&n.PublicPort, &n.PublicRemark, &n.MaintenanceMessage,
-			&subEnabled, &deployedSHA); err != nil {
+			&subEnabled, &deployedSHA, &n.SupportsIPv6); err != nil {
 			return nil, err
 		}
 		n.Protocol = "VLESS + REALITY"
@@ -469,11 +473,16 @@ type Subscription struct {
 	Available bool   `json:"available"`
 	Reason    string `json:"reason"`
 	// 三种格式的完整地址。不可用时全部为空串,不给一个点了没用的链接。
-	BaseURL      string  `json:"base_url"`
-	URLBase64    string  `json:"url_base64"`
-	URLURI       string  `json:"url_uri"`
-	URLSingBox   string  `json:"url_singbox"`
+	BaseURL    string `json:"base_url"`
+	URLBase64  string `json:"url_base64"`
+	URLURI     string `json:"url_uri"`
+	URLSingBox string `json:"url_singbox"`
+	// NodeCount 是物理节点数,与"我的节点"页面的条数一致。
+	// EntryCount 是订阅文件里的条目数 —— 配了 IPv6 的节点会多出一条
+	// "展示名称-IPV6"。两个数字都给出来,用户导入后数不对才不会来问。
 	NodeCount    int     `json:"node_count"`
+	IPv6Count    int     `json:"ipv6_count"`
+	EntryCount   int     `json:"entry_count"`
 	LastAccessAt *string `json:"last_access_at"`
 	AccessCount  int64   `json:"access_count"`
 }
@@ -502,13 +511,16 @@ func (q *Querier) Subscription(ctx context.Context, proxyUserID int64, baseURL s
 	// 节点数按订阅的实际过滤条件算,不能直接用有效节点数 ——
 	// 未部署与已下架的节点不会进订阅,数字对不上用户就会来问。
 	if err := q.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM nodes n
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN n.ipv6_address != '' THEN 1 ELSE 0 END), 0)
+		  FROM nodes n
 		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
 		 WHERE en.proxy_user_id = ? AND n.deleted_at IS NULL
 		   AND n.status != 'DISABLED' AND n.subscription_enabled = 1
-		   AND n.deployed_config_sha256 != ''`, proxyUserID).Scan(&sub.NodeCount); err != nil {
+		   AND n.deployed_config_sha256 != ''`, proxyUserID).
+		Scan(&sub.NodeCount, &sub.IPv6Count); err != nil {
 		return nil, err
 	}
+	sub.EntryCount = sub.NodeCount + sub.IPv6Count
 
 	root := baseURL + "/sub/" + u.SubToken
 	sub.BaseURL = root

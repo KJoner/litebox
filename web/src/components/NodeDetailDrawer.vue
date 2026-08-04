@@ -9,10 +9,11 @@ import {
   type DeploymentRecord,
   type DestCheckResult,
   type Node,
+  type NodeCycleUsage,
   type NodeMetrics,
   type ProbeResult,
 } from '@/api/client'
-import { formatBytes, formatRelative, formatTime, shortHash } from '@/utils/format'
+import { formatBytes, formatRelative, formatTime, formatUTCTime, shortHash } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import TrafficChart from '@/components/TrafficChart.vue'
 import MetricsChart from '@/components/MetricsChart.vue'
@@ -26,6 +27,7 @@ const probe = ref<ProbeResult | null>(null)
 const deployments = ref<DeploymentRecord[]>([])
 const diff = ref<ConfigDiff | null>(null)
 const daily = ref<DailyPoint[]>([])
+const cycle = ref<NodeCycleUsage | null>(null)
 const destResults = ref<DestCheckResult[]>([])
 const loading = ref(false)
 const running = ref('')
@@ -41,6 +43,7 @@ async function load(id: number) {
     node.value = n
     deployments.value = d.items
     daily.value = t.daily
+    cycle.value = t.cycle
     await loadMetrics(id)
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '加载节点详情失败')
@@ -54,6 +57,7 @@ watch(
   (id) => {
     probe.value = null
     diff.value = null
+    cycle.value = null
     destResults.value = []
     metrics.value = null
     metricsHistory.value = []
@@ -360,6 +364,15 @@ function formatUptime(seconds: number): string {
               <div class="hint">需自行配置端口转发,面板只让 sing-box 监听主机端口</div>
             </template>
           </a-descriptions-item>
+          <a-descriptions-item label="IPv6" :span="2">
+            <template v-if="node.ipv6_address">
+              <span class="mono">{{ node.ipv6_address }}</span>
+              <div class="hint">
+                订阅中额外下发「{{ node.display_name }}-IPV6」。SSH 与部署仍走 IPv4。
+              </div>
+            </template>
+            <span v-else class="muted">未配置(订阅中只有 IPv4 条目)</span>
+          </a-descriptions-item>
           <a-descriptions-item label="架构">{{ node.arch || '未探测' }}</a-descriptions-item>
           <a-descriptions-item label="sing-box">
             {{ node.singbox_version || '未安装' }}
@@ -580,6 +593,49 @@ function formatUptime(seconds: number): string {
             <span v-if="!diff.desired_users?.length" class="muted">(无)</span>
           </div>
         </template>
+
+        <!-- 周期汇总与下面的趋势图口径不同,不能互相替代:趋势图按 UTC 自然日
+             聚合,表达不了"每月 15 日 00:00"这种非零点的周期边界。 -->
+        <div class="section-title">节点周期流量</div>
+        <a-descriptions v-if="cycle" :column="2" size="small" bordered>
+          <a-descriptions-item label="周期开始">
+            {{ formatUTCTime(cycle.period_start) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="下次重置">
+            <span v-if="cycle.next_reset_at">{{ formatUTCTime(cycle.next_reset_at) }}</span>
+            <span v-else class="muted">不重置(统计创建以来的累计流量)</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="上行">{{ formatBytes(cycle.uplink_bytes) }}</a-descriptions-item>
+          <a-descriptions-item label="下行">
+            {{ formatBytes(cycle.downlink_bytes) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="已用总量">
+            {{ formatBytes(cycle.used_bytes) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="流量限额">
+            <span v-if="cycle.unlimited" class="muted">不限量</span>
+            <span v-else>{{ formatBytes(cycle.quota_bytes) }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="剩余">
+            <span v-if="cycle.remaining_bytes === null" class="muted">—</span>
+            <span v-else>{{ formatBytes(cycle.remaining_bytes) }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="使用率">
+            <template v-if="cycle.usage_percent === null">
+              <span class="muted">—</span>
+            </template>
+            <template v-else>
+              <span :class="cycle.exceeded ? 'bad' : ''">
+                {{ cycle.usage_percent.toFixed(1) }}%
+              </span>
+              <a-tag v-if="cycle.exceeded" color="red">已超额</a-tag>
+            </template>
+          </a-descriptions-item>
+        </a-descriptions>
+        <p v-if="cycle && cycle.exceeded" class="hint">
+          超额只是提示。面板不会因此停掉 sing-box、禁用节点或把节点从订阅里摘掉 ——
+          那会同时打断这台机器上的全部用户,而各家 VPS 的流量计量口径并不一致。
+        </p>
 
         <div class="section-title">最近 30 天流量</div>
         <TrafficChart :data="daily" />

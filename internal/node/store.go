@@ -11,6 +11,7 @@ import (
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/singbox"
+	"github.com/litebox/litebox/internal/traffic"
 )
 
 var (
@@ -38,7 +39,11 @@ type Node struct {
 	// 内部名称上通常写着机房、供应商、到期日甚至 IP 段,属于运维信息。
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
+	// Host 是 IPv4 地址,同时是 SSH 管理地址与 IPv4 订阅地址。
+	// IPv6Address 只进订阅:SSH、探测、安装、部署、重启、流量同步与资源采集
+	// 一律走 Host,双栈里只留一条管理通道才不会出现"两条路两种结论"。
 	Host        string `json:"host"`
+	IPv6Address string `json:"ipv6_address"`
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
 	SSHKey      string `json:"-"` // PEM 私钥,永不出现在 API 响应中
@@ -76,6 +81,13 @@ type Node struct {
 	PublicRemark        string `json:"public_remark"`
 	MaintenanceMessage  string `json:"maintenance_message"`
 
+	// TrafficQuotaBytes 为 0 表示不限量。节点额度只用于统计与预警,
+	// 超额不会自动停服 —— 同步有间隔、各家 VPS 的口径也不同,
+	// 自动关掉一个共享节点会同时影响全部用户。
+	TrafficQuotaBytes int64  `json:"traffic_quota_bytes"`
+	TrafficResetCycle string `json:"traffic_reset_cycle"`
+	TrafficResetDay   int    `json:"traffic_reset_day"`
+
 	Status               Status  `json:"status"`
 	LastHeartbeatAt      *string `json:"last_heartbeat_at"`
 	ConfigRevision       int64   `json:"config_revision"`
@@ -95,13 +107,14 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 	return &Store{db: db, cipher: cipher}
 }
 
-const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ssh_port, n.ssh_user,
+const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.proxy_port, n.listen_port, n.api_port, n.arch, n.singbox_version, n.singbox_build_tags,
 	n.reality_dest, n.reality_dest_port, n.reality_privkey_encrypted, n.reality_pubkey,
 	n.reality_short_id, n.handshake_max_record_size, n.handshake_checked_at,
 	n.access_tier_id, t.code, t.name, t.level,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
+	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
 	n.status, n.last_heartbeat_at, n.config_revision, n.deployed_config_sha256,
 	n.created_at, n.updated_at`
 
@@ -113,12 +126,14 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
 	var sshKeyEnc, realityKeyEnc string
 	err := scan(
-		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
+		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
+		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.Arch, &n.SingBoxVersion, &n.BuildTags,
 		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey,
 		&n.RealityShortID, &n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
 		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
+		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
 		&n.Status, &n.LastHeartbeatAt, &n.ConfigRevision, &n.DeployedConfigSHA256,
 		&n.CreatedAt, &n.UpdatedAt,
 	)
@@ -144,13 +159,19 @@ type CreateParams struct {
 	// DisplayName 留空时复制 Name。订阅里的节点名不能为空:
 	// 客户端拿它识别条目,空名字会让用户面对一列无法区分的节点。
 	DisplayName string
+	// Host 必须是 IPv4;IPv6Address 选填,留空表示该节点只有 IPv4。
 	Host        string
+	IPv6Address string
 	SSHPort     int
 	SSHUser     string
 	SSHKey      string
 	// AccessTierID 留 0 表示普通组。
 	AccessTierID int64
 	SortOrder    int
+	// TrafficQuotaBytes 留 0 表示不限量;TrafficResetCycle 留空按 NONE。
+	TrafficQuotaBytes int64
+	TrafficResetCycle string
+	TrafficResetDay   int
 	// ProxyPort 是客户端连接的公网端口,必填。
 	// ListenPort 是 sing-box 在主机上监听的端口,留空表示不做端口转发,与 ProxyPort 相同。
 	ProxyPort  int
@@ -197,15 +218,20 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO nodes (name, display_name, host, ssh_port, ssh_user, ssh_key_encrypted,
-			ssh_host_key, proxy_port, listen_port, api_port, reality_dest, reality_dest_port,
+		INSERT INTO nodes (name, display_name, host, ipv6_address, ssh_port, ssh_user,
+			ssh_key_encrypted, ssh_host_key, proxy_port, listen_port, api_port,
+			reality_dest, reality_dest_port,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			access_tier_id, sort_order, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		p.Name, p.DisplayName, p.Host, p.SSHPort, p.SSHUser, sshKeyEnc,
+			access_tier_id, sort_order,
+			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day,
+			status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.RealityDest, p.RealityDestPort,
 		realityKeyEnc, keys.PublicKey, shortID,
-		p.AccessTierID, p.SortOrder, StatusPending, now, now)
+		p.AccessTierID, p.SortOrder,
+		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
+		StatusPending, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
@@ -220,7 +246,19 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 }
 
 func validateCreate(p *CreateParams) error {
-	if err := validateIdentity(p.Name, p.Host); err != nil {
+	var err error
+	if err = validateName(p.Name); err != nil {
+		return err
+	}
+	// 新建节点一律要求 IPv4 字面量。
+	if p.Host, err = normalizeIPv4(p.Host, true); err != nil {
+		return err
+	}
+	if p.IPv6Address, err = normalizeIPv6(p.IPv6Address); err != nil {
+		return err
+	}
+	if err = normalizeTrafficQuota(&p.TrafficQuotaBytes, &p.TrafficResetCycle,
+		&p.TrafficResetDay); err != nil {
 		return err
 	}
 	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
@@ -249,15 +287,31 @@ func validateCreate(p *CreateParams) error {
 	return singbox.ValidatePort(p.RealityDestPort, "握手目标")
 }
 
-func validateIdentity(name, host string) error {
+func validateName(name string) error {
 	if name == "" {
 		return errors.New("节点名称不能为空")
 	}
 	if len(name) > 64 {
 		return errors.New("节点名称不能超过 64 个字符")
 	}
-	if host == "" {
-		return errors.New("主机地址不能为空")
+	return nil
+}
+
+// normalizeTrafficQuota 归一化节点流量额度与重置周期。
+func normalizeTrafficQuota(quota *int64, cycle *string, day *int) error {
+	if *quota < 0 {
+		return errors.New("节点流量限额不能为负数")
+	}
+	parsed, err := traffic.ParseResetCycle(*cycle)
+	if err != nil {
+		return err
+	}
+	*cycle = string(parsed)
+	if *day == 0 {
+		*day = 1
+	}
+	if *day < 1 || *day > 31 {
+		return errors.New("每月重置日必须在 1~31 之间")
 	}
 	return nil
 }
@@ -356,12 +410,23 @@ type UpdateParams struct {
 	Name        string
 	DisplayName string
 	Host        string
+	// IPv6Address 留空表示清空 IPv6,不是"保持原值"。
+	// 与下面几个字段的约定相反,因为清空 IPv6 是管理员的显式动作
+	// (把订阅里的 IPv6 条目撤下来),必须有办法表达。
+	IPv6Address string
 	SSHPort     int
 	SSHUser     string
 	SSHKey      string
 	ProxyPort   int
 	ListenPort  int
 	APIPort     int
+
+	// TrafficQuotaBytes 为 nil 表示保持原额度。用指针是因为 0 本身有含义
+	// (不限量),零值区分不出"没传"和"改成不限量"。
+	TrafficQuotaBytes *int64
+	// TrafficResetCycle 留空、TrafficResetDay 为 0 表示保持原值。
+	TrafficResetCycle string
+	TrafficResetDay   int
 
 	// AccessTierID 为 0 表示保持原等级。不回落到普通组:
 	// 前端漏传这个字段时把 VIP 节点悄悄降成普通组,等于给全体用户开门,
@@ -400,7 +465,28 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if err != nil {
 		return nil, effect, err
 	}
-	if err := validateIdentity(p.Name, p.Host); err != nil {
+	if err := validateName(p.Name); err != nil {
+		return nil, effect, err
+	}
+	// 只有确实改动了这一栏才按 IPv4 字面量的新规矩校验。存量节点可能用域名接入,
+	// 不然管理员改个端口都会被一条与本次操作无关的规则拦住。
+	if p.Host, err = normalizeIPv4(p.Host, strings.TrimSpace(p.Host) != old.Host); err != nil {
+		return nil, effect, err
+	}
+	if p.IPv6Address, err = normalizeIPv6(p.IPv6Address); err != nil {
+		return nil, effect, err
+	}
+	if p.TrafficQuotaBytes == nil {
+		p.TrafficQuotaBytes = &old.TrafficQuotaBytes
+	}
+	if p.TrafficResetCycle == "" {
+		p.TrafficResetCycle = old.TrafficResetCycle
+	}
+	if p.TrafficResetDay == 0 {
+		p.TrafficResetDay = old.TrafficResetDay
+	}
+	if err := normalizeTrafficQuota(p.TrafficQuotaBytes, &p.TrafficResetCycle,
+		&p.TrafficResetDay); err != nil {
 		return nil, effect, err
 	}
 	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
@@ -443,7 +529,9 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	}
 	track("节点名称", old.Name != p.Name, old.Name, p.Name)
 	track("展示名称", old.DisplayName != p.DisplayName, old.DisplayName, p.DisplayName)
-	track("主机地址", old.Host != p.Host, old.Host, p.Host)
+	track("IPv4 地址", old.Host != p.Host, old.Host, p.Host)
+	track("IPv6 地址", old.IPv6Address != p.IPv6Address,
+		orNone(old.IPv6Address), orNone(p.IPv6Address))
 	track("SSH 端口", old.SSHPort != p.SSHPort, old.SSHPort, p.SSHPort)
 	track("SSH 用户", old.SSHUser != p.SSHUser, old.SSHUser, p.SSHUser)
 	track("公网代理端口", old.ProxyPort != p.ProxyPort, old.ProxyPort, p.ProxyPort)
@@ -455,10 +543,19 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	track("公开备注", old.PublicRemark != p.PublicRemark, old.PublicRemark, p.PublicRemark)
 	track("维护说明", old.MaintenanceMessage != p.MaintenanceMessage,
 		old.MaintenanceMessage, p.MaintenanceMessage)
+	track("流量限额", old.TrafficQuotaBytes != *p.TrafficQuotaBytes,
+		quotaLabel(old.TrafficQuotaBytes), quotaLabel(*p.TrafficQuotaBytes))
+	track("重置周期", old.TrafficResetCycle != p.TrafficResetCycle,
+		old.TrafficResetCycle, p.TrafficResetCycle)
+	// 重置日只在按月重置时有意义,不重置时改它没有任何效果,写进审计只会造成误解。
+	track("每月重置日", p.TrafficResetCycle == string(traffic.CycleMonthly) &&
+		old.TrafficResetDay != p.TrafficResetDay, old.TrafficResetDay, p.TrafficResetDay)
 	if sshKeyEnc != "" {
 		effect.Changes = append(effect.Changes, "已更换 SSH 私钥")
 	}
 
+	// IPv6 不在这里:它不参与 SSH,连接池里的连接仍然有效。
+	// 把它算进来会在每次改 IPv6 时白白断掉一条已建立的长连接(建连约 1.3 秒)。
 	effect.SSHChanged = old.Host != p.Host || old.SSHPort != p.SSHPort ||
 		old.SSHUser != p.SSHUser || sshKeyEnc != ""
 	// 只有进入节点配置的字段才需要重新部署。公网端口与节点名只影响订阅内容,
@@ -467,6 +564,9 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// 访问等级是例外:它不写进配置文件,却决定哪些用户会出现在这个节点上。
 	// 等级调低会有一批用户凭空获得访问权(但节点上还没有他们的凭据),
 	// 调高则会有一批用户的凭据滞留在节点上继续可用 —— 后者是安全问题。
+	//
+	// IPv6 与节点流量额度同样不进配置文件:前者只改订阅内容,后者只用于
+	// 统计与预警。为它们重启 sing-box 会把全部在线连接踢掉一次,换不来任何东西。
 	effect.TierChanged = old.AccessTierID != p.AccessTierID
 	effect.NeedsDeploy = old.ListenPort != p.ListenPort || old.APIPort != p.APIPort ||
 		effect.TierChanged
@@ -474,17 +574,22 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE nodes
-		   SET name = ?, display_name = ?, host = ?, ssh_port = ?, ssh_user = ?,
+		   SET name = ?, display_name = ?, host = ?, ipv6_address = ?,
+		       ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
 		       proxy_port = ?, listen_port = ?, api_port = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
-		       public_remark = ?, maintenance_message = ?, updated_at = ?
+		       public_remark = ?, maintenance_message = ?,
+		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
+		       updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
-		p.Name, p.DisplayName, p.Host, p.SSHPort, p.SSHUser,
+		p.Name, p.DisplayName, p.Host, p.IPv6Address,
+		p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort,
 		p.AccessTierID, p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,
+		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
 		time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -624,6 +729,21 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// orNone 让审计日志里的空值读起来像句话,而不是 " → 2602:...:1"。
+func orNone(v string) string {
+	if v == "" {
+		return "(未配置)"
+	}
+	return v
+}
+
+func quotaLabel(bytes int64) string {
+	if bytes <= 0 {
+		return "不限量"
+	}
+	return fmt.Sprintf("%d 字节", bytes)
 }
 
 func isUniqueViolation(err error) bool {

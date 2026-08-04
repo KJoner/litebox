@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -69,7 +71,11 @@ func (s *Server) handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleNodeTraffic 返回某节点的每日流量趋势。
+// handleNodeTraffic 返回某节点的额度周期汇总与每日流量趋势。
+//
+// cycle 与 daily 的口径不同,不能互相替代:daily 是按 UTC 自然日聚合的,
+// 表达不了"每月 15 日 00:00"这种非零点的周期边界;cycle 直接按时间范围
+// 汇总 ledger,是额度判断的依据。趋势图继续用 daily。
 func (s *Server) handleNodeTraffic(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.nodeIDFromPath(w, r)
 	if !ok {
@@ -82,7 +88,33 @@ func (s *Server) handleNodeTraffic(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"node_id": id, "daily": daily})
+	cycle, err := s.traffic.NodeCycleUsage(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "节点不存在")
+			return
+		}
+		s.logger.Error("查询节点周期流量失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"node_id": id, "cycle": cycle, "daily": daily,
+	})
+}
+
+// handleNodesCycleTraffic 一次性返回所有节点的当前周期流量,供节点列表使用。
+//
+// 逐节点单独取的话,10 台机器就是 10 个请求、10 次全表扫 traffic_ledger,
+// 而那是全站写入量最大的一张表。
+func (s *Server) handleNodesCycleTraffic(w http.ResponseWriter, r *http.Request) {
+	items, err := s.traffic.NodesCycleUsage(r.Context())
+	if err != nil {
+		s.logger.Error("查询节点周期流量失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // handleNodesTodayTraffic 一次性返回今日各节点流量,供节点列表使用。

@@ -34,6 +34,29 @@ export function formatDate(value: string | null | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+/**
+ * 按 UTC 显示日期时间。
+ *
+ * 节点额度的周期边界统一取 UTC 00:00。用本地时区渲染会让 UTC+8 的管理员
+ * 看到"9 月 15 日 08:00 重置",而他填的是 15 日 —— 更糟的是重置日填 31 时
+ * 本地会显示成下个月 1 日,看起来像设置根本没生效。
+ */
+export function formatUTCTime(value: string | null | undefined): string {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`
+}
+
+/** 只保留 UTC 日期部分,用于列表里的"8 月 15 日重置"。 */
+export function formatUTCDay(value: string | null | undefined): string {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  return `${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日`
+}
+
 /** 相对时间,用于"最后同步 3 分钟前"这类展示。 */
 export function formatRelative(value: string | null | undefined): string {
   if (!value) return '从未'
