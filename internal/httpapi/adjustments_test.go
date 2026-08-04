@@ -318,7 +318,7 @@ func TestBuildDashboardAlerts(t *testing.T) {
 		5: {NodeID: 5, CollectedAt: now.Add(-99 * time.Hour).Format(time.RFC3339)},
 	}
 
-	alerts := buildDashboardAlerts(users, nodes, metrics, now)
+	alerts := buildDashboardAlerts(users, nodes, metrics, nil, now)
 
 	got := map[string]string{}
 	for _, a := range alerts {
@@ -371,7 +371,7 @@ func TestStaleMetricsIsWarningNotOffline(t *testing.T) {
 	metrics := map[int64]node.Metrics{
 		1: {NodeID: 1, CollectedAt: now.Add(-time.Hour).Format(time.RFC3339)},
 	}
-	alerts := buildDashboardAlerts(nil, nodes, metrics, now)
+	alerts := buildDashboardAlerts(nil, nodes, metrics, nil, now)
 	if len(alerts) != 1 {
 		t.Fatalf("预警数 = %d", len(alerts))
 	}

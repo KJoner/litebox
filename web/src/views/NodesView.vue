@@ -1,13 +1,22 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node, type NodeMetrics } from '@/api/client'
-import { formatBytes, formatRelative } from '@/utils/format'
+import {
+  api,
+  ApiError,
+  type AccessTier,
+  type Node,
+  type NodeCycleUsage,
+  type NodeMetrics,
+} from '@/api/client'
+import { formatBytes, formatRelative, formatUTCDay, formatUTCTime } from '@/utils/format'
 import StatusTag from '@/components/StatusTag.vue'
 import NodeDetailDrawer from '@/components/NodeDetailDrawer.vue'
 
 const nodes = ref<Node[]>([])
 const todayTraffic = ref<Record<number, number>>({})
+// 周期流量批量取回:每行单独请求的话,10 台机器就是 10 次全表扫 ledger。
+const cycleTraffic = ref<Record<number, NodeCycleUsage>>({})
 const metrics = ref<Record<number, NodeMetrics>>({})
 const loading = ref(false)
 const detailId = ref<number | null>(null)
@@ -22,6 +31,7 @@ const columns = [
   { title: '资源', key: 'resource', width: 150 },
   { title: '网速', key: 'net', width: 130 },
   { title: '今日流量', key: 'traffic', width: 110 },
+  { title: '周期流量', key: 'cycle', width: 190 },
   { title: '最后心跳', key: 'heartbeat', width: 120 },
   { title: '操作', key: 'actions', width: 260 },
 ]
@@ -30,14 +40,16 @@ async function load() {
   loading.value = true
   try {
     // 资源采样是可选能力(可以在配置里关掉),取不到不能拖垮整个列表。
-    const [n, t, m, tr] = await Promise.all([
+    const [n, t, c, m, tr] = await Promise.all([
       api.nodes(),
       api.nodesTodayTraffic(),
+      api.nodesCycleTraffic(),
       api.nodeMetricsLatest().catch(() => ({ items: [] as NodeMetrics[] })),
       api.accessTiers(),
     ])
     nodes.value = n.items
     todayTraffic.value = Object.fromEntries(t.items.map((x) => [x.node_id, x.bytes]))
+    cycleTraffic.value = Object.fromEntries(c.items.map((x) => [x.node_id, x]))
     metrics.value = Object.fromEntries(m.items.map((x) => [x.node_id, x]))
     tiers.value = tr.items
   } catch (err) {
@@ -66,6 +78,62 @@ function usageColor(percent: number): string {
   return '#389e0d'
 }
 
+// ---------- 节点周期流量 ----------
+
+// 进度条颜色按后端给出的告警等级取,不在前端重算阈值 ——
+// 边界(80/95/100%)只能有一份定义,两边各算一次迟早会在临界点上对不齐。
+const cycleColors: Record<NodeCycleUsage['warning_level'], string> = {
+  UNLIMITED: '#8c8c8c',
+  NORMAL: '#389e0d',
+  WARNING: '#d46b08',
+  DANGER: '#cf1322',
+  EXCEEDED: '#cf1322',
+}
+
+const GIB = 1024 ** 3
+const TIB = 1024 ** 4
+
+// 表单里的额度用「数值 + 单位」两个控件,提交时换算成字节。
+const quotaValue = ref<number | null>(null)
+const quotaUnit = ref<'GB' | 'TB'>('GB')
+
+function quotaBytes(): number {
+  if (!quotaValue.value || quotaValue.value <= 0) return 0
+  return Math.round(quotaValue.value * (quotaUnit.value === 'TB' ? TIB : GIB))
+}
+
+function setQuotaFields(bytes: number) {
+  if (!bytes || bytes <= 0) {
+    quotaValue.value = null
+    quotaUnit.value = 'GB'
+    return
+  }
+  // 整数 TB 才用 TB 显示,否则 1.5TB 会变成一个不好读的小数。
+  if (bytes % TIB === 0) {
+    quotaValue.value = bytes / TIB
+    quotaUnit.value = 'TB'
+  } else {
+    quotaValue.value = Math.round((bytes / GIB) * 100) / 100
+    quotaUnit.value = 'GB'
+  }
+}
+
+// 编辑时展示的"下一次重置"取后端已算好的值。
+// 前端不自己按重置日推算 —— 那等于把周期边界的逻辑抄第二份,
+// 短月份、跨年这些情况迟早会和后端算得不一样。
+const savedNextReset = computed(() =>
+  editingId.value === null ? null : (cycleTraffic.value[editingId.value]?.next_reset_at ?? null),
+)
+
+// 表单里的周期设置与已保存的不同时,上面那个时间就不再对应当前选择。
+const cycleDirty = computed(() => {
+  if (editingId.value === null) return false
+  const n = nodes.value.find((x) => x.id === editingId.value)
+  if (!n) return false
+  return n.traffic_reset_cycle !== form.traffic_reset_cycle ||
+    n.traffic_reset_day !== form.traffic_reset_day
+})
+
 // ---------- 新增 / 编辑节点 ----------
 
 const formOpen = ref(false)
@@ -83,6 +151,9 @@ const form = reactive({
   name: '',
   display_name: '',
   host: '',
+  ipv6_address: '',
+  traffic_reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
+  traffic_reset_day: 1,
   ssh_port: 22,
   ssh_user: 'root',
   ssh_key: '',
@@ -100,10 +171,14 @@ const form = reactive({
 function openCreate() {
   editingId.value = null
   accessMode.value = 'password'
+  setQuotaFields(0)
   Object.assign(form, {
     name: '',
     display_name: '',
     host: '',
+    ipv6_address: '',
+    traffic_reset_cycle: 'NONE',
+    traffic_reset_day: 1,
     ssh_port: 22,
     ssh_user: 'root',
     ssh_key: '',
@@ -123,10 +198,14 @@ function openCreate() {
 function openEdit(n: Node) {
   editingId.value = n.id
   accessMode.value = 'manual'
+  setQuotaFields(n.traffic_quota_bytes)
   Object.assign(form, {
     name: n.name,
     display_name: n.display_name,
     host: n.host,
+    ipv6_address: n.ipv6_address,
+    traffic_reset_cycle: n.traffic_reset_cycle,
+    traffic_reset_day: n.traffic_reset_day,
     ssh_port: n.ssh_port,
     ssh_user: n.ssh_user,
     // 私钥不回显,留空即保持原值。
@@ -157,6 +236,10 @@ async function submit() {
         access_tier_id: form.access_tier_id,
         sort_order: form.sort_order,
         host: form.host,
+        ipv6_address: form.ipv6_address,
+        traffic_quota_bytes: quotaBytes(),
+        traffic_reset_cycle: form.traffic_reset_cycle,
+        traffic_reset_day: form.traffic_reset_day,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
         proxy_port: form.proxy_port,
@@ -191,6 +274,11 @@ async function submit() {
         name: form.name,
         display_name: form.display_name,
         host: form.host,
+        // 留空即清空 IPv6,订阅里的 IPv6 条目随即消失。
+        ipv6_address: form.ipv6_address,
+        traffic_quota_bytes: quotaBytes(),
+        traffic_reset_cycle: form.traffic_reset_cycle,
+        traffic_reset_day: form.traffic_reset_day,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
         ssh_key: form.ssh_key,
@@ -300,7 +388,7 @@ onMounted(load)
       row-key="id"
       size="middle"
       :pagination="false"
-      :scroll="{ x: 1260 }"
+      :scroll="{ x: 1450 }"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -315,6 +403,10 @@ onMounted(load)
             <span v-if="record.listen_port !== record.proxy_port">
               → 主机 {{ record.listen_port }}
             </span>
+          </div>
+          <!-- IPv6 只进订阅,不参与 SSH,所以单独一行而不是和端口拼在一起。 -->
+          <div v-if="record.ipv6_address" class="node-host">
+            <a-tag color="blue" class="v6-tag">IPv6</a-tag>{{ record.ipv6_address }}
           </div>
         </template>
 
@@ -371,6 +463,33 @@ onMounted(load)
 
         <template v-else-if="column.key === 'traffic'">
           <span class="tabular">{{ formatBytes(todayTraffic[record.id] ?? 0) }}</span>
+        </template>
+
+        <template v-else-if="column.key === 'cycle'">
+          <span v-if="!cycleTraffic[record.id]" class="muted">—</span>
+          <template v-else>
+            <div class="metric tabular">
+              {{ formatBytes(cycleTraffic[record.id].used_bytes) }}
+              /
+              <span v-if="cycleTraffic[record.id].unlimited" class="muted">不限量</span>
+              <span v-else>{{ formatBytes(cycleTraffic[record.id].quota_bytes) }}</span>
+            </div>
+            <!-- 不限量节点不画进度条:没有分母,画出来只能是 0% 或 100%,两种都是错的。 -->
+            <a-progress
+              v-if="!cycleTraffic[record.id].unlimited"
+              :percent="Math.min(cycleTraffic[record.id].usage_percent ?? 0, 100)"
+              :stroke-color="cycleColors[cycleTraffic[record.id].warning_level]"
+              :show-info="false"
+              size="small"
+            />
+            <div class="cycle-foot">
+              <a-tag v-if="cycleTraffic[record.id].exceeded" color="red">已超额</a-tag>
+              <span v-else-if="cycleTraffic[record.id].next_reset_at" class="muted">
+                {{ formatUTCDay(cycleTraffic[record.id].next_reset_at) }}重置
+              </span>
+              <span v-else class="muted">累计流量</span>
+            </div>
+          </template>
         </template>
 
         <template v-else-if="column.key === 'heartbeat'">
@@ -441,9 +560,69 @@ onMounted(load)
           <a-input v-model:value="form.maintenance_message" :maxlength="128" />
         </a-form-item>
       </template>
-      <a-form-item label="主机地址" required extra="面板用它连 SSH,客户端也用它连代理">
-        <a-input v-model:value="form.host" placeholder="IP 或域名" />
+      <a-form-item
+        label="IPv4 地址"
+        required
+        extra="用于 SSH 管理、节点部署和 IPv4 订阅,必须填写"
+      >
+        <a-input v-model:value="form.host" placeholder="例如:192.0.2.10" />
       </a-form-item>
+      <a-form-item
+        label="IPv6 地址"
+        extra="选填。目前只用于订阅下发,填写后订阅中将额外生成「展示名称-IPV6」条目;清空即撤下该条目,都不需要重新部署"
+      >
+        <a-input v-model:value="form.ipv6_address" placeholder="例如:2602:fed2:7116:2110::1" />
+      </a-form-item>
+
+      <a-row :gutter="12">
+        <a-col :span="10">
+          <a-form-item label="节点流量限额" extra="留空表示不限量">
+            <a-input-number
+              v-model:value="quotaValue"
+              :min="0"
+              :precision="2"
+              placeholder="不限量"
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="单位">
+            <a-select v-model:value="quotaUnit">
+              <a-select-option value="GB">GB</a-select-option>
+              <a-select-option value="TB">TB</a-select-option>
+            </a-select>
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="重置周期">
+            <a-select v-model:value="form.traffic_reset_cycle">
+              <a-select-option value="NONE">不重置</a-select-option>
+              <a-select-option value="MONTHLY">每月</a-select-option>
+            </a-select>
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-form-item
+        v-if="form.traffic_reset_cycle === 'MONTHLY'"
+        label="每月重置日"
+        extra="边界统一取 UTC 00:00。当月没有该日时按当月最后一天处理(31 日在二月即 28 或 29 日)"
+      >
+        <a-input-number
+          v-model:value="form.traffic_reset_day"
+          :min="1"
+          :max="31"
+          style="width: 160px"
+        />
+      </a-form-item>
+      <p v-if="editingId !== null && savedNextReset" class="port-hint">
+        下一次重置:{{ formatUTCTime(savedNextReset) }}
+        <span v-if="cycleDirty">(按已保存的设置计算,保存后会按新设置重新计算)</span>
+      </p>
+      <p class="port-hint">
+        节点额度只用于统计与预警:超额会在仪表盘和列表里标红,但不会停掉 sing-box、
+        不会禁用节点,也不会把节点从订阅里摘掉 —— 那会同时打断这台机器上的全部用户。
+      </p>
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item label="SSH 端口">
@@ -613,6 +792,18 @@ onMounted(load)
 .metric-sub {
   margin-left: 6px;
   color: rgb(0 0 0 / 45%);
+}
+
+.v6-tag {
+  margin-right: 4px;
+  transform: scale(0.85);
+  transform-origin: left center;
+}
+
+.cycle-foot {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .mode-hint {

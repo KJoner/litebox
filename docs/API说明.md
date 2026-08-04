@@ -163,13 +163,49 @@ GET    /api/deployments
 节点有两个名称:`name` 是内部名称,只在管理后台出现;`display_name` 是
 发给用户与订阅的名字。留空创建时 `display_name` 复制 `name`。
 
-`PUT /api/nodes/{id}` 的两个字段有特殊语义:
+`PUT /api/nodes/{id}` 的几个字段有特殊语义:
 
 * `access_tier_id` 为 **0** 表示保持原等级;
-* `subscription_enabled` 为 **null** 表示保持原值。
+* `subscription_enabled` 为 **null** 表示保持原值;
+* `traffic_quota_bytes` 为 **null** 表示保持原额度(0 是"改成不限量",
+  所以不能用零值表达"没传");
+* `traffic_reset_cycle` 留空、`traffic_reset_day` 为 0 表示保持原值;
+* `ipv6_address` 留空表示**清空 IPv6**,与上面几个正好相反 ——
+  清空是管理员的显式动作(把 IPv6 条目从订阅撤下来),必须有办法表达。
 
-不回落到零值 —— 漏传的后果是静默的:VIP 节点被降成普通组等于给全体用户开门,
-订阅开关被关掉等于把节点从所有人的订阅里摘掉,两者都不报错。
+前四个不回落到零值,是因为漏传的后果是静默的:VIP 节点被降成普通组等于
+给全体用户开门,订阅开关被关掉等于把节点从所有人的订阅里摘掉,
+额度被清成不限量则是预警从此不再出现,三者都不报错。
+
+### 地址字段
+
+* `host` 是 **IPv4**,同时是 SSH 管理地址与 IPv4 订阅地址,必填。
+  新建节点要求 IPv4 字面量;编辑时只有确实改动了这一栏才按严格规则校验
+  (V1 起就允许填域名,存量节点可能就是域名接入的);
+* `ipv6_address` 选填,**只影响订阅**。填了之后订阅里会额外出现一条
+  `展示名称-IPV6`,服务器地址换成 IPv6,其余(UUID、公网端口、REALITY 公钥、
+  short ID、握手目标、指纹、flow)与 IPv4 条目完全相同;
+* 提交时可以带方括号,后端会剥掉并标准化后存储(`[2602:FED2::0001]`
+  存成 `2602:fed2::1`);
+* IPv4 栏填 IPv6、IPv6 栏填 IPv4 都会返回 400 并说明该填到哪一栏;
+* **改 `ipv6_address` 既不置 `ssh_changed` 也不置 `needs_deploy`** ——
+  它不参与 SSH,也不进节点配置,订阅下次拉取即生效。
+
+### 节点流量额度
+
+```json
+{
+  "traffic_quota_bytes": 107374182400,
+  "traffic_reset_cycle": "MONTHLY",
+  "traffic_reset_day": 15
+}
+```
+
+`traffic_quota_bytes = 0` 表示不限量;`traffic_reset_cycle` 只接受
+`NONE`(统计节点创建以来的累计流量)与 `MONTHLY`;`traffic_reset_day`
+取 1~31,当月没有该日时落到当月最后一天,边界统一取 **UTC 00:00**。
+
+改额度与周期同样不触发重新部署 —— 它们只用于统计与预警。
 
 响应里的 `effect`:
 
@@ -188,13 +224,50 @@ GET    /api/deployments
 ```
 POST /api/nodes/{id}/sync-traffic
 GET  /api/traffic/status
-GET  /api/traffic/nodes-today
-GET  /api/nodes/{id}/traffic
+GET  /api/traffic/nodes-today          今日各节点流量,一次取回
+GET  /api/traffic/nodes-cycle          各节点当前额度周期用量,一次取回
+GET  /api/nodes/{id}/traffic?days=30   周期汇总 + 每日趋势
 GET  /api/metrics/nodes-latest
 GET  /api/nodes/{id}/metrics?hours=6      6 / 24 / 72 / 168
 POST /api/nodes/{id}/collect-metrics
 GET  /api/metrics/status
 ```
+
+`GET /api/nodes/{id}/traffic` 同时返回 `cycle` 与 `daily`。两者口径不同,
+不能互相替代:`daily` 按 UTC 自然日聚合,表达不了"每月 15 日 00:00"
+这种非零点的周期边界;`cycle` 直接按时间范围汇总 `traffic_ledger`,
+是额度判断的依据。趋势图继续用 `daily`。
+
+周期用量对象(`nodes-cycle` 的每一项与 `cycle` 同构):
+
+```json
+{
+  "node_id": 1,
+  "period_start": "2026-07-15T00:00:00Z",
+  "next_reset_at": "2026-08-15T00:00:00Z",
+  "uplink_bytes": 22548578304,
+  "downlink_bytes": 69793218560,
+  "used_bytes": 92341796864,
+  "quota_bytes": 107374182400,
+  "remaining_bytes": 15032385536,
+  "usage_percent": 86.0,
+  "unlimited": false,
+  "exceeded": false,
+  "warning_level": "WARNING",
+  "reset_cycle": "MONTHLY",
+  "reset_day": 15
+}
+```
+
+* `warning_level` 取 `UNLIMITED` / `NORMAL` / `WARNING`(≥80%)/
+  `DANGER`(≥95%)/ `EXCEEDED`(≥100%);
+* **不限量节点的 `remaining_bytes` 与 `usage_percent` 是 `null`**,
+  不是 0 —— 前端拿到 0 会画成"剩余 0 字节"的红条,与"不限量"正好相反;
+* 超额时 `remaining_bytes` 夹到 0,超额本身由 `exceeded` 与 `EXCEEDED` 表达;
+* `next_reset_at` 在 `NONE` 周期下为 `null`;
+* 统计包含该节点下**全部**用户的上下行,含已停用与已删除用户留下的历史流量,
+  也不区分 IPv4 与 IPv6 —— 两个订阅条目指向同一个 sing-box 入站与同一个计数器;
+* **超额只预警**:不会停 sing-box、不禁用节点、不关订阅开关,也不删用户凭据。
 
 ## 用户门户接口 `/api/portal/*`
 

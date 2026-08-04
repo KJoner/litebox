@@ -260,6 +260,9 @@ type nodeFixture struct {
 	SubEnabled  bool
 	TierID      int64
 	SortOrder   int
+	// Host 留空时用 192.0.2.1;IPv6 留空表示 IPv4-only 节点。
+	Host string
+	IPv6 string
 }
 
 func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
@@ -268,13 +271,17 @@ func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
 	if f.Deployed {
 		sha = "deadbeef"
 	}
+	host := f.Host
+	if host == "" {
+		host = "192.0.2.1"
+	}
 	res, err := e.db.Exec(`
-		INSERT INTO nodes (name, display_name, host, proxy_port, reality_dest,
+		INSERT INTO nodes (name, display_name, host, ipv6_address, proxy_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id, status,
 			deployed_config_sha256, access_tier_id, sort_order, subscription_enabled,
 			created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		f.Name, f.DisplayName, "192.0.2.1", 24443, "www.cloudflare.com", "enc",
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		f.Name, f.DisplayName, host, f.IPv6, 24443, "www.cloudflare.com", "enc",
 		"pubkey123", "abcd1234", f.Status, sha, f.TierID, f.SortOrder, f.SubEnabled,
 		"2026-08-02T00:00:00Z", "2026-08-02T00:00:00Z")
 	if err != nil {

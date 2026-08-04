@@ -20,8 +20,11 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
+	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -68,6 +71,14 @@ func newTestEnv(t *testing.T) *testEnv {
 	userStore := user.NewStore(db, cipher)
 	userService := user.NewService(userStore, nil, logger)
 
+	// 节点服务只给 Store 与连接池:CRUD 全在 Store 上,
+	// 探测、部署、引导要连真机器,由 node 与 deployment 包各自测。
+	nodeStore := node.NewStore(db, cipher)
+	pool := sshx.NewPool(node.NewResolver(nodeStore, nil, logger), logger)
+	nodeService := node.NewService(node.ServiceOptions{
+		Store: nodeStore, Pool: pool, Logger: logger,
+	})
+
 	portalService := portal.NewService(db, portal.Options{
 		SessionTTL: cfg.Security.SessionTTL, MaxAttempts: 20, LoginWindow: time.Minute,
 	})
@@ -83,7 +94,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		PortalAccts: portal.NewStore(db),
 		PortalData:  portal.NewQuerier(db, userStore),
 		Adjustments: adjustment.NewStore(db),
-		Logger:      logger,
+		Nodes:       nodeService,
+		Pool:        pool,
+		// Scheduler 留 nil:同步要连真节点,由 traffic 包自己测。
+		// Querier 只读数据库,可以直接给上。
+		Traffic: traffic.NewQuerier(db),
+		Logger:  logger,
 	})
 
 	ts := httptest.NewServer(srv.Handler())

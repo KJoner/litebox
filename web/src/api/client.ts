@@ -185,7 +185,14 @@ export interface Node {
   subscription_enabled: boolean
   public_remark: string
   maintenance_message: string
+  /** IPv4 地址,同时是 SSH 管理地址与 IPv4 订阅地址 */
   host: string
+  /** 可选的公网 IPv6,只影响订阅:填了就多下发一条「展示名称-IPV6」 */
+  ipv6_address: string
+  /** 0 表示不限量。只用于统计与预警,超额不会自动停服 */
+  traffic_quota_bytes: number
+  traffic_reset_cycle: 'NONE' | 'MONTHLY'
+  traffic_reset_day: number
   ssh_port: number
   ssh_user: string
   /** 客户端连接的公网端口,写进订阅 */
@@ -347,6 +354,26 @@ export interface DailyPoint {
   total: number
 }
 
+/** 节点在当前额度周期内的用量。周期边界由后端统一计算,前端不自己算。 */
+export interface NodeCycleUsage {
+  node_id: number
+  period_start: string
+  /** NONE 周期没有下次重置时间 */
+  next_reset_at: string | null
+  uplink_bytes: number
+  downlink_bytes: number
+  used_bytes: number
+  quota_bytes: number
+  /** 不限量时为 null —— 不能当 0 用,那会画成"剩余 0"的红条 */
+  remaining_bytes: number | null
+  usage_percent: number | null
+  unlimited: boolean
+  exceeded: boolean
+  warning_level: 'UNLIMITED' | 'NORMAL' | 'WARNING' | 'DANGER' | 'EXCEEDED'
+  reset_cycle: 'NONE' | 'MONTHLY'
+  reset_day: number
+}
+
 export interface UserNodeTraffic {
   user_code: string
   node_id: number
@@ -502,6 +529,8 @@ export interface PortalNode {
   public_remark: string
   maintenance_message: string
   in_subscription: boolean
+  /** 订阅里会多出一条「展示名称-IPV6」;地址本身不下发给用户 */
+  supports_ipv6: boolean
   today_bytes: number
   month_bytes: number
   total_bytes: number
@@ -533,7 +562,11 @@ export interface PortalSubscription {
   url_base64: string
   url_uri: string
   url_singbox: string
+  /** 物理节点数,与「我的节点」的条数一致 */
   node_count: number
+  ipv6_count: number
+  /** 订阅文件里的条目数:配了 IPv6 的节点会多一条 */
+  entry_count: number
   last_access_at: string | null
   access_count: number
 }
@@ -672,9 +705,10 @@ export const api = {
     request<{ items: DeploymentRecord[] }>(`/api/nodes/${id}/deployments`, { query: { limit } }),
   nodeConfigDiff: (id: number) => request<ConfigDiff>(`/api/nodes/${id}/config-diff`),
   nodeTraffic: (id: number, days = 30) =>
-    request<{ node_id: number; daily: DailyPoint[] }>(`/api/nodes/${id}/traffic`, {
-      query: { days },
-    }),
+    request<{ node_id: number; cycle: NodeCycleUsage; daily: DailyPoint[] }>(
+      `/api/nodes/${id}/traffic`,
+      { query: { days } },
+    ),
   destCandidates: () =>
     request<{ items: string[]; max_record_size: number }>('/api/dest-candidates'),
 
@@ -732,4 +766,7 @@ export const api = {
     request<PanelSettings>('/api/settings', { method: 'PUT', body }),
   nodesTodayTraffic: () =>
     request<{ items: { node_id: number; bytes: number }[] }>('/api/traffic/nodes-today'),
+  // 批量取,节点列表才不会每行发一个请求。
+  nodesCycleTraffic: () =>
+    request<{ items: NodeCycleUsage[] }>('/api/traffic/nodes-cycle'),
 }

@@ -83,12 +83,18 @@ type createNodeRequest struct {
 	// DisplayName 留空表示与内部名称相同。
 	DisplayName string `json:"display_name"`
 	// AccessTierID 留 0 表示普通组。
-	AccessTierID int64  `json:"access_tier_id"`
-	SortOrder    int    `json:"sort_order"`
-	Host         string `json:"host"`
-	SSHPort      int    `json:"ssh_port"`
-	SSHUser      string `json:"ssh_user"`
-	SSHKey       string `json:"ssh_key"`
+	AccessTierID int64 `json:"access_tier_id"`
+	SortOrder    int   `json:"sort_order"`
+	// Host 是 IPv4;IPv6Address 选填,只影响订阅。
+	Host        string `json:"host"`
+	IPv6Address string `json:"ipv6_address"`
+	SSHPort     int    `json:"ssh_port"`
+	SSHUser     string `json:"ssh_user"`
+	SSHKey      string `json:"ssh_key"`
+	// TrafficQuotaBytes 为 0 表示不限量。
+	TrafficQuotaBytes int64  `json:"traffic_quota_bytes"`
+	TrafficResetCycle string `json:"traffic_reset_cycle"`
+	TrafficResetDay   int    `json:"traffic_reset_day"`
 	// ProxyPort 是客户端连接的公网端口;ListenPort 是节点上 sing-box 的监听端口,
 	// 留空表示无转发,与 ProxyPort 相同。
 	ProxyPort       int    `json:"proxy_port"`
@@ -110,19 +116,23 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	n, err := s.nodes.Store().Create(r.Context(), node.CreateParams{
-		Name:            strings.TrimSpace(req.Name),
-		DisplayName:     strings.TrimSpace(req.DisplayName),
-		AccessTierID:    req.AccessTierID,
-		SortOrder:       req.SortOrder,
-		Host:            strings.TrimSpace(req.Host),
-		SSHPort:         req.SSHPort,
-		SSHUser:         strings.TrimSpace(req.SSHUser),
-		SSHKey:          req.SSHKey,
-		ProxyPort:       req.ProxyPort,
-		ListenPort:      req.ListenPort,
-		APIPort:         req.APIPort,
-		RealityDest:     strings.TrimSpace(req.RealityDest),
-		RealityDestPort: req.RealityDestPort,
+		Name:              strings.TrimSpace(req.Name),
+		DisplayName:       strings.TrimSpace(req.DisplayName),
+		AccessTierID:      req.AccessTierID,
+		SortOrder:         req.SortOrder,
+		Host:              strings.TrimSpace(req.Host),
+		IPv6Address:       strings.TrimSpace(req.IPv6Address),
+		SSHPort:           req.SSHPort,
+		SSHUser:           strings.TrimSpace(req.SSHUser),
+		SSHKey:            req.SSHKey,
+		ProxyPort:         req.ProxyPort,
+		ListenPort:        req.ListenPort,
+		APIPort:           req.APIPort,
+		RealityDest:       strings.TrimSpace(req.RealityDest),
+		RealityDestPort:   req.RealityDestPort,
+		TrafficQuotaBytes: req.TrafficQuotaBytes,
+		TrafficResetCycle: req.TrafficResetCycle,
+		TrafficResetDay:   req.TrafficResetDay,
 	})
 	if err != nil {
 		if errors.Is(err, node.ErrNameConflict) {
@@ -216,6 +226,8 @@ type updateNodeRequest struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
 	Host        string `json:"host"`
+	// IPv6Address 留空表示清空 IPv6 —— 那正是"把 IPv6 条目从订阅撤下来"的操作。
+	IPv6Address string `json:"ipv6_address"`
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
 	// SSHKey 留空表示不更换私钥。
@@ -223,6 +235,12 @@ type updateNodeRequest struct {
 	ProxyPort  int    `json:"proxy_port"`
 	ListenPort int    `json:"listen_port"`
 	APIPort    int    `json:"api_port"`
+
+	// TrafficQuotaBytes 为 null 时保持原额度(0 表示改成不限量,不能用零值表达"没传")。
+	// 重置周期留空、重置日为 0 同样保持原值。
+	TrafficQuotaBytes *int64 `json:"traffic_quota_bytes"`
+	TrafficResetCycle string `json:"traffic_reset_cycle"`
+	TrafficResetDay   int    `json:"traffic_reset_day"`
 
 	// AccessTierID 为 0、SubscriptionEnabled 为 null 时保持原值。
 	// 这两个字段漏传的后果是静默的(节点被降级 / 从所有订阅里消失),
@@ -255,6 +273,10 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		Name:                strings.TrimSpace(req.Name),
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		Host:                strings.TrimSpace(req.Host),
+		IPv6Address:         strings.TrimSpace(req.IPv6Address),
+		TrafficQuotaBytes:   req.TrafficQuotaBytes,
+		TrafficResetCycle:   req.TrafficResetCycle,
+		TrafficResetDay:     req.TrafficResetDay,
 		SSHPort:             req.SSHPort,
 		SSHUser:             strings.TrimSpace(req.SSHUser),
 		SSHKey:              req.SSHKey,

@@ -83,7 +83,14 @@ onMounted(load)
         </div>
 
         <a-descriptions :column="{ xs: 1, sm: 3 }" size="small" class="meta">
-          <a-descriptions-item label="包含节点">{{ data.node_count }} 个</a-descriptions-item>
+          <!-- 两个数字都给出来:配了 IPv6 的节点在订阅里是两条,
+               只报节点数的话用户导入后会觉得"多出来几个"。 -->
+          <a-descriptions-item label="包含节点">
+            {{ data.node_count }} 个
+            <span v-if="data.ipv6_count > 0" class="entry-hint">
+              (订阅共 {{ data.entry_count }} 条,其中 {{ data.ipv6_count }} 个节点额外提供 IPv6)
+            </span>
+          </a-descriptions-item>
           <a-descriptions-item label="最近拉取">
             {{ formatRelative(data.last_access_at) }}
           </a-descriptions-item>
@@ -122,6 +129,11 @@ onMounted(load)
   font-weight: 400;
   font-size: 12px;
   color: rgb(0 0 0 / 45%);
+}
+
+.entry-hint {
+  color: rgb(0 0 0 / 45%);
+  font-size: 12px;
 }
 
 .sub-row {

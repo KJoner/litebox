@@ -51,6 +51,8 @@ onMounted(load)
 
           <div class="node-meta">
             <a-tag :color="tierColor(node.tier_code)" size="small">{{ node.tier_name }}</a-tag>
+            <!-- 只说明订阅里会多一条 IPv6 条目,不给出地址 —— 那是节点信息。 -->
+            <a-tag v-if="node.supports_ipv6" color="blue" size="small">IPv6</a-tag>
             <span class="proto">{{ node.protocol }}</span>
             <span class="port">端口 {{ node.public_port }}</span>
           </div>

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -39,7 +40,8 @@ const metricsStaleAfter = 10 * time.Minute
 // 它失败不代表 sing-box 停了。把两件事混在一起会让管理员在代理完全正常时
 // 收到"节点离线",几次之后就再也不看这个列表了。
 func buildDashboardAlerts(users []*user.User, nodes []*node.Node,
-	metrics map[int64]node.Metrics, now time.Time) []Alert {
+	metrics map[int64]node.Metrics, cycles map[int64]traffic.NodeCycleUsage,
+	now time.Time) []Alert {
 	alerts := make([]Alert, 0)
 
 	for _, u := range users {
@@ -83,6 +85,21 @@ func buildDashboardAlerts(users []*user.User, nodes []*node.Node,
 		}
 		if n.Status == node.StatusDeployFailed {
 			alerts = append(alerts, Alert{AlertError, "node", n.Name, n.ID, "上次部署失败"})
+		}
+		// 节点额度只预警,不做任何自动处置:同步有间隔、各家 VPS 的
+		// 计量口径也不同,自动关掉一个共享节点会同时打断全部用户。
+		if c, ok := cycles[n.ID]; ok && !c.Unlimited {
+			switch c.WarningLevel {
+			case traffic.LevelExceeded:
+				alerts = append(alerts, Alert{AlertError, "node", n.Name, n.ID,
+					"本周期流量已超额"})
+			case traffic.LevelDanger:
+				alerts = append(alerts, Alert{AlertError, "node", n.Name, n.ID,
+					fmt.Sprintf("本周期流量已用 %.0f%%", *c.UsagePercent)})
+			case traffic.LevelWarning:
+				alerts = append(alerts, Alert{AlertWarning, "node", n.Name, n.ID,
+					fmt.Sprintf("本周期流量已用 %.0f%%", *c.UsagePercent)})
+			}
 		}
 		// 从未采集过的节点不报警:刚加的节点本来就还没有数据,
 		// 报出来只是噪声。有过数据又断了才值得看一眼。
@@ -138,6 +155,19 @@ func (s *Server) handleDashboardAlerts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	alerts := buildDashboardAlerts(users, nodes, metrics, time.Now().UTC())
+	// 节点周期流量取不到时按"没有额度预警"处理,与监控同理 ——
+	// 它挂了不该把整个预警列表一起带走。
+	cycles := map[int64]traffic.NodeCycleUsage{}
+	if s.traffic != nil {
+		if items, err := s.traffic.NodesCycleUsage(r.Context()); err != nil {
+			s.logger.Error("查询节点周期流量失败", "error", err)
+		} else {
+			for _, item := range items {
+				cycles[item.NodeID] = item
+			}
+		}
+	}
+
+	alerts := buildDashboardAlerts(users, nodes, metrics, cycles, time.Now().UTC())
 	writeJSON(w, http.StatusOK, map[string]any{"items": alerts})
 }

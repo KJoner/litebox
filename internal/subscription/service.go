@@ -147,9 +147,13 @@ func uriList(uuid string, nodes []Node) []string {
 //
 // 只取 display_name:内部名称往往写着机房、供应商与到期日,
 // 那是运维信息,不该随订阅发到用户设备上。
+//
+// IPv6 在读出物理节点之后由 ExpandAll 展开,不在 SQL 里用 UNION 造虚拟行:
+// 上面这一串过滤条件只要写两遍就会分叉,而分叉的表现是节点已经进维护、
+// IPv4 条目消失了,IPv6 条目却还留在订阅里继续被使用。
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.display_name, n.host, n.proxy_port,
+		SELECT n.display_name, n.host, n.ipv6_address, n.proxy_port,
 		       n.reality_dest, n.reality_pubkey, n.reality_short_id
 		  FROM nodes n
 		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
@@ -164,16 +168,19 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	}
 	defer rows.Close()
 
-	nodes := make([]Node, 0)
+	physical := make([]PhysicalNode, 0)
 	for rows.Next() {
-		var n Node
-		if err := rows.Scan(&n.DisplayName, &n.Host, &n.Port,
-			&n.RealityDest, &n.RealityPublicKey, &n.RealityShortID); err != nil {
+		var p PhysicalNode
+		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port,
+			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, n)
+		physical = append(physical, p)
 	}
-	return nodes, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ExpandAll(physical), nil
 }
 
 // userInfoHeader 生成 Subscription-Userinfo 头。

@@ -13,10 +13,12 @@ import (
 	"strconv"
 )
 
-// Node 是订阅里的一个节点。字段已是明文,由调用方从数据库解密后传入。
+// Node 是订阅里的一个节点条目。字段已是明文,由调用方从数据库解密后传入。
 //
 // 刻意只有 DisplayName 而没有内部名称:订阅是发到用户设备上的东西,
 // 结构体里根本不存在内部名称,就不可能有哪条代码路径不小心把它写进去。
+//
+// 一条物理节点记录可能展开成两个 Node(IPv4 与 IPv6),见 PhysicalNode.Expand。
 type Node struct {
 	DisplayName      string
 	Host             string
@@ -24,6 +26,60 @@ type Node struct {
 	RealityDest      string
 	RealityPublicKey string
 	RealityShortID   string
+}
+
+// IPv6NameSuffix 是 IPv6 条目追加在展示名称后的后缀。
+//
+// 固定大写,不做成可配置项:客户端靠节点名区分条目,改一次后缀
+// 所有人的客户端里都会多出一份重复节点,而旧的那份永远留在列表里。
+const IPv6NameSuffix = "-IPV6"
+
+// PhysicalNode 是数据库里的一条节点记录。
+//
+// IPv6 不是第二条 nodes 记录,而是订阅生成时对同一条记录的逻辑展开 ——
+// 两个条目共用同一个 sing-box 入站、同一份用户凭据、同一个流量计数器,
+// 拆成两行会带来第二串部署记录与第二套资源采样,而机器只有一台。
+type PhysicalNode struct {
+	DisplayName      string
+	Host             string
+	IPv6Address      string
+	Port             int
+	RealityDest      string
+	RealityPublicKey string
+	RealityShortID   string
+}
+
+// Expand 把一条物理节点展开成订阅里的一到两个条目。
+//
+// 除展示名称与服务器地址外两个条目完全相同:UUID、公网端口、REALITY 公钥、
+// short ID、握手目标、指纹与 flow 都取自同一条记录 —— 它们本来就是同一个入站。
+func (p PhysicalNode) Expand() []Node {
+	v4 := Node{
+		DisplayName:      p.DisplayName,
+		Host:             p.Host,
+		Port:             p.Port,
+		RealityDest:      p.RealityDest,
+		RealityPublicKey: p.RealityPublicKey,
+		RealityShortID:   p.RealityShortID,
+	}
+	if p.IPv6Address == "" {
+		return []Node{v4}
+	}
+	v6 := v4
+	v6.DisplayName = p.DisplayName + IPv6NameSuffix
+	v6.Host = p.IPv6Address
+	// IPv6 紧跟它自己的 IPv4 条目,而不是集中排在列表末尾:
+	// 客户端按顺序展示,同一台机器的两个地址挨在一起才能一眼看出是同一个节点。
+	return []Node{v4, v6}
+}
+
+// ExpandAll 按物理节点的顺序展开整个列表。
+func ExpandAll(physical []PhysicalNode) []Node {
+	nodes := make([]Node, 0, len(physical))
+	for _, p := range physical {
+		nodes = append(nodes, p.Expand()...)
+	}
+	return nodes
 }
 
 // VLESSURI 生成标准的 vless:// 分享链接。
