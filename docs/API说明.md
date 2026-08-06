@@ -95,6 +95,11 @@ GET    /api/users/{id}/traffic
 
 配置生成、订阅与部署脏标记一律看后者。
 
+`next_reset_at` 是流量的下次重置时刻(不重置的用户为空串),由后端算好下发。
+它与门户 `/api/portal/dashboard` 用的是**同一个** `portal.NextResetAt` ——
+门户上写「09-01 00:00 UTC 重置」、管理后台自己再算一遍,两边差一天时
+谁都说不清哪个才算数。
+
 创建用户时可带 `login_username` / `login_password` / `must_change_password`
 一并开通门户登录。登录账号创建失败**不回滚用户** —— 失败原因几乎都是
 "账号名被占用"这类需要人改一下的问题,而 `user_code` 不可复用,
@@ -163,6 +168,29 @@ GET    /api/deployments
 节点有两个名称:`name` 是内部名称,只在管理后台出现;`display_name` 是
 发给用户与订阅的名字。留空创建时 `display_name` 复制 `name`。
 
+`GET /api/nodes` 与 `GET /api/nodes/{id}` 的每一项额外带两个**算出来的**字段
+(创建与更新的响应里没有,调用方随后都会重新拉列表):
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `config_state` | `NEVER_DEPLOYED` | 从未成功部署过 |
+| | `IN_SYNC` | 节点上生效的配置与库里当前应渲染的一致 |
+| | `PENDING` | 库里已变更,节点上还是旧配置 |
+| | `DEPLOY_FAILED` | 最近一次部署失败,且改动仍未下发 |
+| | `UNKNOWN` | 配置渲染不出来,面板也判定不了 |
+| `needs_deploy` | bool | 是否该提示部署 |
+
+它回答的是「库里当前应有的配置,是否已经在节点上生效」,与 `status`(sing-box
+在不在跑)正交:一台 ONLINE 的机器完全可能跑着三次变更之前的配置。
+
+判定是**纯查库**的 —— 比较 `deployed_config_sha256` 与此刻重新渲染出的哈希,
+不连 SSH。`config-diff` 能给更准的答案,但它要连上去读节点上的实际配置,
+10 台机器就是 10 条 SSH 会话,不能在列表里逐行调用。
+
+两个值分开给:`needs_deploy` 驱动界面上的「该部署了」提示,`config_state` 只
+描述事实。`UNKNOWN` 与已禁用的节点一律 `needs_deploy=false` —— 不确定就不催,
+催错了管理员会去重启一台正常的机器。
+
 `PUT /api/nodes/{id}` 的几个字段有特殊语义:
 
 * `access_tier_id` 为 **0** 表示保持原等级;
@@ -226,6 +254,7 @@ POST /api/nodes/{id}/sync-traffic
 GET  /api/traffic/status
 GET  /api/traffic/nodes-today          今日各节点流量,一次取回
 GET  /api/traffic/nodes-cycle          各节点当前额度周期用量,一次取回
+GET  /api/traffic/daily?days=30        全站每日流量,供仪表盘趋势图
 GET  /api/nodes/{id}/traffic?days=30   周期汇总 + 每日趋势
 GET  /api/metrics/nodes-latest
 GET  /api/nodes/{id}/metrics?hours=6      6 / 24 / 72 / 168
@@ -237,6 +266,11 @@ GET  /api/metrics/status
 不能互相替代:`daily` 按 UTC 自然日聚合,表达不了"每月 15 日 00:00"
 这种非零点的周期边界;`cycle` 直接按时间范围汇总 `traffic_ledger`,
 是额度判断的依据。趋势图继续用 `daily`。
+
+**所有 `daily` 系列(全站、按节点、按用户、门户)只返回确实有记录的日子,
+不把中间缺的日子补成 0。** 库里没有那一天,可能是那天真的没人用,也可能是
+同步任务没跑完 —— 两者长得一模一样,补 0 等于替其中一种下了结论。
+前端按日期轴展开,缺的日子画成空心柱 / 灰虚线,明说「未知」。
 
 周期用量对象(`nodes-cycle` 的每一项与 `cycle` 同构):
 

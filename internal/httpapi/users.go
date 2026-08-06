@@ -40,6 +40,9 @@ type userResponse struct {
 	PortalAccountError string `json:"portal_account_error,omitempty"`
 	// LastRenewalAt 是最近一次加流量或延期限的时间,空串表示从未续期。
 	LastRenewalAt string `json:"last_renewal_at"`
+	// NextResetAt 是流量的下次重置时刻,不重置的用户为空串。
+	// 取 portal.NextResetAt —— 与门户上给用户看的是同一份计算。
+	NextResetAt string `json:"next_reset_at"`
 	// 以下两项仅详情接口填充。
 	UUID            string `json:"uuid,omitempty"`
 	SubToken        string `json:"sub_token,omitempty"`
@@ -47,7 +50,11 @@ type userResponse struct {
 }
 
 func toResponse(u *user.User) userResponse {
-	return userResponse{User: u, UsedTotal: u.UsedTotal()}
+	return userResponse{
+		User:        u,
+		UsedTotal:   u.UsedTotal(),
+		NextResetAt: portal.NextResetAt(u, time.Now().UTC()),
+	}
 }
 
 // portalAccountOf 取用户的门户账号,没有或查询失败时返回 nil。

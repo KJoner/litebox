@@ -101,6 +101,29 @@ func (q *Querier) NodeDaily(ctx context.Context, nodeID int64, days int) ([]Dail
 	return scanDaily(rows)
 }
 
+// SiteDaily 返回全站最近 days 天的每日流量,供仪表盘的趋势图使用。
+//
+// 只返回真正有记录的日子,不把中间缺的日子补成 0 ——
+// traffic_daily 里没有那一天,可能是那天确实没人用,也可能是同步任务没跑完,
+// 两者在库里长得一模一样。补 0 会把后一种画成"当天没人用",
+// 那是凭空造出来的结论。前端按日期轴展开,缺的日子画成缺口。
+func (q *Querier) SiteDaily(ctx context.Context, days int) ([]DailyPoint, error) {
+	if days <= 0 || days > 365 {
+		days = 30
+	}
+	since := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+	rows, err := q.db.QueryContext(ctx, `
+		SELECT day, COALESCE(SUM(uplink),0), COALESCE(SUM(downlink),0)
+		  FROM traffic_daily
+		 WHERE day >= ?
+		 GROUP BY day ORDER BY day`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDaily(rows)
+}
+
 func scanDaily(rows *sql.Rows) ([]DailyPoint, error) {
 	points := make([]DailyPoint, 0)
 	for rows.Next() {

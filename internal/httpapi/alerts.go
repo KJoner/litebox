@@ -83,21 +83,27 @@ func buildDashboardAlerts(users []*user.User, nodes []*node.Node,
 		if n.Status == node.StatusDisabled {
 			continue
 		}
+		// 预警里用展示名称,与仪表盘的节点健康表、部署记录保持一致 ——
+		// 上面写 FRA-NAT、下面写「法兰克福 02」,管理员得自己在两个名字之间对应。
+		name := n.DisplayName
+		if name == "" {
+			name = n.Name
+		}
 		if n.Status == node.StatusDeployFailed {
-			alerts = append(alerts, Alert{AlertError, "node", n.Name, n.ID, "上次部署失败"})
+			alerts = append(alerts, Alert{AlertError, "node", name, n.ID, "上次部署失败"})
 		}
 		// 节点额度只预警,不做任何自动处置:同步有间隔、各家 VPS 的
 		// 计量口径也不同,自动关掉一个共享节点会同时打断全部用户。
 		if c, ok := cycles[n.ID]; ok && !c.Unlimited {
 			switch c.WarningLevel {
 			case traffic.LevelExceeded:
-				alerts = append(alerts, Alert{AlertError, "node", n.Name, n.ID,
+				alerts = append(alerts, Alert{AlertError, "node", name, n.ID,
 					"本周期流量已超额"})
 			case traffic.LevelDanger:
-				alerts = append(alerts, Alert{AlertError, "node", n.Name, n.ID,
+				alerts = append(alerts, Alert{AlertError, "node", name, n.ID,
 					fmt.Sprintf("本周期流量已用 %.0f%%", *c.UsagePercent)})
 			case traffic.LevelWarning:
-				alerts = append(alerts, Alert{AlertWarning, "node", n.Name, n.ID,
+				alerts = append(alerts, Alert{AlertWarning, "node", name, n.ID,
 					fmt.Sprintf("本周期流量已用 %.0f%%", *c.UsagePercent)})
 			}
 		}
@@ -109,7 +115,7 @@ func buildDashboardAlerts(users []*user.User, nodes []*node.Node,
 		}
 		collected, err := time.Parse(time.RFC3339, m.CollectedAt)
 		if err != nil || now.Sub(collected) > metricsStaleAfter {
-			alerts = append(alerts, Alert{AlertWarning, "node", n.Name, n.ID,
+			alerts = append(alerts, Alert{AlertWarning, "node", name, n.ID,
 				"监控数据已超过 10 分钟未更新"})
 		}
 	}
