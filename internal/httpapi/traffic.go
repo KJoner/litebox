@@ -132,6 +132,21 @@ func (s *Server) handleNodesTodayTraffic(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// handleSiteDailyTraffic 返回全站每日流量,供仪表盘的趋势图使用。
+//
+// 没有把它并进 /api/dashboard/summary:那个接口给的是四个当下的数字,
+// 时间范围切换(7/30/90 天)只该重取曲线,不该顺带把整页指标卡都刷一遍。
+func (s *Server) handleSiteDailyTraffic(w http.ResponseWriter, r *http.Request) {
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	daily, err := s.traffic.SiteDaily(r.Context(), days)
+	if err != nil {
+		s.logger.Error("查询全站每日流量失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"daily": daily})
+}
+
 // handleTrafficStatus 返回同步调度的健康状况。
 func (s *Server) handleTrafficStatus(w http.ResponseWriter, r *http.Request) {
 	lastRun, failing := s.scheduler.Status()

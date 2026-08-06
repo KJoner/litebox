@@ -251,9 +251,11 @@ func TestDashboardNextResetAt(t *testing.T) {
 	}
 }
 
-// 流量按日补齐:漏掉没有流量的日子会让折线图把两个相隔一周的点连成直线,
-// 看起来像那一周一直在稳定用流量。
-func TestTrafficFillsMissingDays(t *testing.T) {
+// 每日流量只返回确实有记录的日子,不补 0。
+//
+// 库里没有某一天,可能是那天真的没人用,也可能是同步任务没跑完 ——
+// 两者长得一模一样,补 0 等于替其中一种下了结论。缺口由前端画成空心柱。
+func TestTrafficOmitsDaysWithoutRecords(t *testing.T) {
 	e := newEnv(t)
 	u, _ := e.newUser(t, "张三", "zhangsan", "correct-horse")
 	nodeID := e.addNode(t, nodeFixture{Name: "节点", DisplayName: "节点",
@@ -270,11 +272,13 @@ func TestTrafficFillsMissingDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.Daily) != 7 {
-		t.Fatalf("天数 = %d,期望 7", len(tr.Daily))
+	// 只返回确实有记录的那一天。补成 7 天会让另外 6 天变成「当天没人用」,
+	// 而它们真正的含义是「没有记录」—— 两者在界面上必须长得不一样。
+	if len(tr.Daily) != 1 {
+		t.Fatalf("天数 = %d,期望只返回有记录的 1 天", len(tr.Daily))
 	}
-	if tr.Daily[6].Day != today || tr.Daily[6].Total != 3000 {
-		t.Errorf("最后一天应当是今天且有 3000 字节:%+v", tr.Daily[6])
+	if tr.Daily[0].Day != today || tr.Daily[0].Total != 3000 {
+		t.Errorf("唯一一天应当是今天且有 3000 字节:%+v", tr.Daily[0])
 	}
 	if tr.Total != 3000 || tr.Uplink != 1000 || tr.Downlink != 2000 {
 		t.Errorf("汇总不符:%+v", tr)

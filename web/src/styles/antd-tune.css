@@ -1,0 +1,45 @@
+/*
+ * 只放 ant-design-vue 4.2.6 的 Token 系统够不到的密度调整。
+ *
+ * 为什么会有这个文件:设计规范要求「不写覆盖 .ant-* 的全局样式表」,那是照
+ * AntD React v5 的 component token 覆盖度写的。本版本里 Table 与 Card 在自己的
+ * styleFn 里用 mergeToken 重算派生 token,components.Table / components.Card
+ * 传进去的值会被当场盖掉 —— 换句话说这几项根本没有 Token 通道。
+ *
+ * 规则:每加一条都要说明「为什么不能走 Token」。凡是 Token 能表达的一律回
+ * theme/antd.ts,不要因为写 CSS 更顺手就往这里堆。颜色一律引 tokens.ts 里的值,
+ * 不在这里发明新色。
+ */
+
+/* 表格密度。行高 40 = 内距 9×2 + 行高 20.4 + 1px 分隔线;横向 12。
+   size="small" 的默认值是 8/8(paddingXS),竖向差 1px 不打紧,横向 8 太挤 ——
+   相邻两列的数字会粘在一起。 */
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-thead > tr > th,
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-tbody > tr > td {
+  padding: 9px 12px;
+}
+
+/* 表头文字降到二级灰。tableHeaderTextColor 派生自 colorTextHeading,
+   而后者同时管卡片标题与弹窗标题 —— 那两处要保持一级黑,不能一起动。 */
+.ant-table-wrapper .ant-table-thead > tr > th {
+  color: #576070;
+  font-weight: 500;
+}
+
+/* 卡片头。默认 cardHeadHeight = fontSizeLG × lineHeightLG + padding×2 ≈ 54,
+   在 13px 正文的密度下高出一截;标题也跟着 fontSizeLG 变成 15。 */
+.ant-card > .ant-card-head {
+  min-height: 42px;
+  padding: 0 16px;
+  font-size: 13px;
+}
+
+.ant-card > .ant-card-body {
+  padding: 16px;
+}
+
+/* 描述列表的标签底色。Descriptions 在本版本没有 ComponentToken,
+   labelBg 无处可传。详情抽屉里用得多,不统一会与卡片底色打架。 */
+.ant-descriptions-bordered .ant-descriptions-item-label {
+  background: #f6f7f9;
+}

@@ -1,0 +1,93 @@
+/*
+ * 只放无法通过 Token 表达的东西:字体自托管、焦点环、reduced-motion、
+ * 以及两条 body reset。其余一律走 ConfigProvider。
+ */
+
+/* 字体自托管在 main.ts 里用 @fontsource 引入,不在这里写 @font-face ——
+   中文字体必须按 unicode-range 分片,手写 @font-face 只能整体加载。
+   为什么不引 CDN:面板要 embed 进单个二进制,断网的内网环境也得能用。 */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+/* 字体栈写在 body 上而不是只靠 ConfigProvider:后者只作用于 AntD 组件内部,
+   页面自己的 h2、div 拿不到,会与相邻的 AntD 控件差半档。 */
+body {
+  background: #f6f7f9;
+  font-family:
+    'IBM Plex Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', sans-serif;
+}
+
+/* 数字、ID、地址、端口、时间戳一律等宽 + tabular-nums,表格里才对得齐。 */
+.lb-mono {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.lb-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 单行省略。技术串(hash/token)请用组件里的中段省略,不要用这个。 */
+.lb-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 两行夹断 —— 审计详情、部署错误。绝不用 word-break: break-all 铺开。 */
+.lb-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 键盘焦点一定可见,鼠标点击时不出现。
+   不用 outline: none 换阴影 —— 高对比模式下阴影会被丢弃。 */
+:focus-visible {
+  outline: 2px solid #2563b8;
+  outline-offset: 2px;
+}
+
+/* 跳过导航。侧栏有 6 项,每页 Tab 六下才进内容区,代价太高。 */
+.lb-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 1100;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.lb-skip-link:focus {
+  left: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* 进度信息不能只由动画承载:转圈停下后必须还有文字百分比。 */
+  .ant-progress-bg::before {
+    animation: none !important;
+  }
+}
+
+/* 触屏:桌面的紧凑控件不许直接带过来。缩小间距可以,缩小命中区不行。 */
+@media (max-width: 767px) {
+  .lb-touch-target {
+    min-height: 44px;
+  }
+}

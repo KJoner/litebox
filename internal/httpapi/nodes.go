@@ -52,6 +52,15 @@ func (s *Server) writeNodeError(w http.ResponseWriter, err error, what string) {
 	}
 }
 
+// nodeView 是节点的对外形态:节点本身 + 两个算出来的字段。
+//
+// 用嵌套而不是往 node.Node 上加字段:那个结构体逐列对应 nodes 表,
+// 加两个不落库的字段进去,下一个人写 scanNode 时就得记住"这两个跳过"。
+type nodeView struct {
+	*node.Node
+	node.NodeConfigStatus
+}
+
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.nodes.Store().List(r.Context())
 	if err != nil {
@@ -59,10 +68,13 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	if nodes == nil {
-		nodes = []*node.Node{}
+
+	status := s.nodes.ConfigStatuses(r.Context(), nodes)
+	items := make([]nodeView, 0, len(nodes))
+	for _, n := range nodes {
+		items = append(items, nodeView{Node: n, NodeConfigStatus: status[n.ID]})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": nodes})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +87,11 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		s.writeNodeError(w, err, "查询节点失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, n)
+	state, needsDeploy := s.nodes.ConfigStatus(r.Context(), n)
+	writeJSON(w, http.StatusOK, nodeView{
+		Node:             n,
+		NodeConfigStatus: node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy},
+	})
 }
 
 type createNodeRequest struct {

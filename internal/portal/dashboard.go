@@ -185,6 +185,14 @@ func unavailableReason(u *user.User, now time.Time) string {
 }
 
 // nextResetAt 计算下一次流量重置时刻。不是月度重置时返回空串。
+// NextResetAt 返回用户流量的下次重置时刻(RFC3339 UTC),不重置的用户返回空串。
+//
+// 导出是为了让管理端也读这一份 —— 门户上写「09-01 00:00 UTC 重置」、
+// 管理后台自己再算一遍,两边差一天时谁都说不清哪个才算数。
+// 用户的重置日限定 1~28,没有短月份问题;节点是 1~31,那一套在
+// traffic.CalculateNodePeriod 里,与这里是两条独立规则,不要互相套用。
+func NextResetAt(u *user.User, now time.Time) string { return nextResetAt(u, now) }
+
 func nextResetAt(u *user.User, now time.Time) string {
 	if u.ResetCycle != user.ResetMonthly {
 		return ""
@@ -416,29 +424,26 @@ func (q *Querier) Traffic(ctx context.Context, proxyUserID int64, days int) (*Tr
 	}
 	defer daily.Close()
 
-	byDay := make(map[string]DailyPoint)
+	// 只返回确实有记录的日子,**不把缺的日子补成 0**。
+	//
+	// traffic_daily 里没有某一天,可能是那天真的没人用,也可能是同步任务没跑完,
+	// 两者在库里长得一模一样。补 0 会把后一种画成「当天没人用」——
+	// 那是凭空造出来的结论。缺口由前端画成空心柱 / 灰虚线,明说「未知」。
+	//
+	// (早先这里补 0 是为了不让折线把相隔一周的两个点连成直线。
+	//  现在前端自己按日期轴展开、缺口不参与连线,不需要后端替它铺平。)
 	for daily.Next() {
 		var p DailyPoint
 		if err := daily.Scan(&p.Day, &p.Uplink, &p.Downlink); err != nil {
 			return nil, err
 		}
 		p.Total = p.Uplink + p.Downlink
-		byDay[p.Day] = p
+		result.Daily = append(result.Daily, p)
+		result.Uplink += p.Uplink
+		result.Downlink += p.Downlink
 	}
 	if err := daily.Err(); err != nil {
 		return nil, err
-	}
-	// 补齐没有流量的日子:漏掉它们会让折线图把两个相隔一周的点连成直线,
-	// 看起来像那一周一直在稳定用流量。
-	for i := 0; i < days; i++ {
-		day := time.Now().UTC().AddDate(0, 0, -(days - 1 - i)).Format("2006-01-02")
-		if p, ok := byDay[day]; ok {
-			result.Daily = append(result.Daily, p)
-		} else {
-			result.Daily = append(result.Daily, DailyPoint{Day: day})
-		}
-		result.Uplink += result.Daily[i].Uplink
-		result.Downlink += result.Daily[i].Downlink
 	}
 	result.Total = result.Uplink + result.Downlink
 

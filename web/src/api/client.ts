@@ -162,6 +162,11 @@ export interface ProxyUser {
   portal_account_error?: string
   /** 最近一次加流量或延期限的时间,空串表示从未续期 */
   last_renewal_at: string
+  /**
+   * 流量的下次重置时刻,不重置的用户为空串。
+   * 由后端算好下发 —— 与门户上给用户看的是同一份计算,前端不自己推。
+   */
+  next_reset_at: string
   // 仅详情接口返回
   uuid?: string
   sub_token?: string
@@ -215,7 +220,24 @@ export interface Node {
   deployed_config_sha256: string
   created_at: string
   updated_at: string
+  /**
+   * 库里当前应有的配置是否已经在节点上生效。与 status 正交:
+   * 一台 ONLINE 的机器完全可能跑着三次变更之前的配置。
+   *
+   * 只有 GET /api/nodes 与 GET /api/nodes/{id} 会带上这两个字段;
+   * 创建与更新的响应里没有(调用方随后都会重新拉列表),所以是可选的。
+   */
+  config_state?: NodeConfigState
+  /** 是否该提示部署。与 config_state 分开给 —— 不确定时不催。 */
+  needs_deploy?: boolean
 }
+
+export type NodeConfigState =
+  | 'NEVER_DEPLOYED'
+  | 'IN_SYNC'
+  | 'PENDING'
+  | 'DEPLOY_FAILED'
+  | 'UNKNOWN'
 
 export interface NodeMetrics {
   node_id: number
@@ -769,4 +791,7 @@ export const api = {
   // 批量取,节点列表才不会每行发一个请求。
   nodesCycleTraffic: () =>
     request<{ items: NodeCycleUsage[] }>('/api/traffic/nodes-cycle'),
+  // 全站每日流量。只返回确实有记录的日子,缺的日子由前端画成缺口而不是 0。
+  siteDailyTraffic: (days = 30) =>
+    request<{ daily: DailyPoint[] }>('/api/traffic/daily', { query: { days } }),
 }
