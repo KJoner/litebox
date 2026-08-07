@@ -55,6 +55,8 @@ const blank = {
   sort_order: 0,
   host: '',
   ipv6_address: '',
+  /** 0 / null 表示跟随 IPv4 的公网端口。 */
+  ipv6_proxy_port: null as number | null,
   quota_value: null as number | null,
   quota_unit: 'GB' as LbQuotaUnit,
   traffic_reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
@@ -92,6 +94,8 @@ watch(
         sort_order: n.sort_order,
         host: n.host,
         ipv6_address: n.ipv6_address,
+        // 0 回填成空输入框:「跟随 IPv4」不该显示成一个看起来像端口的 0。
+        ipv6_proxy_port: n.ipv6_proxy_port || null,
         quota_value: q.value,
         quota_unit: q.unit,
         traffic_reset_cycle: n.traffic_reset_cycle,
@@ -118,6 +122,7 @@ const fieldLabels: Record<string, string> = {
   sort_order: '排序',
   host: 'IPv4 地址',
   ipv6_address: 'IPv6 地址',
+  ipv6_proxy_port: 'IPv6 公网端口',
   quota_value: '流量限额',
   quota_unit: '流量限额',
   traffic_reset_cycle: '重置周期',
@@ -201,6 +206,8 @@ async function submit() {
         sort_order: form.sort_order,
         host: form.host,
         ipv6_address: form.ipv6_address,
+        // 留空发 0 —— 后端据此在订阅生成时回落到 IPv4 端口。
+        ipv6_proxy_port: form.ipv6_proxy_port ?? 0,
         traffic_quota_bytes: quota,
         traffic_reset_cycle: form.traffic_reset_cycle,
         traffic_reset_day: form.traffic_reset_day,
@@ -243,6 +250,8 @@ async function submit() {
       host: form.host,
       // 留空即清空 IPv6,订阅里的 IPv6 条目随即消失。
       ipv6_address: form.ipv6_address,
+      // 留空发 0 —— 后端据此在订阅生成时回落到 IPv4 端口。
+      ipv6_proxy_port: form.ipv6_proxy_port ?? 0,
       traffic_quota_bytes: quota,
       traffic_reset_cycle: form.traffic_reset_cycle,
       traffic_reset_day: form.traffic_reset_day,
@@ -386,13 +395,40 @@ async function submit() {
         <div class="nf__help">用于 SSH 管理、节点部署和 IPv4 订阅,必须填写。</div>
       </a-form-item>
 
-      <a-form-item label="IPv6 地址">
-        <a-input v-model:value="form.ipv6_address" placeholder="例如:2602:fed2:7116:2110::1" />
-        <div class="nf__help">
-          选填,只用于订阅下发。填写后订阅中额外生成「{{ form.display_name || form.name || '展示名称' }}-IPV6」条目,
-          清空即撤下 —— 两种改动都不需要重新部署。
-        </div>
-      </a-form-item>
+      <a-row :gutter="12">
+        <a-col :span="15">
+          <a-form-item label="IPv6 地址">
+            <a-input v-model:value="form.ipv6_address" placeholder="例如:2602:fed2:7116:2110::1" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="9">
+          <a-form-item label="IPv6 公网端口">
+            <a-input-number
+              v-model:value="form.ipv6_proxy_port"
+              :min="1"
+              :max="65535"
+              :disabled="!form.ipv6_address.trim()"
+              :placeholder="
+                !form.ipv6_address.trim()
+                  ? '需先填 IPv6'
+                  : form.proxy_port
+                    ? `跟随 ${form.proxy_port}`
+                    : '跟随 IPv4'
+              "
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <div class="nf__help nf__help--row">
+        IPv6 选填,只用于订阅下发。填写后订阅中额外生成
+        「{{ form.display_name || form.name || '展示名称' }}-IPV6」条目,清空即撤下 ——
+        两种改动都不需要重新部署。
+        <br />
+        <strong>端口留空表示跟随左边的公网代理端口</strong>,以后改 IPv4 端口时它自动跟着变;
+        只有两个协议栈映射到不同外部端口时才需要单独填(NAT 小鸡上很常见:
+        IPv4 是服务商映射的高位端口,IPv6 是直连的 443)。
+      </div>
 
       <a-row :gutter="12">
         <a-col :span="9">

@@ -153,7 +153,7 @@ func uriList(uuid string, nodes []Node) []string {
 // IPv4 条目消失了,IPv6 条目却还留在订阅里继续被使用。
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.display_name, n.host, n.ipv6_address, n.proxy_port,
+		SELECT n.display_name, n.host, n.ipv6_address, n.proxy_port, n.ipv6_proxy_port,
 		       n.reality_dest, n.reality_pubkey, n.reality_short_id
 		  FROM nodes n
 		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
@@ -171,7 +171,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	physical := make([]PhysicalNode, 0)
 	for rows.Next() {
 		var p PhysicalNode
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port,
+		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port, &p.IPv6Port,
 			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
 		}
