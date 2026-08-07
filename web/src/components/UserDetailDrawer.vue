@@ -111,7 +111,7 @@ function loadSections(u: ProxyUser) {
       trafficError.value = true
     })
   api
-    .userAdjustments(u.id, 20)
+    .userAdjustments(u.id, 50)
     .then((r) => (adjustments.value = r.items))
     .catch(() => {
       adjustments.value = []
@@ -702,7 +702,7 @@ const adjustColumns = [
             :data-source="adjustments"
             row-key="id"
             size="small"
-            :pagination="false"
+            :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'time'">

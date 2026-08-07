@@ -79,8 +79,6 @@ export const threshold = {
   expiringSoonDays: 7,
   /** 用户额度接近上限的比例 */
   nearQuotaRatio: 0.8,
-  /** 超过这个行数才分页 */
-  paginateOver: 50,
 } as const
 
 export function usageColor(percent: number): string {

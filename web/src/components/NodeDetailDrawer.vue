@@ -76,7 +76,7 @@ async function load(id: number) {
   loading.value = false
 
   api
-    .nodeDeployments(id, 10)
+    .nodeDeployments(id, 50)
     .then((r) => (deployments.value = r.items))
     .catch(() => (deployments.value = []))
   trafficError.value = false
@@ -998,7 +998,7 @@ const subEntries = computed(() => {
             :data-source="deployments"
             row-key="id"
             size="small"
-            :pagination="false"
+            :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
             :expand-row-by-click="true"
           >
             <template #bodyCell="{ column, record }">

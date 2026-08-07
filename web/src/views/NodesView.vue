@@ -28,6 +28,7 @@ import {
   type LbResultItem,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
+import { usePagination } from '@/composables/usePagination'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
 import { formatBytes } from '@/utils/format'
 import { threshold } from '@/theme/tokens'
@@ -356,9 +357,7 @@ const columns = [
   { title: '操作', key: 'actions', width: 190, fixed: 'right' as const },
 ]
 
-const pagination = computed(() =>
-  nodes.value.length > threshold.paginateOver ? { pageSize: 25, showSizeChanger: false } : (false as const),
-)
+const pager = usePagination('nodes', () => visible.value.length)
 
 const keyOpen = ref(false)
 </script>
@@ -499,7 +498,7 @@ const keyOpen = ref(false)
 
       <!-- <768 整表换卡片:横向滚动会把「操作」列推到屏幕外。 -->
       <div v-else-if="narrow" class="nv__cards">
-        <LbRowCard v-for="n in visible" :key="n.id">
+        <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
           <template #head>
             <a class="nv__card-name" @click="detailId = n.id">{{ n.display_name || n.name }}</a>
             <LbStatusTag kind="node" :status="n.status" />
@@ -560,6 +559,16 @@ const keyOpen = ref(false)
             </a-dropdown>
           </template>
         </LbRowCard>
+
+        <a-pagination
+          v-if="visible.length > pager.pageSize.value"
+          v-model:current="pager.current.value"
+          :page-size="pager.pageSize.value"
+          :total="visible.length"
+          :show-size-changer="false"
+          simple
+          class="nv__pager"
+        />
       </div>
 
       <a-table
@@ -568,7 +577,7 @@ const keyOpen = ref(false)
         :data-source="visible"
         :loading="loading"
         :row-selection="rowSelection"
-        :pagination="pagination"
+        :pagination="pager.options.value"
         row-key="id"
         size="small"
         :scroll="{ x: 1100 }"
@@ -802,6 +811,11 @@ const keyOpen = ref(false)
 .nv__card-maint {
   font-size: 11.5px;
   color: #5f52a0;
+}
+
+.nv__pager {
+  align-self: center;
+  padding: 4px 0 2px;
 }
 
 .nv__maint {

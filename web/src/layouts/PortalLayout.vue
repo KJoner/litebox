@@ -117,7 +117,12 @@ const initials = computed(() => {
   background: #f6f7f9;
 }
 
+/* 顶栏吸附在视口上,不跟着内容滚 —— 门户多在手机上用,
+   往下翻两屏之后要能直接换栏目,而不是先滚回顶部。 */
 .pl__header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 16px;

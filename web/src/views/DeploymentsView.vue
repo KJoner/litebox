@@ -12,6 +12,7 @@ import {
   LbTimeText,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
+import { usePagination } from '@/composables/usePagination'
 
 /**
  * 部署记录:按对象回溯 —— 某台机器上发生了什么。
@@ -174,6 +175,8 @@ async function load() {
 
 onMounted(load)
 
+const pager = usePagination('deployments', () => visible.value.length)
+
 const columns = [
   { title: '节点', key: 'node', width: 190 },
   { title: 'rev', key: 'rev', width: 70 },
@@ -276,7 +279,7 @@ const columns = [
         步骤时间线是一次性看完就走的东西,跳一页还要再退回来。
       -->
       <div v-else-if="narrow" class="dp__cards">
-        <LbRowCard v-for="r in visible" :key="r.id" :danger="failed(r)">
+        <LbRowCard v-for="r in pager.slice(visible)" :key="r.id" :danger="failed(r)">
           <template #head>
             <span class="dp__card-name">{{ nodeName(r.node_id) }}</span>
             <span class="lb-mono dp__card-rev">rev {{ r.revision }}</span>
@@ -300,6 +303,16 @@ const columns = [
             <a-button @click="stepsOf = r">查看步骤</a-button>
           </template>
         </LbRowCard>
+
+        <a-pagination
+          v-if="visible.length > pager.pageSize.value"
+          v-model:current="pager.current.value"
+          :page-size="pager.pageSize.value"
+          :total="visible.length"
+          :show-size-changer="false"
+          simple
+          class="dp__pager"
+        />
       </div>
 
       <a-table
@@ -309,7 +322,7 @@ const columns = [
         :loading="loading"
         row-key="id"
         size="small"
-        :pagination="{ pageSize: 20, showSizeChanger: false }"
+        :pagination="pager.options.value"
         :scroll="{ x: 1000 }"
       >
         <template #expandedRowRender="{ record }">
@@ -415,6 +428,11 @@ const columns = [
 .dp__card-rev {
   font-size: 11.5px;
   color: #6b7480;
+}
+
+.dp__pager {
+  align-self: center;
+  padding: 4px 0 2px;
 }
 
 .dp__v1 {

@@ -232,16 +232,29 @@ async function onLogout() {
   min-height: 100vh;
 }
 
+/*
+ * 侧栏与顶栏都吸附在视口上,不跟着内容滚。
+ *
+ * 用 sticky 而不是 fixed:fixed 会脱离文档流,得再给内容区补一个等宽的
+ * margin-left,而侧栏有展开 216 / 折叠 56 两种宽度,补错一次就是内容被压在
+ * 侧栏底下。sticky 仍然占位,宽度变化自动跟着走。
+ */
 .ml__sider {
+  position: sticky;
+  top: 0;
+  height: 100vh;
   /* 白侧栏靠 1px 边线与内容区分开,不靠投影。 */
   border-right: 1px solid #e3e6ea;
   display: flex;
   flex-direction: column;
 }
 
+/* 菜单项多到装不下时由侧栏自己滚,不把整页拉长。 */
 .ml__sider :deep(.ant-layout-sider-children) {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .ml__brand {
@@ -374,6 +387,10 @@ async function onLogout() {
 }
 
 .ml__header {
+  position: sticky;
+  top: 0;
+  /* 盖住滚上来的内容,但要低于抽屉(1000)与弹窗(1000)。 */
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 10px;
