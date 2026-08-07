@@ -26,6 +26,7 @@ import {
   lbDangerConfirm,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
+import { usePagination } from '@/composables/usePagination'
 import {
   hasNoUsableNode,
   isExpiringSoon,
@@ -36,7 +37,7 @@ import {
   userActionLabel,
   daysUntil,
 } from '@/components/lb/derive'
-import { color, threshold } from '@/theme/tokens'
+import { color } from '@/theme/tokens'
 
 const narrow = useNarrow()
 const users = ref<ProxyUser[]>([])
@@ -155,12 +156,7 @@ const columns = [
   { title: '操作', key: 'actions', width: 200, fixed: 'right' as const },
 ]
 
-// 10 人量级不分页。分页条常驻只会在一页三行的表下面挂一个空壳。
-const pagination = computed(() =>
-  users.value.length > threshold.paginateOver
-    ? { pageSize: 25, showSizeChanger: false }
-    : (false as const),
-)
+const pager = usePagination('users', () => visible.value.length)
 
 async function load() {
   loading.value = true
@@ -451,7 +447,7 @@ onMounted(load)
         手机上根本找不到它。按 P1→P2 顺序堆叠,P3(登录账号、最近续期)不出现在卡片上。
       -->
       <div v-else-if="narrow" class="uv__cards">
-        <LbRowCard v-for="u in visible" :key="u.id">
+        <LbRowCard v-for="u in pager.slice(visible)" :key="u.id">
           <template #head>
             <a class="uv__card-name" @click="detailId = u.id">{{ u.display_name }}</a>
             <LbStatusTag kind="user" :status="u.status" />
@@ -509,6 +505,17 @@ onMounted(load)
             </a-dropdown>
           </template>
         </LbRowCard>
+
+        <!-- 卡片列表也要分页,否则手机上会一次铺出全部行。 -->
+        <a-pagination
+          v-if="visible.length > pager.pageSize.value"
+          v-model:current="pager.current.value"
+          :page-size="pager.pageSize.value"
+          :total="visible.length"
+          :show-size-changer="false"
+          simple
+          class="uv__pager"
+        />
       </div>
 
       <a-table
@@ -517,7 +524,7 @@ onMounted(load)
         :data-source="visible"
         :loading="loading"
         :row-selection="rowSelection"
-        :pagination="pagination"
+        :pagination="pager.options.value"
         row-key="id"
         size="small"
         :scroll="{ x: 1120 }"
@@ -741,6 +748,11 @@ onMounted(load)
 
 .uv__nonode-inline {
   color: #b4291d;
+}
+
+.uv__pager {
+  align-self: center;
+  padding: 4px 0 2px;
 }
 
 .uv__code {

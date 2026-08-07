@@ -4,6 +4,7 @@ import { message } from 'ant-design-vue'
 import { api, ApiError, type AuditLog, type Node, type ProxyUser } from '@/api/client'
 import { LbEmptyState, LbFilterBar, LbRowCard, LbStatusTag, LbTimeText } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
+import { usePagination } from '@/composables/usePagination'
 
 /**
  * 审计日志:按时间回溯 —— 这件事是谁在什么时候做的。
@@ -156,12 +157,15 @@ const visible = computed(() =>
   }),
 )
 
+const pager = usePagination('audit', () => visible.value.length)
+
 /** 窄屏按天分组。今天 / 昨天用词而不是日期 —— 那是最常查的两天。 */
 const grouped = computed(() => {
   const today = new Date().toISOString().slice(0, 10)
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
   const out: { day: string; label: string; items: AuditLog[] }[] = []
-  for (const l of visible.value) {
+  // 分组建立在**当前页**之上,不是全部结果 —— 否则窄屏会一次铺出 200 条。
+  for (const l of pager.slice(visible.value)) {
     const day = l.created_at.slice(0, 10)
     let g = out.find((x) => x.day === day)
     if (!g) {
@@ -373,6 +377,16 @@ const columns = [
             </LbRowCard>
           </div>
         </div>
+
+        <a-pagination
+          v-if="visible.length > pager.pageSize.value"
+          v-model:current="pager.current.value"
+          :page-size="pager.pageSize.value"
+          :total="visible.length"
+          :show-size-changer="false"
+          simple
+          class="al__pager"
+        />
       </template>
 
       <a-table
@@ -382,7 +396,7 @@ const columns = [
         :loading="loading"
         row-key="id"
         size="small"
-        :pagination="{ pageSize: 20, showSizeChanger: false }"
+        :pagination="pager.options.value"
         :scroll="{ x: 1050 }"
       >
         <template #bodyCell="{ column, record }">
@@ -566,5 +580,11 @@ const columns = [
 .al__card-meta {
   font-size: 11px;
   color: #6b7480;
+}
+
+.al__pager {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
 }
 </style>
