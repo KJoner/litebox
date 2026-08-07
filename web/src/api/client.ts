@@ -194,6 +194,13 @@ export interface Node {
   host: string
   /** 可选的公网 IPv6,只影响订阅:填了就多下发一条「展示名称-IPV6」 */
   ipv6_address: string
+  /**
+   * IPv6 条目在订阅里用的公网端口。0 表示跟随 proxy_port。
+   *
+   * 存 0 而不是把当时的 proxy_port 写进去 —— 那样以后改 IPv4 公网端口,
+   * IPv6 条目会停在旧端口上,而管理员当初看到的是一个空输入框。
+   */
+  ipv6_proxy_port: number
   /** 0 表示不限量。只用于统计与预警,超额不会自动停服 */
   traffic_quota_bytes: number
   traffic_reset_cycle: 'NONE' | 'MONTHLY'

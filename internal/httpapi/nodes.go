@@ -113,9 +113,11 @@ type createNodeRequest struct {
 	TrafficResetDay   int    `json:"traffic_reset_day"`
 	// ProxyPort 是客户端连接的公网端口;ListenPort 是节点上 sing-box 的监听端口,
 	// 留空表示无转发,与 ProxyPort 相同。
-	ProxyPort       int    `json:"proxy_port"`
-	ListenPort      int    `json:"listen_port"`
-	APIPort         int    `json:"api_port"`
+	ProxyPort  int `json:"proxy_port"`
+	ListenPort int `json:"listen_port"`
+	APIPort    int `json:"api_port"`
+	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。
+	IPv6ProxyPort   int    `json:"ipv6_proxy_port"`
 	RealityDest     string `json:"reality_dest"`
 	RealityDestPort int    `json:"reality_dest_port"`
 	// RootPassword 是节点的登录口令,只用于把面板公钥装进节点的那一次连接,
@@ -144,6 +146,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		ProxyPort:         req.ProxyPort,
 		ListenPort:        req.ListenPort,
 		APIPort:           req.APIPort,
+		IPv6ProxyPort:     req.IPv6ProxyPort,
 		RealityDest:       strings.TrimSpace(req.RealityDest),
 		RealityDestPort:   req.RealityDestPort,
 		TrafficQuotaBytes: req.TrafficQuotaBytes,
@@ -251,6 +254,9 @@ type updateNodeRequest struct {
 	ProxyPort  int    `json:"proxy_port"`
 	ListenPort int    `json:"listen_port"`
 	APIPort    int    `json:"api_port"`
+	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。它与 IPv6Address 一样是
+	// "留空即清空",不是"保持原值" —— 两者总是一起提交,不存在漏传一个的情况。
+	IPv6ProxyPort int `json:"ipv6_proxy_port"`
 
 	// TrafficQuotaBytes 为 null 时保持原额度(0 表示改成不限量,不能用零值表达"没传")。
 	// 重置周期留空、重置日为 0 同样保持原值。
@@ -299,6 +305,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		ProxyPort:           req.ProxyPort,
 		ListenPort:          req.ListenPort,
 		APIPort:             req.APIPort,
+		IPv6ProxyPort:       req.IPv6ProxyPort,
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,

@@ -40,10 +40,14 @@ const IPv6NameSuffix = "-IPV6"
 // 两个条目共用同一个 sing-box 入站、同一份用户凭据、同一个流量计数器,
 // 拆成两行会带来第二串部署记录与第二套资源采样,而机器只有一台。
 type PhysicalNode struct {
-	DisplayName      string
-	Host             string
-	IPv6Address      string
-	Port             int
+	DisplayName string
+	Host        string
+	IPv6Address string
+	Port        int
+	// IPv6Port 为 0 表示 IPv6 条目跟随 Port。
+	// 双栈机器的两个协议栈未必映射到同一个外部端口 —— NAT 小鸡上
+	// IPv4 常是服务商映射的高位端口,IPv6 则是直连的 443。
+	IPv6Port         int
 	RealityDest      string
 	RealityPublicKey string
 	RealityShortID   string
@@ -51,8 +55,12 @@ type PhysicalNode struct {
 
 // Expand 把一条物理节点展开成订阅里的一到两个条目。
 //
-// 除展示名称与服务器地址外两个条目完全相同:UUID、公网端口、REALITY 公钥、
+// 除展示名称、服务器地址与公网端口外两个条目完全相同:UUID、REALITY 公钥、
 // short ID、握手目标、指纹与 flow 都取自同一条记录 —— 它们本来就是同一个入站。
+//
+// 端口在这里解析而不是在写库时:IPv6Port 存 0 表示「跟随 IPv4」,
+// 之后管理员改了 IPv4 公网端口,IPv6 条目会自动跟着变。
+// 写库时就固化成当时的值,改完 IPv4 端口 IPv6 会停在旧端口上,而且不报任何错。
 func (p PhysicalNode) Expand() []Node {
 	v4 := Node{
 		DisplayName:      p.DisplayName,
@@ -68,6 +76,9 @@ func (p PhysicalNode) Expand() []Node {
 	v6 := v4
 	v6.DisplayName = p.DisplayName + IPv6NameSuffix
 	v6.Host = p.IPv6Address
+	if p.IPv6Port > 0 {
+		v6.Port = p.IPv6Port
+	}
 	// IPv6 紧跟它自己的 IPv4 条目,而不是集中排在列表末尾:
 	// 客户端按顺序展示,同一台机器的两个地址挨在一起才能一眼看出是同一个节点。
 	return []Node{v4, v6}

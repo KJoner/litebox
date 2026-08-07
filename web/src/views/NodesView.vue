@@ -592,7 +592,14 @@ const keyOpen = ref(false)
               <template v-if="record.listen_port !== record.proxy_port">
                 → :{{ record.listen_port }}
               </template>
-              <template v-if="record.ipv6_address"> · IPv6 已启用</template>
+              <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
+              <template v-if="record.ipv6_address">
+                · IPv6<template
+                  v-if="record.ipv6_proxy_port && record.ipv6_proxy_port !== record.proxy_port"
+                >
+                  :{{ record.ipv6_proxy_port }}</template
+                >
+              </template>
             </div>
           </template>
 

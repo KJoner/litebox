@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,13 @@ type Node struct {
 	ProxyPort  int `json:"proxy_port"`
 	ListenPort int `json:"listen_port"`
 	APIPort    int `json:"api_port"`
+	// IPv6ProxyPort 是 IPv6 条目在订阅里用的公网端口,0 表示跟随 ProxyPort。
+	// 双栈机器的两个协议栈未必映射到同一个外部端口(NAT 小鸡上 IPv4 常是
+	// 服务商映射的高位端口,而 IPv6 是直连的 443)。
+	//
+	// **0 要原样留着,不在这里解析成 ProxyPort** —— 解析放在订阅生成时,
+	// 否则以后改 ProxyPort,IPv6 条目会停在旧端口上而管理员毫不知情。
+	IPv6ProxyPort int `json:"ipv6_proxy_port"`
 
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
@@ -109,7 +117,8 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 
 const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
-	n.proxy_port, n.listen_port, n.api_port, n.arch, n.singbox_version, n.singbox_build_tags,
+	n.proxy_port, n.listen_port, n.api_port, n.ipv6_proxy_port,
+	n.arch, n.singbox_version, n.singbox_build_tags,
 	n.reality_dest, n.reality_dest_port, n.reality_privkey_encrypted, n.reality_pubkey,
 	n.reality_short_id, n.handshake_max_record_size, n.handshake_checked_at,
 	n.access_tier_id, t.code, t.name, t.level,
@@ -128,7 +137,8 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	err := scan(
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
-		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.Arch, &n.SingBoxVersion, &n.BuildTags,
+		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.IPv6ProxyPort,
+		&n.Arch, &n.SingBoxVersion, &n.BuildTags,
 		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey,
 		&n.RealityShortID, &n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
 		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
@@ -177,6 +187,8 @@ type CreateParams struct {
 	ProxyPort  int
 	ListenPort int
 	APIPort    int
+	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。
+	IPv6ProxyPort int
 	// RealityDest 为空时使用默认候选目标的第一个。
 	RealityDest     string
 	RealityDestPort int
@@ -219,15 +231,16 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO nodes (name, display_name, host, ipv6_address, ssh_port, ssh_user,
-			ssh_key_encrypted, ssh_host_key, proxy_port, listen_port, api_port,
+			ssh_key_encrypted, ssh_host_key, proxy_port, listen_port, api_port, ipv6_proxy_port,
 			reality_dest, reality_dest_port,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			access_tier_id, sort_order,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day,
 			status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
-		p.ProxyPort, p.ListenPort, p.APIPort, p.RealityDest, p.RealityDestPort,
+		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
+		p.RealityDest, p.RealityDestPort,
 		realityKeyEnc, keys.PublicKey, shortID,
 		p.AccessTierID, p.SortOrder,
 		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
@@ -273,6 +286,9 @@ func validateCreate(p *CreateParams) error {
 	// SSH 私钥可以留空:留空表示这个节点用面板专用密钥,
 	// 由 Service.Bootstrap 在创建后把面板公钥装进节点。
 	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
+		return err
+	}
+	if err := normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort); err != nil {
 		return err
 	}
 	if p.RealityDest == "" {
@@ -370,6 +386,25 @@ func normalizePorts(proxyPort, listenPort, apiPort *int) error {
 	return nil
 }
 
+// normalizeIPv6Port 校验 IPv6 条目的公网端口。
+//
+// **0 保持 0,不在这里解析成 proxyPort。** 解析放在订阅生成时:
+// 写死的话,以后改 IPv4 公网端口,IPv6 条目会继续停在旧端口上 ——
+// 而管理员当初看到的是一个空输入框,不会想到那里固化了一个值。
+//
+// 没有 IPv6 地址时端口一并归零:留着它,下次重新填上 IPv6 会静默套用
+// 一个几个月前的端口,而那个端口未必还转发着。清空是显式的,重填是显式的。
+func normalizeIPv6Port(ipv6 string, port *int) error {
+	if ipv6 == "" {
+		*port = 0
+		return nil
+	}
+	if *port == 0 {
+		return nil
+	}
+	return singbox.ValidatePort(*port, "IPv6 公网代理")
+}
+
 func (s *Store) Get(ctx context.Context, id int64) (*Node, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+nodeColumns+nodeFrom+`WHERE n.id = ? AND n.deleted_at IS NULL`, id)
@@ -420,6 +455,10 @@ type UpdateParams struct {
 	ProxyPort   int
 	ListenPort  int
 	APIPort     int
+	// IPv6ProxyPort 为 0 表示 IPv6 条目跟随 ProxyPort,与 IPv6Address 一样
+	// 是"留空即清空"而不是"保持原值" —— 它只有在 IPv6Address 非空时才有意义,
+	// 两个字段总是一起提交,不存在漏传一个的情况。
+	IPv6ProxyPort int
 
 	// TrafficQuotaBytes 为 nil 表示保持原额度。用指针是因为 0 本身有含义
 	// (不限量),零值区分不出"没传"和"改成不限量"。
@@ -498,6 +537,9 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
 		return nil, effect, err
 	}
+	if err := normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort); err != nil {
+		return nil, effect, err
+	}
 	if p.AccessTierID == 0 {
 		p.AccessTierID = old.AccessTierID
 	}
@@ -537,6 +579,8 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	track("公网代理端口", old.ProxyPort != p.ProxyPort, old.ProxyPort, p.ProxyPort)
 	track("主机代理端口", old.ListenPort != p.ListenPort, old.ListenPort, p.ListenPort)
 	track("API 端口", old.APIPort != p.APIPort, old.APIPort, p.APIPort)
+	track("IPv6 公网端口", old.IPv6ProxyPort != p.IPv6ProxyPort,
+		ipv6PortLabel(old.IPv6ProxyPort), ipv6PortLabel(p.IPv6ProxyPort))
 	track("访问等级", old.AccessTierID != p.AccessTierID, old.AccessTierID, p.AccessTierID)
 	track("排序", old.SortOrder != p.SortOrder, old.SortOrder, p.SortOrder)
 	track("下发订阅", old.SubscriptionEnabled != subEnabled, old.SubscriptionEnabled, subEnabled)
@@ -577,7 +621,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		   SET name = ?, display_name = ?, host = ?, ipv6_address = ?,
 		       ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
-		       proxy_port = ?, listen_port = ?, api_port = ?,
+		       proxy_port = ?, listen_port = ?, api_port = ?, ipv6_proxy_port = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, maintenance_message = ?,
 		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
@@ -586,7 +630,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		p.Name, p.DisplayName, p.Host, p.IPv6Address,
 		p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
-		p.ProxyPort, p.ListenPort, p.APIPort,
+		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
 		p.AccessTierID, p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,
 		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
@@ -737,6 +781,15 @@ func orNone(v string) string {
 		return "(未配置)"
 	}
 	return v
+}
+
+// ipv6PortLabel 把 0 写成「跟随 IPv4」而不是「0」——
+// 审计里出现「IPv6 公网端口 0 → 8443」没人看得懂 0 是什么意思。
+func ipv6PortLabel(port int) string {
+	if port == 0 {
+		return "跟随 IPv4"
+	}
+	return strconv.Itoa(port)
 }
 
 func quotaLabel(bytes int64) string {

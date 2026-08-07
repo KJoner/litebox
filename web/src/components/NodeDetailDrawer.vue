@@ -511,9 +511,11 @@ const subEntries = computed(() => {
   if (!n) return []
   const out = [{ name: n.display_name || n.name, addr: `${n.host}:${n.proxy_port}` }]
   if (n.ipv6_address) {
+    // 端口为 0 表示跟随 IPv4 —— 这里的回落必须和后端 Expand 里的一致。
+    const port = n.ipv6_proxy_port || n.proxy_port
     out.push({
       name: `${n.display_name || n.name}-IPV6`,
-      addr: `[${n.ipv6_address}]:${n.proxy_port}`,
+      addr: `[${n.ipv6_address}]:${port}`,
     })
   }
   return out
@@ -543,7 +545,10 @@ const subEntries = computed(() => {
         <div v-if="node" class="nd__sub lb-mono">
           {{ node.name }} · {{ node.host }} · 公网 {{ node.proxy_port }} → 主机
           {{ node.listen_port }} · SSH {{ node.ssh_port }}
-          <template v-if="node.ipv6_address"> · IPv6 {{ node.ipv6_address }}</template>
+          <!-- 带端口显示 IPv6 必须加方括号:2a02:…::1:9443 分不清哪一段是端口。 -->
+          <template v-if="node.ipv6_address">
+            · IPv6 [{{ node.ipv6_address }}]:{{ node.ipv6_proxy_port || node.proxy_port }}
+          </template>
         </div>
       </div>
     </template>
@@ -781,7 +786,13 @@ const subEntries = computed(() => {
                   <div><span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b></div>
                   <div>
                     <span>IPv6</span>
-                    <b class="lb-mono">{{ node.ipv6_address || '未配置(订阅中只有 IPv4 条目)' }}</b>
+                    <b class="lb-mono">
+                      <template v-if="node.ipv6_address">
+                        [{{ node.ipv6_address }}]:{{ node.ipv6_proxy_port || node.proxy_port }}
+                        <template v-if="!node.ipv6_proxy_port">(端口跟随 IPv4)</template>
+                      </template>
+                      <template v-else>未配置(订阅中只有 IPv4 条目)</template>
+                    </b>
                   </div>
                   <div><span>架构</span><b class="lb-mono">{{ node.arch || '未探测' }}</b></div>
                   <div><span>sing-box</span><b class="lb-mono">{{ node.singbox_version || '未安装' }}</b></div>
