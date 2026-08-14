@@ -382,6 +382,16 @@ function cycleResetText(id: number): string {
 }
 
 /**
+ * 双向计费的节点要标出来。这一列的数字已经被后端 ×2 折算过,
+ * 不标的话它和相邻那台出站计费的机器看起来是同一个口径 —— 而两者差一倍。
+ */
+function billingNote(id: number): string {
+  const c = cycles.value[id]
+  if (!c || c.billing_factor <= 1) return ''
+  return `双向计费 ×${c.billing_factor} · 代理转发 ${formatBytes(c.proxy_bytes)}`
+}
+
+/**
  * 详情抽屉渲染出错时的兜底。
  *
  * Vue 在渲染期抛错会卸载出错组件的子树,而 a-drawer 的遮罩是另一个 DOM 节点,
@@ -442,7 +452,7 @@ const keyOpen = ref(false)
         label="本周期流量合计"
         :state="cycleError ? 'error' : metricState"
         :value="formatBytes(stats.cycleUsed)"
-        hint="按各节点自己的周期边界汇总"
+        hint="按各节点自己的周期边界与计费口径汇总"
       />
     </div>
 
@@ -568,6 +578,7 @@ const keyOpen = ref(false)
             :quota-bytes="cycles[n.id]?.quota_bytes ?? n.traffic_quota_bytes"
             :warning-level="cycles[n.id]?.warning_level"
           />
+          <div v-if="billingNote(n.id)" class="nv__reset">{{ billingNote(n.id) }}</div>
           <div v-if="cycleResetText(n.id)" class="nv__reset">{{ cycleResetText(n.id) }}</div>
           <div class="nv__host">
             最后同步
@@ -692,6 +703,7 @@ const keyOpen = ref(false)
               :quota-bytes="cycles[record.id]?.quota_bytes ?? record.traffic_quota_bytes"
               :warning-level="cycles[record.id]?.warning_level"
             />
+            <div v-if="billingNote(record.id)" class="nv__reset">{{ billingNote(record.id) }}</div>
             <div v-if="cycleResetText(record.id)" class="nv__reset">
               {{ cycleResetText(record.id) }}
             </div>

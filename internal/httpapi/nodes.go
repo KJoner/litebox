@@ -107,10 +107,12 @@ type createNodeRequest struct {
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
 	SSHKey      string `json:"ssh_key"`
-	// TrafficQuotaBytes 为 0 表示不限量。
-	TrafficQuotaBytes int64  `json:"traffic_quota_bytes"`
-	TrafficResetCycle string `json:"traffic_reset_cycle"`
-	TrafficResetDay   int    `json:"traffic_reset_day"`
+	// TrafficQuotaBytes 为 0 表示不限量,按**主机计费口径**填(VPS 商账单上的数字)。
+	// TrafficBillingMode 留空按 EGRESS。
+	TrafficQuotaBytes  int64  `json:"traffic_quota_bytes"`
+	TrafficResetCycle  string `json:"traffic_reset_cycle"`
+	TrafficResetDay    int    `json:"traffic_reset_day"`
+	TrafficBillingMode string `json:"traffic_billing_mode"`
 	// ProxyPort 是客户端连接的公网端口;ListenPort 是节点上 sing-box 的监听端口,
 	// 留空表示无转发,与 ProxyPort 相同。
 	ProxyPort  int `json:"proxy_port"`
@@ -134,24 +136,25 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	n, err := s.nodes.Store().Create(r.Context(), node.CreateParams{
-		Name:              strings.TrimSpace(req.Name),
-		DisplayName:       strings.TrimSpace(req.DisplayName),
-		AccessTierID:      req.AccessTierID,
-		SortOrder:         req.SortOrder,
-		Host:              strings.TrimSpace(req.Host),
-		IPv6Address:       strings.TrimSpace(req.IPv6Address),
-		SSHPort:           req.SSHPort,
-		SSHUser:           strings.TrimSpace(req.SSHUser),
-		SSHKey:            req.SSHKey,
-		ProxyPort:         req.ProxyPort,
-		ListenPort:        req.ListenPort,
-		APIPort:           req.APIPort,
-		IPv6ProxyPort:     req.IPv6ProxyPort,
-		RealityDest:       strings.TrimSpace(req.RealityDest),
-		RealityDestPort:   req.RealityDestPort,
-		TrafficQuotaBytes: req.TrafficQuotaBytes,
-		TrafficResetCycle: req.TrafficResetCycle,
-		TrafficResetDay:   req.TrafficResetDay,
+		Name:               strings.TrimSpace(req.Name),
+		DisplayName:        strings.TrimSpace(req.DisplayName),
+		AccessTierID:       req.AccessTierID,
+		SortOrder:          req.SortOrder,
+		Host:               strings.TrimSpace(req.Host),
+		IPv6Address:        strings.TrimSpace(req.IPv6Address),
+		SSHPort:            req.SSHPort,
+		SSHUser:            strings.TrimSpace(req.SSHUser),
+		SSHKey:             req.SSHKey,
+		ProxyPort:          req.ProxyPort,
+		ListenPort:         req.ListenPort,
+		APIPort:            req.APIPort,
+		IPv6ProxyPort:      req.IPv6ProxyPort,
+		RealityDest:        strings.TrimSpace(req.RealityDest),
+		RealityDestPort:    req.RealityDestPort,
+		TrafficQuotaBytes:  req.TrafficQuotaBytes,
+		TrafficResetCycle:  req.TrafficResetCycle,
+		TrafficResetDay:    req.TrafficResetDay,
+		TrafficBillingMode: req.TrafficBillingMode,
 	})
 	if err != nil {
 		if errors.Is(err, node.ErrNameConflict) {
@@ -263,6 +266,9 @@ type updateNodeRequest struct {
 	TrafficQuotaBytes *int64 `json:"traffic_quota_bytes"`
 	TrafficResetCycle string `json:"traffic_reset_cycle"`
 	TrafficResetDay   int    `json:"traffic_reset_day"`
+	// TrafficBillingMode 留空保持原值。漏传时若回落到 EGRESS,
+	// 一台双向计费的机器会悄悄把用量显示成一半 —— 不报任何错。
+	TrafficBillingMode string `json:"traffic_billing_mode"`
 
 	// AccessTierID 为 0、SubscriptionEnabled 为 null 时保持原值。
 	// 这两个字段漏传的后果是静默的(节点被降级 / 从所有订阅里消失),
@@ -299,6 +305,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		TrafficQuotaBytes:   req.TrafficQuotaBytes,
 		TrafficResetCycle:   req.TrafficResetCycle,
 		TrafficResetDay:     req.TrafficResetDay,
+		TrafficBillingMode:  req.TrafficBillingMode,
 		SSHPort:             req.SSHPort,
 		SSHUser:             strings.TrimSpace(req.SSHUser),
 		SSHKey:              req.SSHKey,

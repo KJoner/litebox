@@ -39,6 +39,54 @@ const (
 	ThresholdDanger  = 95
 )
 
+// BillingMode 是 VPS 商计量这台机器流量的口径。
+//
+// sing-box 的 uplink/downlink 计的是**客户端↔节点这一段**的双向字节,
+// 而一次用户下载在节点网卡上要走两趟:节点从源站收 1 份、再发给客户端 1 份。
+// 所以按进出合计计费的机器,商家看到的数字约是 sing-box 计数的两倍。
+//
+// 不写死成某一个倍数:两种口径都常见,甚至同一家不同套餐都不一样。
+// 一律 ×2 会让按出站计费的机器高报一倍 —— 额度还剩一半面板就报红,
+// 而管理员没有任何办法看出这是口径问题还是真的用超了。
+type BillingMode string
+
+const (
+	// BillingEgress 只计出站,与 sing-box 计数 1:1。
+	//
+	// 这两者相等不是巧合:用户下载时节点发给客户端的那一份就是 downlink,
+	// 用户上传时节点发给源站的那一份就是 uplink,加起来正好是出站总量。
+	BillingEgress BillingMode = "EGRESS"
+	// BillingBoth 进出合计,约为 sing-box 计数的两倍。
+	BillingBoth BillingMode = "BOTH"
+)
+
+// ErrUnknownBillingMode 表示计费口径取值非法。
+var ErrUnknownBillingMode = errors.New("计费口径只能是 EGRESS 或 BOTH")
+
+// ParseBillingMode 解析计费口径,空串按 EGRESS 处理(与升级前的行为一致)。
+func ParseBillingMode(raw string) (BillingMode, error) {
+	switch m := BillingMode(strings.ToUpper(strings.TrimSpace(raw))); m {
+	case "":
+		return BillingEgress, nil
+	case BillingEgress, BillingBoth:
+		return m, nil
+	default:
+		return "", ErrUnknownBillingMode
+	}
+}
+
+// Factor 是把 sing-box 计数折算成主机计费口径的倍数。
+//
+// 这是**口径换算,不是精确值**:TCP/IP 头、重传、REALITY 与源站的握手,
+// 以及系统更新、SSH 这些根本不走代理的流量都不在 sing-box 的计数器里,
+// 实际账单通常还要再高几个百分点。额度只做预警不做处置,这个精度够用。
+func (m BillingMode) Factor() int64 {
+	if m == BillingBoth {
+		return 2
+	}
+	return 1
+}
+
 // ErrUnknownCycle 表示重置周期取值非法。
 var ErrUnknownCycle = errors.New("重置周期只能是 NONE 或 MONTHLY")
 
@@ -56,11 +104,13 @@ func ParseResetCycle(raw string) (ResetCycle, error) {
 
 // NodeCycleQuery 是计算一个节点周期用量所需的全部输入。
 type NodeCycleQuery struct {
-	NodeID     int64
-	CreatedAt  time.Time
-	QuotaBytes int64
-	Cycle      ResetCycle
-	ResetDay   int
+	NodeID    int64
+	CreatedAt time.Time
+	// QuotaBytes 按**主机计费口径**计,也就是 VPS 商账单上的那个数字。
+	QuotaBytes  int64
+	Cycle       ResetCycle
+	ResetDay    int
+	BillingMode BillingMode
 }
 
 // NodePeriod 是一个节点当前额度周期的时间边界。
@@ -75,11 +125,17 @@ type NodePeriod struct {
 // RemainingBytes 与 UsagePercent 用指针:不限量节点这两项没有意义,
 // 返回 0 会被前端画成"剩余 0 字节"的红色进度条,与"不限量"正好相反。
 type NodeCycleUsage struct {
-	NodeID         int64    `json:"node_id"`
-	PeriodStart    string   `json:"period_start"`
-	NextResetAt    *string  `json:"next_reset_at"`
-	UplinkBytes    int64    `json:"uplink_bytes"`
-	DownlinkBytes  int64    `json:"downlink_bytes"`
+	NodeID      int64   `json:"node_id"`
+	PeriodStart string  `json:"period_start"`
+	NextResetAt *string `json:"next_reset_at"`
+	// UplinkBytes / DownlinkBytes / ProxyBytes 是 sing-box 的原始计数,
+	// 永远不乘倍数 —— 它们回答的是"代理实际转发了多少",与计费口径无关。
+	UplinkBytes   int64 `json:"uplink_bytes"`
+	DownlinkBytes int64 `json:"downlink_bytes"`
+	ProxyBytes    int64 `json:"proxy_bytes"`
+	// UsedBytes 是折算到主机计费口径之后的量,与 QuotaBytes 同口径。
+	// 额度比较、剩余量、百分比与告警等级全部基于它 ——
+	// 分子分母口径不一致是这类统计里最容易出、也最难看出来的错。
 	UsedBytes      int64    `json:"used_bytes"`
 	QuotaBytes     int64    `json:"quota_bytes"`
 	RemainingBytes *int64   `json:"remaining_bytes"`
@@ -89,6 +145,8 @@ type NodeCycleUsage struct {
 	WarningLevel   string   `json:"warning_level"`
 	ResetCycle     string   `json:"reset_cycle"`
 	ResetDay       int      `json:"reset_day"`
+	BillingMode    string   `json:"billing_mode"`
+	BillingFactor  int64    `json:"billing_factor"`
 }
 
 // CalculateNodePeriod 计算节点当前额度周期的开始与下一次重置时间。
@@ -140,16 +198,30 @@ func daysInMonth(year int, month time.Month) int {
 // 单独拆出来是为了让阈值与除零这两处能被直接测到 —— 它们的错误形态
 // 分别是"超额了却不报警"和"不限量节点整个接口 500"。
 func buildNodeCycleUsage(q NodeCycleQuery, period NodePeriod, uplink, downlink int64) NodeCycleUsage {
-	used := uplink + downlink
+	mode := q.BillingMode
+	if mode == "" {
+		mode = BillingEgress
+	}
+	factor := mode.Factor()
+
+	proxy := uplink + downlink
+	// 折算放在这一处。让上层各自去乘倍数的话,列表、详情、仪表盘预警
+	// 三个地方迟早会有一个漏乘,而漏乘的表现是"额度还剩很多"——
+	// 一个不会报错、只会在收到超额账单那天才被发现的错。
+	used := proxy * factor
+
 	usage := NodeCycleUsage{
 		NodeID:        q.NodeID,
 		PeriodStart:   period.Start.UTC().Format(time.RFC3339),
 		UplinkBytes:   uplink,
 		DownlinkBytes: downlink,
+		ProxyBytes:    proxy,
 		UsedBytes:     used,
 		QuotaBytes:    q.QuotaBytes,
 		ResetCycle:    string(q.Cycle),
 		ResetDay:      q.ResetDay,
+		BillingMode:   string(mode),
+		BillingFactor: factor,
 	}
 	if period.NextReset != nil {
 		next := period.NextReset.UTC().Format(time.RFC3339)
@@ -228,7 +300,7 @@ func (q *Querier) nodeCycleQueries(ctx context.Context, nodeID int64) ([]NodeCyc
 	}
 	rows, err := q.db.QueryContext(ctx, `
 		SELECT n.id, n.created_at, n.traffic_quota_bytes,
-		       n.traffic_reset_cycle, n.traffic_reset_day
+		       n.traffic_reset_cycle, n.traffic_reset_day, n.traffic_billing_mode
 		  FROM nodes n
 		 WHERE `+where+`
 		 ORDER BY n.sort_order, n.id`, args...)
@@ -243,9 +315,10 @@ func (q *Querier) nodeCycleQueries(ctx context.Context, nodeID int64) ([]NodeCyc
 			item      NodeCycleQuery
 			createdAt string
 			cycle     string
+			billing   string
 		)
 		if err := rows.Scan(&item.NodeID, &createdAt, &item.QuotaBytes,
-			&cycle, &item.ResetDay); err != nil {
+			&cycle, &item.ResetDay, &billing); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -253,6 +326,11 @@ func (q *Querier) nodeCycleQueries(ctx context.Context, nodeID int64) ([]NodeCyc
 		// 此时按不重置处理,统计仍然可用,不让整个列表接口挂掉。
 		if item.Cycle, err = ParseResetCycle(cycle); err != nil {
 			item.Cycle = CycleNone
+		}
+		// 同理:认不出来时回落到 EGRESS(倍数 1)而不是 BOTH ——
+		// 宁可少报也不能凭一个坏值把所有数字凭空翻倍。
+		if item.BillingMode, err = ParseBillingMode(billing); err != nil {
+			item.BillingMode = BillingEgress
 		}
 		items = append(items, item)
 	}

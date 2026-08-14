@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node } from '@/api/client'
+import { api, ApiError, type AccessTier, type Node, type NodeBillingMode } from '@/api/client'
 import { LbSensitiveField } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from '@/components/user/quota'
 import { formatUTCTime } from '@/utils/format'
@@ -61,6 +61,7 @@ const blank = {
   quota_unit: 'GB' as LbQuotaUnit,
   traffic_reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
   traffic_reset_day: 1,
+  traffic_billing_mode: 'EGRESS' as NodeBillingMode,
   ssh_port: 22,
   ssh_user: 'root',
   ssh_key: '',
@@ -100,6 +101,7 @@ watch(
         quota_unit: q.unit,
         traffic_reset_cycle: n.traffic_reset_cycle,
         traffic_reset_day: n.traffic_reset_day,
+        traffic_billing_mode: n.traffic_billing_mode,
         ssh_port: n.ssh_port,
         ssh_user: n.ssh_user,
         proxy_port: n.proxy_port,
@@ -127,6 +129,7 @@ const fieldLabels: Record<string, string> = {
   quota_unit: '流量限额',
   traffic_reset_cycle: '重置周期',
   traffic_reset_day: '每月重置日',
+  traffic_billing_mode: '计费口径',
   ssh_port: 'SSH 端口',
   ssh_user: 'SSH 用户',
   ssh_key: 'SSH 私钥',
@@ -211,6 +214,7 @@ async function submit() {
         traffic_quota_bytes: quota,
         traffic_reset_cycle: form.traffic_reset_cycle,
         traffic_reset_day: form.traffic_reset_day,
+        traffic_billing_mode: form.traffic_billing_mode,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
         proxy_port: form.proxy_port,
@@ -255,6 +259,7 @@ async function submit() {
       traffic_quota_bytes: quota,
       traffic_reset_cycle: form.traffic_reset_cycle,
       traffic_reset_day: form.traffic_reset_day,
+      traffic_billing_mode: form.traffic_billing_mode,
       ssh_port: form.ssh_port,
       ssh_user: form.ssh_user,
       ssh_key: form.ssh_key,
@@ -459,6 +464,23 @@ async function submit() {
           </a-form-item>
         </a-col>
       </a-row>
+
+      <a-form-item label="计费口径">
+        <a-select v-model:value="form.traffic_billing_mode">
+          <a-select-option value="EGRESS">出站计费 —— 只算流出的流量</a-select-option>
+          <a-select-option value="BOTH">双向计费 —— 进出合计</a-select-option>
+        </a-select>
+        <div class="nf__help">
+          按 VPS 商的计量口径选,<strong>额度直接填商家给的数字</strong>,面板负责换算。
+          <br />
+          sing-box 统计的是客户端与节点之间转发的量;而一次用户下载在节点网卡上要走两趟
+          ——从源站收一份、再发给客户端一份。所以<strong>双向计费的机器,商家看到的约是
+          面板计数的两倍</strong>,选「双向」后面板会自动 ×2 再跟额度比。
+          <br />
+          这是口径换算不是精确值:TCP/IP 头、重传,以及系统更新、SSH 这些不走代理的
+          流量都不在统计里,实际账单通常还要再高几个百分点。
+        </div>
+      </a-form-item>
 
       <a-form-item v-if="form.traffic_reset_cycle === 'MONTHLY'" label="每月重置日">
         <a-input-number v-model:value="form.traffic_reset_day" :min="1" :max="31" style="width: 160px" />
