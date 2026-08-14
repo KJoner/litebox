@@ -173,6 +173,22 @@ const doCollectMetrics = () =>
   })
 
 /**
+ * SSH 通道能力。unknown 与 no 不能混:前者是没测出来(比如 sshd 只监听在
+ * 别的地址上),后者是明确被拒。把 unknown 显示成"未允许"会让管理员去改一个
+ * 其实没问题的配置。
+ */
+function forwardingText(state: string): string {
+  if (state === 'yes') return '已允许'
+  if (state === 'no') return '被禁止 —— 流量统计与握手实测不可用'
+  return '未能确认'
+}
+function forwardingTone(state: string): string {
+  if (state === 'yes') return color.success
+  if (state === 'no') return color.danger
+  return color.warning
+}
+
+/**
  * TLS 记录超过 8192 的目标不能用于 REALITY,握手超时的同理。
  * 禁用按钮必须说明为什么禁用,否则管理员只会反复点。
  */
@@ -287,6 +303,16 @@ const doInstall = () =>
   run('安装 sing-box', async () => {
     const r = await api.installNode(props.nodeId!)
     message.success(`sing-box 与 ${r.init_system} 服务定义已就绪`)
+    // 改了节点的 sshd 配置就必须说出来,而且要说清改了哪个文件、备份在哪。
+    // 悄悄改别人机器上的 sshd_config 再报一句"安装完成",是不能接受的。
+    if (r.tcp_forwarding?.changed) {
+      Modal.info({
+        title: '已顺带打开节点的 SSH TCP 转发',
+        width: 560,
+        content: `${r.tcp_forwarding.detail}。\n\n面板读流量、从节点出口实测 REALITY 握手目标、部署时拨测 VLESS 都要经这条通道,原先它被 sshd 挡着。改动只加了一行 AllowTcpForwarding yes,用的是 reload 而不是 restart,没有断开任何已有连接。`,
+        okText: '知道了',
+      })
+    }
   }, '安装完成,接下来执行「部署」')
 
 function confirmRestart() {
@@ -711,6 +737,14 @@ const subEntries = computed(() => {
               {{ probe.has_v2ray_api ? 'with_v2ray_api 已启用' : '缺少 with_v2ray_api —— 流量统计不可用' }}
             </b>
           </div>
+          <!-- 单列一行:它关着的时候,流量同步、握手目标实测、部署健康检查
+               三样一起失败,而 sshd 只回一句 administratively prohibited。 -->
+          <div>
+            <span>SSH 通道(TCP 转发)</span>
+            <b :style="{ color: forwardingTone(probe.tcp_forwarding) }">
+              {{ forwardingText(probe.tcp_forwarding) }}
+            </b>
+          </div>
           <!-- 这些数组一律经 ?? [] 兜一层。后端已经保证不会再发 null(见
                ProbeResult 的初始化),但一个 null 数组的代价太不成比例:
                它在渲染期抛错,抽屉内容整个消失、遮罩却留在屏幕上,
@@ -722,8 +756,14 @@ const subEntries = computed(() => {
             </b>
           </div>
         </div>
+        <!-- problems 与 warnings 分开:前者是「这台机器跑不了 sing-box」,
+             会把节点判成离线;后者是「能跑,但面板某些功能用不了」。
+             混在一起会让管理员在代理完全正常时以为节点挂了。 -->
         <div v-if="probe.problems?.length" class="nd__panel-warn">
           <div v-for="(p, i) in probe.problems" :key="i">· {{ p }}</div>
+        </div>
+        <div v-if="probe.warnings?.length" class="nd__panel-warn">
+          <div v-for="(w, i) in probe.warnings" :key="i">· {{ w }}</div>
         </div>
       </section>
 

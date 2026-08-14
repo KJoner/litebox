@@ -25,8 +25,19 @@ type ProbeResult struct {
 	// InitSystem 是节点的服务管理器:systemd 或 openrc,都没有则为空。
 	InitSystem string `json:"init_system"`
 	// InitVersion 是它的版本串,只用于展示。
-	InitVersion string   `json:"init_version"`
-	Problems    []string `json:"problems"`
+	InitVersion string `json:"init_version"`
+	// TCPForwarding 是**实测**的 SSH 通道能力,取值 yes / no / unknown。
+	TCPForwarding string `json:"tcp_forwarding"`
+	// Problems 是"这台机器跑不了 sing-box"级别的问题。它决定 Usable(),
+	// 而 Usable() 会把节点状态写成 OFFLINE,所以门槛必须守住。
+	Problems []string `json:"problems"`
+	// Warnings 是"能跑,但面板的某些功能用不了"。
+	//
+	// TCP 转发被禁就属于这一档:sing-box 照常服务用户,只是面板读不到流量、
+	// 实测不了握手目标。把它塞进 Problems 会让节点被判成 OFFLINE ——
+	// 和"监控数据过期不得判离线"是同一条道理:管理员在代理完全正常时
+	// 收到"节点离线",几次之后就再也不看这个状态了。
+	Warnings []string `json:"warnings"`
 }
 
 // newProbeResult 是 ProbeResult 的唯一构造入口。
@@ -42,6 +53,7 @@ func newProbeResult(singboxPath string) ProbeResult {
 		SingBoxPath: singboxPath,
 		BuildTags:   []string{},
 		Problems:    []string{},
+		Warnings:    []string{},
 	}
 }
 
@@ -70,6 +82,23 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 	if result.InitSystem == "" {
 		result.Problems = append(result.Problems,
 			"未检测到 systemd 或 OpenRC,面板需要其中之一来安装服务、重启与做健康检查")
+	}
+
+	// 探测本身只用 session 通道,所以 TCP 转发关着也照样能跑完 ——
+	// 这正是它值得在这里查一次的原因:不查的话,管理员看到的是探测一切正常,
+	// 然后同步流量、扫描握手目标、部署健康检查逐个失败。
+	switch allowed, err := CheckTCPForwarding(ctx, client); {
+	case err != nil:
+		result.TCPForwarding = "unknown"
+		result.Warnings = append(result.Warnings, "无法确认节点是否允许 SSH TCP 转发:"+err.Error())
+	case allowed:
+		result.TCPForwarding = "yes"
+	default:
+		result.TCPForwarding = "no"
+		result.Warnings = append(result.Warnings,
+			"sshd 未允许 TCP 转发(AllowTcpForwarding no):流量统计、握手目标实测与"+
+				"部署健康检查都会失败,但 sing-box 本身照常服务用户。"+
+				"点一次「安装 sing-box」,面板会自动打开它并 reload sshd")
 	}
 
 	versionOut, err := client.Run(ctx, sshx.NewCommand(singboxPath, "version"))
