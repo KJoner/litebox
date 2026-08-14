@@ -172,12 +172,24 @@ func curveName(id tls.CurveID) string {
 }
 
 // DefaultDestCandidates 是内置的候选握手目标。
-// 均为 Phase 0 在真实节点上实测通过的站点(ECDSA 证书,记录长度余量充足)。
-// 微软系站点(microsoft.com、bing.com)使用 RSA 证书链,记录超限,故不收录。
+//
+// 选取标准有两条,缺一不可:
+//
+//  1. TLS 1.3 + X25519 + 单条记录 ≤ 8192。微软系(microsoft.com、bing.com)
+//     的 RSA 长证书链记录超限,不收录;
+//  2. **不是被大量 REALITY 部署共用的那几个域名。** 苹果与谷歌系
+//     (www.apple.com、dl.google.com、gateway.icloud.com)满足第一条,
+//     但正因为各类教程都用它们,一台 VPS 常年只跟这几个域名握手本身就是特征。
+//     这里改用 CDN 边缘、开发者下载站这类流量本就零散的目标。
+//
+// 下面的记录长度是 2026-08-14 从主控侧实测的,只用于初筛 ——
+// CDN 按地域下发不同证书链,**能不能用一律以节点本机的扫描结果为准**
+// (同一个 www.apple.com,Phase 0 在本地测得 3373 字节、洛杉矶节点 4738 字节)。
 var DefaultDestCandidates = []string{
-	"www.cloudflare.com",
-	"addons.mozilla.org",
-	"www.apple.com",
-	"dl.google.com",
-	"gateway.icloud.com",
+	"www.fastly.com",         // 2569,chain 2,h2 —— 新建节点的默认值
+	"shopify.com",            // 2645,ECDSA,h2
+	"www.tesla.com",          // 3319,chain 2,h2
+	"addons.mozilla.org",     // 4133,h2
+	"download.jetbrains.com", // 4308,h2
+	"www.cloudflare.com",     // 2673,ECDSA,h2 —— 数值最稳,但也是被用得最多的一个
 }

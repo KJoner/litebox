@@ -30,7 +30,7 @@ import {
 import { useNarrow } from '@/composables/useNarrow'
 import { usePagination } from '@/composables/usePagination'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
-import { formatBytes } from '@/utils/format'
+import { daysUntil, formatBytes, formatUTCDay } from '@/utils/format'
 import { threshold } from '@/theme/tokens'
 
 /**
@@ -81,18 +81,23 @@ function clearFilters() {
 }
 
 const visible = computed(() =>
-  nodes.value.filter((n) => {
-    const kw = filters.keyword.trim().toLowerCase()
-    if (kw) {
-      const hay = [n.name, n.display_name, n.host, n.ipv6_address].join(' ').toLowerCase()
-      if (!hay.includes(kw)) return false
-    }
-    if (filters.run !== undefined && n.status !== filters.run) return false
-    if (filters.config !== undefined && configState(n) !== filters.config) return false
-    if (filters.tierID !== undefined && n.access_tier_id !== filters.tierID) return false
-    if (filters.subOff && n.subscription_enabled) return false
-    return true
-  }),
+  nodes.value
+    .filter((n) => {
+      const kw = filters.keyword.trim().toLowerCase()
+      if (kw) {
+        const hay = [n.name, n.display_name, n.host, n.ipv6_address].join(' ').toLowerCase()
+        if (!hay.includes(kw)) return false
+      }
+      if (filters.run !== undefined && n.status !== filters.run) return false
+      if (filters.config !== undefined && configState(n) !== filters.config) return false
+      if (filters.tierID !== undefined && n.access_tier_id !== filters.tierID) return false
+      if (filters.subOff && n.subscription_enabled) return false
+      return true
+    })
+    // 与订阅、门户同一个顺序:排序值升序,相同则按 id。后端 List 已经这样排了,
+    // 这里再排一遍是因为管理员改完排序值就该立刻在这一页看到位置变化 ——
+    // 而列表在 load() 之前还是旧顺序。id 兜底不能省:全部留 0 时没有兜底就是不稳定排序。
+    .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
 )
 
 // ---------- 选择 ----------
@@ -353,9 +358,28 @@ const columns = [
   { title: '运行状态', key: 'run', width: 160 },
   { title: '配置状态', key: 'config', width: 160 },
   { title: '最后同步', key: 'sync', width: 110 },
-  { title: '本周期流量', key: 'cycle', width: 190 },
+  { title: '本周期流量', key: 'cycle', width: 215 },
   { title: '操作', key: 'actions', width: 190, fixed: 'right' as const },
 ]
+
+/**
+ * 「本周期流量」后面跟的重置日。
+ *
+ * 只渲染后端算好的 next_reset_at,不在前端按 reset_day 自己推一遍 ——
+ * 周期边界只有 traffic.CalculateNodePeriod 一处实现(重置日 31 在二月要落到
+ * 当月最后一天而不是顺延)。各算各的会让列表说「9 月 1 日」、详情说
+ * 「8 月 31 日」,两边都不报错,管理员只能靠猜。
+ */
+function cycleResetText(id: number): string {
+  const c = cycles.value[id]
+  if (!c) return ''
+  // 不重置的节点这一列是「创建以来的累计」,不是某个周期内的量 —— 表头写的是
+  // 「本周期流量」,不说明的话看起来像本月用了这么多。
+  if (!c.next_reset_at) return '不重置 · 累计至今'
+  const left = daysUntil(c.next_reset_at)
+  const tail = left === null ? '' : left <= 0 ? ' · 今天' : ` · ${left} 天后`
+  return `${formatUTCDay(c.next_reset_at)} 00:00 UTC 重置${tail}`
+}
 
 const pager = usePagination('nodes', () => visible.value.length)
 
@@ -368,7 +392,8 @@ const keyOpen = ref(false)
       <div>
         <h2 class="nv__title">节点管理</h2>
         <div class="nv__sub">
-          {{ nodes.length }} 台机器 · 一台机器只承载一个节点 · SSH 与部署一律走 IPv4
+          {{ nodes.length }} 台机器 · 按排序值升序(与订阅、门户同序) · 一台机器只承载一个节点 ·
+          SSH 与部署一律走 IPv4
         </div>
       </div>
       <a-space>
@@ -500,6 +525,7 @@ const keyOpen = ref(false)
       <div v-else-if="narrow" class="nv__cards">
         <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
           <template #head>
+            <span class="nv__sort lb-mono">#{{ n.sort_order }}</span>
             <a class="nv__card-name" @click="detailId = n.id">{{ n.display_name || n.name }}</a>
             <LbStatusTag kind="node" :status="n.status" />
           </template>
@@ -525,6 +551,7 @@ const keyOpen = ref(false)
             :quota-bytes="cycles[n.id]?.quota_bytes ?? n.traffic_quota_bytes"
             :warning-level="cycles[n.id]?.warning_level"
           />
+          <div v-if="cycleResetText(n.id)" class="nv__reset">{{ cycleResetText(n.id) }}</div>
           <div class="nv__host">
             最后同步
             <LbTimeText
@@ -580,10 +607,18 @@ const keyOpen = ref(false)
         :pagination="pager.options.value"
         row-key="id"
         size="small"
-        :scroll="{ x: 1100 }"
+        :scroll="{ x: 1125 }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'node'">
+            <!-- 排序值直接写出来。它决定订阅与门户里的先后,不显示的话
+                 管理员改了值也看不出改到了第几位。 -->
+            <span
+              class="nv__sort lb-mono"
+              :title="`排序值 ${record.sort_order} —— 数值小的排在订阅与门户前面`"
+            >
+              #{{ record.sort_order }}
+            </span>
             <a @click="detailId = record.id">{{ record.display_name || record.name }}</a>
             <!-- 内部名称与展示名称都列:管理员按内部名称找机器,用户报的是展示名称。 -->
             <span v-if="record.display_name !== record.name" class="nv__inner">{{ record.name }}</span>
@@ -640,6 +675,9 @@ const keyOpen = ref(false)
               :quota-bytes="cycles[record.id]?.quota_bytes ?? record.traffic_quota_bytes"
               :warning-level="cycles[record.id]?.warning_level"
             />
+            <div v-if="cycleResetText(record.id)" class="nv__reset">
+              {{ cycleResetText(record.id) }}
+            </div>
           </template>
 
           <template v-else-if="column.key === 'actions'">
@@ -840,6 +878,19 @@ const keyOpen = ref(false)
 }
 
 .nv__tier {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: #6b7480;
+}
+
+/* 排序值。跟内部名称一样是运维视角的信息,弱化处理,不跟展示名称抢视线。 */
+.nv__sort {
+  margin-right: 6px;
+  font-size: 10.5px;
+  color: #6b7480;
+}
+
+.nv__reset {
   margin-top: 3px;
   font-size: 10.5px;
   color: #6b7480;

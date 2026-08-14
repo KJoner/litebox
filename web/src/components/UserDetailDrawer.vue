@@ -665,7 +665,7 @@ const adjustColumns = [
           <template v-else>
             <LbSparkline :points="dailyPoints" type="bar" :height="140" />
             <div class="ud__spark-cap">
-              近 30 天 · 按 UTC 日聚合 · 空心柱表示当天没有记录(不补 0、不插值)
+              近 30 天 · 按 UTC 日聚合 · 悬停查看当日用量 · 空心柱表示当天没有记录(不补 0、不插值)
             </div>
 
             <div class="ud__card-head ud__card-head--plain">按节点</div>

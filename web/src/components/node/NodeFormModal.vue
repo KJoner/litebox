@@ -570,10 +570,15 @@ async function submit() {
         公网端口写进订阅;主机端口是 sing-box 实际监听的那个,留空表示与公网相同;API 端口仅监听节点回环。
       </div>
 
+      <!-- 这条 Alert 必须自带下外边距。它下面那行说明用的是 .nf__help--row
+           (margin-top:-12px,为的是贴住上方 a-form-item 那 24px 的固定间距),
+           而 Alert 自身 margin 为 0 —— 不补的话负边距会把说明文字拉进 Alert 框里,
+           两段字直接叠在一起。 -->
       <a-alert
         v-if="form.listen_port && form.listen_port !== form.proxy_port"
         type="warning"
         show-icon
+        class="nf__alert-gap"
         :message="`需要自行把 ${form.host || '节点'}:${form.proxy_port} 转发到本机 ${form.listen_port}`"
         description="面板不会创建这条转发规则。NAT 主机由服务商的端口映射完成,自建则用 nginx stream 或 iptables DNAT;sing-box 只负责监听主机端口。"
       />
@@ -604,6 +609,11 @@ async function submit() {
 
 .nf__help--row {
   margin: -12px 0 20px;
+}
+
+/* 抵消 .nf__help--row 的 -12px,让说明文字落在 Alert 下方而不是压在它身上。 */
+.nf__alert-gap {
+  margin-bottom: 20px;
 }
 
 .nf__note {

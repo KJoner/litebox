@@ -173,6 +173,7 @@ const maxShare = computed(() =>
           <div class="pt__axis lb-mono">
             <span v-for="(l, i) in axisLabels" :key="i">{{ l }}</span>
           </div>
+          <div class="pt__gap-note">把鼠标放到柱子上,可以看到那一天用了多少。</div>
           <div v-if="hasGap" class="pt__gap-note">
             空心柱表示那天没有统计记录(不是 0)。这些天的流量也没有计入你的额度。
           </div>
