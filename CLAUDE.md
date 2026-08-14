@@ -347,6 +347,25 @@ V2 增加了普通用户门户与三档节点访问等级,定位不变。
 * **OpenRC 脚本必须用 `supervisor="supervise-daemon"`**。默认的
   start-stop-daemon 不会在进程退出后拉起它,而 128MB 机器上 OOM 是常态,
   少了它节点崩一次就再也不会自己恢复(systemd 侧对应 `Restart=on-failure`);
+* **节点的 sshd 必须允许 TCP 转发,面板在「安装 sing-box」时自动打开它。**
+  流量同步、握手目标实测、部署健康检查的 VLESS 拨测全走 direct-tcpip 通道,
+  而不少加固过的镜像把 `AllowTcpForwarding` 关成 no。关掉之后这三样一起失败,
+  sshd 只回一句 `administratively prohibited` —— 不提配置项也不提哪台机器,
+  而 session 通道不受影响,所以「测试 SSH」与「探测」照常通过,
+  看起来只有代理坏了。四条硬规则:
+  判断靠**实测**开一条通道(`sshd -T` 的输出与实际行为未必一致);
+  写入的那一行必须在文件**最前面**(OpenSSH 取首次出现的值,追加到末尾无效);
+  只加不删、不注释已有的行(它们可能在 `Match` 块里,是管理员的刻意限制);
+  用 **reload 不用 restart**,且 reload 之后必须再实测一次 ——
+  改完配置就宣布成功,与「部署只看 systemd 状态」是同一类错误。
+  任何一步失败都恢复原文件:宁可让管理员自己去开,也不能留下一个改坏的
+  sshd_config,那台机器下次重启 sshd 就再也连不上了;
+
+* **`ProbeResult` 的 `Problems` 与 `Warnings` 不可混用。** 前者决定 `Usable()`,
+  而 `Usable()` 会把节点状态写成 OFFLINE;TCP 转发被禁属于「能跑,但面板某些
+  功能用不了」,归 Warnings。混进 Problems 会让管理员在代理完全正常时
+  收到「节点离线」—— 与「监控数据过期不得判离线」是同一条道理;
+
 * **端口监听检查不得只依赖 `ss`**。ss 属于 iproute2,Alpine 这类最小镜像不装,
   而 busybox 自带 netstat。只用 ss 会让那种节点每次健康检查都判定"端口未监听",
   部署永远失败并回滚 —— 而服务其实是好的;

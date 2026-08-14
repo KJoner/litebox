@@ -21,6 +21,8 @@ type InstallResult struct {
 	InitSystem string `json:"init_system"`
 	Installed  bool   `json:"installed"`
 	Detail     string `json:"detail"`
+	// TCPForwarding 记录这次有没有替节点打开 sshd 的 TCP 转发。
+	TCPForwarding TCPForwardingResult `json:"tcp_forwarding"`
 }
 
 // InstallBinary 上传 sing-box 二进制并写入服务定义。
@@ -56,6 +58,19 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 			return err
 		}
 		result.InitSystem = init.Name()
+
+		// TCP 转发同样要在传二进制之前解决。
+		//
+		// 面板读流量、实测握手目标、部署时拨测 VLESS 全都走 SSH 的
+		// direct-tcpip 通道,而不少镜像默认把它关了。装完之后才发现的话,
+		// 管理员看到的是"安装成功",然后每一个后续操作都失败,
+		// 报一句 administratively prohibited —— 那句话既不提 sshd,
+		// 也不提该改哪台机器。这里顺手打开,是"初始化这台机器"的一部分。
+		forwarding, err := EnsureTCPForwarding(ctx, client, init)
+		result.TCPForwarding = forwarding
+		if err != nil {
+			return err
+		}
 
 		for _, dir := range []string{layout.BaseDir, layout.BackupDir} {
 			if _, err := client.RunCheck(ctx, sshx.NewCommand("mkdir", "-p", dir)); err != nil {
@@ -95,6 +110,9 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 			return fmt.Errorf("上传的 sing-box 缺少 %s 构建标签,流量统计将无法工作", RequiredBuildTag)
 		}
 		result.Installed = true
+		if forwarding.Changed {
+			result.Detail = strings.TrimSpace(result.Detail + ";" + forwarding.Detail)
+		}
 
 		return s.store.SaveProbe(ctx, nodeID, probe.Arch, probe.SingBoxVersion,
 			strings.Join(probe.BuildTags, ","), probe.Usable())

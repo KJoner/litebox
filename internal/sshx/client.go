@@ -19,6 +19,10 @@ import (
 var (
 	ErrHostKeyMismatch = errors.New("节点主机密钥与已固定的值不一致,可能存在中间人攻击")
 	ErrNotConnected    = errors.New("SSH 连接不可用")
+	// ErrTCPForwardingDisabled 表示节点 sshd 拒绝开 direct-tcpip 通道。
+	// 用哨兵错误而不是让上层去匹配字符串:判断只能有一处,
+	// 而 OpenSSH 的措辞不在我们手里。
+	ErrTCPForwardingDisabled = errors.New("节点 sshd 未允许 TCP 转发(AllowTcpForwarding no)")
 )
 
 // Target 描述一个 SSH 连接目标。
@@ -213,7 +217,22 @@ func (c *Client) DialThrough(network, addr string) (net.Conn, error) {
 	if c == nil || c.ssh == nil {
 		return nil, ErrNotConnected
 	}
-	return c.ssh.Dial(network, addr)
+	conn, err := c.ssh.Dial(network, addr)
+	if err != nil && strings.Contains(err.Error(), "administratively prohibited") {
+		// sshd 关掉 AllowTcpForwarding 时给的原文是
+		// `ssh: rejected: administratively prohibited (open failed)` ——
+		// 它既不提是哪个配置项,也不提该去哪台机器上改,而命令执行
+		// (session 通道)完全不受影响,所以「测试 SSH」和「探测」照常通过。
+		// 三个调用方都会撞上同一堵墙,所以在唯一的出口处一次性说清楚。
+		return nil, fmt.Errorf("%w:到 %s 的通道被节点拒绝(%v)。"+
+			"面板读流量、从节点出口实测 REALITY 握手目标、部署时拨测 VLESS "+
+			"都要经这条通道。到节点详情里点一次「安装 sing-box」,"+
+			"面板会自动打开它并 reload sshd(不断开任何已有连接);"+
+			"也可以自己把节点 /etc/ssh/sshd_config 里的 "+
+			"AllowTcpForwarding 改成 yes",
+			ErrTCPForwardingDisabled, addr, err)
+	}
+	return conn, err
 }
 
 // Upload 通过 SFTP 上传数据到远端路径,并设置权限。

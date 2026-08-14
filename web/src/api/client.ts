@@ -310,7 +310,12 @@ export interface ProbeResult {
   /** systemd 或 openrc,两者都没有则为空 */
   init_system: string
   init_version: string
+  /** 实测的 SSH 通道能力:yes / no / unknown */
+  tcp_forwarding: string
+  /** 「这台机器跑不了 sing-box」级别的问题 */
   problems: string[]
+  /** 「能跑,但面板的某些功能用不了」,例如 sshd 禁掉了 TCP 转发 */
+  warnings: string[]
 }
 
 export interface DestCheckResult {
@@ -713,6 +718,13 @@ export const api = {
       init_system: string
       installed: boolean
       detail: string
+      /** 安装时顺带检查并打开的 sshd TCP 转发 */
+      tcp_forwarding: {
+        allowed: boolean
+        changed: boolean
+        config_path: string
+        detail: string
+      }
     }>(
       `/api/nodes/${id}/install`,
       { method: 'POST' },

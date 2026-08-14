@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/litebox/litebox/internal/sshx"
@@ -27,6 +28,15 @@ type InitSystem interface {
 	RemoveUnit(ctx context.Context, client *sshx.Client, layout Layout) error
 	Restart(ctx context.Context, client *sshx.Client, layout Layout) error
 	Stop(ctx context.Context, client *sshx.Client, layout Layout) error
+	// ReloadService 让某个**节点自带服务**重读配置。目前唯一的用途是 sshd。
+	//
+	// 与 Restart 分开是因为语义完全不同:Restart 管的是 layout 里那个
+	// litebox- 服务,而这里要动的是节点原有的服务,名字由调用方给。
+	//
+	// 一律用 reload 而不是 restart:reload 只让守护进程重读配置,已建立的
+	// 连接一条不断;restart 在配置有问题时可能让 sshd 起不来 ——
+	// 而 sshd 起不来意味着这台机器再也连不上了,没有任何补救手段。
+	ReloadService(ctx context.Context, client *sshx.Client, name string) error
 	// IsActive 返回服务是否在运行,以及原始状态串(排查时要看的就是它)。
 	IsActive(ctx context.Context, client *sshx.Client, layout Layout) (bool, string, error)
 	// RecentLogs 返回最近若干行日志。取不到时返回空串而不是错误 ——
@@ -36,6 +46,20 @@ type InitSystem interface {
 
 // ErrNoInitSystem 表示节点上既没有 systemd 也没有 OpenRC。
 var ErrNoInitSystem = errors.New("节点上没有可用的 init 系统")
+
+// serviceNamePattern 限定 ReloadService 能接受的服务名。
+//
+// 参数进 sshx.Command 时已经会被 shell 转义,这里再挡一道是因为服务名的
+// 取值范围本来就窄:出现别的字符只可能是上游传错了,让它带着奇怪的名字
+// 跑到节点上,错误信息会指向 systemctl 而不是指向真正传错的那一行。
+var serviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
+
+func validateServiceName(name string) error {
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("服务名 %q 不合法", name)
+	}
+	return nil
+}
 
 // DetectInit 判断节点用的是哪套 init 系统。
 func DetectInit(ctx context.Context, client *sshx.Client) (InitSystem, error) {
@@ -132,6 +156,14 @@ func (Systemd) Stop(ctx context.Context, client *sshx.Client, layout Layout) err
 	return err
 }
 
+func (Systemd) ReloadService(ctx context.Context, client *sshx.Client, name string) error {
+	if err := validateServiceName(name); err != nil {
+		return err
+	}
+	_, err := client.RunCheck(ctx, sshx.NewCommand("systemctl", "reload", name))
+	return err
+}
+
 func (Systemd) IsActive(ctx context.Context, client *sshx.Client, layout Layout) (bool, string, error) {
 	result, err := client.Run(ctx, sshx.NewCommand("systemctl", "is-active", layout.ServiceName))
 	if err != nil {
@@ -224,6 +256,14 @@ func (OpenRC) Restart(ctx context.Context, client *sshx.Client, layout Layout) e
 
 func (OpenRC) Stop(ctx context.Context, client *sshx.Client, layout Layout) error {
 	_, err := client.Run(ctx, sshx.NewCommand("rc-service", layout.ServiceName, "stop"))
+	return err
+}
+
+func (OpenRC) ReloadService(ctx context.Context, client *sshx.Client, name string) error {
+	if err := validateServiceName(name); err != nil {
+		return err
+	}
+	_, err := client.RunCheck(ctx, sshx.NewCommand("rc-service", name, "reload"))
 	return err
 }
 
