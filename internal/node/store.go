@@ -95,6 +95,10 @@ type Node struct {
 	TrafficQuotaBytes int64  `json:"traffic_quota_bytes"`
 	TrafficResetCycle string `json:"traffic_reset_cycle"`
 	TrafficResetDay   int    `json:"traffic_reset_day"`
+	// TrafficBillingMode 是 VPS 商计量这台机器流量的口径:
+	// EGRESS 只计出站(与 sing-box 计数 1:1),BOTH 进出合计(约两倍)。
+	// 它只影响额度比较与展示,不动 traffic_ledger 一个字节。
+	TrafficBillingMode string `json:"traffic_billing_mode"`
 
 	Status               Status  `json:"status"`
 	LastHeartbeatAt      *string `json:"last_heartbeat_at"`
@@ -124,6 +128,7 @@ const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh
 	n.access_tier_id, t.code, t.name, t.level,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
+	n.traffic_billing_mode,
 	n.status, n.last_heartbeat_at, n.config_revision, n.deployed_config_sha256,
 	n.created_at, n.updated_at`
 
@@ -144,6 +149,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
+		&n.TrafficBillingMode,
 		&n.Status, &n.LastHeartbeatAt, &n.ConfigRevision, &n.DeployedConfigSHA256,
 		&n.CreatedAt, &n.UpdatedAt,
 	)
@@ -178,10 +184,12 @@ type CreateParams struct {
 	// AccessTierID 留 0 表示普通组。
 	AccessTierID int64
 	SortOrder    int
-	// TrafficQuotaBytes 留 0 表示不限量;TrafficResetCycle 留空按 NONE。
-	TrafficQuotaBytes int64
-	TrafficResetCycle string
-	TrafficResetDay   int
+	// TrafficQuotaBytes 留 0 表示不限量;TrafficResetCycle 留空按 NONE;
+	// TrafficBillingMode 留空按 EGRESS(与升级前的行为一致)。
+	TrafficQuotaBytes  int64
+	TrafficResetCycle  string
+	TrafficResetDay    int
+	TrafficBillingMode string
 	// ProxyPort 是客户端连接的公网端口,必填。
 	// ListenPort 是 sing-box 在主机上监听的端口,留空表示不做端口转发,与 ProxyPort 相同。
 	ProxyPort  int
@@ -235,15 +243,15 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 			reality_dest, reality_dest_port,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			access_tier_id, sort_order,
-			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day,
+			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
 			status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
 		p.RealityDest, p.RealityDestPort,
 		realityKeyEnc, keys.PublicKey, shortID,
 		p.AccessTierID, p.SortOrder,
-		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
+		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay, p.TrafficBillingMode,
 		StatusPending, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -271,7 +279,7 @@ func validateCreate(p *CreateParams) error {
 		return err
 	}
 	if err = normalizeTrafficQuota(&p.TrafficQuotaBytes, &p.TrafficResetCycle,
-		&p.TrafficResetDay); err != nil {
+		&p.TrafficResetDay, &p.TrafficBillingMode); err != nil {
 		return err
 	}
 	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
@@ -314,7 +322,7 @@ func validateName(name string) error {
 }
 
 // normalizeTrafficQuota 归一化节点流量额度与重置周期。
-func normalizeTrafficQuota(quota *int64, cycle *string, day *int) error {
+func normalizeTrafficQuota(quota *int64, cycle *string, day *int, billing *string) error {
 	if *quota < 0 {
 		return errors.New("节点流量限额不能为负数")
 	}
@@ -323,6 +331,11 @@ func normalizeTrafficQuota(quota *int64, cycle *string, day *int) error {
 		return err
 	}
 	*cycle = string(parsed)
+	mode, err := traffic.ParseBillingMode(*billing)
+	if err != nil {
+		return err
+	}
+	*billing = string(mode)
 	if *day == 0 {
 		*day = 1
 	}
@@ -466,6 +479,12 @@ type UpdateParams struct {
 	// TrafficResetCycle 留空、TrafficResetDay 为 0 表示保持原值。
 	TrafficResetCycle string
 	TrafficResetDay   int
+	// TrafficBillingMode 留空表示保持原值。
+	//
+	// 与 IPv6Address 那种"留空即清空"相反 —— 这一项没有"清空"的语义,
+	// 它只有两个取值。漏传时若回落到 EGRESS,一台双向计费的机器会悄悄
+	// 把用量显示成一半,而管理员看到的是额度绰绰有余。
+	TrafficBillingMode string
 
 	// AccessTierID 为 0 表示保持原等级。不回落到普通组:
 	// 前端漏传这个字段时把 VIP 节点悄悄降成普通组,等于给全体用户开门,
@@ -524,8 +543,11 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if p.TrafficResetDay == 0 {
 		p.TrafficResetDay = old.TrafficResetDay
 	}
+	if strings.TrimSpace(p.TrafficBillingMode) == "" {
+		p.TrafficBillingMode = old.TrafficBillingMode
+	}
 	if err := normalizeTrafficQuota(p.TrafficQuotaBytes, &p.TrafficResetCycle,
-		&p.TrafficResetDay); err != nil {
+		&p.TrafficResetDay, &p.TrafficBillingMode); err != nil {
 		return nil, effect, err
 	}
 	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
@@ -591,6 +613,8 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		quotaLabel(old.TrafficQuotaBytes), quotaLabel(*p.TrafficQuotaBytes))
 	track("重置周期", old.TrafficResetCycle != p.TrafficResetCycle,
 		old.TrafficResetCycle, p.TrafficResetCycle)
+	track("计费口径", old.TrafficBillingMode != p.TrafficBillingMode,
+		billingLabel(old.TrafficBillingMode), billingLabel(p.TrafficBillingMode))
 	// 重置日只在按月重置时有意义,不重置时改它没有任何效果,写进审计只会造成误解。
 	track("每月重置日", p.TrafficResetCycle == string(traffic.CycleMonthly) &&
 		old.TrafficResetDay != p.TrafficResetDay, old.TrafficResetDay, p.TrafficResetDay)
@@ -625,6 +649,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, maintenance_message = ?,
 		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
+		       traffic_billing_mode = ?,
 		       updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address,
@@ -634,6 +659,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		p.AccessTierID, p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,
 		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
+		p.TrafficBillingMode,
 		time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -797,6 +823,15 @@ func quotaLabel(bytes int64) string {
 		return "不限量"
 	}
 	return fmt.Sprintf("%d 字节", bytes)
+}
+
+// billingLabel 把计费口径译成审计日志里能直接读懂的话。
+// 记 EGRESS/BOTH 的话,几个月后翻审计日志的人还要再去查一遍这两个词的含义。
+func billingLabel(mode string) string {
+	if traffic.BillingMode(mode) == traffic.BillingBoth {
+		return "双向计费(进出合计,×2)"
+	}
+	return "出站计费(×1)"
 }
 
 func isUniqueViolation(err error) bool {

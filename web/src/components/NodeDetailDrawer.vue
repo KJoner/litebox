@@ -940,6 +940,16 @@ const subEntries = computed(() => {
                     size="md"
                   />
                   <div class="nd__kv">
+                    <!-- 两个口径都摆出来。只给折算值的话,管理员对不上 sing-box 的
+                         数字;只给原值的话,又对不上 VPS 商的账单。 -->
+                    <div>
+                      <span>代理转发(sing-box 计数)</span>
+                      <b class="lb-mono">{{ formatBytes(cycle.proxy_bytes) }}</b>
+                    </div>
+                    <div>
+                      <span>主机口径{{ cycle.billing_factor > 1 ? `(双向 ×${cycle.billing_factor})` : '(出站 ×1)' }}</span>
+                      <b class="lb-mono">{{ formatBytes(cycle.used_bytes) }}</b>
+                    </div>
                     <div><span>上行</span><b class="lb-mono">{{ formatBytes(cycle.uplink_bytes) }}</b></div>
                     <div><span>下行</span><b class="lb-mono">{{ formatBytes(cycle.downlink_bytes) }}</b></div>
                     <div>
@@ -963,6 +973,20 @@ const subEntries = computed(() => {
                   </div>
                   <div class="nd__card-foot">
                     额度只做统计与预警,不会停止 sing-box、不禁用节点,也不改订阅开关。
+                    <template v-if="cycle.billing_factor > 1">
+                      <br />
+                      这台机器按<strong>进出合计</strong>计费:一次用户下载在网卡上要走两趟
+                      (从源站收一份、再发给客户端一份),所以主机口径约是代理转发量的两倍。
+                      额度填的就是 VPS 商给的数字。
+                    </template>
+                    <template v-else>
+                      <br />
+                      这台机器按<strong>出站</strong>计费,与 sing-box 的计数 1:1。
+                      若你的 VPS 是进出合计计费,到编辑里把「计费口径」改成双向。
+                    </template>
+                    <br />
+                    换算不含 TCP/IP 头、重传,以及系统更新、SSH 这些不走代理的流量,
+                    实际账单通常还要再高几个百分点。
                   </div>
                 </template>
               </div>

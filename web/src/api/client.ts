@@ -175,6 +175,15 @@ export interface ProxyUser {
 
 export type NodeStatus = 'PENDING' | 'ONLINE' | 'OFFLINE' | 'DISABLED' | 'DEPLOY_FAILED'
 
+/**
+ * VPS 商计量这台机器流量的口径。
+ *
+ * sing-box 计的是客户端↔节点这一段的双向字节,而一次用户下载在网卡上要走两趟
+ * (从源站收一份、发给客户端一份)。所以进出合计计费的机器,商家看到的数字
+ * 约是 sing-box 计数的两倍。折算由后端做,前端只负责选和显示。
+ */
+export type NodeBillingMode = 'EGRESS' | 'BOTH'
+
 export interface Node {
   id: number
   /** 内部名称,只在管理后台出现 */
@@ -201,10 +210,14 @@ export interface Node {
    * IPv6 条目会停在旧端口上,而管理员当初看到的是一个空输入框。
    */
   ipv6_proxy_port: number
-  /** 0 表示不限量。只用于统计与预警,超额不会自动停服 */
+  /**
+   * 0 表示不限量。只用于统计与预警,超额不会自动停服。
+   * 按**主机计费口径**计,也就是 VPS 商账单上的那个数字。
+   */
   traffic_quota_bytes: number
   traffic_reset_cycle: 'NONE' | 'MONTHLY'
   traffic_reset_day: number
+  traffic_billing_mode: NodeBillingMode
   ssh_port: number
   ssh_user: string
   /** 客户端连接的公网端口,写进订阅 */
@@ -394,8 +407,11 @@ export interface NodeCycleUsage {
   period_start: string
   /** NONE 周期没有下次重置时间 */
   next_reset_at: string | null
+  /** sing-box 的原始计数,永远不乘倍数 —— 它回答的是「代理转发了多少」 */
   uplink_bytes: number
   downlink_bytes: number
+  proxy_bytes: number
+  /** 折算到主机计费口径之后的量,与 quota_bytes 同口径 */
   used_bytes: number
   quota_bytes: number
   /** 不限量时为 null —— 不能当 0 用,那会画成"剩余 0"的红条 */
@@ -406,6 +422,9 @@ export interface NodeCycleUsage {
   warning_level: 'UNLIMITED' | 'NORMAL' | 'WARNING' | 'DANGER' | 'EXCEEDED'
   reset_cycle: 'NONE' | 'MONTHLY'
   reset_day: number
+  /** EGRESS 只计出站(×1);BOTH 进出合计(×2) */
+  billing_mode: NodeBillingMode
+  billing_factor: number
 }
 
 export interface UserNodeTraffic {

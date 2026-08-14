@@ -237,7 +237,8 @@ GET    /api/deployments
 {
   "traffic_quota_bytes": 107374182400,
   "traffic_reset_cycle": "MONTHLY",
-  "traffic_reset_day": 15
+  "traffic_reset_day": 15,
+  "traffic_billing_mode": "BOTH"
 }
 ```
 
@@ -245,7 +246,24 @@ GET    /api/deployments
 `NONE`(统计节点创建以来的累计流量)与 `MONTHLY`;`traffic_reset_day`
 取 1~31,当月没有该日时落到当月最后一天,边界统一取 **UTC 00:00**。
 
-改额度与周期同样不触发重新部署 —— 它们只用于统计与预警。
+`traffic_billing_mode` 是 VPS 商计量这台机器流量的口径,只接受
+`EGRESS`(只计出站,与 sing-box 计数 1:1)与 `BOTH`(进出合计,约两倍)。
+更新接口留空表示保持原值。**`traffic_quota_bytes` 按这个口径填**,
+也就是商家账单上的那个数字。
+
+`GET /api/traffic/nodes-cycle` 与节点流量接口的返回里因此有两组数:
+
+| 字段 | 含义 |
+|---|---|
+| `uplink_bytes` / `downlink_bytes` / `proxy_bytes` | sing-box 的原始计数,**永远不乘倍数** |
+| `used_bytes` | 折算到主机计费口径之后的量,与 `quota_bytes` 同口径 |
+| `billing_mode` / `billing_factor` | 口径与倍数(1 或 2) |
+
+`remaining_bytes`、`usage_percent`、`warning_level`、`exceeded` 全部基于
+`used_bytes` —— 分子分母口径不一致是这类统计里最容易出、也最难看出来的错。
+
+改额度、周期与计费口径同样不触发重新部署 —— 它们只用于统计与预警,
+一个字节都不进节点配置。
 
 响应里的 `effect`:
 
