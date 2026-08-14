@@ -363,6 +363,12 @@ func (d *Deployer) fileExists(ctx context.Context, client *sshx.Client, path str
 
 func (d *Deployer) finish(result Result, rec *stepRecorder, status Status, err error, rollback string) Result {
 	result.Steps = rec.steps
+	if result.Steps == nil {
+		// 一步都没跑就失败时 rec.steps 还是 nil,而 nil 切片序列化成 JSON null。
+		// 前端的部署结果弹窗直接读 steps.length,拿到 null 会当场抛错。
+		// Store.List 读记录时也做同样的归一。
+		result.Steps = []Step{}
+	}
 	result.Status = status
 	result.FinishedAt = time.Now().UTC()
 	result.RollbackResult = rollback

@@ -27,7 +27,9 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
       <span>
         开始 <LbTimeText :value="record.started_at" mode="both" />
       </span>
-      <span>{{ record.steps.length }} 步</span>
+      <!-- ?. 兜底:一步都没跑就失败的部署在旧版本里会把 steps 发成 null,
+           而这里一旦抛错,整个部署结果弹窗就是空的。 -->
+      <span>{{ record.steps?.length ?? 0 }} 步</span>
       <span class="lb-mono" :title="record.config_sha256">
         配置哈希 {{ shortHash(record.config_sha256) }}
       </span>

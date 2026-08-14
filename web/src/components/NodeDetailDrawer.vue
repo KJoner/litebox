@@ -177,7 +177,9 @@ const doCollectMetrics = () =>
  * 禁用按钮必须说明为什么禁用,否则管理员只会反复点。
  */
 function destBlockReason(d: DestCheckResult): string {
-  if (!d.usable) return d.problems[0] ?? '实测未通过'
+  // `d.problems?.[0]` 而不是 `d.problems[0]`:后者在 problems 为 null 时抛错,
+  // 而这个函数跑在渲染期 —— 抛出去就是整个抽屉变白、遮罩留在屏幕上。
+  if (!d.usable) return d.problems?.[0] ?? '实测未通过'
   if (d.max_record_size > 8192) return `TLS 记录 ${d.max_record_size} > 8192,不能用于 REALITY`
   if (!d.tls13) return '不支持 TLS 1.3'
   return ''
@@ -709,14 +711,18 @@ const subEntries = computed(() => {
               {{ probe.has_v2ray_api ? 'with_v2ray_api 已启用' : '缺少 with_v2ray_api —— 流量统计不可用' }}
             </b>
           </div>
+          <!-- 这些数组一律经 ?? [] 兜一层。后端已经保证不会再发 null(见
+               ProbeResult 的初始化),但一个 null 数组的代价太不成比例:
+               它在渲染期抛错,抽屉内容整个消失、遮罩却留在屏幕上,
+               管理员只能对着一片灰色乱点。兜底之后最坏也只是少显示一行。 -->
           <div class="nd__kv-wide">
             <span>构建标签</span>
-            <b class="lb-mono lb-ellipsis" :title="probe.build_tags.join(',')">
-              {{ probe.build_tags.join(',') || '—' }}
+            <b class="lb-mono lb-ellipsis" :title="(probe.build_tags ?? []).join(',')">
+              {{ (probe.build_tags ?? []).join(',') || '—' }}
             </b>
           </div>
         </div>
-        <div v-if="probe.problems.length" class="nd__panel-warn">
+        <div v-if="probe.problems?.length" class="nd__panel-warn">
           <div v-for="(p, i) in probe.problems" :key="i">· {{ p }}</div>
         </div>
       </section>

@@ -38,6 +38,21 @@ type DestCheckResult struct {
 	CheckedAt     string   `json:"checked_at"`
 }
 
+// newDestCheckResult 是 DestCheckResult 的唯一构造入口。
+// 三个切片显式初始化,理由同 newProbeResult:nil 切片序列化成 JSON null,
+// 而前端把它们当数组用(`d.problems[0]`、`d.record_sizes`)。
+// 目标完全可用时 Problems 与 Warnings 恰恰都是 nil。
+func newDestCheckResult(server string, port int) DestCheckResult {
+	return DestCheckResult{
+		Server:      server,
+		Port:        port,
+		CheckedAt:   time.Now().UTC().Format(time.RFC3339),
+		RecordSizes: []int{},
+		Problems:    []string{},
+		Warnings:    []string{},
+	}
+}
+
 // recordingConn 记录服务端 → 客户端方向的原始字节,用于还原 TLS 记录边界。
 type recordingConn struct {
 	net.Conn
@@ -58,11 +73,7 @@ func (c *recordingConn) Read(b []byte) (int, error) {
 // CDN 会按地域下发不同证书链,Phase 0 实测同一个 www.apple.com
 // 在本地测得 3373 字节、在洛杉矶节点测得 4738 字节。在主控侧检测会得出错误结论。
 func CheckDest(ctx context.Context, client *sshx.Client, server string, port int) (DestCheckResult, error) {
-	result := DestCheckResult{
-		Server:    server,
-		Port:      port,
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
-	}
+	result := newDestCheckResult(server, port)
 
 	addr := net.JoinHostPort(server, fmt.Sprint(port))
 	rawConn, err := client.DialThrough("tcp", addr)
