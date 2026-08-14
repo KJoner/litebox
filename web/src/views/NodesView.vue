@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onErrorCaptured, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   api,
@@ -380,6 +380,23 @@ function cycleResetText(id: number): string {
   const tail = left === null ? '' : left <= 0 ? ' · 今天' : ` · ${left} 天后`
   return `${formatUTCDay(c.next_reset_at)} 00:00 UTC 重置${tail}`
 }
+
+/**
+ * 详情抽屉渲染出错时的兜底。
+ *
+ * Vue 在渲染期抛错会卸载出错组件的子树,而 a-drawer 的遮罩是另一个 DOM 节点,
+ * 会原样留在屏幕上 —— 管理员看到的是「详情页没了、屏幕一片灰」,不知道发生了
+ * 什么,也只能靠点遮罩脱身。已经踩过一次:探测成功时后端把 problems 发成 null,
+ * 模板里 `problems.length` 当场抛 TypeError。
+ *
+ * 这里把抽屉关掉并说出原因。不 return false —— 错误仍要冒泡到控制台,
+ * 否则下次排查时什么线索都没有。
+ */
+onErrorCaptured((err) => {
+  if (detailId.value === null) return
+  detailId.value = null
+  message.error(`节点详情渲染失败,已关闭:${err instanceof Error ? err.message : String(err)}`)
+})
 
 const pager = usePagination('nodes', () => visible.value.length)
 

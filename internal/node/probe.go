@@ -29,9 +29,25 @@ type ProbeResult struct {
 	Problems    []string `json:"problems"`
 }
 
+// newProbeResult 是 ProbeResult 的唯一构造入口。
+//
+// 两个切片必须显式初始化,不能留 nil。Go 的 nil 切片序列化成 JSON `null`
+// 而不是 `[]`,而前端对数组字段一律当数组用(`problems.length`、
+// `build_tags.join(',')`)。要命的是 Problems 恰恰在**一切正常时**才是 nil ——
+// 于是"探测成功"反而让详情页渲染当场抛 TypeError,抽屉内容整个消失、
+// 遮罩还留在屏幕上,看起来就是"点一下探测详情页就没了";探测失败时
+// Problems 有内容,反倒能正常显示。单独抽出来是为了能被测试直接盯住。
+func newProbeResult(singboxPath string) ProbeResult {
+	return ProbeResult{
+		SingBoxPath: singboxPath,
+		BuildTags:   []string{},
+		Problems:    []string{},
+	}
+}
+
 // Probe 采集节点的基础信息并校验 sing-box 是否满足要求。
 func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeResult, error) {
-	result := ProbeResult{SingBoxPath: singboxPath}
+	result := newProbeResult(singboxPath)
 
 	arch, err := runTrimmed(ctx, client, sshx.NewCommand("uname", "-m"))
 	if err != nil {
@@ -114,6 +130,9 @@ func probeInit(ctx context.Context, client *sshx.Client) (string, string) {
 //	Revision: 3708fa1...
 //	CGO: disabled
 func parseVersionOutput(out string) (version string, tags []string) {
+	// 同样不能返回 nil:它的返回值直接赋给 ProbeResult.BuildTags,
+	// 没有 Tags: 行的 sing-box(或输出格式变了)会让那一列变成 JSON null。
+	tags = []string{}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
