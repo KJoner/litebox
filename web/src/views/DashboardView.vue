@@ -317,7 +317,7 @@ function conclusion(d: DeploymentRecord): string {
           <span v-for="(l, i) in axisLabels" :key="i">{{ l }}</span>
         </div>
         <div class="dv__axis-note">
-          峰值 {{ formatBytes(peak) }} · 虚线跨过的日子没有记录,不补 0 也不插值
+          峰值 {{ formatBytes(peak) }} · 悬停查看当日流量 · 虚线跨过的日子没有记录,不补 0 也不插值
         </div>
       </template>
     </a-card>

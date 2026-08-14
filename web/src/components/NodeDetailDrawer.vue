@@ -219,7 +219,13 @@ function confirmDeploy() {
       `健康检查不通过时自动回滚到 rev ${n.config_revision}`,
     ],
     footer: '部署是可逆的(有自动回滚),所以不要求输入节点名称。',
-    onOk: doDeploy,
+    // 故意不 return doDeploy() 的 Promise。Modal.confirm 只要拿到 Promise
+    // 就会把自己留在屏幕上转圈等它 resolve —— 而部署要 15~25 秒,
+    // 这期间进度弹窗已经打开,两个 Modal 同层叠在一起,后开的反而被压住。
+    // 这里让确认框先落幕,进度弹窗独占屏幕:同一时刻只有一个部署相关的窗口。
+    onOk: () => {
+      void doDeploy()
+    },
   })
 }
 
@@ -227,6 +233,7 @@ async function doDeploy() {
   deployResult.value = null
   deployOpen.value = true
   deployRunning.value = true
+  running.value = '部署'
   try {
     deployResult.value = await api.deployNode(props.nodeId!)
   } catch (err) {
@@ -234,6 +241,7 @@ async function doDeploy() {
     deployOpen.value = false
   } finally {
     deployRunning.value = false
+    running.value = ''
     emit('changed')
     reload()
   }
@@ -523,9 +531,16 @@ const subEntries = computed(() => {
 </script>
 
 <template>
+  <!-- 有检查在跑时不接受遮罩点击与 ESC。
+       探测、扫描握手目标这类动作要几秒到十几秒,期间页面上只有一个按钮在转圈,
+       而抽屉外面整片都是遮罩 —— 随手点一下就把它关了,几秒后结果返回时已经
+       没有地方可以呈现,看起来就是「点了探测,等了一会儿,详情页自己没了」。
+       右上角的 × 照常可用:那是明确的关闭意图,不是误触。 -->
   <a-drawer
     :open="nodeId !== null"
     :width="720"
+    :mask-closable="running === ''"
+    :keyboard="running === ''"
     :body-style="{ padding: '0 20px 20px' }"
     @close="emit('close')"
   >
@@ -555,13 +570,15 @@ const subEntries = computed(() => {
 
     <template #extra>
       <a-space v-if="node">
+        <!-- 库里的配置已经在节点上生效时不做成主按钮:那一下点下去只会白白
+             重启一次 sing-box、断掉全部在线连接,换回一模一样的配置。 -->
         <a-button
-          type="primary"
+          :type="needsDeploy(node) ? 'primary' : 'default'"
           size="small"
           :loading="running === '部署'"
           @click="confirmDeploy"
         >
-          部署{{ needsDeploy(node) ? '' : '' }}
+          部署
         </a-button>
         <a-dropdown placement="bottomRight">
           <a-button size="small" :aria-label="`${node.name} 的更多操作`" title="更多操作">⋯</a-button>
@@ -643,7 +660,12 @@ const subEntries = computed(() => {
         <a-button size="small" :loading="running === '采集资源'" @click="doCollectMetrics">
           采集资源
         </a-button>
-        <span class="nd__tools-note">都不改动节点状态</span>
+        <!-- 正在跑什么必须写出来。只有按钮上一个小转圈的话,管理员会以为没点上
+             而反复点,也不明白为什么这时候点别处关不掉抽屉。 -->
+        <span v-if="running" class="nd__tools-running">
+          {{ running }}中…&nbsp;结果稍后显示在下方,期间点击别处不会关掉本页
+        </span>
+        <span v-else class="nd__tools-note">都不改动节点状态</span>
       </div>
 
       <!-- 只读动作的结果面板。探测会写回三四个字段,一条吐司交付不了。 -->
@@ -831,8 +853,11 @@ const subEntries = computed(() => {
                   <div><span>配置版本</span><b class="lb-mono">rev {{ node.config_revision }}</b></div>
                   <div>
                     <span>已部署配置</span>
+                    <!-- 判空要看原值,不能靠 shortHash 的返回值:它对空串返回的是
+                         「—」而不是空,`|| '从未部署'` 永远走不到。而「—」在本项目里
+                         的含义是「读取失败」,与「这台机器还没部署过」正好是两回事。 -->
                     <b class="lb-mono" :title="node.deployed_config_sha256">
-                      {{ shortHash(node.deployed_config_sha256) || '从未部署' }}
+                      {{ node.deployed_config_sha256 ? shortHash(node.deployed_config_sha256) : '从未部署' }}
                     </b>
                   </div>
                   <div class="nd__kv-wide">
@@ -1042,7 +1067,7 @@ const subEntries = computed(() => {
           <template v-else>
             <LbSparkline :points="dailyPoints" type="bar" :height="140" />
             <div class="nd__card-note nd__spark-cap">
-              近 30 天 · 按 UTC 日聚合 · 空心柱表示当天没有记录(不补 0、不插值)
+              近 30 天 · 按 UTC 日聚合 · 悬停查看当日用量 · 空心柱表示当天没有记录(不补 0、不插值)
             </div>
           </template>
         </a-tab-pane>
@@ -1073,11 +1098,14 @@ const subEntries = computed(() => {
     </template>
   </a-drawer>
 
-  <!-- 部署一旦发出就在节点上跑,关掉弹窗不会取消它 —— 所以执行中干脆不让关。 -->
+  <!-- 部署一旦发出就在节点上跑,关掉弹窗不会取消它 —— 所以执行中干脆不让关。
+       z-index 高于 Modal.confirm 的默认 1000:确认框收起有一段淡出动画,
+       同层的话进度弹窗会在那两百毫秒里被盖住半截。 -->
   <a-modal
     v-model:open="deployOpen"
     :title="deployRunning ? '正在部署' : '部署结果'"
     :width="620"
+    :z-index="1100"
     :closable="!deployRunning"
     :mask-closable="false"
     :keyboard="!deployRunning"
@@ -1253,6 +1281,12 @@ const subEntries = computed(() => {
   margin-left: auto;
   font-size: 11px;
   color: #6b7480;
+}
+
+.nd__tools-running {
+  margin-left: auto;
+  font-size: 11px;
+  color: #2563b8;
 }
 
 .nd__panel {
