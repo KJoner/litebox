@@ -88,7 +88,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Auth:        authService,
 		Audit:       audit.NewRecorder(db, logger),
 		Users:       userService,
-		Subs:        subscription.NewService(db, userStore, cipher, 2080),
+		Subs:        subscription.NewService(db, userStore, cipher, 2080, nil),
 		Tiers:       access.NewStore(db),
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),

@@ -4,6 +4,7 @@ import { message, Modal } from 'ant-design-vue'
 import {
   api,
   ApiError,
+  PROTOCOL_LABEL,
   type AccessTier,
   type ConfigDiff,
   type DailyPoint,
@@ -13,6 +14,7 @@ import {
   type Node,
   type NodeCycleUsage,
   type NodeMetrics,
+  type NodeProtocol,
   type ProbeResult,
 } from '@/api/client'
 import { formatBytes, formatDuration, shortHash } from '@/utils/format'
@@ -57,6 +59,22 @@ const trafficError = ref(false)
 
 /** 工具条上正在跑的动作名。同一时刻只允许一个。 */
 const running = ref('')
+
+/** 当前(期望)协议是 Shadowsocks —— 决定这一屏显示 REALITY 还是加密方法。 */
+const isSS = computed(() => node.value?.protocol === 'SHADOWSOCKS')
+
+/**
+ * 期望协议与节点上生效的协议不一致 —— 也就是「改了协议还没部署」。
+ *
+ * 从未部署过(deployed_protocol 为空)不算不一致:那台机器上还什么都没有,
+ * 报「不一致」会让管理员以为是自己改坏了什么。
+ */
+const protocolMismatch = computed(
+  () =>
+    !!node.value &&
+    !!node.value.deployed_protocol &&
+    node.value.deployed_protocol !== node.value.protocol,
+)
 
 async function load(id: number) {
   loading.value = true
@@ -681,8 +699,16 @@ const subEntries = computed(() => {
         <a-button size="small" :loading="running === '测试 SSH'" @click="doTestSSH">测试 SSH</a-button>
         <a-button size="small" :loading="running === '探测'" @click="doProbe">探测</a-button>
         <a-button size="small" :loading="running === '比对配置'" @click="doDiff">比对配置</a-button>
-        <a-button size="small" :loading="running === '扫描握手目标'" @click="doScanDests">
-          扫描握手目标
+        <!-- Shadowsocks 节点上这一项仍然可点。它是切回 VLESS 的前置步骤 ——
+             切协议要求握手目标已经实测通过,而实测只能从这里做。
+             按钮上写清楚为什么它在一个不用 REALITY 的节点上出现。 -->
+        <a-button
+          size="small"
+          :loading="running === '扫描握手目标'"
+          :title="isSS ? '当前协议不用 REALITY。实测通过后才能把这个节点切回 VLESS' : ''"
+          @click="doScanDests"
+        >
+          扫描握手目标<template v-if="isSS">(切回 VLESS 用)</template>
         </a-button>
         <a-button size="small" :loading="running === '同步流量'" @click="doSyncTraffic">同步流量</a-button>
         <a-button size="small" :loading="running === '采集资源'" @click="doCollectMetrics">
@@ -879,23 +905,48 @@ const subEntries = computed(() => {
 
             <section class="nd__card">
               <div class="nd__card-head">
-                REALITY 与配置版本
-                <a @click="doScanDests">扫描握手目标</a>
+                落地协议与配置版本
+                <a v-if="!isSS" @click="doScanDests">扫描握手目标</a>
               </div>
               <div class="nd__card-body">
                 <div class="nd__kv">
-                  <div><span>握手目标</span><b class="lb-mono">{{ node.reality_dest }}:{{ node.reality_dest_port }}</b></div>
+                  <!-- 「期望」与「节点上生效」分两行,不合成一行。
+                       合起来只能显示其中一个:显示期望值会让管理员以为切换已经
+                       完成(而节点上还是旧协议),显示生效值又看不出他刚才改过。 -->
                   <div>
-                    <span>最大 TLS 记录</span>
-                    <b
-                      class="lb-mono"
-                      :style="{
-                        color: node.handshake_max_record_size > 8192 ? color.danger : undefined,
-                      }"
-                    >
-                      {{ node.handshake_max_record_size || '未实测' }} / 8192
+                    <span>期望协议</span>
+                    <b>{{ PROTOCOL_LABEL[node.protocol] }}</b>
+                  </div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b :style="{ color: protocolMismatch ? color.warning : undefined }">
+                      {{
+                        node.deployed_protocol
+                          ? PROTOCOL_LABEL[node.deployed_protocol]
+                          : '从未部署'
+                      }}
                     </b>
                   </div>
+                  <template v-if="isSS">
+                    <div class="nd__kv-wide">
+                      <span>加密方法</span>
+                      <b class="lb-mono">{{ node.ss_method || '—' }}</b>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div><span>握手目标</span><b class="lb-mono">{{ node.reality_dest || '未设置' }}<template v-if="node.reality_dest">:{{ node.reality_dest_port }}</template></b></div>
+                    <div>
+                      <span>最大 TLS 记录</span>
+                      <b
+                        class="lb-mono"
+                        :style="{
+                          color: node.handshake_max_record_size > 8192 ? color.danger : undefined,
+                        }"
+                      >
+                        {{ node.handshake_max_record_size || '未实测' }} / 8192
+                      </b>
+                    </div>
+                  </template>
                   <div><span>配置版本</span><b class="lb-mono">rev {{ node.config_revision }}</b></div>
                   <div>
                     <span>已部署配置</span>
@@ -906,11 +957,17 @@ const subEntries = computed(() => {
                       {{ node.deployed_config_sha256 ? shortHash(node.deployed_config_sha256) : '从未部署' }}
                     </b>
                   </div>
-                  <div class="nd__kv-wide">
+                  <div v-if="!isSS" class="nd__kv-wide">
                     <span>上次实测</span>
                     <b><LbTimeText :value="node.handshake_checked_at" empty="从未实测" /></b>
                   </div>
                 </div>
+              </div>
+              <div v-if="protocolMismatch" class="nd__card-foot">
+                协议已改但还没部署。<strong>节点上仍在运行
+                {{ PROTOCOL_LABEL[node.deployed_protocol as NodeProtocol] }},
+                订阅里下发的也是它</strong> —— 现在的用户不会断线。
+                部署之后才会切换到 {{ PROTOCOL_LABEL[node.protocol] }},届时所有人都要重新拉一次订阅。
               </div>
             </section>
 

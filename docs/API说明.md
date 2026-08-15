@@ -84,6 +84,7 @@ DELETE /api/users/{id}
 POST   /api/users/{id}/enabled
 POST   /api/users/{id}/reset-traffic
 POST   /api/users/{id}/regenerate-uuid
+POST   /api/users/{id}/regenerate-ss-password
 POST   /api/users/{id}/regenerate-sub-token
 GET    /api/users/{id}/traffic
 ```
@@ -94,6 +95,14 @@ GET    /api/users/{id}/traffic
 * `effective_node_ids` —— 等级继承与额外授权合并后的**实际可用节点**。
 
 配置生成、订阅与部署脏标记一律看后者。
+
+**两种协议各有一份凭据,互不替代**:`regenerate-uuid` 换 VLESS 的 UUID,
+`regenerate-ss-password` 换 Shadowsocks 的 PSK,重置一份不动另一份,
+也都不动订阅地址。
+
+各自**只标脏跑对应协议的节点**:UUID 根本不出现在 Shadowsocks 节点的配置里,
+而部署协调器不跳过无差异部署 —— 一并标脏会把那些机器白白重启一遍,
+把上面全部在线连接踢掉,换不来任何配置变化。
 
 `next_reset_at` 是流量的下次重置时刻(不重置的用户为空串),由后端算好下发。
 它与门户 `/api/portal/dashboard` 用的是**同一个** `portal.NextResetAt` ——
@@ -198,6 +207,9 @@ GET    /api/deployments
 * `traffic_quota_bytes` 为 **null** 表示保持原额度(0 是"改成不限量",
   所以不能用零值表达"没传");
 * `traffic_reset_cycle` 留空、`traffic_reset_day` 为 0 表示保持原值;
+* `protocol`、`ss_method` 留空表示保持原值。漏传会把一台 Shadowsocks 节点
+  悄悄改回 VLESS,下一次部署就把这台机器上的全部用户踢下线 ——
+  而管理员那次操作可能只是改了个排序;
 * `ipv6_address` 留空表示**清空 IPv6**,与上面几个正好相反 ——
   清空是管理员的显式动作(把 IPv6 条目从订阅撤下来),必须有办法表达。
   `ipv6_proxy_port` 同理:0 表示「跟随 IPv4」,不是「保持原值」。
@@ -230,6 +242,50 @@ GET    /api/deployments
 * IPv4 栏填 IPv6、IPv6 栏填 IPv4 都会返回 400 并说明该填到哪一栏;
 * **改 `ipv6_address` 既不置 `ssh_changed` 也不置 `needs_deploy`** ——
   它不参与 SSH,也不进节点配置,订阅下次拉取即生效。
+
+### 落地协议
+
+```json
+{
+  "protocol": "SHADOWSOCKS",
+  "ss_method": "2022-blake3-aes-128-gcm"
+}
+```
+
+`protocol` 只接受 `VLESS_REALITY`(默认)与 `SHADOWSOCKS`。
+一个节点只跑一种协议 —— 端口、访问等级、额度、IPv6 这些设置对两者完全一样。
+
+`ss_method` 只接受 SS2022 三种:`2022-blake3-aes-128-gcm`(默认)、
+`2022-blake3-aes-256-gcm`、`2022-blake3-chacha20-poly1305`。
+不收传统 AEAD:它的多用户没有 EIH,服务端要逐个用户试解密,也没有 replay 防护。
+
+节点详情返回两组协议字段,**它们不是一回事**:
+
+| 字段 | 含义 |
+|---|---|
+| `protocol` / `ss_method` | 期望值 —— 下一次部署要下发的 |
+| `deployed_protocol` / `deployed_ss_method` | **节点上当前生效的**;空串表示从未部署过 |
+
+**订阅与门户只反映 `deployed_*`。** 改协议到部署成功之间存在一个窗口 ——
+可能二十秒,也可能是部署失败自动回滚之后的永远。按期望值下发的话,
+这个窗口里用户拉到 `ss://` 而节点上跑的还是 VLESS,客户端握手失败,
+而数据库、节点、面板三方都是「对的」。所以改完协议不部署也不会有人断线,
+界面上把两者分开显示即可。
+
+改协议或改加密方法会让响应里的 `needs_deploy` 为真,但**不会自动部署**:
+与访问等级变更不同,那一条是安全问题,协议变更是可用性问题,
+立刻部署会让全部在线用户在管理员没准备好时断线。
+
+**切换到 `VLESS_REALITY` 要求该节点已完成握手目标实测**
+(`reality_dest` 非空且 `handshake_checked_at` 不为空),否则返回 400。
+握手目标必须经 `POST /api/nodes/{id}/dest-check` 在节点本机实测才能写入。
+新建 Shadowsocks 节点时不要求握手目标,`reality_dest` 留空。
+
+Shadowsocks 节点的部署事务多一步:**检查节点时钟**。
+SS2022 的 AEAD 头带时间戳,节点与真实时间相差超过 30 秒时全部用户连不上,
+而 `check`、服务状态、端口监听与拨测**全部仍然通过** ——
+拨测客户端跑在节点自己身上,与服务端共用同一个时钟。
+这一步放在事务最前面,超限时中止,节点上什么都还没动过。
 
 ### 节点流量额度
 

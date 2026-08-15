@@ -3,6 +3,8 @@ package user
 import (
 	"context"
 	"log/slog"
+
+	"github.com/litebox/litebox/internal/singbox"
 )
 
 // DeployTrigger 把受影响的节点标记为待部署。由 deployment.Coordinator 实现。
@@ -92,13 +94,49 @@ func (s *Service) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	return u, nil
 }
 
+// RegenerateUUID 重置用户的 VLESS 凭据。
+//
+// 只标脏跑 VLESS 的节点。UUID 根本不出现在 Shadowsocks 节点的配置里,
+// 而部署协调器不跳过无差异部署 —— 一并标脏会把那些机器白白重启一遍,
+// 把上面全部在线连接踢掉,换不来任何配置变化。
+//
+// V4 之前所有节点都是 VLESS,"全部有效节点"恰好就是正确答案;
+// 现在不是了。
 func (s *Service) RegenerateUUID(ctx context.Context, id int64) (*User, error) {
 	u, err := s.store.RegenerateUUID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.EffectiveNodeIDs)
+	s.markProtocolNodes(ctx, id, singbox.ProtocolVLESSReality)
 	return u, nil
+}
+
+// RegenerateSSPassword 重置用户的 Shadowsocks 凭据。与 RegenerateUUID 对称。
+func (s *Service) RegenerateSSPassword(ctx context.Context, id int64) (*User, error) {
+	u, err := s.store.RegenerateSSPassword(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.markProtocolNodes(ctx, id, singbox.ProtocolShadowsocks)
+	return u, nil
+}
+
+// markProtocolNodes 只标脏该用户可用节点中跑指定协议的那些。
+//
+// 查询失败时回落到全部有效节点:宁可多重启几台,也不能漏标 ——
+// 漏标的表现是数据库里凭据已经换了,而节点上旧凭据还在继续可用,
+// 那是权限没有真正收回。多重启是一次可见的抖动,漏标是一个静默的洞。
+func (s *Service) markProtocolNodes(ctx context.Context, userID int64, protocol singbox.Protocol) {
+	ids, err := s.store.NodesForUserWithProtocol(ctx, userID, protocol)
+	if err != nil {
+		s.logger.Error("按协议筛选受影响节点失败,回落到全部有效节点",
+			"user_id", userID, "protocol", protocol, "error", err)
+		if all, allErr := s.store.NodesForUser(ctx, userID); allErr == nil {
+			s.markNodes(all)
+		}
+		return
+	}
+	s.markNodes(ids)
 }
 
 // RegenerateSubToken 只换订阅地址,不影响节点配置,因此不触发部署。

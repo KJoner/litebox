@@ -17,9 +17,13 @@ import (
 // 过滤条件是 User.Serviceable:只有 ACTIVE 且未过期未超额的用户才下发。
 // 被停用、过期或超额的用户从配置中消失,重启后其 UUID 立即失效 ——
 // 这就是"停用即断线"的实现方式。
+// 两种协议的凭据一并返回,不看这个节点跑的是哪种。
+// 按协议取舍发生在渲染时(singbox.Render 只用它需要的那一份)——
+// 在这里按协议分叉的话,查询要多一个参数,而调用方拿到的
+// "用户列表"会变成一个依赖节点协议的东西,配置 diff 就没法比了。
 func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.user_code, u.uuid_encrypted, u.status, u.quota_bytes,
+		SELECT u.user_code, u.uuid_encrypted, u.ss_password_encrypted, u.status, u.quota_bytes,
 		       u.used_uplink, u.used_downlink, u.expires_at
 		  FROM proxy_users u
 		  JOIN `+access.EffectiveNodesView+` en ON en.proxy_user_id = u.id
@@ -34,8 +38,8 @@ func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User,
 	users := make([]singbox.User, 0)
 	for rows.Next() {
 		var u User
-		var uuidEnc string
-		if err := rows.Scan(&u.UserCode, &uuidEnc, &u.Status, &u.QuotaBytes,
+		var uuidEnc, ssKeyEnc string
+		if err := rows.Scan(&u.UserCode, &uuidEnc, &ssKeyEnc, &u.Status, &u.QuotaBytes,
 			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt); err != nil {
 			return nil, err
 		}
@@ -51,7 +55,17 @@ func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User,
 		if err := singbox.ValidateUUID(uuid); err != nil {
 			return nil, err
 		}
-		users = append(users, singbox.User{Code: u.UserCode, UUID: uuid})
+		// Shadowsocks 密钥不在这里校验:VLESS 节点上它可以是空的
+		// (存量用户等着 backfill),拿它拦住渲染会让一个与 SS 无关的
+		// 节点部署不下去。格式由 singbox.validateShadowsocksParams 在
+		// 真正用到它的时候把关。
+		ssKey := ""
+		if ssKeyEnc != "" {
+			if ssKey, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
+				return nil, err
+			}
+		}
+		users = append(users, singbox.User{Code: u.UserCode, UUID: uuid, SSPassword: ssKey})
 	}
 	return users, rows.Err()
 }
@@ -59,6 +73,40 @@ func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User,
 // NodesForUser 返回某用户当前可用的节点 ID(等级继承 + 额外授权)。
 func (s *Store) NodesForUser(ctx context.Context, userID int64) ([]int64, error) {
 	return access.NodesForUser(ctx, s.db, userID)
+}
+
+// NodesForUserWithProtocol 返回该用户可用节点中跑指定协议的那些。
+//
+// 用于按协议重置凭据:VLESS 的 UUID 不出现在 Shadowsocks 节点的配置里,
+// 反之亦然。不筛的话,重置一种凭据会把另一种协议的节点也标脏,
+// 而部署协调器【不跳过无差异部署】—— 它会照常重启 sing-box,
+// 把那台机器上全部在线连接踢掉一次,换不来任何配置变化。
+//
+// 筛的是期望协议 nodes.protocol 而不是 deployed_protocol:标脏排的是
+// 下一次部署,而那一次渲染出来的是期望协议的配置。
+func (s *Store) NodesForUserWithProtocol(
+	ctx context.Context, userID int64, protocol singbox.Protocol,
+) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.id
+		  FROM nodes n
+		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
+		 WHERE en.proxy_user_id = ? AND n.deleted_at IS NULL AND n.protocol = ?
+		 ORDER BY n.id`, userID, string(protocol))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // AffectedNodes 返回用户变更需要重新部署的节点集合。

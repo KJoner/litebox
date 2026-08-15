@@ -32,24 +32,34 @@ const (
 // SingBoxClientConfig 生成完整的 sing-box 客户端配置。
 //
 // 只生成能让用户"导入即用"的最小可用配置:一个本地混合入站、
-// 每个节点一个 VLESS 出站、一个手动选择器与一个自动测速选择器。
+// 每个条目一个出站、一个手动选择器与一个自动测速选择器。
 // 刻意不下发规则集与 GeoIP —— V1 不承诺分流能力,
 // 塞进去只会让客户端下载大文件并在低配设备上变慢。
-func SingBoxClientConfig(uuid string, nodes []Node, mixedPort int) ([]byte, error) {
+//
+// 入参是与协议无关的 Entry:这里不认识 VLESS 也不认识 Shadowsocks,
+// 只负责编排。加一种协议时这个函数一个字都不用改。
+//
+// Outbound 为 nil 的条目被跳过 —— 它在 URI 格式的订阅里仍然存在,
+// 只是表达不成 sing-box 出站。V4 的两种协议都表达得出来,
+// 这条分支是为将来的外部代理留的。
+func SingBoxClientConfig(entries []Entry, mixedPort int) ([]byte, error) {
 	if mixedPort <= 0 {
 		mixedPort = 2080
 	}
 
-	outbounds := make([]any, 0, len(nodes)+4)
-	tags := make([]string, 0, len(nodes))
+	outbounds := make([]any, 0, len(entries)+4)
+	tags := make([]string, 0, len(entries))
 	used := map[string]bool{
 		tagSelect: true, tagAuto: true, tagDirect: true, tagBlock: true, tagDNSOut: true,
 	}
 
-	for i, node := range nodes {
-		tag := uniqueTag(node.DisplayName, i, used)
+	for i, entry := range entries {
+		if entry.Outbound == nil {
+			continue
+		}
+		tag := uniqueTag(entry.DisplayName, i, used)
 		tags = append(tags, tag)
-		outbounds = append(outbounds, vlessOutbound(tag, uuid, node))
+		outbounds = append(outbounds, entry.Outbound(tag))
 	}
 
 	// 选择器必须放在节点出站之后:sing-box 允许任意顺序,

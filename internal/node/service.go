@@ -283,15 +283,28 @@ func (s *Service) desiredConfig(ctx context.Context, nodeID int64) (singbox.Rend
 			return singbox.Rendered{}, err
 		}
 	}
-	return singbox.RenderJSON(singbox.NodeParams{
+	return singbox.RenderJSON(nodeParams(n, users))
+}
+
+// nodeParams 把一条节点记录投影成渲染参数。
+//
+// 只此一处:desiredConfig 与 Deploy 各拼一遍的话,加一个协议字段时
+// 漏掉其中一处的表现是"配置差异里看不出变化,部署下去却全变了",
+// 或者反过来 —— 两种都让 diff 失去意义,而 diff 正是管理员部署前
+// 唯一能看到影响范围的地方。
+func nodeParams(n *Node, users []singbox.User) singbox.NodeParams {
+	return singbox.NodeParams{
+		Protocol:          n.Protocol,
 		ListenPort:        n.ListenPort,
 		APIPort:           n.APIPort,
 		RealityDest:       n.RealityDest,
 		RealityPort:       n.RealityDestPort,
 		RealityPrivateKey: n.RealityPrivateKey,
 		ShortID:           n.RealityShortID,
+		SSMethod:          singbox.SSMethod(n.SSMethod),
+		SSPassword:        n.SSPassword,
 		Users:             users,
-	})
+	}
 }
 
 // Deploy 把节点当前的期望状态部署到节点。
@@ -317,16 +330,8 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	}
 
 	req := deployment.Request{
-		NodeID: nodeID,
-		Params: singbox.NodeParams{
-			ListenPort:        n.ListenPort,
-			APIPort:           n.APIPort,
-			RealityDest:       n.RealityDest,
-			RealityPort:       n.RealityDestPort,
-			RealityPrivateKey: n.RealityPrivateKey,
-			ShortID:           n.RealityShortID,
-			Users:             users,
-		},
+		NodeID:           nodeID,
+		Params:           nodeParams(n, users),
 		RealityPublicKey: n.RealityPublicKey,
 		SSHPort:          n.SSHPort,
 		Revision:         revision,
@@ -344,7 +349,8 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 		}
 		return result, deployErr
 	}
-	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256); err != nil {
+	// 生效协议在这里才落库:部署成功之前订阅一直下发旧协议的条目。
+	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256, n.Protocol, n.SSMethod); err != nil {
 		s.logger.Error("记录部署成功状态出错", "node_id", nodeID, "error", err)
 	}
 	return result, nil

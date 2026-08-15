@@ -69,6 +69,7 @@ func NewDeployer(opts Options) *Deployer {
 //
 //	强制同步流量(失败即中止)
 //	→ 渲染配置并自校验
+//	→ 检查节点时钟(Shadowsocks 偏差超限即中止,此时节点上什么都还没动)
 //	→ 上传临时文件
 //	→ sing-box check
 //	→ 备份当前配置
@@ -76,7 +77,7 @@ func NewDeployer(opts Options) *Deployer {
 //	→ systemctl restart
 //	→ 健康检查一:systemd 状态
 //	→ 健康检查二:端口监听
-//	→ 健康检查三:真实 VLESS 拨测
+//	→ 健康检查三:按协议做真实拨测
 //	任一健康检查失败则回滚到备份并重启复验。
 //
 // 同一节点的部署由连接池的节点级锁串行化,不会并发。
@@ -190,6 +191,22 @@ func (d *Deployer) runTransaction(
 		return err
 	}
 
+	// 步骤 0:节点时钟。放在最前面 —— 到这里为止节点上什么都还没动过,
+	// 中止的代价只是一次白跑,而 Shadowsocks 节点带着 30 秒以上的偏差跑起来,
+	// 表现是全部用户连不上而后面三步检查全绿。
+	skewDetail, skewSkipped, skewErr := checkClockSkew(ctx, client, req.Params.Protocol)
+	switch {
+	case skewErr != nil:
+		rec.steps = append(rec.steps, Step{
+			Name: clockSkewStep, Status: StepFailed, Detail: skewErr.Error()})
+		return skewErr
+	case skewSkipped:
+		rec.skip(clockSkewStep, skewDetail)
+	default:
+		rec.steps = append(rec.steps, Step{
+			Name: clockSkewStep, Status: StepSuccess, Detail: skewDetail})
+	}
+
 	// 步骤 1:确保目录存在并上传临时配置。
 	tempPath := d.layout.tempConfigPath()
 	if err := rec.run("上传临时配置", func() (string, error) {
@@ -276,13 +293,16 @@ func (d *Deployer) runTransaction(
 		return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 	}
 
+	// 步骤名带上协议:部署记录是事后排查唯一的现场,
+	// 只写"拨测失败"会让人分不清那次跑的是哪一种链路。
+	dialStep := "健康检查:" + dialLabel(req.Params.Protocol) + "拨测"
 	if len(req.Params.Users) == 0 {
 		// 空配置没有用户可拨测。这不是故障,但必须显式记录,
 		// 否则会被误读成"三步健康检查全过"。
-		rec.skip("健康检查:VLESS 拨测", "配置中没有用户,无法拨测")
+		rec.skip(dialStep, "配置中没有用户,无法拨测")
 	} else {
-		if err := rec.run("健康检查:VLESS 拨测", func() (string, error) {
-			return d.checkVLESSDial(ctx, client, req)
+		if err := rec.run(dialStep, func() (string, error) {
+			return d.checkDial(ctx, client, req)
 		}); err != nil {
 			return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 		}

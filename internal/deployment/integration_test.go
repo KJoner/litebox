@@ -161,13 +161,37 @@ func (e *integrationEnv) request(revision int64, users []singbox.User) Request {
 	}
 }
 
+// ssRequest 把同一台节点改成 Shadowsocks 2022 的部署请求。
+//
+// 节点二进制不变 —— Shadowsocks 在 sing-box 里是核心协议,
+// 不在任何构建标签后面,现有的 assets/singbox 直接就支持。
+func (e *integrationEnv) ssRequest(t *testing.T, revision int64, users []singbox.User) Request {
+	t.Helper()
+	req := e.request(revision, users)
+	req.Params.Protocol = singbox.ProtocolShadowsocks
+	req.Params.SSMethod = singbox.SSMethodAES128GCM
+	key, err := singbox.GenerateSSKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Params.SSPassword = key
+	return req
+}
+
+// testUsers 生成带两套凭据的用户 —— 与生产一致:
+// 一份凭据对应一种协议,渲染时按节点协议取用其中一份。
 func testUsers(t *testing.T, n int) []singbox.User {
 	t.Helper()
 	users := make([]singbox.User, 0, n)
 	for i := 1; i <= n; i++ {
+		key, err := singbox.GenerateSSKey()
+		if err != nil {
+			t.Fatal(err)
+		}
 		users = append(users, singbox.User{
-			Code: fmt.Sprintf("user_%06d", i),
-			UUID: genUUID(t),
+			Code:       fmt.Sprintf("user_%06d", i),
+			UUID:       genUUID(t),
+			SSPassword: key,
 		})
 	}
 	return users
@@ -374,5 +398,83 @@ func TestIntegrationSingBoxCheckRejectsMalformedConfig(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("执行远端 check: %v", err)
+	}
+}
+
+// Shadowsocks 2022 的完整部署:配置渲染 → check → 重启 → 三步健康检查,
+// 其中拨测必须真的经 Shadowsocks 链路建立连接。
+//
+// 这是第一块功能里唯一无法在单元测试中覆盖的一环 ——
+// serverPSK:userPSK 的拼法、method 与密钥长度的匹配、sing-box 对
+// 多用户 EIH 的支持,都只能由节点上真实的 sing-box 来回答。
+func TestIntegrationDeployShadowsocksPassesDialCheck(t *testing.T) {
+	env := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+
+	result, err := env.deployer.Deploy(ctx, env.ssRequest(t, 201, testUsers(t, 2)))
+	logSteps(t, result)
+	if err != nil {
+		t.Fatalf("Shadowsocks 部署失败: %v", err)
+	}
+	if result.Status != StatusSuccess {
+		t.Fatalf("部署状态 = %s", result.Status)
+	}
+
+	dial, ok := stepByName(result, "健康检查:Shadowsocks 拨测")
+	if !ok {
+		t.Fatal("步骤记录中没有 Shadowsocks 拨测")
+	}
+	if dial.Status != StepSuccess {
+		t.Fatalf("拨测未通过:%s", dial.Detail)
+	}
+	if !strings.Contains(dial.Detail, "SSH-") {
+		t.Errorf("拨测详情应包含经代理读到的 SSH 横幅:%s", dial.Detail)
+	}
+
+	// 时钟检查必须真的跑过。它是 Shadowsocks 独有的失效模式,
+	// 而后面三步检查【结构性地】测不出它 —— 拨测客户端与服务端
+	// 跑在同一台机器上,共用同一个时钟。
+	skew, ok := stepByName(result, clockSkewStep)
+	if !ok {
+		t.Fatal("步骤记录中没有时钟检查")
+	}
+	if skew.Status == StepFailed {
+		t.Fatalf("时钟检查失败:%s", skew.Detail)
+	}
+	t.Logf("节点时钟:%s", skew.Detail)
+}
+
+// 两种协议来回切换都要能部署成功,且切回去之后节点仍然可用。
+//
+// 单向测通不够:切走时留在节点上的旧配置字段(REALITY 块、
+// 用户列表的形状)如果没被干净替换,表现是切回来之后 sing-box
+// 起得来、端口也在听,但没有人连得上。
+func TestIntegrationProtocolSwitchRoundTrip(t *testing.T) {
+	env := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+
+	users := testUsers(t, 2)
+
+	for _, step := range []struct {
+		name     string
+		req      Request
+		dialStep string
+	}{
+		{"VLESS", env.request(301, users), "健康检查:VLESS 拨测"},
+		{"切到 Shadowsocks", env.ssRequest(t, 302, users), "健康检查:Shadowsocks 拨测"},
+		{"切回 VLESS", env.request(303, users), "健康检查:VLESS 拨测"},
+	} {
+		result, err := env.deployer.Deploy(ctx, step.req)
+		t.Logf("--- %s ---", step.name)
+		logSteps(t, result)
+		if err != nil {
+			t.Fatalf("%s 部署失败: %v", step.name, err)
+		}
+		dial, ok := stepByName(result, step.dialStep)
+		if !ok || dial.Status != StepSuccess {
+			t.Fatalf("%s 的拨测没通过:%+v", step.name, dial)
+		}
 	}
 }

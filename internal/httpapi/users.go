@@ -20,6 +20,7 @@ const (
 	actionUserDisable      = "user.disable"
 	actionUserResetTraffic = "user.reset_traffic"
 	actionUserRegenUUID    = "user.regenerate_uuid"
+	actionUserRegenSSKey   = "user.regenerate_ss_password"
 	actionUserRegenToken   = "user.regenerate_sub_token"
 	actionUserDelete       = "user.delete"
 )
@@ -405,6 +406,28 @@ func (s *Server) handleRegenerateUserUUID(w http.ResponseWriter, r *http.Request
 		AdminUserID: &admin.ID, Action: actionUserRegenUUID,
 		TargetType: "user", TargetID: u.UserCode,
 		Detail: "旧 UUID 将在下次部署后失效", ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
+}
+
+// handleRegenerateSSPassword 重置用户的 Shadowsocks 凭据。
+// 与重置 UUID 是两件独立的事:一份凭据对应一种协议,重置一份不动另一份。
+func (s *Server) handleRegenerateSSPassword(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.userIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	admin := adminFromContext(r.Context())
+	u, err := s.users.RegenerateSSPassword(r.Context(), id)
+	if err != nil {
+		s.writeUserError(w, err, "重新生成 Shadowsocks 密钥失败")
+		return
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionUserRegenSSKey,
+		TargetType: "user", TargetID: u.UserCode,
+		Detail:   "旧 Shadowsocks 密钥将在下次部署后失效,只影响跑该协议的节点",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
 	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
 }

@@ -67,6 +67,15 @@ type Node struct {
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`
 
+	// Protocol 是期望的落地协议;DeployedProtocol 是节点上当前生效的那个。
+	// 两者不一致就是"改了协议还没部署"——订阅与门户一律看后者,
+	// 前者只用来渲染下一次要下发的配置。
+	Protocol         singbox.Protocol `json:"protocol"`
+	SSMethod         string           `json:"ss_method"`
+	SSPassword       string           `json:"-"` // 节点级 PSK,永不出现在 API 响应中
+	DeployedProtocol singbox.Protocol `json:"deployed_protocol"`
+	DeployedSSMethod string           `json:"deployed_ss_method"`
+
 	RealityDest       string `json:"reality_dest"`
 	RealityDestPort   int    `json:"reality_dest_port"`
 	RealityPrivateKey string `json:"-"`
@@ -123,6 +132,8 @@ const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.proxy_port, n.listen_port, n.api_port, n.ipv6_proxy_port,
 	n.arch, n.singbox_version, n.singbox_build_tags,
+	n.protocol, n.ss_method, n.ss_password_encrypted,
+	n.deployed_protocol, n.deployed_ss_method,
 	n.reality_dest, n.reality_dest_port, n.reality_privkey_encrypted, n.reality_pubkey,
 	n.reality_short_id, n.handshake_max_record_size, n.handshake_checked_at,
 	n.access_tier_id, t.code, t.name, t.level,
@@ -138,12 +149,14 @@ const nodeFrom = ` FROM nodes n JOIN access_tiers t ON t.id = n.access_tier_id `
 
 func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
-	var sshKeyEnc, realityKeyEnc string
+	var sshKeyEnc, realityKeyEnc, ssKeyEnc string
 	err := scan(
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.IPv6ProxyPort,
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags,
+		&n.Protocol, &n.SSMethod, &ssKeyEnc,
+		&n.DeployedProtocol, &n.DeployedSSMethod,
 		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey,
 		&n.RealityShortID, &n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
 		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
@@ -164,6 +177,11 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	if realityKeyEnc != "" {
 		if n.RealityPrivateKey, err = s.cipher.Decrypt(realityKeyEnc); err != nil {
 			return nil, fmt.Errorf("解密节点 %d 的 REALITY 私钥: %w", n.ID, err)
+		}
+	}
+	if ssKeyEnc != "" {
+		if n.SSPassword, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
+			return nil, fmt.Errorf("解密节点 %d 的 Shadowsocks 密钥: %w", n.ID, err)
 		}
 	}
 	return &n, nil
@@ -197,7 +215,12 @@ type CreateParams struct {
 	APIPort    int
 	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。
 	IPv6ProxyPort int
+	// Protocol 留空按 VLESS_REALITY 处理;SSMethod 只在 SHADOWSOCKS 下有意义,
+	// 留空取默认方法。
+	Protocol string
+	SSMethod string
 	// RealityDest 为空时使用默认候选目标的第一个。
+	// SHADOWSOCKS 节点不要求握手目标,这两项会被强制清空 —— 详见 validateCreate。
 	RealityDest     string
 	RealityDestPort int
 }
@@ -214,6 +237,10 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 		return nil, err
 	}
 
+	// REALITY 密钥对与 Shadowsocks PSK 一律生成,与本次选的协议无关。
+	// 两者都是纯本地计算,零成本,而缺了任何一个都会让"切协议"变成一个
+	// 可能在中途失败的复合操作 —— 失败时节点停在半成品状态,
+	// 而管理员看到的只是一句"生成密钥失败",不知道协议到底切没切。
 	keys, err := GenerateRealityKeyPair()
 	if err != nil {
 		return nil, err
@@ -221,6 +248,14 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	shortID, err := GenerateShortID(8)
 	if err != nil {
 		return nil, err
+	}
+	ssKey, err := GenerateSSKey()
+	if err != nil {
+		return nil, err
+	}
+	ssKeyEnc, err := s.cipher.Encrypt(ssKey)
+	if err != nil {
+		return nil, fmt.Errorf("加密 Shadowsocks 密钥: %w", err)
 	}
 
 	// 空私钥直接存空串而不是加密后的空串:读取侧用"是否为空"判断
@@ -240,14 +275,16 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO nodes (name, display_name, host, ipv6_address, ssh_port, ssh_user,
 			ssh_key_encrypted, ssh_host_key, proxy_port, listen_port, api_port, ipv6_proxy_port,
+			protocol, ss_method, ss_password_encrypted,
 			reality_dest, reality_dest_port,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			access_tier_id, sort_order,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
 			status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
+		p.Protocol, p.SSMethod, ssKeyEnc,
 		p.RealityDest, p.RealityDestPort,
 		realityKeyEnc, keys.PublicKey, shortID,
 		p.AccessTierID, p.SortOrder,
@@ -299,6 +336,21 @@ func validateCreate(p *CreateParams) error {
 	if err := normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort); err != nil {
 		return err
 	}
+	if err := normalizeProtocol(&p.Protocol, &p.SSMethod); err != nil {
+		return err
+	}
+
+	// Shadowsocks 不用 REALITY,握手目标一并留空。
+	//
+	// 不给它填一个默认候选:那个域名从来没在这台机器上实测过,
+	// 而节点详情里显示一个未经检测的握手目标,会让人以为这一步已经做过了。
+	// 将来切到 VLESS 时要求先跑一次实测,那时才写入。
+	if singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks {
+		p.RealityDest = ""
+		p.RealityDestPort = 0
+		return nil
+	}
+
 	if p.RealityDest == "" {
 		p.RealityDest = DefaultDestCandidates[0]
 	}
@@ -309,6 +361,29 @@ func validateCreate(p *CreateParams) error {
 		p.RealityDestPort = 443
 	}
 	return singbox.ValidatePort(p.RealityDestPort, "握手目标")
+}
+
+// normalizeProtocol 归一化落地协议与加密方法。
+//
+// 非 Shadowsocks 的节点把 ss_method 清成空串:留着一个用不到的方法名,
+// 会让节点详情看起来像是"两种协议都配好了",而实际上只有一种在跑。
+func normalizeProtocol(protocol, ssMethod *string) error {
+	parsed, err := singbox.ParseProtocol(*protocol)
+	if err != nil {
+		return err
+	}
+	*protocol = string(parsed)
+
+	if parsed != singbox.ProtocolShadowsocks {
+		*ssMethod = ""
+		return nil
+	}
+	method, err := singbox.ParseSSMethod(*ssMethod)
+	if err != nil {
+		return err
+	}
+	*ssMethod = string(method)
+	return nil
 }
 
 func validateName(name string) error {
@@ -486,6 +561,14 @@ type UpdateParams struct {
 	// 把用量显示成一半,而管理员看到的是额度绰绰有余。
 	TrafficBillingMode string
 
+	// Protocol 留空表示保持原协议,SSMethod 同理。
+	//
+	// 与 AccessTierID 一样刻意不回落到默认值:漏传这个字段会把一台
+	// Shadowsocks 节点悄悄改回 VLESS,下一次部署就把全部用户踢下线,
+	// 而管理员那次操作可能只是改了个排序。
+	Protocol string
+	SSMethod string
+
 	// AccessTierID 为 0 表示保持原等级。不回落到普通组:
 	// 前端漏传这个字段时把 VIP 节点悄悄降成普通组,等于给全体用户开门,
 	// 而且不报任何错。
@@ -562,6 +645,18 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if err := normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort); err != nil {
 		return nil, effect, err
 	}
+	if strings.TrimSpace(p.Protocol) == "" {
+		p.Protocol = string(old.Protocol)
+	}
+	if strings.TrimSpace(p.SSMethod) == "" {
+		p.SSMethod = old.SSMethod
+	}
+	if err := normalizeProtocol(&p.Protocol, &p.SSMethod); err != nil {
+		return nil, effect, err
+	}
+	if err := s.checkProtocolSwitch(old, singbox.Protocol(p.Protocol)); err != nil {
+		return nil, effect, err
+	}
 	if p.AccessTierID == 0 {
 		p.AccessTierID = old.AccessTierID
 	}
@@ -615,6 +710,12 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		old.TrafficResetCycle, p.TrafficResetCycle)
 	track("计费口径", old.TrafficBillingMode != p.TrafficBillingMode,
 		billingLabel(old.TrafficBillingMode), billingLabel(p.TrafficBillingMode))
+	track("落地协议", string(old.Protocol) != p.Protocol,
+		old.Protocol.Label(), singbox.Protocol(p.Protocol).Label())
+	// 加密方法只在 Shadowsocks 下有意义。协议切走时它被清空,
+	// 那不是"管理员改了方法",写进审计只会让人以为动了两处。
+	track("加密方法", singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks &&
+		old.SSMethod != p.SSMethod, orDash(old.SSMethod), orDash(p.SSMethod))
 	// 重置日只在按月重置时有意义,不重置时改它没有任何效果,写进审计只会造成误解。
 	track("每月重置日", p.TrafficResetCycle == string(traffic.CycleMonthly) &&
 		old.TrafficResetDay != p.TrafficResetDay, old.TrafficResetDay, p.TrafficResetDay)
@@ -635,8 +736,15 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	//
 	// IPv6 与节点流量额度同样不进配置文件:前者只改订阅内容,后者只用于
 	// 统计与预警。为它们重启 sing-box 会把全部在线连接踢掉一次,换不来任何东西。
+	//
+	// 落地协议与加密方法整份改写节点配置,必须重新部署 —— 但【不自动部署】。
+	// 与访问等级不同:那一条是安全问题(被移出的用户凭据还留在节点上,
+	// 拖多久就多能用多久),而协议变更是可用性问题。立刻部署会让全部在线用户
+	// 在管理员没准备好的时候断线,而在部署完成之前订阅仍然下发旧协议的条目
+	// (订阅只看 deployed_protocol),没有人会拿到连不上的东西。
 	effect.TierChanged = old.AccessTierID != p.AccessTierID
 	effect.NeedsDeploy = old.ListenPort != p.ListenPort || old.APIPort != p.APIPort ||
+		string(old.Protocol) != p.Protocol || old.SSMethod != p.SSMethod ||
 		effect.TierChanged
 
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
@@ -646,6 +754,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		       ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
 		       proxy_port = ?, listen_port = ?, api_port = ?, ipv6_proxy_port = ?,
+		       protocol = ?, ss_method = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, maintenance_message = ?,
 		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
@@ -656,6 +765,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
+		p.Protocol, p.SSMethod,
 		p.AccessTierID, p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,
 		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
@@ -748,14 +858,56 @@ func (s *Store) NextRevision(ctx context.Context, id int64) (int64, error) {
 	return revision, tx.Commit()
 }
 
-// MarkDeployed 记录部署成功后的配置哈希与状态。
-func (s *Store) MarkDeployed(ctx context.Context, id int64, sha256 string) error {
+// MarkDeployed 记录部署成功后的配置哈希、生效协议与状态。
+//
+// deployed_protocol / deployed_ss_method 只在这里写入 —— 它们回答的是
+// "节点上现在跑的是什么",而订阅与门户只信这个答案。部署失败回滚后
+// 这两列保持原值,于是订阅继续下发那份仍然能连的旧协议条目。
+func (s *Store) MarkDeployed(
+	ctx context.Context, id int64, sha256 string,
+	protocol singbox.Protocol, ssMethod string,
+) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE nodes SET deployed_config_sha256 = ?, status = ?, last_heartbeat_at = ?, updated_at = ?
+		UPDATE nodes SET deployed_config_sha256 = ?, deployed_protocol = ?, deployed_ss_method = ?,
+		       status = ?, last_heartbeat_at = ?, updated_at = ?
 		WHERE id = ? AND status != 'DISABLED'`,
-		sha256, StatusOnline, now, now, id)
+		sha256, string(protocol), ssMethod, StatusOnline, now, now, id)
 	return err
+}
+
+// checkProtocolSwitch 在切换落地协议前检查前置条件。
+//
+// 切到 VLESS 要求握手目标已经实测通过。握手目标必须经 ApplyHandshakeDest
+// 在节点本机实测才能写入(CDN 按地域下发不同证书链,TLS 记录超过 8192 字节
+// 会静默握手失败),这里放行等于绕过那道实测。
+//
+// 不在这里顺带跑一次检测:那会把"切协议"变成一个可能在中途失败的复合操作 ——
+// 失败时节点停在半成品状态,而管理员看到的只是一句"检测失败",
+// 不知道协议到底切没切。拆成两个各自可验证的步骤,每一步的失败都是干净的。
+func (s *Store) checkProtocolSwitch(old *Node, next singbox.Protocol) error {
+	if next == old.Protocol {
+		return nil
+	}
+	switch next {
+	case singbox.ProtocolVLESSReality:
+		if old.RealityDest == "" || old.HandshakeCheckedAt == nil {
+			return errors.New("切换到 VLESS + REALITY 之前,请先在节点详情里完成握手目标检测")
+		}
+	case singbox.ProtocolShadowsocks:
+		// 正常路径上不会走到:密钥在建节点时生成,存量节点由启动 backfill 补齐。
+		if old.SSPassword == "" {
+			return errors.New("该节点还没有 Shadowsocks 密钥,请重启面板让补齐任务跑一次")
+		}
+	}
+	return nil
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
 }
 
 // MarkDeployFailed 把节点标记为部署失败。

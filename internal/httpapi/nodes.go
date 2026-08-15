@@ -119,7 +119,11 @@ type createNodeRequest struct {
 	ListenPort int `json:"listen_port"`
 	APIPort    int `json:"api_port"`
 	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。
-	IPv6ProxyPort   int    `json:"ipv6_proxy_port"`
+	IPv6ProxyPort int `json:"ipv6_proxy_port"`
+	// Protocol 留空按 VLESS_REALITY;SSMethod 只在 SHADOWSOCKS 下有意义,
+	// 留空取默认方法。Shadowsocks 节点不要求握手目标,下面两项会被忽略。
+	Protocol        string `json:"protocol"`
+	SSMethod        string `json:"ss_method"`
 	RealityDest     string `json:"reality_dest"`
 	RealityDestPort int    `json:"reality_dest_port"`
 	// RootPassword 是节点的登录口令,只用于把面板公钥装进节点的那一次连接,
@@ -149,6 +153,8 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		ListenPort:         req.ListenPort,
 		APIPort:            req.APIPort,
 		IPv6ProxyPort:      req.IPv6ProxyPort,
+		Protocol:           strings.TrimSpace(req.Protocol),
+		SSMethod:           strings.TrimSpace(req.SSMethod),
 		RealityDest:        strings.TrimSpace(req.RealityDest),
 		RealityDestPort:    req.RealityDestPort,
 		TrafficQuotaBytes:  req.TrafficQuotaBytes,
@@ -270,6 +276,12 @@ type updateNodeRequest struct {
 	// 一台双向计费的机器会悄悄把用量显示成一半 —— 不报任何错。
 	TrafficBillingMode string `json:"traffic_billing_mode"`
 
+	// Protocol、SSMethod 留空保持原值。与 AccessTierID 一样刻意不回落到默认值:
+	// 漏传会把一台 Shadowsocks 节点悄悄改回 VLESS,下一次部署就把全部用户踢下线,
+	// 而管理员那次操作可能只是改了个排序。
+	Protocol string `json:"protocol"`
+	SSMethod string `json:"ss_method"`
+
 	// AccessTierID 为 0、SubscriptionEnabled 为 null 时保持原值。
 	// 这两个字段漏传的后果是静默的(节点被降级 / 从所有订阅里消失),
 	// 不能用零值当"用户的意思"。
@@ -313,6 +325,8 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		ListenPort:          req.ListenPort,
 		APIPort:             req.APIPort,
 		IPv6ProxyPort:       req.IPv6ProxyPort,
+		Protocol:            strings.TrimSpace(req.Protocol),
+		SSMethod:            strings.TrimSpace(req.SSMethod),
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,

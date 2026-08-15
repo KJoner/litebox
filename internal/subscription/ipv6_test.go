@@ -102,7 +102,7 @@ func TestIPv6EntrySingBoxServerHasNoBrackets(t *testing.T) {
 	p := testPhysical()
 	p.IPv6Address = "2602:fed2:7116:2110::1"
 
-	raw, err := SingBoxClientConfig(testUUID, p.Expand(), 2080)
+	raw, err := SingBoxClientConfig(testEntries(t, Credentials{UUID: testUUID}, p.Expand()), 2080)
 	if err != nil {
 		t.Fatal(err)
 	}

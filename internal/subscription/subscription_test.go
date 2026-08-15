@@ -29,6 +29,21 @@ func testNode() Node {
 
 const testUUID = "0e53ec27-4f42-48da-a473-6ada91959d35"
 
+// testEntries 把节点转成订阅条目。任一条失败即让用例失败 ——
+// 生产路径上是跳过并记日志,但测试里静默少一个条目会让断言凭空通过。
+func testEntries(t *testing.T, cred Credentials, nodes []Node) []Entry {
+	t.Helper()
+	out := make([]Entry, 0, len(nodes))
+	for _, n := range nodes {
+		e, err := EntryFor(cred, n)
+		if err != nil {
+			t.Fatalf("生成节点 %s 的订阅条目: %v", n.DisplayName, err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // ---------- VLESS URI ----------
 
 func TestVLESSURIContainsAllRealityParams(t *testing.T) {
@@ -113,7 +128,7 @@ func TestSingBoxClientConfigStructure(t *testing.T) {
 		RealityDest: "www.apple.com", RealityPublicKey: "abc", RealityShortID: "1234",
 	}}
 
-	raw, err := SingBoxClientConfig(testUUID, nodes, 2080)
+	raw, err := SingBoxClientConfig(testEntries(t, Credentials{UUID: testUUID}, nodes), 2080)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +201,7 @@ func TestSingBoxClientConfigTagsAreUnique(t *testing.T) {
 		{DisplayName: "!!!", Host: "192.0.2.3", Port: 443},
 		{DisplayName: "", Host: "192.0.2.4", Port: 443},
 	}
-	raw, err := SingBoxClientConfig(testUUID, nodes, 2080)
+	raw, err := SingBoxClientConfig(testEntries(t, Credentials{UUID: testUUID}, nodes), 2080)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +219,7 @@ func TestSingBoxClientConfigTagsAreUnique(t *testing.T) {
 }
 
 func TestSingBoxClientConfigWithNoNodes(t *testing.T) {
-	raw, err := SingBoxClientConfig(testUUID, nil, 2080)
+	raw, err := SingBoxClientConfig(nil, 2080)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +240,18 @@ type subEnv struct {
 	db      *sql.DB
 	svc     *Service
 	store   *user.Store
+	cipher  *crypto.Cipher
 	nodeIDs []int64
+}
+
+// encrypt 用与 Service 同一把主密钥加密,供插入节点密钥的夹具用。
+func (e *subEnv) encrypt(t *testing.T, plain string) string {
+	t.Helper()
+	enc, err := e.cipher.Encrypt(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return enc
 }
 
 func newSubEnv(t *testing.T) *subEnv {
@@ -241,7 +267,9 @@ func newSubEnv(t *testing.T) *subEnv {
 	key, _ := crypto.GenerateMasterKey()
 	cipher, _ := crypto.NewCipher(key)
 	store := user.NewStore(db, cipher)
-	return &subEnv{db: db, svc: NewService(db, store, cipher, 2080), store: store}
+	return &subEnv{
+		db: db, svc: NewService(db, store, cipher, 2080, nil), store: store, cipher: cipher,
+	}
 }
 
 // addNode 插入一个节点。deployed 为 false 表示尚未成功部署过。

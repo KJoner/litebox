@@ -170,6 +170,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/users/{id}/enabled", s.handleSetUserEnabled)
 		authed.HandleFunc("POST /api/users/{id}/reset-traffic", s.handleResetUserTraffic)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-uuid", s.handleRegenerateUserUUID)
+		authed.HandleFunc("POST /api/users/{id}/regenerate-ss-password", s.handleRegenerateSSPassword)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
 
 		if s.portalAccts != nil && s.portal != nil {
