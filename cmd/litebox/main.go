@@ -34,6 +34,7 @@ import (
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/deployment"
+	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
@@ -394,6 +395,20 @@ func cmdServe(args []string) error {
 		logger.Info("已为存量用户补齐 Shadowsocks 密钥", "用户数", n)
 	}
 
+	// 外部代理:不属于本面板、不由本面板部署的成品线路。
+	// UA 从设置里取,改了不必重启 —— 部分机场按 UA 返回不同格式。
+	externalService := externalproxy.NewService(externalproxy.ServiceOptions{
+		Store: externalproxy.NewStore(db, cipher),
+		UserAgent: func(ctx context.Context) string {
+			ua, err := settingsStore.Get(ctx, settings.KeySubscriptionUserAgent)
+			if err != nil {
+				return ""
+			}
+			return ua
+		},
+		Logger: logger,
+	})
+
 	nodeService := node.NewService(node.ServiceOptions{
 		Store:            nodeStore,
 		Pool:             pool,
@@ -445,6 +460,11 @@ func cmdServe(args []string) error {
 		logger.Info("节点资源监控已关闭(node.metrics_interval 为负)")
 	}
 
+	// 外部代理源的自动同步。每个源自己的间隔决定何时拉,
+	// 这里的巡检只是「多久看一眼有没有到点的」。
+	// 默认所有源都关着自动同步 —— 打开之前管理员应该先手工同步一次看结果。
+	go externalService.Run(ctx)
+
 	// 门户认证与管理员认证是两套独立实现,共用同一个会话时长与限流配置即可。
 	portalService := portal.NewService(db, portal.Options{
 		SessionTTL:  cfg.Security.SessionTTL,
@@ -453,14 +473,15 @@ func cmdServe(args []string) error {
 	})
 
 	server := httpapi.NewServer(httpapi.Options{
-		Config: cfg,
-		DB:     db,
-		Auth:   authService,
-		Audit:  audit.NewRecorder(db, logger),
-		Nodes:  nodeService,
-		Users:  userService,
+		Config:   cfg,
+		DB:       db,
+		Auth:     authService,
+		Audit:    audit.NewRecorder(db, logger),
+		Nodes:    nodeService,
+		Users:    userService,
+		External: externalService,
 		Subs: subscription.NewService(
-			db, userStore, cipher, cfg.Subscription.ClientMixedPort, logger),
+			db, userStore, cipher, cfg.Subscription.ClientMixedPort, settingsStore, logger),
 		Traffic:   traffic.NewQuerier(db),
 		Scheduler: scheduler,
 		Metrics:   metricsStore,

@@ -22,6 +22,7 @@ import (
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/traffic"
@@ -88,7 +89,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Auth:        authService,
 		Audit:       audit.NewRecorder(db, logger),
 		Users:       userService,
-		Subs:        subscription.NewService(db, userStore, cipher, 2080, nil),
+		Subs:        subscription.NewService(db, userStore, cipher, 2080, settings.NewStore(db, cipher), nil),
 		Tiers:       access.NewStore(db),
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),

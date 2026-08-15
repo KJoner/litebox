@@ -32,7 +32,16 @@ const routes: RouteRecordRaw[] = [
         path: '/nodes',
         name: 'nodes',
         component: () => import('@/views/NodesView.vue'),
-        meta: { title: '节点管理' },
+        // 界面上叫「自建节点」,但路由与 API 一个字没改 ——
+        // 重命名一个被十几处引用的标识,收益只是名字好看一点,
+        // 而审计日志里已经写死的历史记录改不回来。
+        meta: { title: '自建节点' },
+      },
+      {
+        path: '/external-proxies',
+        name: 'external-proxies',
+        component: () => import('@/views/ExternalProxiesView.vue'),
+        meta: { title: '外部代理' },
       },
       {
         path: '/deployments',

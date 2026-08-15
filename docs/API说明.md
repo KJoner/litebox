@@ -389,6 +389,97 @@ GET  /api/metrics/status
   也不区分 IPv4 与 IPv6 —— 两个订阅条目指向同一个 sing-box 入站与同一个计数器;
 * **超额只预警**:不会停 sing-box、不禁用节点、不关订阅开关,也不删用户凭据。
 
+## 外部代理接口
+
+外部代理是「不属于本面板、不由本面板部署的成品线路」(机场订阅或朋友给的链接)。
+面板只负责登记与下发,**统计不到它们的流量**。
+
+```text
+GET    /api/external-proxies                      ?source_id=&include_excluded=1
+POST   /api/external-proxies                      带 uri 时按分享链接解析
+POST   /api/external-proxies/parse                只解析不落库,响应里没有密码
+GET    /api/external-proxies/{id}
+PUT    /api/external-proxies/{id}
+DELETE /api/external-proxies/{id}
+POST   /api/external-proxies/{id}/status          ACTIVE / DISABLED / EXCLUDED
+POST   /api/external-proxies/{id}/subscription    单独开关是否进订阅
+POST   /api/external-proxies/{id}/detach          转为手工条目(不可逆)
+POST   /api/external-proxies/{id}/locked-fields   解锁 / 覆盖锁定集合
+POST   /api/external-proxies/{id}/endpoint        改地址与凭据(仅手工条目)
+GET    /api/external-proxies/{id}/credentials     明文凭据,每次查看写审计
+POST   /api/external-proxies/{id}/check           连通性(只测 TCP 可达)
+
+GET    /api/proxy-sources
+POST   /api/proxy-sources
+POST   /api/proxy-sources/preview                 拉取并解析,**不落库**
+POST   /api/proxy-sources/import                  建源 + 首次导入(三步向导的最后一步)
+GET    /api/proxy-sources/{id}
+PUT    /api/proxy-sources/{id}
+DELETE /api/proxy-sources/{id}?proxies=delete|detach
+GET    /api/proxy-sources/{id}/url                明文订阅地址,写审计
+POST   /api/proxy-sources/{id}/preview
+POST   /api/proxy-sources/{id}/sync
+```
+
+### 凭据从不随列表返回
+
+`params_encrypted`(加密方法与密码)、原始分享链接、订阅地址都打了 `json:"-"`,
+列表与详情里**没有位置可填**。要看走单独的接口,而且每次查看都写审计 ——
+它们是别人家的账号,跟在每次列表响应后面会让它在浏览器缓存、
+代理日志与截图里到处都是。审计只记「看过」,不记看到了什么。
+
+### 删除代理源必须指定条目去向
+
+```text
+DELETE /api/proxy-sources/{id}?proxies=delete   一并删除该源下全部条目
+DELETE /api/proxy-sources/{id}?proxies=detach   保留并转为手工条目
+```
+
+**没有默认值**,不带这个参数返回 400。默认删除会让手滑一次丢掉几十条配置,
+默认保留会留下一堆无主条目 —— 这个选择没有安全的默认值。
+
+### 导入是三步,不是一步
+
+```text
+POST /api/proxy-sources/preview   →  拉取、解析、逐条列出,不写库
+POST /api/proxy-sources/import    →  建源 + 按 selected_keys 导入
+```
+
+预览返回里的 `identity_key` 是勾选用的稳定标识,**不要用下标** ——
+两次请求之间上游的列表可能变。
+
+预览会标出两类条目:
+
+* `announcement: true` —— 疑似公告而非节点(机场常把「剩余流量」「套餐到期」
+  这类信息伪装成节点)。`suggested` 为 false,即默认不勾选,
+  但**仍然列出** —— 识别规则一定会误伤;
+* `skipped` —— 按协议分组报数的、本版本不落库的条目(vmess / trojan …)。
+  **不静默丢弃**:导入 50 条只进来 12 条而面板一声不吭,
+  管理员会以为这个机场就只有 12 个节点。
+
+**没勾选的条目仍然入库**,状态为 `EXCLUDED` 且不进订阅。不入库的话,
+下次同步它们会作为「新增」再进来一遍。
+
+格式不支持时错误信息会写清识别到了什么(「识别到 Clash / mihomo YAML,
+本版本暂不支持」),而不是笼统的「解析失败」—— 后者会让管理员以为是地址填错了。
+
+### 同步失败不改动任何条目
+
+`POST /api/proxy-sources/{id}/sync` 失败时返回 502,响应里带一句
+「同步失败,已有条目一条都没有改动」。这不是客套话:拿不到数据时什么都不做,
+比按空数据去改状态安全得多。
+
+成功时返回四类计数与 `unlisted`(本次因连续消失而自动退出订阅的条目名)。
+逐个列出而不是只报个数 —— 那是用户订阅里会少掉的东西。
+
+### 用户的外部代理授权
+
+`POST /api/users` 与 `PATCH /api/users/{id}` 多了一个 `external_proxy_ids`,
+与 `node_ids` 逐条对应。**两个列表分开传** —— 两张表的 ID 空间不同,
+`nodes.id = 3` 与 `external_proxies.id = 3` 是两个东西。
+
+用户对象里相应多了 `external_proxy_ids` 与 `effective_external_proxy_ids`。
+
 ## 用户门户接口 `/api/portal/*`
 
 ```

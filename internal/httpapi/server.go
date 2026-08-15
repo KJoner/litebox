@@ -16,6 +16,7 @@ import (
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
+	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/settings"
@@ -41,6 +42,7 @@ type Server struct {
 	monitor      *node.Monitor
 	settings     *settings.Store
 	tiers        *access.Store
+	external     *externalproxy.Service
 	portal       *portal.Service
 	portalAccts  *portal.Store
 	portalData   *portal.Querier
@@ -72,6 +74,8 @@ type Options struct {
 	Monitor   *node.Monitor
 	Settings  *settings.Store
 	Tiers     *access.Store
+	// External 为 nil 时外部代理相关路由整体不注册。
+	External *externalproxy.Service
 	// Portal 三件套一起提供或一起省略。省略时门户路由整体不注册,
 	// 前端访问 /user/* 会拿到 404 —— 好过注册了半套接口再在运行时空指针。
 	Portal      *portal.Service
@@ -94,6 +98,7 @@ func NewServer(opts Options) *Server {
 		audit:        opts.Audit,
 		nodes:        opts.Nodes,
 		users:        opts.Users,
+		external:     opts.External,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
 		traffic:      opts.Traffic,
@@ -185,6 +190,40 @@ func (s *Server) Handler() http.Handler {
 			authed.HandleFunc("POST /api/users/batch-adjust", s.handleBatchAdjust)
 		}
 		authed.HandleFunc("GET /api/dashboard/alerts", s.handleDashboardAlerts)
+	}
+
+	// 外部代理:不属于本面板、不由本面板部署的成品线路。
+	// 拉取上游订阅要走网络,几个接口挂 longOperation。
+	if s.external != nil {
+		authed.HandleFunc("GET /api/external-proxies", s.handleListExternalProxies)
+		authed.HandleFunc("POST /api/external-proxies", s.handleCreateExternalProxy)
+		authed.HandleFunc("POST /api/external-proxies/parse", s.handleParseProxyURI)
+		authed.HandleFunc("GET /api/external-proxies/{id}", s.handleGetExternalProxy)
+		authed.HandleFunc("PUT /api/external-proxies/{id}", s.handleUpdateExternalProxy)
+		authed.HandleFunc("DELETE /api/external-proxies/{id}", s.handleDeleteExternalProxy)
+		authed.HandleFunc("POST /api/external-proxies/{id}/status", s.handleSetExternalProxyStatus)
+		authed.HandleFunc("POST /api/external-proxies/{id}/subscription",
+			s.handleSetExternalProxySubscription)
+		authed.HandleFunc("POST /api/external-proxies/{id}/detach", s.handleDetachExternalProxy)
+		authed.HandleFunc("POST /api/external-proxies/{id}/locked-fields",
+			s.handleSetExternalProxyLocks)
+		authed.HandleFunc("POST /api/external-proxies/{id}/endpoint", s.handleReplaceProxyEndpoint)
+		authed.HandleFunc("GET /api/external-proxies/{id}/credentials",
+			s.handleExternalProxyCredentials)
+		authed.HandleFunc("POST /api/external-proxies/{id}/check",
+			longOperation(s.handleCheckExternalProxy))
+
+		authed.HandleFunc("GET /api/proxy-sources", s.handleListProxySources)
+		authed.HandleFunc("POST /api/proxy-sources", s.handleCreateProxySource)
+		authed.HandleFunc("POST /api/proxy-sources/preview", longOperation(s.handlePreviewProxySource))
+		authed.HandleFunc("POST /api/proxy-sources/import", longOperation(s.handleImportProxySource))
+		authed.HandleFunc("GET /api/proxy-sources/{id}", s.handleGetProxySource)
+		authed.HandleFunc("PUT /api/proxy-sources/{id}", s.handleUpdateProxySource)
+		authed.HandleFunc("DELETE /api/proxy-sources/{id}", s.handleDeleteProxySource)
+		authed.HandleFunc("GET /api/proxy-sources/{id}/url", s.handleProxySourceURL)
+		authed.HandleFunc("POST /api/proxy-sources/{id}/preview",
+			longOperation(s.handlePreviewProxySource))
+		authed.HandleFunc("POST /api/proxy-sources/{id}/sync", longOperation(s.handleSyncProxySource))
 	}
 
 	if s.traffic != nil {

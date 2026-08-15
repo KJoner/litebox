@@ -29,7 +29,14 @@ func (s *Server) handlePortalNodes(w http.ResponseWriter, r *http.Request) {
 		s.writePortalError(w, err, "查询门户节点失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": nodes})
+	// 外部代理单独一个数组,不混进 items:混在一起的话它们的流量字段
+	// 只能填 0,而 0 与「真的没用过」长得一模一样。
+	external, err := s.portalData.ExternalNodes(r.Context(), identity.ProxyUserID)
+	if err != nil {
+		s.writePortalError(w, err, "查询门户外部代理失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": nodes, "external": external})
 }
 
 func (s *Server) handlePortalTraffic(w http.ResponseWriter, r *http.Request) {

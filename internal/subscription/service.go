@@ -12,6 +12,8 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
+	"github.com/litebox/litebox/internal/externalproxy"
+	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -67,16 +69,35 @@ type Service struct {
 	cipher *crypto.Cipher
 	// mixedPort 是 sing-box 客户端配置里本地混合入站的端口。
 	mixedPort int
+	settings  *settings.Store
 	logger    *slog.Logger
 }
 
 func NewService(
-	db *sql.DB, users *user.Store, cipher *crypto.Cipher, mixedPort int, logger *slog.Logger,
+	db *sql.DB, users *user.Store, cipher *crypto.Cipher, mixedPort int,
+	set *settings.Store, logger *slog.Logger,
 ) *Service {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &Service{db: db, users: users, cipher: cipher, mixedPort: mixedPort, logger: logger}
+	return &Service{
+		db: db, users: users, cipher: cipher, mixedPort: mixedPort,
+		settings: set, logger: logger,
+	}
+}
+
+// externalPosition 读取「外部代理排在哪一边」。
+// 读不到时按 AFTER —— 那是默认值,也是绝大多数人想要的顺序。
+func (s *Service) externalPosition(ctx context.Context) ExternalPosition {
+	if s.settings == nil {
+		return ExternalAfter
+	}
+	raw, err := s.settings.Get(ctx, settings.KeyExternalPosition)
+	if err != nil {
+		s.logger.Warn("读取订阅排序设置失败,按默认顺序", "error", err)
+		return ExternalAfter
+	}
+	return ParseExternalPosition(raw)
 }
 
 // Build 按订阅 Token 生成内容。
@@ -99,8 +120,14 @@ func (s *Service) Build(ctx context.Context, token string, format Format) (Resul
 	if err != nil {
 		return Result{}, err
 	}
+	external, err := s.externalFor(ctx, u.ID)
+	if err != nil {
+		return Result{}, err
+	}
 
-	entries := s.entriesFor(Credentials{UUID: u.UUID, SSPassword: u.SSPassword}, nodes)
+	entries := s.mergeEntries(ctx,
+		s.entriesFor(Credentials{UUID: u.UUID, SSPassword: u.SSPassword}, nodes),
+		s.externalEntries(external))
 
 	result := Result{
 		NodeCount: len(entries),
@@ -293,4 +320,116 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// externalFor 返回该用户订阅中应当出现的外部代理。
+//
+// 归属关系走 user_effective_external_proxies 视图(等级继承 + 额外授权),
+// 与自建节点各用各的视图 —— 两张表的 ID 空间不同,合成一张会撞。
+//
+// 过滤条件与自建节点对称,**但没有「至少部署过一次」那一条** ——
+// 外部代理不需要部署,不是我们的机器。多出来的是两级到期:
+//
+//   - 条目自己到期;
+//   - 所属源到期、被禁用或被删除 —— **该源下全部条目一起退出订阅**。
+//     机场账号到期后那些节点就是连不上的,留在订阅里只会让用户
+//     以为是自己的问题,然后来问管理员。
+//
+// 源的到期取「手工填的优先,没有才用上游给的」,与 Source.EffectiveExpiry
+// 是同一条规则 —— 两处分叉的表现是页面上说没到期而订阅里已经撤下来了。
+//
+// 时间比较直接用字符串:全站的时间都是 RFC3339 的 UTC,
+// 字典序与时间序一致(见 CLAUDE.md 的时间约定)。
+func (s *Service) externalFor(ctx context.Context, userID int64) ([]ExternalProxy, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.display_name, p.display_name_override, COALESCE(src.name_prefix, ''),
+		       p.protocol, p.server, p.port, p.params_encrypted, p.raw_uri_encrypted
+		  FROM external_proxies p
+		  JOIN `+externalproxy.EffectiveView+` ep ON ep.external_proxy_id = p.id
+		  LEFT JOIN proxy_sources src ON src.id = p.source_id
+		 WHERE ep.proxy_user_id = ?
+		   AND p.deleted_at IS NULL
+		   AND p.status = 'ACTIVE'
+		   AND p.subscription_enabled = 1
+		   AND (p.expires_at IS NULL OR p.expires_at = '' OR p.expires_at > ?)
+		   AND (p.source_id IS NULL OR (
+		            src.deleted_at IS NULL
+		        AND src.enabled = 1
+		        AND (COALESCE(NULLIF(src.expires_at, ''), NULLIF(src.upstream_expires_at, '')) IS NULL
+		             OR COALESCE(NULLIF(src.expires_at, ''), NULLIF(src.upstream_expires_at, '')) > ?)))
+		 ORDER BY p.sort_order, p.id`, userID, now, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]ExternalProxy, 0)
+	for rows.Next() {
+		var (
+			displayName, override, prefix string
+			protocol                      string
+			paramsEnc, rawURIEnc          string
+			p                             ExternalProxy
+		)
+		if err := rows.Scan(&displayName, &override, &prefix,
+			&protocol, &p.Server, &p.Port, &paramsEnc, &rawURIEnc); err != nil {
+			return nil, err
+		}
+		// 前缀在这里拼,与管理页看到的最终名字来自同一条规则。
+		p.DisplayName = override
+		if p.DisplayName == "" {
+			p.DisplayName = prefix + displayName
+		}
+		p.Protocol = externalproxy.Protocol(protocol)
+
+		if paramsEnc != "" {
+			plain, err := s.cipher.Decrypt(paramsEnc)
+			if err != nil {
+				return nil, fmt.Errorf("解密外部代理 %q 的协议参数: %w", p.DisplayName, err)
+			}
+			if p.Params, err = externalproxy.ParseParams(plain); err != nil {
+				return nil, err
+			}
+		}
+		if rawURIEnc != "" {
+			if p.RawURI, err = s.cipher.Decrypt(rawURIEnc); err != nil {
+				return nil, fmt.Errorf("解密外部代理 %q 的原始链接: %w", p.DisplayName, err)
+			}
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// externalEntries 把外部代理转成订阅条目。转不出来的跳过并记日志,
+// 理由与 entriesFor 相同:一条坏数据不该让整份订阅失败。
+func (s *Service) externalEntries(list []ExternalProxy) []Entry {
+	entries := make([]Entry, 0, len(list))
+	for _, p := range list {
+		entry, err := EntryForExternal(p)
+		if err != nil {
+			s.logger.Error("生成外部代理条目失败,已跳过",
+				"proxy", p.DisplayName, "protocol", p.Protocol, "error", err)
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// mergeEntries 按分组顺序拼接两组条目。
+//
+// **分组而不是全局统一排序**:两组的 sort_order 是在两个页面上各自分配的,
+// 管理员在其中一个页面里看不到另一组的取值,混排的结果多半不是他要的。
+// 分组固定之后,「外部代理永远在自建节点后面」是一句能记住的规则。
+func (s *Service) mergeEntries(ctx context.Context, nodes, external []Entry) []Entry {
+	if len(external) == 0 {
+		return nodes
+	}
+	out := make([]Entry, 0, len(nodes)+len(external))
+	if s.externalPosition(ctx) == ExternalBefore {
+		return append(append(out, external...), nodes...)
+	}
+	return append(append(out, nodes...), external...)
 }
