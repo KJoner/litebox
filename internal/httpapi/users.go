@@ -119,7 +119,8 @@ func (s *Server) writeUserError(w http.ResponseWriter, err error, what string) {
 		writeError(w, http.StatusNotFound, "用户不存在")
 	case errors.Is(err, user.ErrNameConflict):
 		writeError(w, http.StatusConflict, "用户名称已被占用")
-	case errors.Is(err, user.ErrNodeNotFound):
+	case errors.Is(err, user.ErrNodeNotFound),
+		errors.Is(err, user.ErrExternalProxyNotFound):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		s.logger.Error(what, "error", err)
@@ -186,6 +187,9 @@ type createUserRequest struct {
 	AccessTierID int64 `json:"access_tier_id"`
 	// NodeIDs 是额外授权节点,不含等级继承来的那些。
 	NodeIDs []int64 `json:"node_ids"`
+	// ExternalProxyIDs 同理,针对外部代理。两个列表分开传 ——
+	// 两张表的 ID 空间不同,合成一个会撞。
+	ExternalProxyIDs []int64 `json:"external_proxy_ids"`
 	// 门户登录账号。留空表示这个用户不开通门户登录,只用订阅。
 	LoginUsername      string `json:"login_username"`
 	LoginPassword      string `json:"login_password"`
@@ -221,17 +225,19 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u, err := s.users.Create(r.Context(), user.CreateParams{
-		DisplayName:  req.DisplayName,
-		Remark:       req.Remark,
-		QuotaBytes:   req.QuotaBytes,
-		ExpiresAt:    req.ExpiresAt,
-		ResetCycle:   user.ResetCycle(req.ResetCycle),
-		ResetDay:     req.ResetDay,
-		AccessTierID: req.AccessTierID,
-		NodeIDs:      req.NodeIDs,
+		DisplayName:      req.DisplayName,
+		Remark:           req.Remark,
+		QuotaBytes:       req.QuotaBytes,
+		ExpiresAt:        req.ExpiresAt,
+		ResetCycle:       user.ResetCycle(req.ResetCycle),
+		ResetDay:         req.ResetDay,
+		AccessTierID:     req.AccessTierID,
+		NodeIDs:          req.NodeIDs,
+		ExternalProxyIDs: req.ExternalProxyIDs,
 	})
 	if err != nil {
-		if errors.Is(err, user.ErrNameConflict) || errors.Is(err, user.ErrNodeNotFound) {
+		if errors.Is(err, user.ErrNameConflict) || errors.Is(err, user.ErrNodeNotFound) ||
+			errors.Is(err, user.ErrExternalProxyNotFound) {
 			s.writeUserError(w, err, "创建用户失败")
 			return
 		}
@@ -278,14 +284,15 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateUserRequest struct {
-	DisplayName *string  `json:"display_name"`
-	Remark      *string  `json:"remark"`
-	QuotaBytes  *int64   `json:"quota_bytes"`
-	ExpiresAt   *string  `json:"expires_at"`
-	ClearExpiry bool     `json:"clear_expiry"`
-	ResetCycle  *string  `json:"reset_cycle"`
-	ResetDay    *int     `json:"reset_day"`
-	NodeIDs     *[]int64 `json:"node_ids"`
+	DisplayName      *string  `json:"display_name"`
+	Remark           *string  `json:"remark"`
+	QuotaBytes       *int64   `json:"quota_bytes"`
+	ExpiresAt        *string  `json:"expires_at"`
+	ClearExpiry      bool     `json:"clear_expiry"`
+	ResetCycle       *string  `json:"reset_cycle"`
+	ResetDay         *int     `json:"reset_day"`
+	NodeIDs          *[]int64 `json:"node_ids"`
+	ExternalProxyIDs *[]int64 `json:"external_proxy_ids"`
 	// AccessTierID 为 nil 表示不改等级。改了它会让该用户可用的节点集合整体变化,
 	// user.Service 会按变更前后的并集标脏。
 	AccessTierID *int64 `json:"access_tier_id"`
@@ -304,12 +311,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	params := user.UpdateParams{
-		DisplayName:  req.DisplayName,
-		Remark:       req.Remark,
-		QuotaBytes:   req.QuotaBytes,
-		ResetDay:     req.ResetDay,
-		NodeIDs:      req.NodeIDs,
-		AccessTierID: req.AccessTierID,
+		DisplayName:      req.DisplayName,
+		Remark:           req.Remark,
+		QuotaBytes:       req.QuotaBytes,
+		ResetDay:         req.ResetDay,
+		NodeIDs:          req.NodeIDs,
+		ExternalProxyIDs: req.ExternalProxyIDs,
+		AccessTierID:     req.AccessTierID,
 	}
 	// clear_expiry 与 expires_at 分开表达:JSON 里的 null 无法区分
 	// "不修改"和"清除到期时间"。

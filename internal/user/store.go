@@ -83,6 +83,15 @@ type User struct {
 	// 只按额外授权标脏会漏掉"改等级"带来的全部变化。
 	EffectiveNodeIDs []int64 `json:"effective_node_ids"`
 
+	// 外部代理的两个集合,与上面两个逐条对应。
+	//
+	// 与节点分开是因为 ID 空间不同:nodes.id = 3 与 external_proxies.id = 3
+	// 是两个东西。合成一个列表必须加类型标记,而所有既有查询都得跟着改;
+	// 更要命的是部署脏标记会拿到一批不存在的「节点 ID」,
+	// 然后对它们发起 SSH 连接 —— 那是往别人家的机器上发命令。
+	ExternalProxyIDs          []int64 `json:"external_proxy_ids"`
+	EffectiveExternalProxyIDs []int64 `json:"effective_external_proxy_ids"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 
@@ -181,6 +190,8 @@ type CreateParams struct {
 	AccessTierID int64
 	// NodeIDs 是额外授权节点,不含等级继承来的那些。
 	NodeIDs []int64
+	// ExternalProxyIDs 同理,针对外部代理。
+	ExternalProxyIDs []int64
 }
 
 // Create 新增用户,自动分配 user_code、UUID 与订阅 Token。
@@ -255,6 +266,9 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	}
 
 	if err := replaceNodes(ctx, tx, id, p.NodeIDs, now); err != nil {
+		return nil, err
+	}
+	if err := replaceExternalProxies(ctx, tx, id, p.ExternalProxyIDs, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -342,9 +356,15 @@ func (s *Store) Get(ctx context.Context, id int64) (*User, error) {
 	return u, nil
 }
 
-// loadNodes 填充额外授权与有效节点两个集合。
+// loadNodes 填充额外授权与有效集合,节点与外部代理各两组。
 func (s *Store) loadNodes(ctx context.Context, u *User) error {
 	var err error
+	if u.ExternalProxyIDs, err = s.externalProxyIDs(ctx, u.ID); err != nil {
+		return err
+	}
+	if u.EffectiveExternalProxyIDs, err = s.EffectiveExternalProxyIDs(ctx, u.ID); err != nil {
+		return err
+	}
 	if u.NodeIDs, err = s.nodeIDs(ctx, u.ID); err != nil {
 		return err
 	}
@@ -400,7 +420,23 @@ func (s *Store) List(ctx context.Context) ([]*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	extAssignments, err := s.allExternalProxyIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	extEffective, err := s.allEffectiveExternalProxyIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, u := range users {
+		// 四处都要兜底成空切片:nil 切片序列化成 JSON null,
+		// 而前端把这些字段当数组用(.length / .includes)。
+		if u.ExternalProxyIDs = extAssignments[u.ID]; u.ExternalProxyIDs == nil {
+			u.ExternalProxyIDs = []int64{}
+		}
+		if u.EffectiveExternalProxyIDs = extEffective[u.ID]; u.EffectiveExternalProxyIDs == nil {
+			u.EffectiveExternalProxyIDs = []int64{}
+		}
 		u.NodeIDs = assignments[u.ID]
 		if u.NodeIDs == nil {
 			u.NodeIDs = []int64{}

@@ -672,6 +672,28 @@ export interface PortalSession {
   current: boolean
 }
 
+
+/**
+ * 门户里的一条外部代理。
+ *
+ * 与 PortalNode 分开而不是混进同一个数组:混在一起的话它的流量字段只能填 0,
+ * 而 0 与「真的没用过」长得一模一样。
+ *
+ * 刻意没有的东西:服务器地址与端口、**来源(哪个机场)**、任何流量数字。
+ * 来源这一条尤其重要 —— 用户知道了没有用处,只会引出
+ * 「那我能不能自己去买」和「你加价了多少」。
+ */
+export interface PortalExternalNode {
+  id: number
+  display_name: string
+  tier_name: string
+  tier_code: string
+  status: 'normal' | 'maintenance' | 'disabled'
+  public_remark: string
+  maintenance_message: string
+  in_subscription: boolean
+}
+
 export const portalApi = {
   login: (username: string, password: string) =>
     request<PortalIdentity>('/api/portal/auth/login', {
@@ -692,7 +714,8 @@ export const portalApi = {
     request<{ message: string }>('/api/portal/auth/logout-all', { method: 'POST' }),
 
   dashboard: () => request<PortalDashboard>('/api/portal/dashboard'),
-  nodes: () => request<{ items: PortalNode[] }>('/api/portal/nodes'),
+  nodes: () =>
+    request<{ items: PortalNode[]; external: PortalExternalNode[] }>('/api/portal/nodes'),
   traffic: (days = 30) => request<PortalTraffic>('/api/portal/traffic', { query: { days } }),
   subscription: () => request<PortalSubscription>('/api/portal/subscription'),
   regenerateSubscription: () =>
@@ -701,6 +724,172 @@ export const portalApi = {
 }
 
 // ---------- 接口 ----------
+
+
+/* ---------------- 外部代理 ---------------- */
+
+/**
+ * 外部代理:不属于本面板、不由本面板部署的成品线路。
+ *
+ * 与自建节点只有「能被用户连」这一点相同 —— 没有 SSH、不能部署、
+ * **统计不到流量**(流量走的是上游的服务器)。
+ */
+export type ExternalProtocol =
+  | 'SHADOWSOCKS'
+  | 'VMESS'
+  | 'VLESS'
+  | 'TROJAN'
+  | 'HYSTERIA2'
+  | 'TUIC'
+  | 'UNKNOWN'
+
+/** ACTIVE 正常 / DISABLED 手工停用 / EXCLUDED 上游有但我不要 */
+export type ExternalProxyStatus = 'ACTIVE' | 'DISABLED' | 'EXCLUDED'
+
+export type ExternalOrigin = 'MANUAL' | 'IMPORTED'
+
+export interface ExternalProxy {
+  id: number
+  /** null 表示手工添加,不参与任何同步 */
+  source_id: number | null
+  source_name: string
+  name_prefix: string
+  /** 内部名称,唯一;删除确认时要输入的就是它 */
+  name: string
+  /** 不含前缀的展示名 */
+  display_name: string
+  /** 管理员改过的名字。非空时完全取代「前缀 + 展示名」 */
+  display_name_override: string
+  /** 上游给的原始名称,同步匹配的二级键 */
+  raw_name: string
+  /** 后端拼好的最终展示名 —— 与订阅里下发的是同一个 */
+  final_display_name: string
+  protocol: ExternalProtocol
+  server: string
+  port: number
+  access_tier_id: number
+  access_tier_code: string
+  access_tier_name: string
+  access_tier_level: number
+  subscription_enabled: boolean
+  sort_order: number
+  public_remark: string
+  maintenance_message: string
+  expires_at: string | null
+  origin: ExternalOrigin
+  identity_key: string
+  locked_fields: string
+  /** 已锁定的字段列表,同步时不会被上游覆盖 */
+  locked_list: string[]
+  /** 上游连续多少轮没出现。达到阈值自动退出订阅,但永不自动删除 */
+  missing_rounds: number
+  missing_since: string | null
+  last_seen_at: string | null
+  status: ExternalProxyStatus
+  last_check_at: string | null
+  last_check_ok: boolean | null
+  last_check_message: string
+  last_check_latency_ms: number | null
+  created_at: string
+  updated_at: string
+}
+
+export type ProxySourceSyncStatus = 'NEVER' | 'OK' | 'FAILED'
+
+export interface ProxySource {
+  id: number
+  name: string
+  /** 订阅地址不随列表返回 —— 它含 token,等同密码 */
+  has_url: boolean
+  name_prefix: string
+  default_access_tier_id: number
+  default_subscription_enabled: boolean
+  auto_sync_enabled: boolean
+  sync_interval_minutes: number
+  expires_at: string | null
+  /** 上游给的数字。**只在这一页展示**,不进任何用户视图 */
+  upstream_used_bytes: number
+  upstream_total_bytes: number
+  upstream_expires_at: string | null
+  upstream_seen_at: string | null
+  last_sync_at: string | null
+  last_sync_status: ProxySourceSyncStatus
+  last_sync_message: string
+  last_sync_added: number
+  last_sync_updated: number
+  last_sync_missing: number
+  last_sync_skipped: number
+  consecutive_failures: number
+  enabled: boolean
+  remark: string
+  sort_order: number
+  proxy_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProxyPreviewItem {
+  identity_key: string
+  name: string
+  protocol: string
+  server: string
+  port: number
+  method: string
+  /** 默认勾选状态。疑似公告的条目默认不勾 */
+  suggested: boolean
+  /** 疑似公告条目。仍然列出 —— 识别规则一定会误伤 */
+  announcement: boolean
+  /** 库里已经有这一条,导入时走「更新」 */
+  existing: boolean
+}
+
+export interface ProxySkippedGroup {
+  protocol: string
+  label: string
+  count: number
+}
+
+export interface ProxyPreviewResult {
+  format: string
+  format_label: string
+  items: ProxyPreviewItem[]
+  skipped: ProxySkippedGroup[]
+  parse_errors: string[]
+  upstream: {
+    used_bytes: number
+    total_bytes: number
+    expires_at: string | null
+  } | null
+}
+
+export interface ProxySyncResult {
+  added: number
+  updated: number
+  unchanged: number
+  missing: number
+  skipped: number
+  /** 本次因连续消失而自动退出订阅的条目名 */
+  unlisted: string[]
+  skipped_by_protocol: ProxySkippedGroup[]
+  parse_errors: string[]
+}
+
+export interface ProxyCheckResult {
+  ok: boolean
+  message: string
+  latency_ms: number
+  /** 后端一起下发,免得前端某处忘了写这句 */
+  disclaimer: string
+}
+
+/** 可锁定的字段与它们的中文名。server/port/凭据不可锁定 —— 那是上游的事实。 */
+export const LOCKABLE_FIELD_LABEL: Record<string, string> = {
+  display_name: '展示名称',
+  access_tier_id: '访问等级',
+  subscription_enabled: '下发订阅',
+  sort_order: '排序',
+  public_remark: '公开备注',
+}
 
 export const api = {
   login: (username: string, password: string) =>
@@ -860,6 +1049,98 @@ export const api = {
   accessTiers: () => request<{ items: AccessTier[] }>('/api/access-tiers'),
   updateAccessTier: (id: number, body: Record<string, unknown>) =>
     request<AccessTier>(`/api/access-tiers/${id}`, { method: 'PUT', body }),
+
+
+  // 外部代理
+  externalProxies: (opts: { sourceId?: number | null; includeExcluded?: boolean } = {}) =>
+    request<{ items: ExternalProxy[]; excluded_count: number }>('/api/external-proxies', {
+      query: {
+        source_id: opts.sourceId ?? undefined,
+        include_excluded: opts.includeExcluded ? 1 : undefined,
+      },
+    }),
+  externalProxy: (id: number) => request<ExternalProxy>(`/api/external-proxies/${id}`),
+  createExternalProxy: (body: Record<string, unknown>) =>
+    request<ExternalProxy>('/api/external-proxies', { method: 'POST', body }),
+  updateExternalProxy: (id: number, body: Record<string, unknown>) =>
+    request<{ proxy: ExternalProxy; effect: { changes: string[]; locked_fields: string[] } }>(
+      `/api/external-proxies/${id}`,
+      { method: 'PUT', body },
+    ),
+  deleteExternalProxy: (id: number) =>
+    request<void>(`/api/external-proxies/${id}`, { method: 'DELETE' }),
+  setExternalProxyStatus: (id: number, status: ExternalProxyStatus) =>
+    request<ExternalProxy>(`/api/external-proxies/${id}/status`, {
+      method: 'POST',
+      body: { status },
+    }),
+  setExternalProxySubscription: (id: number, enabled: boolean) =>
+    request<ExternalProxy>(`/api/external-proxies/${id}/subscription`, {
+      method: 'POST',
+      body: { enabled },
+    }),
+  detachExternalProxy: (id: number) =>
+    request<ExternalProxy>(`/api/external-proxies/${id}/detach`, { method: 'POST' }),
+  setExternalProxyLocks: (id: number, fields: string[]) =>
+    request<ExternalProxy>(`/api/external-proxies/${id}/locked-fields`, {
+      method: 'POST',
+      body: { fields },
+    }),
+  replaceExternalProxyEndpoint: (id: number, body: Record<string, unknown>) =>
+    request<ExternalProxy>(`/api/external-proxies/${id}/endpoint`, { method: 'POST', body }),
+  /** 凭据单独取,每次查看都写审计 —— 它是别人家的账号 */
+  externalProxyCredentials: (id: number) =>
+    request<{
+      method: string
+      password: string
+      plugin: string
+      plugin_opts: string
+      share_uri: string
+    }>(`/api/external-proxies/${id}/credentials`),
+  checkExternalProxy: (id: number) =>
+    request<ProxyCheckResult>(`/api/external-proxies/${id}/check`, { method: 'POST' }),
+  /** 粘贴分享链接解析,不落库。响应里没有密码 */
+  parseProxyURI: (uri: string) =>
+    request<{
+      protocol: string
+      display_name: string
+      server: string
+      port: number
+      method: string
+      plugin: string
+      plugin_opts: string
+      has_password: boolean
+    }>('/api/external-proxies/parse', { method: 'POST', body: { uri } }),
+
+  // 代理源
+  proxySources: () =>
+    request<{
+      items: ProxySource[]
+      sync_failure_alert_threshold: number
+      missing_rounds_before_unlist: number
+    }>('/api/proxy-sources'),
+  createProxySource: (body: Record<string, unknown>) =>
+    request<ProxySource>('/api/proxy-sources', { method: 'POST', body }),
+  updateProxySource: (id: number, body: Record<string, unknown>) =>
+    request<ProxySource>(`/api/proxy-sources/${id}`, { method: 'PUT', body }),
+  /** 条目去向必须显式给,没有默认值 */
+  deleteProxySource: (id: number, proxies: 'delete' | 'detach') =>
+    request<{ affected: number; mode: string }>(`/api/proxy-sources/${id}`, {
+      method: 'DELETE',
+      query: { proxies },
+    }),
+  proxySourceURL: (id: number) => request<{ url: string }>(`/api/proxy-sources/${id}/url`),
+  previewProxySource: (url: string) =>
+    request<ProxyPreviewResult>('/api/proxy-sources/preview', { method: 'POST', body: { url } }),
+  previewExistingProxySource: (id: number) =>
+    request<ProxyPreviewResult>(`/api/proxy-sources/${id}/preview`, { method: 'POST', body: {} }),
+  importProxySource: (body: Record<string, unknown>) =>
+    request<{ source: ProxySource; result: ProxySyncResult; error: string }>(
+      '/api/proxy-sources/import',
+      { method: 'POST', body },
+    ),
+  syncProxySource: (id: number) =>
+    request<ProxySyncResult>(`/api/proxy-sources/${id}/sync`, { method: 'POST' }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),

@@ -13,6 +13,7 @@ import (
 
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -268,7 +269,7 @@ func newSubEnv(t *testing.T) *subEnv {
 	cipher, _ := crypto.NewCipher(key)
 	store := user.NewStore(db, cipher)
 	return &subEnv{
-		db: db, svc: NewService(db, store, cipher, 2080, nil), store: store, cipher: cipher,
+		db: db, svc: NewService(db, store, cipher, 2080, settings.NewStore(db, cipher), nil), store: store, cipher: cipher,
 	}
 }
 

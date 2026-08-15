@@ -26,6 +26,12 @@ const (
 	KeyPanelSSHPrivateKey = "panel_ssh_private_key"
 	// KeyPanelSSHPublicKey 是对应公钥。公钥不敏感,明文存储便于展示与复制。
 	KeyPanelSSHPublicKey = "panel_ssh_public_key"
+	// KeyExternalPosition 决定外部代理排在自建节点之前还是之后。
+	// 取值 BEFORE / AFTER,留空按 AFTER。
+	KeyExternalPosition = "subscription_external_position"
+	// KeySubscriptionUserAgent 是拉取机场订阅时用的 UA。
+	// 部分机场按 UA 返回不同格式,留空用 externalproxy.DefaultUserAgent。
+	KeySubscriptionUserAgent = "subscription_fetch_user_agent"
 )
 
 // Store 读写 system_settings。需要还原的敏感值用主密钥加密。

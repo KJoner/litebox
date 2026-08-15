@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { portalApi, ApiError, type PortalNode } from '@/api/client'
+import {
+  portalApi,
+  ApiError,
+  type PortalExternalNode,
+  type PortalNode,
+} from '@/api/client'
 import { formatBytes } from '@/utils/format'
 import { LbEmptyState, LbStatusTag, LbTimeText, portalNodeStatusMeta } from '@/components/lb'
 
@@ -13,6 +18,12 @@ import { LbEmptyState, LbStatusTag, LbTimeText, portalNodeStatusMeta } from '@/c
  * 端口和协议留着,客户端排障时用得上。
  */
 const nodes = ref<PortalNode[]>([])
+/**
+ * 外部代理。它们能连、能进订阅,但**面板统计不到流量** ——
+ * 流量走的是上游的服务器。所以这一段不显示任何流量数字:
+ * 给一个 0 会被读成「我一点都没用过」,那比不显示更糟。
+ */
+const external = ref<PortalExternalNode[]>([])
 const loading = ref(true)
 const loadError = ref('')
 
@@ -20,10 +31,13 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    nodes.value = (await portalApi.nodes()).items
+    const r = await portalApi.nodes()
+    nodes.value = r.items
+    external.value = r.external ?? []
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '暂时读不到节点信息'
     nodes.value = []
+    external.value = []
   } finally {
     loading.value = false
   }
@@ -59,7 +73,7 @@ const summary = computed(() => {
       <a-skeleton active :paragraph="{ rows: 2 }" />
     </div>
 
-    <div v-else-if="nodes.length === 0" class="pn__card">
+    <div v-else-if="nodes.length === 0 && external.length === 0" class="pn__card">
       <LbEmptyState
         variant="empty"
         title="还没有可用节点"
@@ -68,7 +82,7 @@ const summary = computed(() => {
     </div>
 
     <!-- 维护中的卡片不折叠、不排到最后 —— 用户正是因为「某个节点连不上」才打开这一页。 -->
-    <div v-else class="pn__grid">
+    <div v-else-if="nodes.length" class="pn__grid">
       <section v-for="n in nodes" :key="n.id" class="pn__node">
         <div class="pn__node-head">
           <span class="pn__node-name">{{ n.display_name }}</span>
@@ -110,10 +124,62 @@ const summary = computed(() => {
         </div>
       </section>
     </div>
+
+    <!-- 外部代理单独一段。
+         不混进上面的网格:那些卡片有流量数字,而这些没有 ——
+         并排放的话空着的那三格会被读成「我一点都没用过」。 -->
+    <template v-if="!loading && !loadError && external.length">
+      <div class="pn__section">
+        <span class="pn__section-title">其他线路</span>
+        <span class="pn__section-note">
+          这些线路不由本面板托管,因此没有流量统计。用法与上面的节点完全一样。
+        </span>
+      </div>
+      <div class="pn__grid">
+        <section v-for="x in external" :key="x.id" class="pn__node">
+          <div class="pn__node-head">
+            <span class="pn__node-name">{{ x.display_name }}</span>
+            <LbStatusTag :meta="portalNodeStatusMeta[x.status]" />
+            <span class="pn__node-tier">{{ x.tier_name }}</span>
+          </div>
+
+          <div v-if="x.status === 'maintenance'" class="pn__node-maint">
+            <div v-if="x.maintenance_message" class="pn__node-maint-msg">
+              {{ x.maintenance_message }}
+            </div>
+            <div>该线路暂未下发到订阅,恢复后会自动出现,不需要你做任何操作。</div>
+          </div>
+          <div v-else-if="x.status === 'disabled'" class="pn__node-off">
+            管理员已停用该线路。它不在你的订阅里,也不会自动恢复。
+          </div>
+          <div v-else-if="x.public_remark" class="pn__node-remark">{{ x.public_remark }}</div>
+
+          <div class="pn__node-foot">
+            {{ x.in_subscription ? '已在你的订阅里' : '当前不在你的订阅里' }}
+          </div>
+        </section>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.pn__section {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.pn__section-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.pn__section-note {
+  font-size: 12px;
+  color: #6b7480;
+}
+
 .pn {
   display: flex;
   flex-direction: column;

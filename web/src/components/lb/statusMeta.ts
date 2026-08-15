@@ -95,6 +95,38 @@ export const portalNodeStatusMeta: Record<string, LbStatusMeta> = {
   disabled: mute('已停用', 'square'),
 }
 
+/**
+ * 外部代理条目状态。
+ *
+ * 「上游已消失」与「已到期」都是红的,靠形状分开 —— 前者要去问机场,
+ * 后者要去续费,两件完全不同的事。只靠颜色的话打印与投屏下分不出来。
+ */
+export const externalProxyStatusMeta: Record<string, LbStatusMeta> = {
+  ACTIVE: ok('正常'),
+  DISABLED: mute('已停用', 'square'),
+  // 「上游有但我不要」—— 导入时没勾选的。不是故障,是刻意排除。
+  EXCLUDED: mute('已排除', 'minus'),
+}
+
+/** 上游连续未出现。达到阈值会自动退出订阅,但永不自动删除。 */
+export const missingMeta = (rounds: number, threshold: number): LbStatusMeta =>
+  rounds >= threshold
+    ? bad('上游已消失 ' + rounds + ' 轮 · 已退出订阅', 'triangle')
+    : warn('上游第 ' + rounds + ' 次未出现')
+
+/**
+ * 条目或其所属源已到期 —— 要去续费,与「上游消失」是两件事。
+ *
+ * 文案里带上后果:到期与「下发订阅」开关是两个维度,开关开着但已到期时
+ * 那一条其实不在订阅里。只写「已到期」的话,管理员看到开关是开的,
+ * 会以为它还在发。
+ */
+export const expiredMeta: LbStatusMeta = bad('已到期 · 已退出订阅')
+
+/** 代理源同步失败。连续多次才报 —— 偶发失败是常态。 */
+export const syncFailedMeta = (times: number): LbStatusMeta =>
+  bad('同步连续失败 ' + times + ' 次', 'triangle')
+
 /** 采样过期。只挂在「最后同步」列上,不污染运行状态。 */
 export const staleMeta: LbStatusMeta = {
   text: '数据过期',
@@ -107,7 +139,8 @@ export const staleMeta: LbStatusMeta = {
 /** 节点停发订阅 —— subscription_enabled=false,与 DISABLED 是两回事。 */
 export const subscriptionOffMeta: LbStatusMeta = paused('停发订阅')
 
-export type LbStatusKind = 'user' | 'node' | 'deploy' | 'config' | 'portalNode'
+export type LbStatusKind =
+  | 'user' | 'node' | 'deploy' | 'config' | 'portalNode' | 'externalProxy'
 
 const tables: Record<LbStatusKind, Record<string, LbStatusMeta>> = {
   user: userStatusMeta,
@@ -115,6 +148,7 @@ const tables: Record<LbStatusKind, Record<string, LbStatusMeta>> = {
   deploy: deployStatusMeta,
   config: configStatusMeta,
   portalNode: portalNodeStatusMeta,
+  externalProxy: externalProxyStatusMeta,
 }
 
 export function statusMeta(kind: LbStatusKind, status: string): LbStatusMeta {

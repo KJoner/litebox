@@ -24,7 +24,12 @@ const route = useRoute()
 const selectedKeys = computed(() => [route.name as string])
 
 /** 侧栏计数。取不到就不显示 —— 显示 0 会被读成「一个都没有」。 */
-const counts = ref<{ users?: number; nodes?: number; failedDeploys?: number }>({})
+const counts = ref<{
+  users?: number
+  nodes?: number
+  external?: number
+  failedDeploys?: number
+}>({})
 /** 侧栏底部的流量同步状态。它是全站唯一一处能看出后台任务还活着的地方。 */
 const sync = ref<{ lastRun?: string; failing: number } | null>(null)
 
@@ -46,7 +51,11 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
     title: '资源',
     items: [
       { key: 'users', label: '用户管理', badge: counts.value.users },
-      { key: 'nodes', label: '节点管理', badge: counts.value.nodes },
+      // 「自建节点」与「外部代理」并列:两者只有「能被用户连」这一点相同 ——
+      // 一个是我们有 root 的机器,一个是别人的。都叫「节点」的话,
+      // 管理员读预警、读审计时每一次都要先判断说的是哪一类。
+      { key: 'nodes', label: '自建节点', badge: counts.value.nodes },
+      { key: 'external-proxies', label: '外部代理', badge: counts.value.external },
     ],
   },
   {
@@ -81,14 +90,16 @@ function onResize() {
 
 async function loadMeta() {
   // 侧栏计数是装饰性的,任何一个取不到都不该影响页面本身。
-  const [u, n, d, s] = await Promise.allSettled([
+  const [u, n, e, d, s] = await Promise.allSettled([
     api.users(),
     api.nodes(),
+    api.externalProxies(),
     api.deployments(50),
     api.trafficStatus(),
   ])
   if (u.status === 'fulfilled') counts.value.users = u.value.items.length
   if (n.status === 'fulfilled') counts.value.nodes = n.value.items.length
+  if (e.status === 'fulfilled') counts.value.external = e.value.items.length || undefined
   if (d.status === 'fulfilled') {
     const week = Date.now() - 7 * 86400000
     const failed = d.value.items.filter(

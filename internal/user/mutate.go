@@ -25,6 +25,8 @@ type UpdateParams struct {
 	AccessTierID *int64
 	// NodeIDs 覆盖额外授权,不影响等级继承来的节点。
 	NodeIDs *[]int64
+	// ExternalProxyIDs 同理,针对外部代理。nil 表示不改。
+	ExternalProxyIDs *[]int64
 }
 
 // Update 编辑用户。user_code 与 UUID 不在可编辑字段内。
@@ -107,6 +109,11 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*User, er
 			if isUniqueViolation(err) {
 				return nil, ErrNameConflict
 			}
+			return nil, err
+		}
+	}
+	if p.ExternalProxyIDs != nil {
+		if err := replaceExternalProxies(ctx, tx, id, *p.ExternalProxyIDs, now); err != nil {
 			return nil, err
 		}
 	}
