@@ -359,6 +359,27 @@ function confirmRegenerateUUID() {
   })
 }
 
+/**
+ * 两种协议各有一份凭据,重置一份不动另一份。
+ *
+ * 影响面也不同:重置 UUID 只让跑 VLESS 的节点重新部署,重置这一把
+ * 只让跑 Shadowsocks 的节点重新部署 —— 后端按节点协议筛过,
+ * 不相干的机器不会被白白重启一次。
+ */
+function confirmRegenerateSSPassword() {
+  lbDangerConfirm({
+    title: `重新生成 ${user.value?.display_name} 的 Shadowsocks 密钥?`,
+    okText: '重新生成',
+    impacts: [
+      '该用户在所有 Shadowsocks 节点上的凭据在重新部署后立即失效',
+      '需要重新导入订阅才能恢复',
+      'VLESS 节点不受影响,订阅地址本身也不变',
+    ],
+    onOk: () =>
+      act(() => api.regenerateUserSSPassword(props.userId!), 'Shadowsocks 密钥已重新生成'),
+  })
+}
+
 function confirmRegenerateToken() {
   lbDangerConfirm({
     title: `重新生成 ${user.value?.display_name} 的订阅地址?`,
@@ -462,7 +483,10 @@ const adjustColumns = [
               <a-menu-item @click="openAdjust('RESET_TRAFFIC')">重置已用流量</a-menu-item>
               <a-menu-item @click="openAdjust('CHANGE_TIER')">调整访问等级</a-menu-item>
               <a-menu-item @click="confirmRegenerateToken">重新生成订阅地址</a-menu-item>
-              <a-menu-item @click="confirmRegenerateUUID">重新生成 UUID</a-menu-item>
+              <a-menu-item @click="confirmRegenerateUUID">重新生成 UUID(VLESS)</a-menu-item>
+              <a-menu-item @click="confirmRegenerateSSPassword">
+                重新生成密钥(Shadowsocks)
+              </a-menu-item>
               <a-menu-divider />
               <a-menu-item danger @click="deleteOpen = true">删除用户</a-menu-item>
             </a-menu>

@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node, type NodeBillingMode } from '@/api/client'
-import { LbSensitiveField } from '@/components/lb'
+import {
+  api,
+  ApiError,
+  PROTOCOL_LABEL,
+  type AccessTier,
+  type Node,
+  type NodeBillingMode,
+  type NodeProtocol,
+  type NodeSSMethod,
+} from '@/api/client'
+import { LbSensitiveField, lbDangerConfirm } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from '@/components/user/quota'
 import { formatUTCTime } from '@/utils/format'
 
@@ -62,6 +71,8 @@ const blank = {
   traffic_reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
   traffic_reset_day: 1,
   traffic_billing_mode: 'EGRESS' as NodeBillingMode,
+  protocol: 'VLESS_REALITY' as NodeProtocol,
+  ss_method: '2022-blake3-aes-128-gcm' as NodeSSMethod,
   ssh_port: 22,
   ssh_user: 'root',
   ssh_key: '',
@@ -102,6 +113,10 @@ watch(
         traffic_reset_cycle: n.traffic_reset_cycle,
         traffic_reset_day: n.traffic_reset_day,
         traffic_billing_mode: n.traffic_billing_mode,
+        protocol: n.protocol,
+        // 协议不是 SS 时后端把方法清成空串。回填成默认值而不是空 ——
+        // 空值会让下拉框显示成一片空白,看起来像没加载出来。
+        ss_method: n.ss_method || '2022-blake3-aes-128-gcm',
         ssh_port: n.ssh_port,
         ssh_user: n.ssh_user,
         proxy_port: n.proxy_port,
@@ -130,6 +145,8 @@ const fieldLabels: Record<string, string> = {
   traffic_reset_cycle: '重置周期',
   traffic_reset_day: '每月重置日',
   traffic_billing_mode: '计费口径',
+  protocol: '落地协议',
+  ss_method: '加密方法',
   ssh_port: 'SSH 端口',
   ssh_user: 'SSH 用户',
   ssh_key: 'SSH 私钥',
@@ -161,6 +178,27 @@ const cycleDirty = computed(
       props.node.traffic_reset_day !== form.traffic_reset_day),
 )
 
+const isSS = computed(() => form.protocol === 'SHADOWSOCKS')
+
+/** 编辑时协议被改动。它决定保存前要不要先拦一道。 */
+const protocolChanged = computed(() => !!props.node && props.node.protocol !== form.protocol)
+
+/**
+ * 切到 VLESS 需要握手目标已经实测通过。后端也会拦(那才是唯一可靠的一道),
+ * 这里提前说清楚,免得管理员填完整个表单才被一句错误退回来。
+ *
+ * 判据用 handshake_checked_at 而不是 reality_dest 是否为空:
+ * 有值不等于测过 —— 而没测过的握手目标可能超过 8192 字节记录上限,
+ * 那会让节点部署完之后所有人静默握手失败。
+ */
+const needsHandshakeFirst = computed(
+  () =>
+    !!props.node &&
+    protocolChanged.value &&
+    form.protocol === 'VLESS_REALITY' &&
+    !props.node.handshake_checked_at,
+)
+
 function close() {
   emit('update:open', false)
 }
@@ -178,13 +216,53 @@ function tryClose() {
   })
 }
 
+/**
+ * 保存入口。改协议时先过一道 lbDangerConfirm —— 按 V3 的分档规则它属于
+ * 「可逆但影响面大」:一次重启踢掉全部在线连接,而且所有人的订阅条目
+ * 从 vless:// 变成 ss://,不重新拉订阅的客户端会一直连不上。
+ *
+ * 不用 LbNameConfirm 的打字摩擦:协议改错了再改回来就是,
+ * 给可逆操作也加打字,管理员很快会变成无脑复制粘贴,
+ * 真正不可逆的那四个反而失去警示作用。
+ */
 async function submit() {
+  if (!protocolChanged.value) return doSubmit()
+
+  const from = PROTOCOL_LABEL[props.node!.protocol]
+  const to = PROTOCOL_LABEL[form.protocol]
+  lbDangerConfirm({
+    title: `把节点「${props.node!.display_name || props.node!.name}」的落地协议改为 ${to}?`,
+    impacts: [
+      `落地协议 ${from} → ${to},整份节点配置会被替换`,
+      '需要重新部署;部署时 sing-box 重启,这台机器上全部在线连接会断开',
+      `该节点在所有用户订阅中的条目会从 ${from === 'VLESS + REALITY' ? 'vless://' : 'ss://'} 变成 ${to === 'VLESS + REALITY' ? 'vless://' : 'ss://'}`,
+      '用户必须重新拉取订阅,不更新的客户端会一直连不上',
+    ],
+    okText: '改用 ' + to,
+    okType: 'primary',
+    footer:
+      '部署成功之前订阅里仍然是旧协议的条目,现在的用户不会立刻断线 —— ' +
+      '面板只下发节点上已经生效的那一种。保存后不会自动部署,时机由你定。',
+    // 不返回这个 Promise:AntD 只要拿到 Promise 就把确认框留在屏幕上转圈等它,
+    // 而保存成功后还要再开一个「是否立即部署」的确认框,两个 Modal 会叠在一起。
+    onOk: () => {
+      void doSubmit()
+    },
+  })
+}
+
+async function doSubmit() {
   if (!form.name.trim()) {
     serverError.value = '请填写内部名称'
     return
   }
   if (!form.host.trim()) {
     serverError.value = '请填写 IPv4 地址'
+    return
+  }
+  if (needsHandshakeFirst.value) {
+    serverError.value =
+      '切换到 VLESS + REALITY 之前,请先到节点详情里「扫描握手目标」并应用一个实测通过的目标。'
     return
   }
   if (!isEdit.value && accessMode.value === 'password' && !form.root_password) {
@@ -215,6 +293,8 @@ async function submit() {
         traffic_reset_cycle: form.traffic_reset_cycle,
         traffic_reset_day: form.traffic_reset_day,
         traffic_billing_mode: form.traffic_billing_mode,
+        protocol: form.protocol,
+        ss_method: form.ss_method,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
         proxy_port: form.proxy_port,
@@ -260,6 +340,8 @@ async function submit() {
       traffic_reset_cycle: form.traffic_reset_cycle,
       traffic_reset_day: form.traffic_reset_day,
       traffic_billing_mode: form.traffic_billing_mode,
+      protocol: form.protocol,
+      ss_method: form.ss_method,
       ssh_port: form.ssh_port,
       ssh_user: form.ssh_user,
       ssh_key: form.ssh_key,
@@ -592,6 +674,51 @@ async function submit() {
         公网端口写进订阅;主机端口是 sing-box 实际监听的那个,留空表示与公网相同;API 端口仅监听节点回环。
       </div>
 
+      <a-form-item label="落地协议">
+        <a-select v-model:value="form.protocol">
+          <a-select-option value="VLESS_REALITY">VLESS + REALITY —— 需要握手目标</a-select-option>
+          <a-select-option value="SHADOWSOCKS">Shadowsocks 2022 —— 不需要握手目标</a-select-option>
+        </a-select>
+        <div class="nf__help">
+          一个节点只跑一种协议,端口、访问等级、额度这些设置对两种协议完全一样。
+          <template v-if="isEdit">
+            <br />
+            改协议要重新部署才生效;<strong>部署成功之前订阅里仍然是旧协议的条目</strong>,
+            现在的用户不会立刻断线。
+          </template>
+        </div>
+      </a-form-item>
+
+      <a-form-item v-if="isSS" label="加密方法">
+        <a-select v-model:value="form.ss_method">
+          <a-select-option value="2022-blake3-aes-128-gcm">
+            AES-128-GCM —— 默认,低配机器上更快
+          </a-select-option>
+          <a-select-option value="2022-blake3-aes-256-gcm">AES-256-GCM</a-select-option>
+          <a-select-option value="2022-blake3-chacha20-poly1305">
+            ChaCha20-Poly1305 —— 无 AES 硬件加速的老 ARM
+          </a-select-option>
+        </a-select>
+        <div class="nf__help">
+          只提供 2022 系列。传统的 aes-128-gcm 那几种没有 replay 防护,多用户也要逐个试解密。
+          <br />
+          <strong>改加密方法会让所有人的密码变长或变短</strong>,与改协议一样需要重新部署、
+          用户需要重新拉订阅。
+        </div>
+      </a-form-item>
+
+      <!-- Shadowsocks 2022 对时钟敏感,而部署的三步健康检查全都测不出这个问题:
+           拨测客户端跑在节点自己身上,与服务端共用同一个时钟。所以这里要先说,
+           部署事务开头也会实测一次并在超限时中止。 -->
+      <a-alert
+        v-if="isSS"
+        type="warning"
+        show-icon
+        class="nf__alert-gap"
+        message="Shadowsocks 2022 要求节点时间准确"
+        description="握手带时间戳,节点与真实时间相差超过约 30 秒时全部用户都连不上,而服务状态、端口监听与拨测仍然全绿。部署前面板会实测一次,超限直接中止。请确认节点上开着 NTP(ntpd / chronyd / systemd-timesyncd)。"
+      />
+
       <!-- 这条 Alert 必须自带下外边距。它下面那行说明用的是 .nf__help--row
            (margin-top:-12px,为的是贴住上方 a-form-item 那 24px 的固定间距),
            而 Alert 自身 margin 为 0 —— 不补的话负边距会把说明文字拉进 Alert 框里,
@@ -605,10 +732,21 @@ async function submit() {
         description="面板不会创建这条转发规则。NAT 主机由服务商的端口映射完成,自建则用 nginx stream 或 iptables DNAT;sing-box 只负责监听主机端口。"
       />
 
-      <div v-if="isEdit" class="nf__help nf__help--row">
+      <div v-if="isEdit && !isSS" class="nf__help nf__help--row">
         REALITY 握手目标不在这里改:它必须从节点本机实测通过才能保存。
         到节点详情里「扫描握手目标」,检测后应用。
       </div>
+
+      <!-- 提前说清楚,免得管理员填完整个表单才被后端一句错误退回来。
+           后端那道校验才是唯一可靠的一道,这里只是省一次往返。 -->
+      <a-alert
+        v-if="needsHandshakeFirst"
+        type="error"
+        show-icon
+        class="nf__alert-gap"
+        message="这个节点还没有实测通过的握手目标"
+        description="切换到 VLESS + REALITY 之前,请先到节点详情里「扫描握手目标」并应用一个。握手目标必须在节点本机实测:CDN 按地域下发不同证书链,记录超过 8192 字节会让所有人静默握手失败。"
+      />
     </a-form>
 
     <div v-if="isEdit && dirtyFields.length" class="nf__foot">

@@ -25,19 +25,55 @@ type LogConfig struct {
 }
 
 type Inbound struct {
-	Type       string      `json:"type"`
-	Tag        string      `json:"tag"`
-	Listen     string      `json:"listen"`
-	ListenPort int         `json:"listen_port"`
-	Users      []VLESSUser `json:"users"`
-	TLS        InboundTLS  `json:"tls"`
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Listen     string `json:"listen"`
+	ListenPort int    `json:"listen_port"`
+	// Users 两种协议共用。字段按协议取舍,见 InboundUser。
+	//
+	// 没有 omitempty:空用户列表要显式渲染成 "users": [],不能整个消失。
+	// VLESS 的空列表表示"谁都连不上";Shadowsocks 的空列表会让 sing-box
+	// 退回单用户模式,此时唯一的凭据是节点 PSK,而它从不离开面板 ——
+	// 同样没有人连得上,但两者的机制不同,配置里看得见比看不见好。
+	Users []InboundUser `json:"users"`
+
+	// TLS 只有 VLESS + REALITY 用。
+	//
+	// 必须是指针 + omitempty:值类型会让 Shadowsocks 的配置里渲染出
+	// 一整段 "tls": {"enabled": false, ...} 的空壳。sing-box 对无关字段
+	// 是宽容的,不会报错 —— 正因为不报错,一个 shadowsocks 入站里挂着
+	// TLS 块会让人在排查时先怀疑配置串了。
+	TLS *InboundTLS `json:"tls,omitempty"`
+
+	// 以下只有 Shadowsocks 用。Method 与 Password 的长度必须匹配,
+	// 校验在 validateParams 里完成。
+	Method   string `json:"method,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
-type VLESSUser struct {
+// InboundUser 是入站里的一个用户。两种协议共用一个结构体,
+// 按协议填不同字段 —— 分成两个结构体的话,stats 白名单的一致性断言
+// 就要为每种协议各写一遍,而那是全配置最不能分叉的一处。
+type InboundUser struct {
 	// Name 是用户代码(user_000001),同时也是流量统计的计数器名。
+	// 两种协议都靠它把流量归属到用户,这是唯一与协议无关的字段。
 	Name string `json:"name"`
-	UUID string `json:"uuid"`
-	Flow string `json:"flow"`
+
+	// VLESS 专有。
+	UUID string `json:"uuid,omitempty"`
+	Flow string `json:"flow,omitempty"`
+
+	// Shadowsocks 专有:该用户的 PSK,已按 method 截取并 base64。
+	Password string `json:"password,omitempty"`
+}
+
+// Credential 返回该用户在当前协议下的凭据原文,供 diff 计算指纹用。
+// 不要把它直接写进任何输出 —— diff、审计与日志里一律只出现指纹。
+func (u InboundUser) Credential() string {
+	if u.UUID != "" {
+		return u.UUID
+	}
+	return u.Password
 }
 
 type InboundTLS struct {

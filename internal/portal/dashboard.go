@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -254,7 +255,7 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		SELECT n.id, n.display_name, t.name, t.code, n.status,
 		       n.proxy_port, n.public_remark, n.maintenance_message,
 		       n.subscription_enabled, n.deployed_config_sha256,
-		       n.ipv6_address != ''
+		       n.ipv6_address != '', n.deployed_protocol
 		  FROM nodes n
 		  JOIN access_tiers t ON t.id = n.access_tier_id
 		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
@@ -268,14 +269,19 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 	nodes := make([]Node, 0)
 	for rows.Next() {
 		var n Node
-		var status, deployedSHA string
+		var status, deployedSHA, deployedProtocol string
 		var subEnabled bool
 		if err := rows.Scan(&n.ID, &n.DisplayName, &n.TierName, &n.TierCode, &status,
 			&n.PublicPort, &n.PublicRemark, &n.MaintenanceMessage,
-			&subEnabled, &deployedSHA, &n.SupportsIPv6); err != nil {
+			&subEnabled, &deployedSHA, &n.SupportsIPv6, &deployedProtocol); err != nil {
 			return nil, err
 		}
-		n.Protocol = "VLESS + REALITY"
+		// 取节点上【已经生效】的协议,与订阅里那条条目是同一个来源。
+		// 用数据库里的期望值的话,管理员改完还没部署的那段时间里,
+		// 门户说的和用户订阅里拿到的会是两种协议 —— 用户照着门户去查
+		// 客户端设置,只会更糊涂。
+		protocol, _ := singbox.ParseProtocol(deployedProtocol)
+		n.Protocol = protocol.Label()
 		n.InSubscription = subEnabled && status != "DISABLED" && deployedSHA != ""
 		switch {
 		case status == "DISABLED":

@@ -4,6 +4,8 @@ import { message } from 'ant-design-vue'
 import {
   api,
   ApiError,
+  PROTOCOL_LABEL,
+  PROTOCOL_SHORT,
   type AccessTier,
   type Node,
   type NodeConfigState,
@@ -392,6 +394,33 @@ function billingNote(id: number): string {
 }
 
 /**
+ * 列表里的协议标记。
+ *
+ * 取【已部署】的协议:列表回答的是「这台机器现在是什么样」,而
+ * deployed_protocol 才是节点上真正在跑的那个。用期望值的话,改完协议
+ * 还没部署的那段时间里,列表说 SS2022、用户订阅里却仍是 vless://。
+ *
+ * 从未部署过时回落到期望值并加问号 —— 那台机器上还什么都没有。
+ */
+function protocolShort(n: Node): string {
+  if (!n.deployed_protocol) return PROTOCOL_SHORT[n.protocol] + '?'
+  return PROTOCOL_SHORT[n.deployed_protocol]
+}
+
+function protocolTitle(n: Node): string {
+  if (!n.deployed_protocol) {
+    return `尚未部署过。部署后将使用 ${PROTOCOL_LABEL[n.protocol]}`
+  }
+  const running = PROTOCOL_LABEL[n.deployed_protocol]
+  if (n.deployed_protocol === n.protocol) {
+    return `节点上正在运行 ${running},订阅里下发的也是它`
+  }
+  // 期望与生效不一致 —— 这正是「改了协议还没部署」。必须说全,
+  // 只显示其中一个会让管理员以为切换已经完成。
+  return `节点上正在运行 ${running}(订阅里下发的也是它);已改为 ${PROTOCOL_LABEL[n.protocol]},部署后生效`
+}
+
+/**
  * 详情抽屉渲染出错时的兜底。
  *
  * Vue 在渲染期抛错会卸载出错组件的子树,而 a-drawer 的遮罩是另一个 DOM 节点,
@@ -558,6 +587,7 @@ const keyOpen = ref(false)
           </template>
 
           <div class="nv__host lb-mono">
+            <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
             {{ n.host }}:{{ n.proxy_port }} · {{ n.access_tier_name }}
             <template v-if="n.ipv6_address"> · IPv6</template>
           </div>
@@ -651,6 +681,10 @@ const keyOpen = ref(false)
             <!-- 内部名称与展示名称都列:管理员按内部名称找机器,用户报的是展示名称。 -->
             <span v-if="record.display_name !== record.name" class="nv__inner">{{ record.name }}</span>
             <div class="nv__host lb-mono">
+              <!-- 协议放在地址前面。同一份列表里两种协议混着,不标的话
+                   管理员分不出哪台机器的订阅条目是 ss:// —— 而排查
+                   「某个客户端连不上」时那正是第一个要知道的事。 -->
+              <span class="nv__proto" :title="protocolTitle(record)">{{ protocolShort(record) }}</span>
               {{ record.host }}:{{ record.proxy_port }}
               <template v-if="record.listen_port !== record.proxy_port">
                 → :{{ record.listen_port }}
@@ -853,6 +887,20 @@ const keyOpen = ref(false)
 .nv__host {
   font-size: 11px;
   color: #6b7480;
+}
+
+/* 协议标记。用中性底色而不是彩色 —— 协议不是状态,没有好坏之分,
+   给它上色会跟旁边真正表达状态的那几个 LbStatusTag 抢注意力。
+   两个值都取自 tokens.ts(bgSubtle / text2)。 */
+.nv__proto {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #f1f3f5;
+  color: #576070;
+  font-size: 10px;
+  letter-spacing: 0.02em;
 }
 
 .nv__stack {

@@ -97,7 +97,15 @@ func parseListenResult(out string, port int) (string, error) {
 	return fmt.Sprintf("端口 %d 正在监听", port), nil
 }
 
-// checkVLESSDial 是健康检查第三步:用真实用户发起一次 VLESS 连接。
+// dialLabel 是拨测步骤名里的协议部分。
+func dialLabel(p singbox.Protocol) string {
+	if p == singbox.ProtocolShadowsocks {
+		return "Shadowsocks"
+	}
+	return "VLESS"
+}
+
+// checkDial 是健康检查第三步:用真实用户凭据发起一次真实连接。
 //
 // 这一步不可省略。Phase 0 实测:把 flow 写成非法值后,sing-box check 通过、
 // systemd active、端口正常监听,但所有用户连接全部失败 —— 前两步检查会把
@@ -106,7 +114,14 @@ func parseListenResult(out string, port int) (string, error) {
 // 做法:在节点上临时起一个 sing-box 客户端进程,主控经 SSH 通道连它的 SOCKS 端口,
 // 通过代理 CONNECT 到节点自己的 SSH 端口并读取 SSH 版本横幅。选择 SSH 端口作为
 // 探测目标是因为它必然可达且会立即返回可识别的字节,不引入外部网络依赖。
-func (d *Deployer) checkVLESSDial(ctx context.Context, client *sshx.Client, req Request) (string, error) {
+//
+// 协议只影响探测配置里的那一个出站 —— 客户端是节点上已有的 sing-box 二进制,
+// 主控侧不需要实现任何协议。
+//
+// 【它测不出什么】:客户端与服务端在同一台机器上,共用同一个时钟,
+// 所以 Shadowsocks 2022 的时间戳窗口问题在这里恒定通过。那一类失效
+// 由部署事务开头的 checkClockSkew 负责。
+func (d *Deployer) checkDial(ctx context.Context, client *sshx.Client, req Request) (string, error) {
 	if len(req.Params.Users) == 0 {
 		return "", errNoProbeUser
 	}
@@ -180,7 +195,7 @@ func probeTargetPort(ctx context.Context, client *sshx.Client, fallback int) int
 	return port
 }
 
-var errNoProbeUser = errors.New("配置中没有用户,无法进行 VLESS 拨测")
+var errNoProbeUser = errors.New("配置中没有用户,无法进行拨测")
 
 // pickProbePort 在节点上找一个空闲的回环端口给探测客户端用。
 func (d *Deployer) pickProbePort(ctx context.Context, client *sshx.Client) (int, error) {
@@ -223,6 +238,10 @@ func waitPortReady(ctx context.Context, client *sshx.Client, port int) error {
 
 // buildProbeConfig 生成探测用的 sing-box 客户端配置。
 func buildProbeConfig(req Request, user singbox.User, probePort int) ([]byte, error) {
+	out, err := probeOutbound(req, user)
+	if err != nil {
+		return nil, err
+	}
 	cfg := map[string]any{
 		"log": map[string]any{"level": "error", "timestamp": true},
 		"inbounds": []any{map[string]any{
@@ -231,26 +250,51 @@ func buildProbeConfig(req Request, user singbox.User, probePort int) ([]byte, er
 			"listen":      "127.0.0.1",
 			"listen_port": probePort,
 		}},
-		"outbounds": []any{map[string]any{
-			"type":        "vless",
-			"tag":         "probe-out",
-			"server":      "127.0.0.1",
-			"server_port": req.Params.ListenPort,
-			"uuid":        user.UUID,
-			"flow":        singbox.FlowVision,
-			"tls": map[string]any{
-				"enabled":     true,
-				"server_name": req.Params.RealityDest,
-				"utls":        map[string]any{"enabled": true, "fingerprint": "chrome"},
-				"reality": map[string]any{
-					"enabled":    true,
-					"public_key": req.RealityPublicKey,
-					"short_id":   req.Params.ShortID,
-				},
-			},
-		}},
+		"outbounds": []any{out},
 	}
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// probeOutbound 按协议生成探测出站。
+//
+// 参数一律取自 req.Params,也就是【本次即将部署的那份配置】的输入,
+// 而不是数据库里的当前值 —— 拨测要验证的正是刚刚写上去的那一份。
+func probeOutbound(req Request, user singbox.User) (map[string]any, error) {
+	base := map[string]any{
+		"tag":         "probe-out",
+		"server":      "127.0.0.1",
+		"server_port": req.Params.ListenPort,
+	}
+
+	if req.Params.Protocol == singbox.ProtocolShadowsocks {
+		// password 走 SSClientPassword,与订阅生成同一个实现。
+		// 这里另拼一遍的话,某天改了拼法只改到一处,表现是
+		// "拨测通过但用户连不上",或者反过来 —— 两条路径各自看起来都对。
+		password, err := singbox.SSClientPassword(
+			req.Params.SSPassword, user.SSPassword, req.Params.SSMethod)
+		if err != nil {
+			return nil, fmt.Errorf("拼接探测用的 Shadowsocks 凭据: %w", err)
+		}
+		base["type"] = "shadowsocks"
+		base["method"] = string(req.Params.SSMethod)
+		base["password"] = password
+		return base, nil
+	}
+
+	base["type"] = "vless"
+	base["uuid"] = user.UUID
+	base["flow"] = singbox.FlowVision
+	base["tls"] = map[string]any{
+		"enabled":     true,
+		"server_name": req.Params.RealityDest,
+		"utls":        map[string]any{"enabled": true, "fingerprint": "chrome"},
+		"reality": map[string]any{
+			"enabled":    true,
+			"public_key": req.RealityPublicKey,
+			"short_id":   req.Params.ShortID,
+		},
+	}
+	return base, nil
 }
 
 // dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,

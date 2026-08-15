@@ -184,6 +184,32 @@ export type NodeStatus = 'PENDING' | 'ONLINE' | 'OFFLINE' | 'DISABLED' | 'DEPLOY
  */
 export type NodeBillingMode = 'EGRESS' | 'BOTH'
 
+/**
+ * 节点的落地协议。
+ *
+ * VLESS_REALITY 需要握手目标、REALITY 密钥与 short_id;
+ * SHADOWSOCKS 用 2022 系列的加密方法与两级 PSK,不用 REALITY。
+ * 一个节点只跑一种 —— 表单按它决定显示哪一组字段。
+ */
+export type NodeProtocol = 'VLESS_REALITY' | 'SHADOWSOCKS'
+
+/** Shadowsocks 2022 的加密方法。只有这三种,不收传统 AEAD。 */
+export type NodeSSMethod =
+  | '2022-blake3-aes-128-gcm'
+  | '2022-blake3-aes-256-gcm'
+  | '2022-blake3-chacha20-poly1305'
+
+export const PROTOCOL_LABEL: Record<NodeProtocol, string> = {
+  VLESS_REALITY: 'VLESS + REALITY',
+  SHADOWSOCKS: 'Shadowsocks 2022',
+}
+
+/** 列表里的短标记。全称太长,会把展示名挤到换行。 */
+export const PROTOCOL_SHORT: Record<NodeProtocol, string> = {
+  VLESS_REALITY: 'VLESS',
+  SHADOWSOCKS: 'SS2022',
+}
+
 export interface Node {
   id: number
   /** 内部名称,只在管理后台出现 */
@@ -228,6 +254,18 @@ export interface Node {
   arch: string
   singbox_version: string
   singbox_build_tags: string
+  /** 期望的落地协议。改了它必须重新部署,部署成功前订阅仍下发旧协议的条目。 */
+  protocol: NodeProtocol
+  /** 只在 SHADOWSOCKS 下有值 */
+  ss_method: NodeSSMethod | ''
+  /**
+   * 节点上【已经生效】的协议,只在部署成功时写入。空串表示从未部署过。
+   *
+   * 订阅、门户与「节点上现在跑什么」一律看它,不看 protocol ——
+   * 两者不同就是「改了协议还没部署」,那段时间里用户手上的订阅仍然可用。
+   */
+  deployed_protocol: NodeProtocol | ''
+  deployed_ss_method: NodeSSMethod | ''
   reality_dest: string
   reality_dest_port: number
   reality_public_key: string
@@ -702,6 +740,9 @@ export const api = {
     request<ProxyUser>(`/api/users/${id}/reset-traffic`, { method: 'POST' }),
   regenerateUserUUID: (id: number) =>
     request<ProxyUser>(`/api/users/${id}/regenerate-uuid`, { method: 'POST' }),
+  /** 只影响跑 Shadowsocks 的节点 —— UUID 不出现在它们的配置里,反之亦然。 */
+  regenerateUserSSPassword: (id: number) =>
+    request<ProxyUser>(`/api/users/${id}/regenerate-ss-password`, { method: 'POST' }),
   regenerateSubToken: (id: number) =>
     request<ProxyUser>(`/api/users/${id}/regenerate-sub-token`, { method: 'POST' }),
   userTraffic: (id: number, days = 30) =>

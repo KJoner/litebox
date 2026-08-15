@@ -1,9 +1,3 @@
-// Package subscription 生成用户订阅内容。
-//
-// 输出三种格式:
-//   - base64:换行分隔的 vless:// URI 再整体 base64,v2rayN/Shadowrocket 等客户端的通用格式;
-//   - uri:同上但不编码,便于人工核对与调试;
-//   - sing-box:完整的 sing-box 客户端配置 JSON。
 package subscription
 
 import (
@@ -11,22 +5,9 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-)
 
-// Node 是订阅里的一个节点条目。字段已是明文,由调用方从数据库解密后传入。
-//
-// 刻意只有 DisplayName 而没有内部名称:订阅是发到用户设备上的东西,
-// 结构体里根本不存在内部名称,就不可能有哪条代码路径不小心把它写进去。
-//
-// 一条物理节点记录可能展开成两个 Node(IPv4 与 IPv6),见 PhysicalNode.Expand。
-type Node struct {
-	DisplayName      string
-	Host             string
-	Port             int
-	RealityDest      string
-	RealityPublicKey string
-	RealityShortID   string
-}
+	"github.com/litebox/litebox/internal/singbox"
+)
 
 // IPv6NameSuffix 是 IPv6 条目追加在展示名称后的后缀。
 //
@@ -47,10 +28,15 @@ type PhysicalNode struct {
 	// IPv6Port 为 0 表示 IPv6 条目跟随 Port。
 	// 双栈机器的两个协议栈未必映射到同一个外部端口 —— NAT 小鸡上
 	// IPv4 常是服务商映射的高位端口,IPv6 则是直连的 443。
-	IPv6Port         int
+	IPv6Port int
+	// Protocol 是节点上【已经生效】的协议(deployed_protocol),
+	// 不是数据库里的期望值。理由见 Service.nodesFor。
+	Protocol         singbox.Protocol
 	RealityDest      string
 	RealityPublicKey string
 	RealityShortID   string
+	SSMethod         singbox.SSMethod
+	SSServerKey      string
 }
 
 // Expand 把一条物理节点展开成订阅里的一到两个条目。
@@ -66,9 +52,12 @@ func (p PhysicalNode) Expand() []Node {
 		DisplayName:      p.DisplayName,
 		Host:             p.Host,
 		Port:             p.Port,
+		Protocol:         p.Protocol,
 		RealityDest:      p.RealityDest,
 		RealityPublicKey: p.RealityPublicKey,
 		RealityShortID:   p.RealityShortID,
+		SSMethod:         p.SSMethod,
+		SSServerKey:      p.SSServerKey,
 	}
 	if p.IPv6Address == "" {
 		return []Node{v4}
@@ -113,14 +102,23 @@ func VLESSURI(uuid string, node Node) string {
 	query.Set("flow", "xtls-rprx-vision")
 	query.Set("encryption", "none")
 
-	// 主机是 IPv6 字面量时必须加方括号,否则冒号会被当成端口分隔符。
-	host := node.Host
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		host = "[" + host + "]"
-	}
-
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s",
-		uuid, host, node.Port, query.Encode(), url.PathEscape(node.DisplayName))
+		uuid, hostForURI(node.Host), node.Port, query.Encode(), url.PathEscape(node.DisplayName))
+}
+
+// hostForURI 给 IPv6 字面量加方括号。
+//
+// 只在 URI 里加,不进数据库也不进 sing-box 配置的 server 字段:
+// 方括号是 URI 语法的一部分,不是地址的一部分。sing-box 客户端拿到
+// "[2602::1]" 解析不出地址,而订阅本身照常下发,看起来一切正常。
+//
+// 两种协议共用一份实现 —— 各写一遍的话,漏掉的那一种在纯 IPv6 条目上
+// 会生成 ss://...@2602::1:8388 这种把最后一段冒号当端口分隔符的链接。
+func hostForURI(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 // clientOutbound 是 sing-box 客户端配置中的一个 VLESS 出站。

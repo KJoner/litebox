@@ -17,6 +17,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
+	"github.com/litebox/litebox/internal/singbox"
 )
 
 var (
@@ -53,6 +54,10 @@ type User struct {
 	Remark      string `json:"remark"`
 	// UUID 只在需要下发配置或展示订阅时使用,不随列表接口返回。
 	UUID string `json:"-"`
+	// SSPassword 是该用户的 Shadowsocks 2022 PSK(32 字节 base64),
+	// 与 UUID 平级:一份凭据对应一种协议,互不替代。
+	// 全站共用一把 —— 不同节点的 server PSK 不同,拼出来的 password 本来就不同。
+	SSPassword string `json:"-"`
 	// SubToken 同上,只在详情与订阅接口按需返回。
 	SubToken string `json:"-"`
 
@@ -124,7 +129,8 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 	return &Store{db: db, cipher: cipher}
 }
 
-const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypted, u.sub_token_encrypted,
+const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypted,
+	u.ss_password_encrypted, u.sub_token_encrypted,
 	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
 	u.reset_cycle, u.reset_day, u.last_reset_at, u.created_at, u.updated_at,
 	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
@@ -136,8 +142,8 @@ const userFrom = ` FROM proxy_users u JOIN access_tiers t ON t.id = u.access_tie
 
 func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	var u User
-	var uuidEnc, tokenEnc string
-	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &tokenEnc,
+	var uuidEnc, ssKeyEnc, tokenEnc string
+	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &ssKeyEnc, &tokenEnc,
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
 		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
 		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
@@ -147,6 +153,13 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	}
 	if u.UUID, err = s.cipher.Decrypt(uuidEnc); err != nil {
 		return nil, fmt.Errorf("解密用户 %s 的 UUID: %w", u.UserCode, err)
+	}
+	// 空串表示这个用户还没被 backfill 补齐 Shadowsocks 密钥。
+	// 空私钥存空串而不是加密后的空串:后者不为空,会被当成一把解不开的密钥。
+	if ssKeyEnc != "" {
+		if u.SSPassword, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
+			return nil, fmt.Errorf("解密用户 %s 的 Shadowsocks 密钥: %w", u.UserCode, err)
+		}
 	}
 	if tokenEnc != "" {
 		if u.SubToken, err = s.cipher.Decrypt(tokenEnc); err != nil {
@@ -186,11 +199,22 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 两种协议的凭据一起签发,与本站现有节点跑什么协议无关:
+	// 缺一份的话,管理员把某个节点切成 Shadowsocks 时,那一刻起
+	// 全部存量用户都渲染不进配置,而他改的只是一个节点。
+	ssKey, err := singbox.GenerateSSKey()
+	if err != nil {
+		return nil, err
+	}
 	token, err := crypto.GenerateToken(24)
 	if err != nil {
 		return nil, err
 	}
 	uuidEnc, err := s.cipher.Encrypt(uuid)
+	if err != nil {
+		return nil, err
+	}
+	ssKeyEnc, err := s.cipher.Encrypt(ssKey)
 	if err != nil {
 		return nil, err
 	}
@@ -213,10 +237,11 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO proxy_users
-		  (user_code, display_name, remark, uuid_encrypted, sub_token_encrypted, sub_token_hash,
+		  (user_code, display_name, remark, uuid_encrypted, ss_password_encrypted,
+		   sub_token_encrypted, sub_token_hash,
 		   status, quota_bytes, expires_at, reset_cycle, reset_day, access_tier_id, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		userCode, p.DisplayName, p.Remark, uuidEnc, tokenEnc, crypto.HashToken(token),
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		userCode, p.DisplayName, p.Remark, uuidEnc, ssKeyEnc, tokenEnc, crypto.HashToken(token),
 		StatusActive, p.QuotaBytes, p.ExpiresAt, p.ResetCycle, p.ResetDay, p.AccessTierID, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {

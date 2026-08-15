@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/litebox/litebox/internal/singbox"
 )
 
 // RealityKeyPair 是一对 REALITY X25519 密钥,均为 base64url 无填充编码。
@@ -67,3 +69,7 @@ func GenerateUUID() (string, error) {
 	buf[8] = (buf[8] & 0x3f) | 0x80 // RFC 4122 变体
 	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }
+
+// GenerateSSKey 生成节点级的 Shadowsocks PSK。
+// 生成规则(32 字节、标准 base64)与校验规则同在 singbox 包,不在这里复制一份。
+func GenerateSSKey() (string, error) { return singbox.GenerateSSKey() }

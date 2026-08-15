@@ -377,6 +377,23 @@ func cmdServe(args []string) error {
 		KeepBackups: 5,
 	})
 	userStore := user.NewStore(db, cipher)
+
+	// Shadowsocks 密钥的一次性补齐。迁移里做不了 —— 主密钥在 Go 侧,
+	// 而这两列存的是密文。跑过一次之后永远是 no-op。
+	//
+	// 必须在开始服务之前完成:补齐没跑完就把某个节点切成 Shadowsocks 的话,
+	// 那一刻起全部存量用户都渲染不进配置,而管理员改的只是一个节点。
+	if n, err := nodeStore.BackfillSSKeys(ctx); err != nil {
+		return fmt.Errorf("补齐节点 Shadowsocks 密钥: %w", err)
+	} else if n > 0 {
+		logger.Info("已为存量节点补齐 Shadowsocks 密钥", "节点数", n)
+	}
+	if n, err := userStore.BackfillSSKeys(ctx); err != nil {
+		return fmt.Errorf("补齐用户 Shadowsocks 密钥: %w", err)
+	} else if n > 0 {
+		logger.Info("已为存量用户补齐 Shadowsocks 密钥", "用户数", n)
+	}
+
 	nodeService := node.NewService(node.ServiceOptions{
 		Store:            nodeStore,
 		Pool:             pool,
@@ -436,13 +453,14 @@ func cmdServe(args []string) error {
 	})
 
 	server := httpapi.NewServer(httpapi.Options{
-		Config:    cfg,
-		DB:        db,
-		Auth:      authService,
-		Audit:     audit.NewRecorder(db, logger),
-		Nodes:     nodeService,
-		Users:     userService,
-		Subs:      subscription.NewService(db, userStore, cipher, cfg.Subscription.ClientMixedPort),
+		Config: cfg,
+		DB:     db,
+		Auth:   authService,
+		Audit:  audit.NewRecorder(db, logger),
+		Nodes:  nodeService,
+		Users:  userService,
+		Subs: subscription.NewService(
+			db, userStore, cipher, cfg.Subscription.ClientMixedPort, logger),
 		Traffic:   traffic.NewQuerier(db),
 		Scheduler: scheduler,
 		Metrics:   metricsStore,
