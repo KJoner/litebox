@@ -115,7 +115,7 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 		}
 
 		return s.store.SaveProbe(ctx, nodeID, probe.Arch, probe.SingBoxVersion,
-			strings.Join(probe.BuildTags, ","), probe.Usable())
+			strings.Join(probe.BuildTags, ","), probe.MemTotalMB, probe.Usable())
 	})
 	return result, err
 }

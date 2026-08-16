@@ -72,6 +72,8 @@ type clientSSOutbound struct {
 	UDPOverTCP *udpOverTCP `json:"udp_over_tcp,omitempty"`
 	// Detour 只有配置文件订阅里的落地节点会填,空时整个字段不出现。
 	Detour string `json:"detour,omitempty"`
+	// TCPFastOpen 关掉时整项不出现,理由同 clientOutbound。
+	TCPFastOpen bool `json:"tcp_fast_open,omitempty"`
 }
 
 type udpOverTCP struct {
@@ -84,12 +86,13 @@ type udpOverTCP struct {
 // 加了括号的话客户端解析不出地址,而订阅照常下发,面板一个错都不报。
 func shadowsocksOutbound(o OutboundOptions, password string, node Node) clientSSOutbound {
 	return clientSSOutbound{
-		Type:       "shadowsocks",
-		Tag:        o.Tag,
-		Server:     node.Host,
-		ServerPort: node.Port,
-		Method:     string(node.SSMethod),
-		Password:   password,
-		Detour:     o.Detour,
+		Type:        "shadowsocks",
+		Tag:         o.Tag,
+		Server:      node.Host,
+		ServerPort:  node.Port,
+		Method:      string(node.SSMethod),
+		Password:    password,
+		Detour:      o.Detour,
+		TCPFastOpen: node.TCPFastOpen,
 	}
 }

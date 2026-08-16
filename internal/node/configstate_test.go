@@ -39,7 +39,7 @@ func markDeployedWithCurrent(t *testing.T, svc *Service, id int64) {
 		t.Fatalf("渲染期望配置: %v", err)
 	}
 	if err := svc.store.MarkDeployed(t.Context(), id, desired.SHA256,
-		singbox.ProtocolVLESSReality, ""); err != nil {
+		singbox.ProtocolVLESSReality, "", false); err != nil {
 		t.Fatalf("记录已部署哈希: %v", err)
 	}
 }

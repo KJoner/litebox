@@ -39,6 +39,15 @@ type Node struct {
 	Port        int
 	Protocol    singbox.Protocol
 
+	// TCPFastOpen 是节点上【已经生效】的 TFO 状态(deployed_tcp_fast_open)。
+	//
+	// 与 Protocol 同一条道理:客户端开了而服务端没开,第一个包会白白多一次
+	// 回落握手 —— 而管理员改开关到部署完成之间的那段时间里,期望值是"开"的。
+	//
+	// 只写进 sing-box 客户端配置,不进 URI:tfo=1 不在分享链接标准里,
+	// 各家客户端认不认要逐个确认,而我们没有办法验证。
+	TCPFastOpen bool
+
 	// VLESS + REALITY 专有。
 	RealityDest      string
 	RealityPublicKey string

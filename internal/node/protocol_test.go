@@ -271,7 +271,7 @@ func TestMarkDeployedRecordsRunningProtocol(t *testing.T) {
 	}
 
 	if err := store.MarkDeployed(t.Context(), n.ID, "abc123",
-		singbox.ProtocolShadowsocks, string(singbox.SSMethodAES128GCM)); err != nil {
+		singbox.ProtocolShadowsocks, string(singbox.SSMethodAES128GCM), false); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.Get(t.Context(), n.ID)

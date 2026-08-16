@@ -146,7 +146,7 @@ func (s *Service) ProbeNode(ctx context.Context, nodeID int64) (ProbeResult, err
 	}
 	if err := s.store.SaveProbe(ctx, nodeID,
 		result.Arch, result.SingBoxVersion, strings.Join(result.BuildTags, ","),
-		result.Usable()); err != nil {
+		result.MemTotalMB, result.Usable()); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -297,6 +297,8 @@ func nodeParams(n *Node, users []singbox.User) singbox.NodeParams {
 		Protocol:          n.Protocol,
 		ListenPort:        n.ListenPort,
 		APIPort:           n.APIPort,
+		TCPFastOpen:       n.TCPFastOpen,
+		MemTotalMB:        n.MemTotalMB,
 		RealityDest:       n.RealityDest,
 		RealityPort:       n.RealityDestPort,
 		RealityPrivateKey: n.RealityPrivateKey,
@@ -349,8 +351,9 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 		}
 		return result, deployErr
 	}
-	// 生效协议在这里才落库:部署成功之前订阅一直下发旧协议的条目。
-	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256, n.Protocol, n.SSMethod); err != nil {
+	// 生效协议与 TFO 在这里才落库:部署成功之前订阅一直下发旧的那一套。
+	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256,
+		n.Protocol, n.SSMethod, n.TCPFastOpen); err != nil {
 		s.logger.Error("记录部署成功状态出错", "node_id", nodeID, "error", err)
 	}
 	return result, nil

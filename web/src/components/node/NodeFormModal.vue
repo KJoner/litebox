@@ -73,6 +73,7 @@ const blank = {
   traffic_billing_mode: 'EGRESS' as NodeBillingMode,
   protocol: 'VLESS_REALITY' as NodeProtocol,
   ss_method: '2022-blake3-aes-128-gcm' as NodeSSMethod,
+  tcp_fast_open: false,
   ssh_port: 22,
   ssh_user: 'root',
   ssh_key: '',
@@ -117,6 +118,9 @@ watch(
         // 协议不是 SS 时后端把方法清成空串。回填成默认值而不是空 ——
         // 空值会让下拉框显示成一片空白,看起来像没加载出来。
         ss_method: n.ss_method || '2022-blake3-aes-128-gcm',
+        // 回填期望值而不是已生效值:这一栏是"要改成什么",
+        // 已经生效的那个在详情页单独显示。
+        tcp_fast_open: n.tcp_fast_open,
         ssh_port: n.ssh_port,
         ssh_user: n.ssh_user,
         proxy_port: n.proxy_port,
@@ -146,6 +150,7 @@ const fieldLabels: Record<string, string> = {
   traffic_reset_day: '每月重置日',
   traffic_billing_mode: '计费口径',
   protocol: '落地协议',
+  tcp_fast_open: 'TCP Fast Open',
   ss_method: '加密方法',
   ssh_port: 'SSH 端口',
   ssh_user: 'SSH 用户',
@@ -295,6 +300,7 @@ async function doSubmit() {
         traffic_billing_mode: form.traffic_billing_mode,
         protocol: form.protocol,
         ss_method: form.ss_method,
+        tcp_fast_open: form.tcp_fast_open,
         ssh_port: form.ssh_port,
         ssh_user: form.ssh_user,
         proxy_port: form.proxy_port,
@@ -342,6 +348,7 @@ async function doSubmit() {
       traffic_billing_mode: form.traffic_billing_mode,
       protocol: form.protocol,
       ss_method: form.ss_method,
+      tcp_fast_open: form.tcp_fast_open,
       ssh_port: form.ssh_port,
       ssh_user: form.ssh_user,
       ssh_key: form.ssh_key,
@@ -689,6 +696,29 @@ async function doSubmit() {
         </div>
       </a-form-item>
 
+      <!-- TFO 默认关,而且刻意不按机器规格自动开:它的成败取决于用户到节点
+           这一段路径上的中间设备,而面板的探测是从节点本机做的,与那条路无关。 -->
+      <a-form-item label="TCP Fast Open">
+        <a-switch v-model:checked="form.tcp_fast_open" />
+        <span class="nf__inline">{{ form.tcp_fast_open ? '开启' : '关闭(默认)' }}</span>
+        <div class="nf__help">
+          省掉每条新建连接的一次握手往返,跨境高延迟链路上能感觉到。
+          这一个开关同时管两端 —— 节点入站与订阅里下发给客户端的 sing-box 出站,
+          <strong>只开一边不会有任何效果</strong>。
+          <br />
+          不确定就别开:路径上不少中间设备会丢弃带数据的 SYN 或剥掉 TFO 选项,
+          而这件事面板测不出来(探测是从节点本机做的)。TFO 的 cookie 还是一个
+          跨连接稳定的标识,对刻意伪装成正常 TLS 的节点来说是白送的特征。
+          <br />
+          只写进 sing-box 格式的订阅;分享链接里不加 <code>tfo=1</code> ——
+          它不在标准里,各家客户端认不认无法验证。
+          <template v-if="isEdit">
+            <br />
+            改了要重新部署才生效;<strong>部署成功之前订阅里仍按旧值下发</strong>。
+          </template>
+        </div>
+      </a-form-item>
+
       <a-form-item v-if="isSS" label="加密方法">
         <a-select v-model:value="form.ss_method">
           <a-select-option value="2022-blake3-aes-128-gcm">
@@ -765,6 +795,14 @@ async function doSubmit() {
   font-size: 12px;
   line-height: 1.6;
   color: #6b7480;
+}
+
+/* 开关右边的状态字。开关本身只有形态没有文字,单看它分不出「开着」还是
+   「这一栏是灰的」——尤其是关闭态,和禁用态长得很像。 */
+.nf__inline {
+  margin-left: 10px;
+  font-size: 12.5px;
+  color: #576070;
 }
 
 .nf__help--row {

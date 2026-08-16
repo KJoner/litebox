@@ -237,7 +237,8 @@ func uriList(entries []Entry) []string {
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT n.display_name, n.host, n.ipv6_address, n.proxy_port, n.ipv6_proxy_port,
-		       n.deployed_protocol, n.deployed_ss_method, n.ss_password_encrypted,
+		       n.deployed_protocol, n.deployed_ss_method, n.deployed_tcp_fast_open,
+		       n.ss_password_encrypted,
 		       n.reality_dest, n.reality_pubkey, n.reality_short_id
 		  FROM nodes n
 		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
@@ -257,7 +258,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		var p PhysicalNode
 		var protocol, ssMethod, ssKeyEnc string
 		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port, &p.IPv6Port,
-			&protocol, &ssMethod, &ssKeyEnc,
+			&protocol, &ssMethod, &p.TCPFastOpen, &ssKeyEnc,
 			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
 		}

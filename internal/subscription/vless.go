@@ -32,7 +32,9 @@ type PhysicalNode struct {
 	IPv6Port int
 	// Protocol 是节点上【已经生效】的协议(deployed_protocol),
 	// 不是数据库里的期望值。理由见 Service.nodesFor。
-	Protocol         singbox.Protocol
+	Protocol singbox.Protocol
+	// TCPFastOpen 同样取【已经生效】的那一列。
+	TCPFastOpen      bool
 	RealityDest      string
 	RealityPublicKey string
 	RealityShortID   string
@@ -54,6 +56,7 @@ func (p PhysicalNode) Expand() []Node {
 		Host:             p.Host,
 		Port:             p.Port,
 		Protocol:         p.Protocol,
+		TCPFastOpen:      p.TCPFastOpen,
 		RealityDest:      p.RealityDest,
 		RealityPublicKey: p.RealityPublicKey,
 		RealityShortID:   p.RealityShortID,
@@ -135,6 +138,9 @@ type clientOutbound struct {
 	Flow       string    `json:"flow"`
 	TLS        clientTLS `json:"tls"`
 	Detour     string    `json:"detour,omitempty"`
+	// TCPFastOpen 放在最后并带 omitempty:关掉时整项不出现,
+	// 已经把订阅导进客户端的人不会看到配置无端多出一行。
+	TCPFastOpen bool `json:"tcp_fast_open,omitempty"`
 }
 
 type clientTLS struct {
@@ -173,7 +179,8 @@ func vlessOutbound(o OutboundOptions, uuid string, node Node) clientOutbound {
 				ShortID:   node.RealityShortID,
 			},
 		},
-		Detour: o.Detour,
+		Detour:      o.Detour,
+		TCPFastOpen: node.TCPFastOpen,
 	}
 }
 

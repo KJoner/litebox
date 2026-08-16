@@ -109,6 +109,21 @@ func compareNodeAttrs(old, new Config) []string {
 		changes = append(changes, fmt.Sprintf("主机代理端口 %d → %d", oldIn.ListenPort, newIn.ListenPort))
 	}
 
+	// 监听选项必须在这里出现,哪怕它们看起来"不重要"。
+	//
+	// 配置状态(node.ConfigStatus)是按整份配置的哈希算的,而这份 diff 是
+	// 按字段白名单算的。渲染里加了字段却不加进白名单,两者就会给出互相矛盾的
+	// 答案:同一个抽屉里,上面写着「待部署」,点开「配置比对」却说「配置无变化」。
+	// 管理员只能二选一地相信,而两个都是我们自己给的。
+	if oldIn.TCPFastOpen != newIn.TCPFastOpen {
+		changes = append(changes, fmt.Sprintf("TCP Fast Open %s → %s",
+			onOff(oldIn.TCPFastOpen), onOff(newIn.TCPFastOpen)))
+	}
+	if oldIn.UDPTimeout != newIn.UDPTimeout {
+		changes = append(changes, fmt.Sprintf("UDP 会话超时 %s → %s",
+			udpTimeoutLabel(oldIn.UDPTimeout), udpTimeoutLabel(newIn.UDPTimeout)))
+	}
+
 	changes = append(changes, compareRealityAttrs(oldIn, newIn)...)
 
 	if oldIn.Method != newIn.Method {
@@ -177,6 +192,23 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+func onOff(v bool) string {
+	if v {
+		return "开"
+	}
+	return "关"
+}
+
+// udpTimeoutLabel 把空值说成 sing-box 的默认值,而不是"—"。
+// 这一项的空缺不是"读不到",而是"用默认值" —— 两者在 diff 里长得一样的话,
+// 管理员会以为节点上的配置缺了一块。
+func udpTimeoutLabel(v string) string {
+	if v == "" {
+		return "默认 5m"
+	}
+	return v
 }
 
 func summarize(d Diff) string {

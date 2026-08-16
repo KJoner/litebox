@@ -29,6 +29,20 @@ type Inbound struct {
 	Tag        string `json:"tag"`
 	Listen     string `json:"listen"`
 	ListenPort int    `json:"listen_port"`
+
+	// TCPFastOpen 与 UDPTimeout 是监听选项,两者都必须 omitempty。
+	//
+	// 关掉 / 取默认值时整项不能出现在 JSON 里:存量节点升级后渲染出的配置
+	// 要与升级前逐字节相同,否则十几台机器同时被判成「需要部署」,
+	// 而那次重启换不来任何配置变化,只会踢掉全部在线连接。compat_test.go 盯着这一点。
+	TCPFastOpen bool `json:"tcp_fast_open,omitempty"`
+	// UDPTimeout 是 UDP NAT 会话的最长驻留时间,取 Go 的时长写法("2m")。
+	//
+	// 用字符串而不是数字:sing-box 的这个字段在历史版本里既当过「秒」的整数,
+	// 又是现在的 Duration,而数字形式在两种解析下含义不同 ——
+	// 写错的表现是超时变成几十纳秒或几十小时,配置照样通过 check。
+	UDPTimeout string `json:"udp_timeout,omitempty"`
+
 	// Users 两种协议共用。字段按协议取舍,见 InboundUser。
 	//
 	// 没有 omitempty:空用户列表要显式渲染成 "users": [],不能整个消失。
