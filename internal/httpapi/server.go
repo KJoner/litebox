@@ -43,6 +43,7 @@ type Server struct {
 	settings     *settings.Store
 	tiers        *access.Store
 	external     *externalproxy.Service
+	profiles     *subscription.ProfileStore
 	portal       *portal.Service
 	portalAccts  *portal.Store
 	portalData   *portal.Querier
@@ -76,6 +77,9 @@ type Options struct {
 	Tiers     *access.Store
 	// External 为 nil 时外部代理相关路由整体不注册。
 	External *externalproxy.Service
+	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
+	// 而不是「页面在、点了报错」。
+	Profiles *subscription.ProfileStore
 	// Portal 三件套一起提供或一起省略。省略时门户路由整体不注册,
 	// 前端访问 /user/* 会拿到 404 —— 好过注册了半套接口再在运行时空指针。
 	Portal      *portal.Service
@@ -99,6 +103,7 @@ func NewServer(opts Options) *Server {
 		nodes:        opts.Nodes,
 		users:        opts.Users,
 		external:     opts.External,
+		profiles:     opts.Profiles,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
 		traffic:      opts.Traffic,
@@ -132,6 +137,12 @@ func (s *Server) Handler() http.Handler {
 	// 订阅端点不需要登录:凭据就是 URL 里的随机 Token。
 	if s.subs != nil {
 		mux.HandleFunc("GET /sub/{token}", s.handleSubscription)
+		// 配置文件订阅。两个 pattern 指向同一个处理器:末段的文件名只为了
+		// 让 URL 带上扩展名(客户端据此决定怎么处理),查找按 id ——
+		// 所以管理员改文件名不会让用户手里的链接失效,
+		// 而用户手滑删掉末段也仍然能拉到。
+		mux.HandleFunc("GET /sub/{token}/profile/{id}", s.handleProfileSubscription)
+		mux.HandleFunc("GET /sub/{token}/profile/{id}/{filename}", s.handleProfileSubscription)
 	}
 
 	// 需要登录的接口
@@ -224,6 +235,18 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/proxy-sources/{id}/preview",
 			longOperation(s.handlePreviewProxySource))
 		authed.HandleFunc("POST /api/proxy-sources/{id}/sync", longOperation(s.handleSyncProxySource))
+	}
+
+	// 配置文件订阅:管理员上传整份客户端配置,面板按用户替换占位符。
+	if s.profiles != nil {
+		authed.HandleFunc("GET /api/subscription-profiles", s.handleListProfiles)
+		authed.HandleFunc("POST /api/subscription-profiles", s.handleCreateProfile)
+		authed.HandleFunc("GET /api/subscription-profiles/placeholders", s.handleProfilePlaceholders)
+		authed.HandleFunc("POST /api/subscription-profiles/preview", s.handlePreviewProfile)
+		authed.HandleFunc("GET /api/subscription-profiles/{id}", s.handleGetProfile)
+		authed.HandleFunc("PUT /api/subscription-profiles/{id}", s.handleUpdateProfile)
+		authed.HandleFunc("DELETE /api/subscription-profiles/{id}", s.handleDeleteProfile)
+		authed.HandleFunc("POST /api/subscription-profiles/{id}/enabled", s.handleSetProfileEnabled)
 	}
 
 	if s.traffic != nil {

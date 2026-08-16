@@ -58,14 +58,15 @@ type Entry struct {
 	// 无法表达成 sing-box 出站(将来的外部代理可能用不认识的协议),
 	// 该格式下跳过它。
 	//
-	// 是函数而不是值:出站的 tag 要等全部条目收齐、去重之后才能确定。
+	// 是函数而不是值:出站的 tag 要等全部条目收齐、去重之后才能确定,
+	// detour 更要等到知道这份配置的落地前置组叫什么才能填。
 	// 返回具体结构体而不是 map —— map 序列化按键名字母序输出,
 	// 会把现有 VLESS 订阅里的字段顺序整个打乱,而那份内容是用户
 	// 已经导入到客户端里的东西。
 	//
 	// URI 与 Outbound 并存,而不是从 URI 反解出 outbound:反解是脆弱的
 	// (参数方言太多),而且反解失败时没有任何东西可以降级到。
-	Outbound func(tag string) any
+	Outbound func(o OutboundOptions) any
 }
 
 // EntryFor 把一个节点连同用户凭据转成订阅条目。
@@ -80,13 +81,13 @@ func EntryFor(cred Credentials, node Node) (Entry, error) {
 		return Entry{
 			DisplayName: node.DisplayName,
 			URI:         ShadowsocksURI(password, node),
-			Outbound:    func(tag string) any { return shadowsocksOutbound(tag, password, node) },
+			Outbound:    func(o OutboundOptions) any { return shadowsocksOutbound(o, password, node) },
 		}, nil
 	default:
 		return Entry{
 			DisplayName: node.DisplayName,
 			URI:         VLESSURI(cred.UUID, node),
-			Outbound:    func(tag string) any { return vlessOutbound(tag, cred.UUID, node) },
+			Outbound:    func(o OutboundOptions) any { return vlessOutbound(o, cred.UUID, node) },
 		}, nil
 	}
 }

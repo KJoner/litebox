@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -122,6 +123,79 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition",
 			fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(result.Body)
+}
+
+// handleProfileSubscription 是公开的配置文件订阅端点。
+//
+//	GET /sub/{token}/profile/{id}
+//	GET /sub/{token}/profile/{id}/{filename}
+//
+// 与节点订阅共用限流与缓存头:这份内容里同样有用户的凭据 ——
+// sing-box 配置里是 UUID 与 PSK,Clash 配置里是他的订阅地址,
+// 两者都等同密码。
+func (s *Server) handleProfileSubscription(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	ip := clientIP(r, s.trustProxy)
+
+	if !s.subLimiter.allow(ip, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeSubError(w, http.StatusTooManyRequests, "请求过于频繁,请稍后再试")
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+
+	if len(token) < 16 {
+		writeSubError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeSubError(w, http.StatusNotFound, "配置文件不存在")
+		return
+	}
+
+	result, err := s.subs.BuildProfile(r.Context(), token, id, s.baseURL(r.Context()))
+	if err != nil {
+		switch {
+		case errors.Is(err, subscription.ErrNotFound):
+			s.logger.Info("配置文件拉取失败:Token 无效", "ip", ip)
+			writeSubError(w, http.StatusNotFound, "订阅不存在")
+		case errors.Is(err, subscription.ErrProfileNotFound):
+			// 删掉或停用的模板按不存在处理 —— 管理员这么做就是要把它撤下来。
+			writeSubError(w, http.StatusNotFound, "配置文件不存在或已下架")
+		case errors.Is(err, subscription.ErrNotServiceable):
+			writeSubError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, subscription.ErrNotRenderable):
+			// 409 而不是 500:服务器没坏,是这个用户的节点凑不齐这份配置。
+			// 原因是写给用户看的完整句子,原样给出去。
+			s.logger.Info("配置文件对该用户不可生成", "ip", ip, "reason", err.Error())
+			writeSubError(w, http.StatusConflict, err.Error())
+		default:
+			s.logger.Error("生成配置文件失败", "error", err, "ip", ip)
+			writeSubError(w, http.StatusInternalServerError, "服务器内部错误")
+		}
+		return
+	}
+
+	if err := s.subs.RecordAccess(r.Context(), result.UserCode, ip, r.UserAgent()); err != nil {
+		s.logger.Warn("记录订阅访问失败", "user_code", result.UserCode, "error", err)
+	}
+	s.logger.Info("配置文件已下发",
+		"user_code", result.UserCode, "profile", result.ProfileName,
+		"bytes", len(result.Body), "ip", ip, "ua", r.UserAgent())
+
+	if result.UserInfo != "" {
+		w.Header().Set("Subscription-Userinfo", result.UserInfo)
+	}
+	w.Header().Set("Profile-Update-Interval", "24")
+	w.Header().Set("Content-Type", result.ContentType)
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	w.WriteHeader(http.StatusOK)
 	w.Write(result.Body)
 }

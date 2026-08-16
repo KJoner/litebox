@@ -660,6 +660,28 @@ export interface PortalSubscription {
   entry_count: number
   last_access_at: string | null
   access_count: number
+  /**
+   * 管理员配置的配置文件。一份都没配时是空数组,这一整块在页面上不出现 ——
+   * 不显示灰掉的按钮,也不显示「暂未配置」:用户对此做不了任何事。
+   */
+  profiles: PortalProfileLink[]
+}
+
+/**
+ * 门户里的一份配置文件。
+ *
+ * 刻意没有的东西:正文、内部名称、内部备注。
+ * available 为假时链接照常给出(它本身没变),但前端只展示原因。
+ */
+export interface PortalProfileLink {
+  id: number
+  kind: ProfileKind
+  name: string
+  description: string
+  filename: string
+  url: string
+  available: boolean
+  reason: string
 }
 
 export interface PortalSession {
@@ -889,6 +911,71 @@ export const LOCKABLE_FIELD_LABEL: Record<string, string> = {
   subscription_enabled: '下发订阅',
   sort_order: '排序',
   public_remark: '公开备注',
+}
+
+/* ---------------- 配置文件订阅 ---------------- */
+
+/**
+ * 配置文件订阅:管理员上传整份客户端配置,面板按用户替换占位符。
+ *
+ * 与节点订阅的分工 —— 节点订阅给的是一串节点,这个给的是一整份带
+ * 分流规则、DNS 与入站的配置。系统里不预置任何模板。
+ */
+export type ProfileKind = 'SINGBOX' | 'CLASH' | 'SHADOWROCKET'
+
+export const profileKindLabel: Record<ProfileKind, string> = {
+  SINGBOX: 'sing-box',
+  CLASH: 'Clash / mihomo',
+  SHADOWROCKET: '小火箭',
+}
+
+/** 每种类型在客户端里的用法不同,这句话直接决定用户会不会用错。 */
+export const profileKindHint: Record<ProfileKind, string> = {
+  SINGBOX: '整份配置里就是节点本身,导入后不需要再单独加节点订阅',
+  CLASH: '配置里的 proxy-providers 自己去拉节点,面板只替换其中的订阅地址',
+  SHADOWROCKET: '只有规则,节点要另外用「通用订阅」地址添加',
+}
+
+export interface SubscriptionProfile {
+  id: number
+  kind: ProfileKind
+  name: string
+  display_name: string
+  filename: string
+  /** 只有详情接口带正文;列表里是 undefined,不是空字符串 */
+  content?: string
+  content_bytes: number
+  singbox_landing_detour: string
+  description: string
+  remark: string
+  enabled: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ProfilePlaceholder {
+  name: string
+  description: string
+  kinds: ProfileKind[]
+  once: boolean
+}
+
+export interface ProfilePlaceholderInfo {
+  items: ProfilePlaceholder[]
+  default_filenames: Record<ProfileKind, string>
+  max_bytes: number
+  landing_keywords: string[]
+}
+
+export interface ProfilePreview {
+  rendered: string
+  /** 语法自检。不影响保存 —— 我们的检查一定比客户端严格 */
+  warning: { line: number; message: string } | null
+  sample_used: boolean
+  user_code: string
+  node_count: number
+  landing_count: number
 }
 
 export const api = {
@@ -1141,6 +1228,27 @@ export const api = {
     ),
   syncProxySource: (id: number) =>
     request<ProxySyncResult>(`/api/proxy-sources/${id}/sync`, { method: 'POST' }),
+
+  // 配置文件订阅
+  subscriptionProfiles: () =>
+    request<{ items: SubscriptionProfile[] }>('/api/subscription-profiles'),
+  subscriptionProfile: (id: number) =>
+    request<SubscriptionProfile>(`/api/subscription-profiles/${id}`),
+  createSubscriptionProfile: (body: Record<string, unknown>) =>
+    request<SubscriptionProfile>('/api/subscription-profiles', { method: 'POST', body }),
+  updateSubscriptionProfile: (id: number, body: Record<string, unknown>) =>
+    request<SubscriptionProfile>(`/api/subscription-profiles/${id}`, { method: 'PUT', body }),
+  deleteSubscriptionProfile: (id: number) =>
+    request<{ message: string }>(`/api/subscription-profiles/${id}`, { method: 'DELETE' }),
+  setSubscriptionProfileEnabled: (id: number, enabled: boolean) =>
+    request<SubscriptionProfile>(`/api/subscription-profiles/${id}/enabled`, {
+      method: 'POST',
+      body: { enabled },
+    }),
+  /** 占位符说明由后端给,前端不另写一份 —— 两处会分叉 */
+  profilePlaceholders: () => request<ProfilePlaceholderInfo>('/api/subscription-profiles/placeholders'),
+  previewSubscriptionProfile: (body: Record<string, unknown>) =>
+    request<ProfilePreview>('/api/subscription-profiles/preview', { method: 'POST', body }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),

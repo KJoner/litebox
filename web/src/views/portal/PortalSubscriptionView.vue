@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { portalApi, ApiError, type PortalSubscription } from '@/api/client'
+import {
+  portalApi,
+  ApiError,
+  profileKindHint,
+  profileKindLabel,
+  type PortalSubscription,
+} from '@/api/client'
 import { LbCopyField, LbEmptyState, LbTimeText, lbDangerConfirm } from '@/components/lb'
 
 /**
@@ -58,6 +64,13 @@ const formats = computed(() => {
     },
   ]
 })
+
+/**
+ * 配置文件。管理员一份都没配时,整块不出现 ——
+ * 不显示灰掉的按钮,也不显示「暂未配置」:用户对此做不了任何事,
+ * 写出来只会让他来问。
+ */
+const profiles = computed(() => (data.value?.available ? (data.value.profiles ?? []) : []))
 
 function regenerate() {
   lbDangerConfirm({
@@ -123,7 +136,7 @@ function regenerate() {
     <template v-else>
       <section class="ps__card">
         <div class="ps__card-head">
-          <span>按客户端选择格式</span>
+          <span>节点订阅</span>
           <span class="ps__card-note">不确定选哪个?多数客户端用第一个</span>
         </div>
         <div class="ps__card-body">
@@ -158,6 +171,42 @@ function regenerate() {
         </div>
       </section>
 
+      <!--
+        配置文件与上面的节点订阅是两件事:上面导进去是一串节点,
+        这里导进去会替换掉整份配置(分流规则、DNS、代理方式都在里面)。
+        并排放在同一张卡里会让人随便点一个。
+      -->
+      <section v-if="profiles.length" class="ps__card">
+        <div class="ps__card-head">
+          <span>配置文件</span>
+          <span class="ps__card-note">已经配好分流规则,适合不想自己折腾的人</span>
+        </div>
+        <div class="ps__card-body">
+          <div class="ps__note">
+            这些是<strong>整份配置</strong>,导入后会替换客户端里的规则设置,
+            和上面的节点订阅不是一回事。按你用的客户端选一个,
+            <strong>只需要选一个</strong>。
+          </div>
+
+          <div v-for="p in profiles" :key="p.id" class="ps__fmt">
+            <div class="ps__fmt-head">
+              <span class="ps__fmt-name">{{ p.name }}</span>
+              <span class="ps__fmt-apps">{{ profileKindLabel[p.kind] }}</span>
+            </div>
+            <div class="ps__fmt-hint">{{ p.description || profileKindHint[p.kind] }}</div>
+
+            <LbCopyField v-if="p.available" :value="p.url" middle-ellipsis button-text="复制" />
+            <!--
+              不可用时不给一个点了会报错的复制按钮:置灰只传达「现在不能点」,
+              传达不了「为什么」。原因是后端真的渲染过一遍得出来的。
+            -->
+            <div v-else class="ps__fmt-blocked">
+              <strong>这一份暂时不能用。</strong>{{ p.reason }}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="ps__card">
         <div class="ps__card-head"><span>怎么用</span></div>
         <div class="ps__card-body">
@@ -166,6 +215,14 @@ function regenerate() {
             <li>在客户端里新增订阅并粘贴。</li>
             <li>节点有变动时,客户端里手动更新一次订阅才能看到 —— 面板不会主动推给你。</li>
           </ol>
+          <!--
+            小火箭把「配置」与「节点」分成两处,这是它最容易卡住人的地方:
+            只导了配置会发现一个节点都没有,而界面上没有任何提示。
+          -->
+          <div v-if="profiles.some((p) => p.kind === 'SHADOWROCKET')" class="ps__note">
+            用<strong>小火箭</strong>的话要做两次:配置文件在「配置」里添加,
+            节点用上面的<strong>通用订阅</strong>地址在首页添加。少做一步就会发现没有节点可选。
+          </div>
         </div>
       </section>
 
@@ -323,6 +380,22 @@ function regenerate() {
 .ps__fmt-apps {
   font-size: 11.5px;
   color: #6b7480;
+}
+
+.ps__fmt-hint {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #576070;
+}
+
+.ps__fmt-blocked {
+  padding: 9px 11px;
+  background: #f1f3f5;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.8;
+  color: #5c6672;
 }
 
 .ps__note {

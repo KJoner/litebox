@@ -56,6 +56,9 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
       // 管理员读预警、读审计时每一次都要先判断说的是哪一类。
       { key: 'nodes', label: '自建节点', badge: counts.value.nodes },
       { key: 'external-proxies', label: '外部代理', badge: counts.value.external },
+      // 排在两类线路之后:管理员的工作流是配节点 → 配外部代理 →
+      // 配这些东西怎么发出去。
+      { key: 'subscription-profiles', label: '订阅配置' },
     ],
   },
   {

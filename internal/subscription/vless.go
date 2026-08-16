@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/litebox/litebox/internal/singbox"
 )
@@ -122,6 +123,9 @@ func hostForURI(host string) string {
 }
 
 // clientOutbound 是 sing-box 客户端配置中的一个 VLESS 出站。
+//
+// Detour 排在最后且 omitempty:只有配置文件订阅里的落地节点会填它,
+// 空的时候整个字段不出现 —— 内置订阅的渲染结果因此与 V4 时逐字节相同。
 type clientOutbound struct {
 	Type       string    `json:"type"`
 	Tag        string    `json:"tag"`
@@ -130,6 +134,7 @@ type clientOutbound struct {
 	UUID       string    `json:"uuid"`
 	Flow       string    `json:"flow"`
 	TLS        clientTLS `json:"tls"`
+	Detour     string    `json:"detour,omitempty"`
 }
 
 type clientTLS struct {
@@ -150,10 +155,10 @@ type clientReality struct {
 	ShortID   string `json:"short_id"`
 }
 
-func vlessOutbound(tag, uuid string, node Node) clientOutbound {
+func vlessOutbound(o OutboundOptions, uuid string, node Node) clientOutbound {
 	return clientOutbound{
 		Type:       "vless",
-		Tag:        tag,
+		Tag:        o.Tag,
 		Server:     node.Host,
 		ServerPort: node.Port,
 		UUID:       uuid,
@@ -168,6 +173,7 @@ func vlessOutbound(tag, uuid string, node Node) clientOutbound {
 				ShortID:   node.RealityShortID,
 			},
 		},
+		Detour: o.Detour,
 	}
 }
 
@@ -186,21 +192,31 @@ func uniqueTag(name string, index int, used map[string]bool) string {
 	return candidate
 }
 
+// sanitizeTag 只去掉控制字符,其余一律保留。
+//
+// sing-box 的 tag 就是一个 JSON 字符串,空格、@、.、: 、方括号都合法 ——
+// 用户给的示例配置里就有 "🇦🇷 JMS-822857@c60s1.portablesubmarines.com:7839"
+// 这样的 tag。原来那套白名单(只留字母数字、空格换成短横)有两个实际代价:
+//
+//   - 机场导入的名字被改得面目全非:「香港 01 [倍率2.0]」变成
+//     「香港-01-倍率20」,而同一条在 Clash 与 v2rayN 里是原名 ——
+//     用户会以为那是两个不同的节点;
+//   - **管理员在自己的模板里手写分组时对不上**。我们的占位符只覆盖
+//     「全部 / 落地 / 非落地」三种分法,想再分一个「专线组」只能手写 tag,
+//     而他手边只有面板上显示的名字。
+//
+// 代价是存量用户的内置 sing-box 订阅里 tag 会变一次(「香港-01」→「香港 01」),
+// 客户端里选中的节点会退回默认。一次性的,而且看得见、两下就能改回来。
+//
+// 控制字符必须去掉:它们能过 JSON 转义,但会让配置在终端里 cat 出来时错行,
+// 排查问题的人第一眼就被带偏。
 func sanitizeTag(name string) string {
 	out := make([]rune, 0, len(name))
 	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			out = append(out, r)
-		case r == '-', r == '_':
-			out = append(out, r)
-		case r > 127:
-			// 中文等非 ASCII 字符保留:sing-box 的 tag 允许 UTF-8,
-			// 保留后用户在客户端里看到的名字与面板一致。
-			out = append(out, r)
-		case r == ' ':
-			out = append(out, '-')
+		if r < 0x20 || r == 0x7F {
+			continue
 		}
+		out = append(out, r)
 	}
-	return string(out)
+	return strings.TrimSpace(string(out))
 }

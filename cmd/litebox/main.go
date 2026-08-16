@@ -472,6 +472,8 @@ func cmdServe(args []string) error {
 		LoginWindow: cfg.Security.LoginWindow,
 	})
 
+	profileStore := subscription.NewProfileStore(db)
+
 	server := httpapi.NewServer(httpapi.Options{
 		Config:   cfg,
 		DB:       db,
@@ -480,8 +482,10 @@ func cmdServe(args []string) error {
 		Nodes:    nodeService,
 		Users:    userService,
 		External: externalService,
+		Profiles: profileStore,
 		Subs: subscription.NewService(
-			db, userStore, cipher, cfg.Subscription.ClientMixedPort, settingsStore, logger),
+			db, userStore, cipher, cfg.Subscription.ClientMixedPort,
+			settingsStore, profileStore, logger),
 		Traffic:   traffic.NewQuerier(db),
 		Scheduler: scheduler,
 		Metrics:   metricsStore,

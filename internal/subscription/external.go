@@ -63,8 +63,8 @@ func EntryForExternal(p ExternalProxy) (Entry, error) {
 	return Entry{
 		DisplayName: p.DisplayName,
 		URI:         uri,
-		Outbound: func(tag string) any {
-			return externalShadowsocksOutbound(tag, p)
+		Outbound: func(o OutboundOptions) any {
+			return externalShadowsocksOutbound(o, p)
 		},
 	}, nil
 }
@@ -89,14 +89,15 @@ func replaceFragment(uri, name string) string {
 // plugin 原样带上:sing-box 认识 obfs-local 与 v2ray-plugin,
 // 丢掉它会让带混淆的机场节点在 sing-box 客户端里连不上,
 // 而同一条在 v2rayN 里(走 URI 原文)是好的 —— 两个用户会各执一词。
-func externalShadowsocksOutbound(tag string, p ExternalProxy) clientSSOutbound {
+func externalShadowsocksOutbound(o OutboundOptions, p ExternalProxy) clientSSOutbound {
 	out := clientSSOutbound{
 		Type:       "shadowsocks",
-		Tag:        tag,
+		Tag:        o.Tag,
 		Server:     p.Server,
 		ServerPort: p.Port,
 		Method:     p.Params.Method,
 		Password:   p.Params.Password,
+		Detour:     o.Detour,
 	}
 	out.Plugin = p.Params.Plugin
 	out.PluginOpts = p.Params.PluginOpts

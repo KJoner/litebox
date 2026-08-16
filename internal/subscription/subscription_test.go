@@ -142,9 +142,11 @@ func TestSingBoxClientConfigStructure(t *testing.T) {
 	if !ok {
 		t.Fatal("缺少 outbounds")
 	}
-	// 两个节点 + selector + urltest + direct + block
-	if len(outbounds) != 6 {
-		t.Fatalf("出站数量 = %d,期望 6", len(outbounds))
+	// 两个节点 + selector + urltest + direct。
+	// **没有 block** —— 它从 sing-box 1.11 起弃用、1.13 移除,
+	// 而这份配置里从来没有任何规则引用过它。
+	if len(outbounds) != 5 {
+		t.Fatalf("出站数量 = %d,期望 5", len(outbounds))
 	}
 
 	var vlessCount int
@@ -173,10 +175,14 @@ func TestSingBoxClientConfigStructure(t *testing.T) {
 	if vlessCount != 2 {
 		t.Errorf("VLESS 出站数 = %d", vlessCount)
 	}
-	for _, tag := range []string{tagSelect, tagAuto, tagDirect, tagBlock} {
+	for _, tag := range []string{tagSelect, tagAuto, tagDirect} {
 		if !tags[tag] {
 			t.Errorf("缺少出站 %s", tag)
 		}
+	}
+	// 钉住 block 不再出现:装了新版客户端的用户会因为这一行直接启动失败。
+	if tags[tagBlock] {
+		t.Error("配置里仍然输出了 block 出站,新版 sing-box 会拒绝启动")
 	}
 
 	inbounds := cfg["inbounds"].([]any)
@@ -229,8 +235,8 @@ func TestSingBoxClientConfigWithNoNodes(t *testing.T) {
 		t.Fatalf("无节点时产出非法 JSON: %v", err)
 	}
 	// 仍应是结构完整的配置,只是没有可选节点。
-	if len(cfg["outbounds"].([]any)) != 4 {
-		t.Errorf("无节点时出站数 = %d,期望 4(selector/urltest/direct/block)",
+	if len(cfg["outbounds"].([]any)) != 3 {
+		t.Errorf("无节点时出站数 = %d,期望 3(selector/urltest/direct)",
 			len(cfg["outbounds"].([]any)))
 	}
 }
@@ -269,7 +275,9 @@ func newSubEnv(t *testing.T) *subEnv {
 	cipher, _ := crypto.NewCipher(key)
 	store := user.NewStore(db, cipher)
 	return &subEnv{
-		db: db, svc: NewService(db, store, cipher, 2080, settings.NewStore(db, cipher), nil), store: store, cipher: cipher,
+		db:    db,
+		svc:   NewService(db, store, cipher, 2080, settings.NewStore(db, cipher), NewProfileStore(db), nil),
+		store: store, cipher: cipher,
 	}
 }
 
