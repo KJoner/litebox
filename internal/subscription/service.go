@@ -70,19 +70,22 @@ type Service struct {
 	// mixedPort 是 sing-box 客户端配置里本地混合入站的端口。
 	mixedPort int
 	settings  *settings.Store
-	logger    *slog.Logger
+	// profiles 是配置文件模板。为 nil 时配置文件订阅整体不可用 ——
+	// 那是「没配」而不是「坏了」,门户上对应的整块不出现。
+	profiles *ProfileStore
+	logger   *slog.Logger
 }
 
 func NewService(
 	db *sql.DB, users *user.Store, cipher *crypto.Cipher, mixedPort int,
-	set *settings.Store, logger *slog.Logger,
+	set *settings.Store, profiles *ProfileStore, logger *slog.Logger,
 ) *Service {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Service{
 		db: db, users: users, cipher: cipher, mixedPort: mixedPort,
-		settings: set, logger: logger,
+		settings: set, profiles: profiles, logger: logger,
 	}
 }
 
@@ -116,18 +119,10 @@ func (s *Service) Build(ctx context.Context, token string, format Format) (Resul
 		return Result{}, fmt.Errorf("%w:%s", ErrNotServiceable, statusReason(u))
 	}
 
-	nodes, err := s.nodesFor(ctx, u.ID)
+	entries, err := s.buildEntries(ctx, u)
 	if err != nil {
 		return Result{}, err
 	}
-	external, err := s.externalFor(ctx, u.ID)
-	if err != nil {
-		return Result{}, err
-	}
-
-	entries := s.mergeEntries(ctx,
-		s.entriesFor(Credentials{UUID: u.UUID, SSPassword: u.SSPassword}, nodes),
-		s.externalEntries(external))
 
 	result := Result{
 		NodeCount: len(entries),
@@ -155,6 +150,25 @@ func (s *Service) Build(ctx context.Context, token string, format Format) (Resul
 		result.ContentType = "text/plain; charset=utf-8"
 	}
 	return result, nil
+}
+
+// buildEntries 组装一个用户的全部订阅条目(自建节点 + 外部代理,已按分组排序)。
+//
+// 节点订阅与配置文件订阅共用它 —— 各查一遍的话,两种订阅里的节点集合
+// 会在某次改动后悄悄分叉,而用户看到的是「Clash 里有六个节点、
+// sing-box 配置里只有五个」,两边都不报错。
+func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, error) {
+	nodes, err := s.nodesFor(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	external, err := s.externalFor(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	return s.mergeEntries(ctx,
+		s.entriesFor(Credentials{UUID: u.UUID, SSPassword: u.SSPassword}, nodes),
+		s.externalEntries(external)), nil
 }
 
 // entriesFor 把节点列表转成订阅条目。

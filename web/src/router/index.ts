@@ -44,6 +44,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '外部代理' },
       },
       {
+        path: '/subscription-profiles',
+        name: 'subscription-profiles',
+        component: () => import('@/views/SubscriptionProfilesView.vue'),
+        meta: { title: '订阅配置' },
+      },
+      {
         path: '/deployments',
         name: 'deployments',
         component: () => import('@/views/DeploymentsView.vue'),

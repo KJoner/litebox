@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -50,14 +52,50 @@ func (s *Server) handlePortalTraffic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, data)
 }
 
+// portalSubscriptionResponse 在门户订阅数据上补一段配置文件。
+//
+// 匿名嵌入让两部分在 JSON 里平铺成一个对象,前端不用为此多一层。
+// 分成两块而不是混进现有的三种格式:那三种是「节点订阅」,
+// 导进客户端得到的是一串节点;配置文件导进去会替换掉整份配置,
+// 包括分流规则、DNS 与入站 —— 并排放着会让用户随便点一个。
+type portalSubscriptionResponse struct {
+	*portal.Subscription
+	Profiles []subscription.ProfileLink `json:"profiles"`
+}
+
 func (s *Server) handlePortalSubscription(w http.ResponseWriter, r *http.Request) {
 	identity := portalFromContext(r.Context())
-	data, err := s.portalData.Subscription(r.Context(), identity.ProxyUserID, s.baseURL(r.Context()))
+	data, err := s.portalSubscription(r, identity.ProxyUserID)
 	if err != nil {
 		s.writePortalError(w, err, "查询门户订阅失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
+}
+
+func (s *Server) portalSubscription(r *http.Request, proxyUserID int64) (portalSubscriptionResponse, error) {
+	base := s.baseURL(r.Context())
+	data, err := s.portalData.Subscription(r.Context(), proxyUserID, base)
+	if err != nil {
+		return portalSubscriptionResponse{}, err
+	}
+	resp := portalSubscriptionResponse{
+		Subscription: data,
+		// 空切片而不是 nil:nil 序列化成 JSON null,而前端把它当数组用。
+		Profiles: []subscription.ProfileLink{},
+	}
+	if s.subs == nil {
+		return resp, nil
+	}
+	links, err := s.subs.ProfileLinks(r.Context(), proxyUserID, base)
+	if err != nil {
+		// 配置文件读不出来不该让整个订阅页失败 —— 那一页真正要紧的是
+		// 上面那个节点订阅地址,而它已经拿到了。
+		s.logger.Error("查询门户配置文件失败", "error", err)
+		return resp, nil
+	}
+	resp.Profiles = links
+	return resp, nil
 }
 
 // handlePortalRegenerateSubToken 让用户自助重置订阅地址。
@@ -70,7 +108,9 @@ func (s *Server) handlePortalRegenerateSubToken(w http.ResponseWriter, r *http.R
 		s.writePortalError(w, err, "重置订阅地址失败")
 		return
 	}
-	data, err := s.portalData.Subscription(r.Context(), identity.ProxyUserID, s.baseURL(r.Context()))
+	// 配置文件的链接里也带着 Token,必须一起换成新的 ——
+	// 只换上面三条的话,用户复制下面那几条会得到一个已经失效的地址。
+	data, err := s.portalSubscription(r, identity.ProxyUserID)
 	if err != nil {
 		s.writePortalError(w, err, "重置订阅地址失败")
 		return

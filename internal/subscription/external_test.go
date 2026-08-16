@@ -94,7 +94,7 @@ func TestExternalOutboundCarriesPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := entry.Outbound("t").(clientSSOutbound)
+	out := entry.Outbound(OutboundOptions{Tag: "t"}).(clientSSOutbound)
 	if out.Plugin != "obfs-local" || out.PluginOpts != "obfs=http;obfs-host=www.bing.com" {
 		t.Errorf("插件参数丢了:%+v", out)
 	}
@@ -103,7 +103,7 @@ func TestExternalOutboundCarriesPlugin(t *testing.T) {
 	}
 	// 自建节点的出站不该多出这几个字段 —— 加了 omitempty,
 	// 渲染结果与 V4 第一块时逐字节相同。
-	plain := shadowsocksOutbound("t", "pw", Node{Host: "1.2.3.4", Port: 443})
+	plain := shadowsocksOutbound(OutboundOptions{Tag: "t"}, "pw", Node{Host: "1.2.3.4", Port: 443})
 	raw, _ := json.Marshal(plain)
 	for _, key := range []string{"plugin", "plugin_opts", "udp_over_tcp"} {
 		if strings.Contains(string(raw), key) {

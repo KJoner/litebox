@@ -97,7 +97,7 @@ func TestShadowsocksURIPasswordMatchesSingboxHelper(t *testing.T) {
 	}
 
 	// sing-box 出站里的那一份同样要一致。
-	out := entry.Outbound("t").(clientSSOutbound)
+	out := entry.Outbound(OutboundOptions{Tag: "t"}).(clientSSOutbound)
 	if out.Password != want {
 		t.Errorf("出站里的 password = %q,期望 %q", out.Password, want)
 	}
@@ -143,7 +143,7 @@ func TestShadowsocksIPv6BracketsOnlyInURI(t *testing.T) {
 		t.Errorf("IPv6 的 ss:// 无法解析: %v", err)
 	}
 
-	out := entry.Outbound("t").(clientSSOutbound)
+	out := entry.Outbound(OutboundOptions{Tag: "t"}).(clientSSOutbound)
 	if out.Server != "2001:db8::1" {
 		t.Errorf("sing-box 出站的 server = %q,不该带方括号", out.Server)
 	}

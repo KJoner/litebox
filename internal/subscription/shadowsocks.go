@@ -70,6 +70,8 @@ type clientSSOutbound struct {
 	Plugin     string      `json:"plugin,omitempty"`
 	PluginOpts string      `json:"plugin_opts,omitempty"`
 	UDPOverTCP *udpOverTCP `json:"udp_over_tcp,omitempty"`
+	// Detour 只有配置文件订阅里的落地节点会填,空时整个字段不出现。
+	Detour string `json:"detour,omitempty"`
 }
 
 type udpOverTCP struct {
@@ -80,13 +82,14 @@ type udpOverTCP struct {
 //
 // server 用不带方括号的原始地址:方括号只属于 URI 语法。
 // 加了括号的话客户端解析不出地址,而订阅照常下发,面板一个错都不报。
-func shadowsocksOutbound(tag, password string, node Node) clientSSOutbound {
+func shadowsocksOutbound(o OutboundOptions, password string, node Node) clientSSOutbound {
 	return clientSSOutbound{
 		Type:       "shadowsocks",
-		Tag:        tag,
+		Tag:        o.Tag,
 		Server:     node.Host,
 		ServerPort: node.Port,
 		Method:     string(node.SSMethod),
 		Password:   password,
+		Detour:     o.Detour,
 	}
 }
