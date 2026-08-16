@@ -16,10 +16,12 @@ import {
   type NodeMetrics,
   type NodeProtocol,
   type ProbeResult,
+  type TuneReport,
 } from '@/api/client'
 import { formatBytes, formatDuration, shortHash } from '@/utils/format'
 import DeployStepList from '@/components/DeployStepList.vue'
 import MetricsChart from '@/components/MetricsChart.vue'
+import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
 import {
   LbEmptyState,
   LbNameConfirm,
@@ -32,6 +34,7 @@ import {
   type LbPoint,
 } from '@/components/lb'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
+import { useNarrow } from '@/composables/useNarrow'
 import { color, threshold, usageColor } from '@/theme/tokens'
 
 /**
@@ -46,6 +49,13 @@ import { color, threshold, usageColor } from '@/theme/tokens'
  */
 const props = defineProps<{ nodeId: number | null; tiers: AccessTier[] }>()
 const emit = defineEmits<{ close: []; changed: []; edit: [node: Node] }>()
+
+/**
+ * 抽屉宽度。窄屏必须占满,不能固定 720 ——
+ * 390 宽的屏幕上,固定宽度会让内容左半边整个滑出可视区,
+ * 而抽屉里横向滚动条并不明显,看起来就是"字被切掉了一半"。
+ */
+const narrow = useNarrow()
 
 const node = ref<Node | null>(null)
 const loading = ref(false)
@@ -125,8 +135,9 @@ const sshResult = ref<{ ok: boolean; text: string } | null>(null)
 const probe = ref<ProbeResult | null>(null)
 const diff = ref<ConfigDiff | null>(null)
 const destResults = ref<DestCheckResult[]>([])
+const tuning = ref<TuneReport | null>(null)
 /** 当前展开的结果面板。同一时刻只显示一个,免得往下堆四块。 */
-const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest'>('')
+const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest' | 'tune'>('')
 
 async function readonlyAction(
   label: string,
@@ -171,6 +182,17 @@ const doDiff = () =>
 const doScanDests = () =>
   readonlyAction('扫描握手目标', 'dest', async () => {
     destResults.value = (await api.scanNodeDests(props.nodeId!)).items
+  })
+
+/**
+ * TCP 调优。按钮本身是只读的:它只采集这台机器的事实、算出方案、逐项与
+ * 当前值对比。要不要写下去在面板里另有一个带影响范围的确认 ——
+ * 一个直接下发的「一键优化」在 128MB 小鸡与 4GB 机器上写的是完全不同的值,
+ * 而两次点击看起来一模一样。
+ */
+const doTuning = () =>
+  readonlyAction('TCP 调优检查', 'tune', async () => {
+    tuning.value = await api.tuningPreview(props.nodeId!)
   })
 
 const doSyncTraffic = () =>
@@ -547,6 +569,7 @@ watch(
     probe.value = null
     diff.value = null
     destResults.value = []
+    tuning.value = null
     sshResult.value = null
     panel.value = ''
     metricsHistory.value = []
@@ -584,7 +607,7 @@ const subEntries = computed(() => {
        右上角的 × 照常可用:那是明确的关闭意图,不是误触。 -->
   <a-drawer
     :open="nodeId !== null"
-    :width="720"
+    :width="narrow ? '100%' : 720"
     :mask-closable="running === ''"
     :keyboard="running === ''"
     :body-style="{ padding: '0 20px 20px' }"
@@ -713,6 +736,15 @@ const subEntries = computed(() => {
         <a-button size="small" :loading="running === '同步流量'" @click="doSyncTraffic">同步流量</a-button>
         <a-button size="small" :loading="running === '采集资源'" @click="doCollectMetrics">
           采集资源
+        </a-button>
+        <!-- 这一下只是算方案并与当前值对比,不写节点。要不要应用在面板里另点。 -->
+        <a-button
+          size="small"
+          :loading="running === 'TCP 调优检查'"
+          title="按这台机器的内存现算一份内核参数方案,先看后应用"
+          @click="doTuning"
+        >
+          TCP 调优
         </a-button>
         <!-- 正在跑什么必须写出来。只有按钮上一个小转圈的话,管理员会以为没点上
              而反复点,也不明白为什么这时候点别处关不掉抽屉。 -->
@@ -864,6 +896,16 @@ const subEntries = computed(() => {
           这也是编辑表单里不让改握手目标的原因。
         </div>
       </section>
+
+      <NodeTuningPanel
+        v-else-if="panel === 'tune' && tuning"
+        :node-id="node.id"
+        :node-name="node.display_name || node.name"
+        :report="tuning"
+        @update:report="(r) => (tuning = r)"
+        @busy="(label) => (running = label)"
+        @close="panel = ''"
+      />
 
       <a-tabs v-model:activeKey="tab" size="small">
         <a-tab-pane key="overview" tab="概览">

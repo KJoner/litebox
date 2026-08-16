@@ -385,6 +385,70 @@ export interface DestCheckResult {
   checked_at: string
 }
 
+/**
+ * TCP 调优单项的状态。
+ *
+ * UNSUPPORTED 与 READONLY 不能混:前者是这个内核压根没有这个键,后者是
+ * 键在但由宿主机控制(容器)。两者都不是故障,但给管理员的结论不一样 ——
+ * 前者换内核才有,后者换机器才有。
+ */
+export type TuneState =
+  | 'PENDING'
+  | 'SAME'
+  | 'APPLIED'
+  | 'UNSUPPORTED'
+  | 'READONLY'
+  | 'FAILED'
+
+export interface TuneItem {
+  group: string
+  key: string
+  desired: string
+  current: string
+  /** 这个数字是怎么算出来的。它同时被写进节点上的 conf 文件 */
+  reason: string
+  state: TuneState
+  detail: string
+}
+
+export interface TuneFacts {
+  os_name: string
+  kernel: string
+  virt: string
+  init_system: string
+  mem_total_kb: number
+  cpu_count: number
+  disk_total_kb: number
+  disk_free_kb: number
+  cc_available: string[]
+  cc_current: string
+  qdisc_now: string
+  reserved_now: string
+  /** 节点上 sing-box 进程**实际**的句柄上限,进程没跑时为 0 */
+  nofile_limit: number
+  has_sysctl: boolean
+}
+
+export interface TuneReport {
+  node_id: number
+  mode: 'PREVIEW' | 'APPLY' | 'RESTORE'
+  facts: TuneFacts
+  profile: string
+  items: TuneItem[]
+  warnings: string[]
+  /** 刻意没做的事及其原因。不显示的话下一个人会以为是漏了 */
+  notes: string[]
+  conf_path: string
+  tuned_at: string
+  baseline_present: boolean
+  changed: boolean
+  summary: string
+  generated_at: string
+}
+
+// 状态的文案不在这里定义:它与形状、颜色是同一个三重编码的三面,
+// 拆开放两处迟早会出现「文案改了形状没改」。见 NodeTuningPanel 的 stateMeta。
+
 export interface DeployStep {
   name: string
   status: 'SUCCESS' | 'FAILED' | 'SKIPPED'
@@ -1088,6 +1152,14 @@ export const api = {
     ),
   destCandidates: () =>
     request<{ items: string[]; max_record_size: number }>('/api/dest-candidates'),
+
+  // TCP 调优。preview 只读,apply/restore 会改节点上的内核参数。
+  tuningPreview: (id: number) =>
+    request<TuneReport>(`/api/nodes/${id}/tcp-tuning/preview`, { method: 'POST' }),
+  tuningApply: (id: number) =>
+    request<TuneReport>(`/api/nodes/${id}/tcp-tuning/apply`, { method: 'POST' }),
+  tuningRestore: (id: number) =>
+    request<TuneReport>(`/api/nodes/${id}/tcp-tuning/restore`, { method: 'POST' }),
 
   // 流量与部署
   deployments: (limit = 50) =>

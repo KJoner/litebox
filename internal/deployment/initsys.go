@@ -205,6 +205,16 @@ func (OpenRC) logPath(layout Layout) string {
 // 用 supervise-daemon 而不是默认的 start-stop-daemon:前者常驻监督进程,
 // 崩溃后按 respawn_delay 自动拉起,与 systemd 的 Restart=on-failure 等价。
 // 少了它,节点上的 sing-box 一旦 OOM 就再也不会自己起来。
+//
+// rc_ulimit 是 systemd 单元里 LimitNOFILE=infinity 的 OpenRC 对应物。
+// 没有它,sing-box 继承的是 OpenRC 的默认 1024:一条代理连接占两个句柄,
+// 五百条并发就到顶,之后新连接被直接拒绝,而日志里只有一句
+// too many open files —— 看起来像网络问题,查的却是错的方向。
+//
+// 取 65536 而不是跟 systemd 那样"无限":这个值由 shell 的 ulimit 执行,
+// 失败会让整个服务起不来,而 65536 远低于 fs.nr_open 的默认上限,
+// 在任何内核上都不会被拒。128MB 的机器也用不到更多 —— 每条 socket
+// 光内核缓冲就要几 KB,句柄没耗尽之前内存先没了。
 const openrcScriptTemplate = `#!/sbin/openrc-run
 
 name="%s"
@@ -216,6 +226,8 @@ command_args="run -c %s"
 supervisor="supervise-daemon"
 respawn_delay=3
 respawn_max=0
+
+rc_ulimit="-n 65536"
 
 output_log="%s"
 error_log="%s"

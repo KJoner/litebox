@@ -171,6 +171,11 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/deploy", longOperation(s.handleDeployNode))
 		authed.HandleFunc("POST /api/nodes/{id}/restart", longOperation(s.handleRestartNode))
 		authed.HandleFunc("POST /api/nodes/{id}/reset-host-key", s.handleResetNodeHostKey)
+		// TCP 调优。preview 是只读的,apply/restore 会改节点上的内核参数,
+		// 三者都要连 SSH 跑好几轮命令,统一走 longOperation。
+		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/preview", longOperation(s.handleNodeTuningPreview))
+		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/apply", longOperation(s.handleNodeTuningApply))
+		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/restore", longOperation(s.handleNodeTuningRestore))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
 		authed.HandleFunc("GET /api/nodes/{id}/config-diff", longOperation(s.handleNodeConfigDiff))
 		authed.HandleFunc("GET /api/deployments", s.handleRecentDeployments)

@@ -22,6 +22,10 @@ func TestOpenRCScriptShape(t *testing.T) {
 		`supervisor="supervise-daemon"`,
 		// OpenRC 没有 journald,不显式指定日志就等于把排查材料直接丢掉。
 		`output_log="/var/log/litebox-singbox.log"`,
+		// 句柄上限是 systemd 单元里 LimitNOFILE=infinity 的对应物。
+		// 少了它,sing-box 继承 OpenRC 默认的 1024,五百条并发就到顶,
+		// 而日志里只有一句 too many open files。
+		`rc_ulimit="-n 65536"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("服务脚本缺少 %s", want)
