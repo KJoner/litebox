@@ -42,6 +42,12 @@ type NodeParams struct {
 	LogLevel   string
 	Users      []User
 
+	// TCPFastOpen 由管理员按机器决定,默认关。见迁移 0017 的说明。
+	TCPFastOpen bool
+	// MemTotalMB 是探测到的节点内存,0 表示还没探测过。
+	// 它只用来算 UDPTimeout —— 没探测过就不写那一项,由 sing-box 用默认值。
+	MemTotalMB int
+
 	// 以下只有 VLESS_REALITY 用。
 	RealityDest       string
 	RealityPort       int
@@ -115,11 +121,42 @@ func Render(params NodeParams) (Config, error) {
 	return cfg, nil
 }
 
+// UDPTimeoutFor 按节点内存给出 UDP NAT 会话的最长驻留时间。
+//
+// 每条 UDP 会话在超时之前都占着一个出站 socket 与若干 Go 侧结构。QUIC 让
+// 现在几乎每个网页都开 UDP,会话数在小内存机器上能堆到四位数 —— 5 分钟的
+// 默认值意味着这堆东西要留五分钟。压短它不是为了省下多少 MB,
+// 而是给「最多同时存在多少条」定一个更小的上界。
+//
+// 返回空串表示不写这一项:
+//
+//	内存 0     没探测过。不猜 —— 与 TCP 调优里"读不到内存就中止"是同一条规矩
+//	内存 > 512 算出来就是 sing-box 自己的默认值(5m)
+//
+// 后一种情况尤其重要:写一个与默认值相同的字段,行为一个字节都不变,
+// 却会改掉配置哈希 —— 于是全站每台机器都显示「待部署」,而部署下去什么也没发生。
+func UDPTimeoutFor(memMB int) string {
+	switch {
+	case memMB <= 0:
+		return ""
+	case memMB <= 256:
+		return "2m"
+	case memMB <= 512:
+		return "3m"
+	default:
+		return ""
+	}
+}
+
 func buildInbound(params NodeParams, users []User) (Inbound, error) {
 	base := Inbound{
 		Tag:        params.Protocol.InboundTag(),
 		Listen:     ProxyListenAll,
 		ListenPort: params.ListenPort,
+		// 两种协议都走同一份监听选项:UDP 会话与 TFO 与协议无关,
+		// 按协议各写一份的话,加协议时漏掉一处就是"某种节点的调优静默失效"。
+		TCPFastOpen: params.TCPFastOpen,
+		UDPTimeout:  UDPTimeoutFor(params.MemTotalMB),
 	}
 
 	switch params.Protocol {

@@ -254,6 +254,13 @@ export interface Node {
   arch: string
   singbox_version: string
   singbox_build_tags: string
+  /**
+   * 探测到的节点内存,0 表示还没探测过。
+   *
+   * 它决定入站的 udp_timeout(小内存机器压短 UDP 会话的驻留时间),
+   * 所以第一次探测之后节点可能会变成「待部署」—— 那正是这一项要生效。
+   */
+  mem_total_mb: number
   /** 期望的落地协议。改了它必须重新部署,部署成功前订阅仍下发旧协议的条目。 */
   protocol: NodeProtocol
   /** 只在 SHADOWSOCKS 下有值 */
@@ -266,6 +273,13 @@ export interface Node {
    */
   deployed_protocol: NodeProtocol | ''
   deployed_ss_method: NodeSSMethod | ''
+  /**
+   * TCP Fast Open 的期望值。一个开关同时管两端:节点入站与订阅里下发给
+   * 客户端的 sing-box 出站 —— 只开一边不会有任何效果。
+   */
+  tcp_fast_open: boolean
+  /** 节点上【已经生效】的 TFO。订阅只看它,理由同 deployed_protocol。 */
+  deployed_tcp_fast_open: boolean
   reality_dest: string
   reality_dest_port: number
   reality_public_key: string
@@ -276,6 +290,13 @@ export interface Node {
   last_heartbeat_at: string | null
   config_revision: number
   deployed_config_sha256: string
+  /**
+   * 按 mem_total_mb 算出来的 UDP 会话超时,空串表示用 sing-box 的默认值(5m)。
+   *
+   * 后端算好下发,前端不按内存自己推 —— 分档边界只能有一处实现,
+   * 各算一遍会在某个内存刚好卡在边界上的节点上分叉,而两边都不报错。
+   */
+  udp_timeout: string
   created_at: string
   updated_at: string
   /**

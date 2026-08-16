@@ -66,6 +66,10 @@ type Node struct {
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`
+	// MemTotalMB 由探测写入,0 表示还没探测过。它只用来算入站的 udp_timeout ——
+	// 不读 node_metrics 的最新采样:那个值每五分钟变一次、还能整个关掉,
+	// 配置哈希会跟着抖,「已同步」与「待部署」两个状态来回跳。
+	MemTotalMB int `json:"mem_total_mb"`
 
 	// Protocol 是期望的落地协议;DeployedProtocol 是节点上当前生效的那个。
 	// 两者不一致就是"改了协议还没部署"——订阅与门户一律看后者,
@@ -75,6 +79,12 @@ type Node struct {
 	SSPassword       string           `json:"-"` // 节点级 PSK,永不出现在 API 响应中
 	DeployedProtocol singbox.Protocol `json:"deployed_protocol"`
 	DeployedSSMethod string           `json:"deployed_ss_method"`
+
+	// TCPFastOpen 是期望值,DeployedTCPFastOpen 是节点上当前生效的那个。
+	// 与协议同一条道理:订阅只看后者 —— 改了开关还没部署时,
+	// 让客户端去对一个没开 TFO 的服务端发带数据的 SYN 是白多一次回落。
+	TCPFastOpen         bool `json:"tcp_fast_open"`
+	DeployedTCPFastOpen bool `json:"deployed_tcp_fast_open"`
 
 	RealityDest       string `json:"reality_dest"`
 	RealityDestPort   int    `json:"reality_dest_port"`
@@ -131,9 +141,10 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.proxy_port, n.listen_port, n.api_port, n.ipv6_proxy_port,
-	n.arch, n.singbox_version, n.singbox_build_tags,
+	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
 	n.protocol, n.ss_method, n.ss_password_encrypted,
 	n.deployed_protocol, n.deployed_ss_method,
+	n.tcp_fast_open, n.deployed_tcp_fast_open,
 	n.reality_dest, n.reality_dest_port, n.reality_privkey_encrypted, n.reality_pubkey,
 	n.reality_short_id, n.handshake_max_record_size, n.handshake_checked_at,
 	n.access_tier_id, t.code, t.name, t.level,
@@ -154,9 +165,10 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.IPv6ProxyPort,
-		&n.Arch, &n.SingBoxVersion, &n.BuildTags,
+		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
 		&n.Protocol, &n.SSMethod, &ssKeyEnc,
 		&n.DeployedProtocol, &n.DeployedSSMethod,
+		&n.TCPFastOpen, &n.DeployedTCPFastOpen,
 		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey,
 		&n.RealityShortID, &n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
 		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
@@ -223,6 +235,10 @@ type CreateParams struct {
 	// SHADOWSOCKS 节点不要求握手目标,这两项会被强制清空 —— 详见 validateCreate。
 	RealityDest     string
 	RealityDestPort int
+	// TCPFastOpen 默认关。新建时就能填,第一次部署即生效 ——
+	// 只支持编辑的话,建完节点还要再进一次表单,而那次编辑与新建之间
+	// 通常已经部署过一回了。
+	TCPFastOpen bool
 }
 
 // Create 新增节点,同时生成 REALITY 密钥对与 short_id。
@@ -278,16 +294,16 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 			protocol, ss_method, ss_password_encrypted,
 			reality_dest, reality_dest_port,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			access_tier_id, sort_order,
+			access_tier_id, sort_order, tcp_fast_open,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
 			status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
 		p.Protocol, p.SSMethod, ssKeyEnc,
 		p.RealityDest, p.RealityDestPort,
 		realityKeyEnc, keys.PublicKey, shortID,
-		p.AccessTierID, p.SortOrder,
+		p.AccessTierID, p.SortOrder, p.TCPFastOpen,
 		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay, p.TrafficBillingMode,
 		StatusPending, now, now)
 	if err != nil {
@@ -579,6 +595,11 @@ type UpdateParams struct {
 	SubscriptionEnabled *bool
 	PublicRemark        string
 	MaintenanceMessage  string
+
+	// TCPFastOpen 为 nil 表示保持原值。用指针的理由与 SubscriptionEnabled 相同:
+	// 漏传会把一台已经开了 TFO 的机器悄悄关掉,而下一次部署才生效 ——
+	// 那时管理员早忘了自己动过什么。
+	TCPFastOpen *bool
 }
 
 // UpdateEffect 描述一次修改带来的后果,调用方据此决定后续动作。
@@ -667,6 +688,10 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if p.SubscriptionEnabled != nil {
 		subEnabled = *p.SubscriptionEnabled
 	}
+	fastOpen := old.TCPFastOpen
+	if p.TCPFastOpen != nil {
+		fastOpen = *p.TCPFastOpen
+	}
 	if len([]rune(p.PublicRemark)) > 128 {
 		return nil, effect, errors.New("公开备注不能超过 128 个字符")
 	}
@@ -701,6 +726,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	track("访问等级", old.AccessTierID != p.AccessTierID, old.AccessTierID, p.AccessTierID)
 	track("排序", old.SortOrder != p.SortOrder, old.SortOrder, p.SortOrder)
 	track("下发订阅", old.SubscriptionEnabled != subEnabled, old.SubscriptionEnabled, subEnabled)
+	track("TCP Fast Open", old.TCPFastOpen != fastOpen, onOffLabel(old.TCPFastOpen), onOffLabel(fastOpen))
 	track("公开备注", old.PublicRemark != p.PublicRemark, old.PublicRemark, p.PublicRemark)
 	track("维护说明", old.MaintenanceMessage != p.MaintenanceMessage,
 		old.MaintenanceMessage, p.MaintenanceMessage)
@@ -743,8 +769,14 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// 在管理员没准备好的时候断线,而在部署完成之前订阅仍然下发旧协议的条目
 	// (订阅只看 deployed_protocol),没有人会拿到连不上的东西。
 	effect.TierChanged = old.AccessTierID != p.AccessTierID
+	//
+	// TFO 与协议同档:它进节点配置(是入站的监听选项),必须重新部署才生效,
+	// 但同样【不自动部署】—— 那会让全部在线用户在管理员没准备好时断线,
+	// 而在部署完成之前订阅仍按 deployed_tcp_fast_open 下发,没有人会拿到
+	// 一个客户端开了、服务端没开的组合。
 	effect.NeedsDeploy = old.ListenPort != p.ListenPort || old.APIPort != p.APIPort ||
 		string(old.Protocol) != p.Protocol || old.SSMethod != p.SSMethod ||
+		old.TCPFastOpen != fastOpen ||
 		effect.TierChanged
 
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
@@ -756,6 +788,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		       proxy_port = ?, listen_port = ?, api_port = ?, ipv6_proxy_port = ?,
 		       protocol = ?, ss_method = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
+		       tcp_fast_open = ?,
 		       public_remark = ?, maintenance_message = ?,
 		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
 		       traffic_billing_mode = ?,
@@ -766,7 +799,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		sshKeyEnc, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
 		p.Protocol, p.SSMethod,
-		p.AccessTierID, p.SortOrder, subEnabled,
+		p.AccessTierID, p.SortOrder, subEnabled, fastOpen,
 		p.PublicRemark, p.MaintenanceMessage,
 		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
 		p.TrafficBillingMode,
@@ -810,7 +843,14 @@ func (s *Store) ResetHostKey(ctx context.Context, id int64) error {
 }
 
 // SaveProbe 保存节点探测结果。
-func (s *Store) SaveProbe(ctx context.Context, id int64, arch, version, buildTags string, usable bool) error {
+// SaveProbe 保存节点探测结果。
+//
+// memTotalMB 为 0 时不覆盖已有值:探测偶尔读不到 /proc/meminfo(极少见),
+// 把它写成 0 会让 udp_timeout 那一项从配置里消失,于是节点凭空变成「待部署」,
+// 部署下去又把它加回来 —— 一次读取抖动换来两次全节点重启。
+func (s *Store) SaveProbe(
+	ctx context.Context, id int64, arch, version, buildTags string, memTotalMB int, usable bool,
+) error {
 	status := StatusOnline
 	if !usable {
 		status = StatusOffline
@@ -818,10 +858,11 @@ func (s *Store) SaveProbe(ctx context.Context, id int64, arch, version, buildTag
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE nodes SET arch = ?, singbox_version = ?, singbox_build_tags = ?,
+			mem_total_mb = CASE WHEN ? > 0 THEN ? ELSE mem_total_mb END,
 			status = CASE WHEN status = 'DISABLED' THEN status ELSE ? END,
 			last_heartbeat_at = ?, updated_at = ?
 		WHERE id = ?`,
-		arch, version, buildTags, status, now, now, id)
+		arch, version, buildTags, memTotalMB, memTotalMB, status, now, now, id)
 	return err
 }
 
@@ -865,14 +906,15 @@ func (s *Store) NextRevision(ctx context.Context, id int64) (int64, error) {
 // 这两列保持原值,于是订阅继续下发那份仍然能连的旧协议条目。
 func (s *Store) MarkDeployed(
 	ctx context.Context, id int64, sha256 string,
-	protocol singbox.Protocol, ssMethod string,
+	protocol singbox.Protocol, ssMethod string, tcpFastOpen bool,
 ) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE nodes SET deployed_config_sha256 = ?, deployed_protocol = ?, deployed_ss_method = ?,
+		       deployed_tcp_fast_open = ?,
 		       status = ?, last_heartbeat_at = ?, updated_at = ?
 		WHERE id = ? AND status != 'DISABLED'`,
-		sha256, string(protocol), ssMethod, StatusOnline, now, now, id)
+		sha256, string(protocol), ssMethod, tcpFastOpen, StatusOnline, now, now, id)
 	return err
 }
 
@@ -908,6 +950,15 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// onOffLabel 用于审计里的开关变更。写「开 → 关」而不是「true → false」——
+// 审计日志是给人读的,而管理员在界面上看到的就是一个开关。
+func onOffLabel(v bool) string {
+	if v {
+		return "开"
+	}
+	return "关"
 }
 
 // MarkDeployFailed 把节点标记为部署失败。

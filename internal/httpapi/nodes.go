@@ -8,6 +8,7 @@ import (
 
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/singbox"
 )
 
 // 节点相关的审计动作。
@@ -59,6 +60,23 @@ func (s *Server) writeNodeError(w http.ResponseWriter, err error, what string) {
 type nodeView struct {
 	*node.Node
 	node.NodeConfigStatus
+	// UDPTimeout 是这台机器按内存算出来的 UDP 会话超时,空串表示用 sing-box 的默认值。
+	//
+	// 由后端给而不是让前端按 mem_total_mb 自己推:分档边界只能有一处实现,
+	// 各算一遍的话,详情页显示的和真正写进配置的会在某个内存刚好卡在边界上的
+	// 节点上分叉,而两边都不报错。与「列表里的周期重置日只渲染后端给的
+	// next_reset_at」是同一条规矩。
+	UDPTimeout string `json:"udp_timeout"`
+}
+
+// newNodeView 是 nodeView 的唯一构造入口 —— 列表与详情各拼一遍的话,
+// 加字段时漏掉一处的表现是「列表里有、点进详情就没了」。
+func newNodeView(n *node.Node, status node.NodeConfigStatus) nodeView {
+	return nodeView{
+		Node:             n,
+		NodeConfigStatus: status,
+		UDPTimeout:       singbox.UDPTimeoutFor(n.MemTotalMB),
+	}
 }
 
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +90,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	status := s.nodes.ConfigStatuses(r.Context(), nodes)
 	items := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
-		items = append(items, nodeView{Node: n, NodeConfigStatus: status[n.ID]})
+		items = append(items, newNodeView(n, status[n.ID]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -88,10 +106,8 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, needsDeploy := s.nodes.ConfigStatus(r.Context(), n)
-	writeJSON(w, http.StatusOK, nodeView{
-		Node:             n,
-		NodeConfigStatus: node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy},
-	})
+	writeJSON(w, http.StatusOK, newNodeView(n,
+		node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy}))
 }
 
 type createNodeRequest struct {
@@ -126,6 +142,9 @@ type createNodeRequest struct {
 	SSMethod        string `json:"ss_method"`
 	RealityDest     string `json:"reality_dest"`
 	RealityDestPort int    `json:"reality_dest_port"`
+	// TCPFastOpen 默认关。它必须两端一致才有意义,所以这一个开关同时控制
+	// 节点入站与订阅里下发给客户端的出站。
+	TCPFastOpen bool `json:"tcp_fast_open"`
 	// RootPassword 是节点的登录口令,只用于把面板公钥装进节点的那一次连接,
 	// 用完即弃,不落库也不写日志。留空则改用主控本机上的私钥去装。
 	RootPassword string `json:"root_password"`
@@ -157,6 +176,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		SSMethod:           strings.TrimSpace(req.SSMethod),
 		RealityDest:        strings.TrimSpace(req.RealityDest),
 		RealityDestPort:    req.RealityDestPort,
+		TCPFastOpen:        req.TCPFastOpen,
 		TrafficQuotaBytes:  req.TrafficQuotaBytes,
 		TrafficResetCycle:  req.TrafficResetCycle,
 		TrafficResetDay:    req.TrafficResetDay,
@@ -290,6 +310,8 @@ type updateNodeRequest struct {
 	SubscriptionEnabled *bool  `json:"subscription_enabled"`
 	PublicRemark        string `json:"public_remark"`
 	MaintenanceMessage  string `json:"maintenance_message"`
+	// TCPFastOpen 为 null 时保持原值,理由同 SubscriptionEnabled。
+	TCPFastOpen *bool `json:"tcp_fast_open"`
 }
 
 // handleUpdateNode 修改节点配置。
@@ -330,6 +352,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,
+		TCPFastOpen:         req.TCPFastOpen,
 		PublicRemark:        strings.TrimSpace(req.PublicRemark),
 		MaintenanceMessage:  strings.TrimSpace(req.MaintenanceMessage),
 	})

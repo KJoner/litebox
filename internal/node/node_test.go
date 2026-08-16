@@ -263,7 +263,7 @@ func TestSetEnabledAndDeployStatus(t *testing.T) {
 
 	// 已禁用的节点不应被部署流程改回在线。
 	if err := store.MarkDeployed(t.Context(), n.ID, "abc123",
-		singbox.ProtocolVLESSReality, ""); err != nil {
+		singbox.ProtocolVLESSReality, "", false); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = store.Get(t.Context(), n.ID)

@@ -932,6 +932,20 @@ const subEntries = computed(() => {
                   </div>
                   <div><span>架构</span><b class="lb-mono">{{ node.arch || '未探测' }}</b></div>
                   <div><span>sing-box</span><b class="lb-mono">{{ node.singbox_version || '未安装' }}</b></div>
+                  <!-- 内存与它推出来的 UDP 超时挨在一起。分开的话,一台机器
+                       探测完突然变成「待部署」而管理员看不出是什么改了。
+                       超时值取后端给的,不在前端按内存自己推。 -->
+                  <div>
+                    <span>内存</span>
+                    <b class="lb-mono">{{ node.mem_total_mb ? node.mem_total_mb + ' MB' : '未探测' }}</b>
+                  </div>
+                  <div>
+                    <span>UDP 会话超时</span>
+                    <b class="lb-mono">
+                      {{ node.udp_timeout || 'sing-box 默认 5m' }}
+                      <template v-if="node.udp_timeout">(按内存压短)</template>
+                    </b>
+                  </div>
                   <div class="nd__kv-wide">
                     <span>构建标签</span>
                     <b class="lb-mono lb-ellipsis" :title="node.singbox_build_tags">
@@ -989,6 +1003,26 @@ const subEntries = computed(() => {
                       </b>
                     </div>
                   </template>
+                  <!-- 与协议一样分两行。TFO 必须两端一致才有意义,而"改了没部署"
+                       的那段时间里订阅下发的是旧值 —— 只显示一个的话,
+                       管理员看到「已开启」会以为客户端那边也已经在用了。 -->
+                  <div>
+                    <span>TCP Fast Open</span>
+                    <b>{{ node.tcp_fast_open ? '已开启' : '未开启' }}</b>
+                  </div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      :style="{
+                        color:
+                          node.tcp_fast_open !== node.deployed_tcp_fast_open
+                            ? color.warning
+                            : undefined,
+                      }"
+                    >
+                      {{ node.deployed_tcp_fast_open ? '已开启' : '未开启' }}
+                    </b>
+                  </div>
                   <div><span>配置版本</span><b class="lb-mono">rev {{ node.config_revision }}</b></div>
                   <div>
                     <span>已部署配置</span>
