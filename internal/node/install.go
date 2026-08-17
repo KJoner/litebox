@@ -117,6 +117,22 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 		return s.store.SaveProbe(ctx, nodeID, probe.Arch, probe.SingBoxVersion,
 			strings.Join(probe.BuildTags, ","), probe.MemTotalMB, probe.Usable())
 	})
+
+	// 装完一律丢掉池里这条连接,不看这次有没有真的改过 sshd。
+	//
+	// sshd 在 accept 那一刻就把配置解析进了这条连接的子进程,之后的 reload 只对
+	// 新建的连接生效 —— 也就是说这条连接的转发能力停在它建立的那一刻,
+	// 而两个方向都会出事:
+	//
+	//	这次刚打开转发    这条连接仍然开不了通道,紧接着的第一次部署会卡在
+	//	                VLESS 拨测并自动回滚,而管理员刚看到"安装成功"
+	//	转发本来就是开的  也可能是这条老连接"记得"它开着,而节点上早被改成了禁止
+	//
+	// 判断"该不该丢"本身就要依赖这条不可靠的连接,不如一律重建 ——
+	// 代价是下一次操作多花约 1.3 秒建连,而安装本身要二十几秒。
+	//
+	// 必须放在 pool.Do 之外:节点锁不可重入,在事务内部调 Invalidate 会自我死锁。
+	s.pool.Invalidate(nodeID)
 	return result, err
 }
 

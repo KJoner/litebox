@@ -87,7 +87,9 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 	// 探测本身只用 session 通道,所以 TCP 转发关着也照样能跑完 ——
 	// 这正是它值得在这里查一次的原因:不查的话,管理员看到的是探测一切正常,
 	// 然后同步流量、扫描握手目标、部署健康检查逐个失败。
-	switch allowed, err := CheckTCPForwarding(ctx, client); {
+	// 用新连接问:探测回答的是「这台机器现在是什么样」,而不是
+	// 「面板手上这条几小时前的连接能做什么」。
+	switch allowed, err := CheckTCPForwardingFresh(ctx, client); {
 	case err != nil:
 		result.TCPForwarding = "unknown"
 		result.Warnings = append(result.Warnings, "无法确认节点是否允许 SSH TCP 转发:"+err.Error())

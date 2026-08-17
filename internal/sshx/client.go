@@ -288,6 +288,21 @@ func (c *Client) Download(ctx context.Context, remotePath string) ([]byte, error
 	return io.ReadAll(f)
 }
 
+// Redial 用同一组连接参数新开一条连接,调用方负责 Close。
+//
+// 存在的理由只有一个:sshd 在 accept 那一刻就把配置解析进了这条连接的子进程,
+// 之后 reload 只对**新建**的连接生效。所以凡是"改了 sshd 配置再验证它生效没有"
+// 的场景,都必须换一条连接来验 —— 拿原来那条去测,无论配置改得多正确都一定失败。
+func (c *Client) Redial(ctx context.Context, timeout time.Duration) (*Client, error) {
+	if c == nil || c.ssh == nil {
+		return nil, ErrNotConnected
+	}
+	if timeout <= 0 {
+		timeout = DefaultDialTimeout
+	}
+	return Dial(ctx, c.target, timeout)
+}
+
 // Alive 通过一次轻量远程命令确认连接仍然可用。
 func (c *Client) Alive(ctx context.Context) bool {
 	if c == nil || c.ssh == nil {

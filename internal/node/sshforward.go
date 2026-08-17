@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -28,9 +29,19 @@ import (
 // 功能坏了,方向一开始就是错的。
 const (
 	sshdConfigPath = "/etc/ssh/sshd_config"
-	// dropInDir / dropInPath 只在 sshd_config 里确实有 Include 指令时才用。
-	dropInDir  = "/etc/ssh/sshd_config.d"
-	dropInPath = dropInDir + "/50-litebox-forwarding.conf"
+	// dropInDir / dropInPath 只在 sshd_config 里的 Include 确实会读到它时才用。
+	dropInDir = "/etc/ssh/sshd_config.d"
+	// 前缀取 00- 而不是 50-:OpenSSH 对绝大多数关键字取**首次出现**的值,
+	// 而 drop-in 目录按文件名顺序加载 —— 排在前面的赢。
+	//
+	// 这与 sysctl.d 的规矩正好相反(那边是后来者覆盖先来者),而两处我们都要写
+	// drop-in,很容易照着另一处的直觉取错前缀。取 50- 的话,任何一个 0x-/1x-/2x-
+	// 的加固片段里的 AllowTcpForwarding no 都压在我们上面,表现是文件写对了、
+	// sshd -t 通过、reload 成功,而通道照样开不起来。
+	dropInPath = dropInDir + "/00-litebox-forwarding.conf"
+	// legacyDropInPath 是 50- 时期写下的那份,成功之后顺手清掉,
+	// 免得同一个目录里躺着两份内容相同的文件让人以为改了两处。
+	legacyDropInPath = dropInDir + "/50-litebox-forwarding.conf"
 
 	// forwardMarker 标记这段配置是面板写的,用于幂等判断。
 	forwardMarker = "# LiteBox: 面板经 SSH 通道访问节点回环,必须允许 TCP 转发"
@@ -86,6 +97,26 @@ func CheckTCPForwarding(ctx context.Context, client *sshx.Client) (bool, error) 
 	return false, fmt.Errorf("测试到 127.0.0.1:%d 的 SSH 通道: %w", port, err)
 }
 
+// CheckTCPForwardingFresh 新开一条连接来测,回答的是「节点**现在的配置**允不允许」。
+//
+// 与 CheckTCPForwarding 的区别不是性能,是问题不同:后者回答「手上这条连接
+// 能不能开通道」。sshd 在 accept 那一刻就把配置解析进了这条连接的子进程,
+// 之后配置怎么改都与它无关 —— 所以拿一条长连接去回答前一个问题,两个方向都会答错:
+//
+//	节点原先允许、后来被改成禁止  → 老连接说"允许",面板跳过修复,
+//	                             等连接哪天重连才突然全线失败
+//	节点原先禁止、刚刚被改成允许  → 老连接说"禁止",面板把正确的修改回滚掉
+//
+// 后一种已经在生产上发生过。连接池里的长连接可能存活几小时,这个窗口不小。
+func CheckTCPForwardingFresh(ctx context.Context, client *sshx.Client) (bool, error) {
+	fresh, err := client.Redial(ctx, 0)
+	if err != nil {
+		return false, fmt.Errorf("为复测 TCP 转发新建连接: %w", err)
+	}
+	defer fresh.Close()
+	return CheckTCPForwarding(ctx, fresh)
+}
+
 // EnsureTCPForwarding 检查并在需要时打开节点的 TCP 转发。
 //
 // 全流程:实测 → 改配置 → `sshd -t` 校验 → reload → **再实测一次**。
@@ -98,7 +129,9 @@ func CheckTCPForwarding(ctx context.Context, client *sshx.Client) (bool, error) 
 func EnsureTCPForwarding(ctx context.Context, client *sshx.Client, init deployment.InitSystem) (TCPForwardingResult, error) {
 	var result TCPForwardingResult
 
-	allowed, err := CheckTCPForwarding(ctx, client)
+	// 初始判断必须问「节点现在的配置」,不能问「手上这条连接能不能开通道」——
+	// 后者可能是几小时前建立的,带着一份早就被改掉的策略。
+	allowed, err := CheckTCPForwardingFresh(ctx, client)
 	if err != nil {
 		return result, err
 	}
@@ -173,14 +206,23 @@ func EnsureTCPForwarding(ctx context.Context, client *sshx.Client, init deployme
 	// 固定值定短了偶发失败,定长了每台机器都白等。
 	allowed, checkErr := recheckForwarding(ctx, client)
 	if checkErr != nil || !allowed {
+		// 诊断要在回滚**之前**采:回滚会把我们写的那份删掉,而这里最有价值的
+		// 一条证据恰恰是「我们的文件明明写着 yes,sshd -T 却仍然说 no」——
+		// 它直接指向是谁在覆盖我们。回滚之后再采,就只剩一堆与故障无关的现状。
+		diag := diagnoseForwarding(ctx, client)
 		rollback()
 		reloadSSHD(context.WithoutCancel(ctx), client, init)
 		if checkErr != nil {
-			return result, fmt.Errorf("改动 sshd 配置后复测失败,已恢复原文件: %w", checkErr)
+			return result, fmt.Errorf("改动 sshd 配置后复测失败,已恢复原文件: %w%s", checkErr, diag)
 		}
 		return result, fmt.Errorf("已在 %s 写入 AllowTcpForwarding yes 并 reload,"+
-			"但 SSH 通道仍然开不起来,已恢复原文件。"+
-			"请检查 sshd_config 里是否有 Match 块覆盖了这一项,或由上层防火墙拦截", target)
+			"但新开的 SSH 通道仍然被拒绝,已恢复原文件。%s", target, diag)
+	}
+
+	// 复测通过之后才清理旧版本留下的那份。提前删的话,万一这次失败要回滚,
+	// 等于顺手抹掉了一个不是本次创建的文件。
+	if target == dropInPath {
+		client.Run(ctx, sshx.NewCommand("rm", "-f", legacyDropInPath))
 	}
 
 	result.Allowed = true
@@ -190,6 +232,55 @@ func EnsureTCPForwarding(ctx context.Context, client *sshx.Client, init deployme
 		result.Detail += ";原文件备份在 " + backupPath
 	}
 	return result, nil
+}
+
+// forwardDiagScript 采集"到底是谁在拒绝这条通道"的证据。只读,不改任何东西。
+//
+// 四类线索各回答一个不同的问题:
+//
+//	sshd -T          实际生效的是什么(它已经把 Include 与默认值都算进去了)
+//	配置里的相关行     是哪个文件、哪一行在设它 —— 带文件名才知道该去动谁
+//	Match 块         Match 里的值不会出现在无参数的 sshd -T 输出里
+//	authorized_keys  公钥那一行前面的 restrict / no-port-forwarding 会静默否决一切
+const forwardDiagScript = `
+echo "  sshd -T 实际生效:"
+{ sshd -T 2>/dev/null || /usr/sbin/sshd -T 2>/dev/null; } |
+  grep -iE '^(allowtcpforwarding|permitopen|permittunnel)' | sed 's/^/    /' || echo "    (取不到)"
+echo "  配置里设过这几项的地方:"
+grep -niE '^[[:space:]]*(allowtcpforwarding|permitopen)' \
+  /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sed 's/^/    /' || echo "    (没有)"
+echo "  Match 块:"
+grep -niE '^[[:space:]]*match[[:space:]]' \
+  /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sed 's/^/    /' || echo "    (没有)"
+echo "  面板公钥那一行的开头(前面若有 restrict / no-port-forwarding 就是它):"
+grep -n 'litebox-panel' ~/.ssh/authorized_keys 2>/dev/null | cut -c1-90 | sed 's/^/    /' || echo "    (没找到)"
+`
+
+// diagnoseForwarding 返回一段可以直接贴进错误信息的诊断文本。
+//
+// 采不到就返回空串:诊断失败不该盖住真正的故障 ——
+// 那会让错误信息从"通道开不起来"变成"诊断脚本执行失败",方向完全跑偏。
+func diagnoseForwarding(ctx context.Context, client *sshx.Client) string {
+	out, err := client.Run(ctx, sshx.NewCommand("sh", "-c", forwardDiagScript))
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimRight(out.Stdout, "\n")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return "\n节点上查到:\n" + truncate(text, 1200) +
+		"\n上面若有排在 00-litebox-forwarding.conf 之前的文件设了 AllowTcpForwarding no," +
+		"或有 Match 块覆盖了它,面板改不动 —— OpenSSH 取首次出现的值,需要你手工调整。"
+}
+
+// truncate 截断过长的诊断输出。错误信息最终要进日志与页面,
+// 一份几百行的 grep 结果会把真正的那句话挤到看不见。
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\n    …(已截断)"
 }
 
 // planForwardingConfig 决定把配置写到哪里、写什么。
@@ -204,8 +295,10 @@ func EnsureTCPForwarding(ctx context.Context, client *sshx.Client, init deployme
 //
 // 无论哪种都只做加法,不删除也不注释掉已有的行:那些行可能在 Match 块里,
 // 是管理员对特定用户的刻意限制,不该被面板顺手抹掉。
-func planForwardingConfig(original string) (path, content string) {
-	if includeComesFirst(original) {
+// 返回值刻意不叫 path:那会在函数内遮蔽 path 包,而本文件用它做通配符匹配 ——
+// 以后有人在这里加一行 path.Join 会撞上一个看不懂的编译错误。
+func planForwardingConfig(original string) (target, content string) {
+	if dropInIsIncluded(original) {
 		return dropInPath, forwardBlock
 	}
 	if strings.Contains(original, forwardMarker) {
@@ -217,8 +310,14 @@ func planForwardingConfig(original string) (path, content string) {
 	return sshdConfigPath, forwardBlock + "\n" + original
 }
 
-// includeComesFirst 判断 Include 指令是否出现在任何 AllowTcpForwarding 之前。
-func includeComesFirst(original string) bool {
+// dropInIsIncluded 判断 drop-in 那条路走不走得通:sshd_config 里要有一条
+// Include,它出现在任何 AllowTcpForwarding / Match 之前,**而且它的通配符
+// 确实会读到我们要写的那个文件**。
+//
+// 最后半句不能省。只确认"有 Include"的话,遇到 `Include /etc/ssh/conf.d/*.conf`
+// 这种指向别处的配置,我们会往一个没有人读的目录里写文件 —— 而写入、
+// sshd -t、reload 全部成功,只有通道照样开不起来。
+func dropInIsIncluded(original string) bool {
 	for _, line := range strings.Split(original, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
@@ -226,13 +325,27 @@ func includeComesFirst(original string) bool {
 		}
 		switch strings.ToLower(fields[0]) {
 		case "include":
-			return true
+			for _, pattern := range fields[1:] {
+				if includeCovers(pattern, dropInPath) {
+					return true
+				}
+			}
 		case "allowtcpforwarding", "match":
 			// 撞上 Match 也算输:Match 之后的 Include 只对该分支生效。
 			return false
 		}
 	}
 	return false
+}
+
+// includeCovers 判断一个 Include 通配符是否会读到 target。
+// 相对路径按 sshd 的规矩相对 /etc/ssh 解析。
+func includeCovers(pattern, target string) bool {
+	if !path.IsAbs(pattern) {
+		pattern = path.Join("/etc/ssh", pattern)
+	}
+	ok, err := path.Match(pattern, target)
+	return err == nil && ok
 }
 
 // reloadSSHD 逐个试 sshd 在各发行版里的服务名。
@@ -258,19 +371,31 @@ func reloadSSHD(ctx context.Context, client *sshx.Client, init deployment.InitSy
 		strings.Join(sshdServiceNames, "、"), lastErr)
 }
 
-// recheckForwarding 在 reload 之后复测,最多等两秒。
+// recheckForwarding 在 reload 之后复测,**每次都新开一条连接**。
+//
+// 这是整段逻辑里最容易写错、而且错了会把正确的修改回滚掉的一处:
+// sshd 在 accept 那一刻就把配置解析进了这条连接的子进程,reload 只对之后
+// 新建的连接生效。拿传进来的那条连接去复测,无论 drop-in 写得多正确都一定
+// 失败 —— 然后回滚、报一句"通道仍然开不起来",而节点上的配置其实是对的。
+//
+// 已在真机实测:同一份 drop-in、同一次 reload,原连接测出来是拒绝,
+// 新连接立刻就能开通道。
 func recheckForwarding(ctx context.Context, client *sshx.Client) (bool, error) {
 	var lastErr error
 	for i := 0; i < 4; i++ {
-		allowed, err := CheckTCPForwarding(ctx, client)
-		if err == nil && allowed {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+		allowed, checkErr := CheckTCPForwardingFresh(ctx, client)
+		if checkErr == nil && allowed {
 			return true, nil
 		}
-		lastErr = err
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		if checkErr != nil {
+			lastErr = checkErr
 		}
 	}
 	return false, lastErr
