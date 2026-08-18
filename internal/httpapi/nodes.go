@@ -446,12 +446,14 @@ func (s *Server) handleTestNodeSSH(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	output, err := s.nodes.TestConnection(r.Context(), id)
+	output, resolvedIP, err := s.nodes.TestConnection(r.Context(), id)
 	if err != nil {
 		s.writeNodeError(w, err, "测试节点 SSH 失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uname": output})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "uname": output, "resolved_ip": resolvedIP,
+	})
 }
 
 func (s *Server) handleProbeNode(w http.ResponseWriter, r *http.Request) {

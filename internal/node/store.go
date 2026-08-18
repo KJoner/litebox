@@ -325,7 +325,7 @@ func validateCreate(p *CreateParams) error {
 		return err
 	}
 	// 新建节点一律要求 IPv4 字面量。
-	if p.Host, err = normalizeIPv4(p.Host, true); err != nil {
+	if p.Host, err = normalizeIPv4(p.Host); err != nil {
 		return err
 	}
 	if p.IPv6Address, err = normalizeIPv6(p.IPv6Address); err != nil {
@@ -632,7 +632,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	}
 	// 只有确实改动了这一栏才按 IPv4 字面量的新规矩校验。存量节点可能用域名接入,
 	// 不然管理员改个端口都会被一条与本次操作无关的规则拦住。
-	if p.Host, err = normalizeIPv4(p.Host, strings.TrimSpace(p.Host) != old.Host); err != nil {
+	if p.Host, err = normalizeIPv4(p.Host); err != nil {
 		return nil, effect, err
 	}
 	if p.IPv6Address, err = normalizeIPv6(p.IPv6Address); err != nil {
