@@ -14,6 +14,10 @@ const RequiredBuildTag = "with_v2ray_api"
 
 // ProbeResult 是节点探测的结果。
 type ProbeResult struct {
+	// ResolvedIP 是这次连接实际连上的 IP。节点填 IP 字面量时与它相同;
+	// 填域名时它是**此刻**的解析结果 —— 动态 DNS 的节点上,这是管理员唯一
+	// 能看到"域名现在指到哪儿"的地方,而那正是排查"节点突然连不上"的第一步。
+	ResolvedIP     string   `json:"resolved_ip"`
 	Arch           string   `json:"arch"`
 	Kernel         string   `json:"kernel"`
 	OSName         string   `json:"os_name"`
@@ -60,6 +64,7 @@ func newProbeResult(singboxPath string) ProbeResult {
 // Probe 采集节点的基础信息并校验 sing-box 是否满足要求。
 func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeResult, error) {
 	result := newProbeResult(singboxPath)
+	result.ResolvedIP = client.DialedIP()
 
 	arch, err := runTrimmed(ctx, client, sshx.NewCommand("uname", "-m"))
 	if err != nil {

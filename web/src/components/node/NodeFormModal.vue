@@ -141,8 +141,8 @@ const fieldLabels: Record<string, string> = {
   display_name: '展示名称',
   access_tier_id: '访问等级',
   sort_order: '排序',
-  host: 'IPv4 地址',
-  ipv6_address: 'IPv6 地址',
+  host: 'IPv4 地址 / 域名',
+  ipv6_address: 'IPv6 地址 / 域名',
   ipv6_proxy_port: 'IPv6 公网端口',
   quota_value: '流量限额',
   quota_unit: '流量限额',
@@ -484,15 +484,26 @@ async function doSubmit() {
         </a-form-item>
       </template>
 
-      <a-form-item label="IPv4 地址" required>
-        <a-input v-model:value="form.host" placeholder="例如:45.77.12.90" />
-        <div class="nf__help">用于 SSH 管理、节点部署和 IPv4 订阅,必须填写。</div>
+      <a-form-item label="IPv4 地址 / 域名" required>
+        <a-input v-model:value="form.host" placeholder="例如:45.77.12.90 或 la.ddns.example.com" />
+        <div class="nf__help">
+          用于 SSH 管理、节点部署和 IPv4 订阅,必须填写。
+          <br />
+          公网 IP 会变的机器(动态 DNS)填域名:面板在<strong>每次操作之前</strong>
+          重新解析,IP 换了会自动丢掉旧连接;订阅里下发的是域名本身,不是解析结果 ——
+          所以 IP 变了用户不用重新拉订阅。
+          <br />
+          域名只查 A 记录:面板的管理通道一律走 IPv4,只有 AAAA 的域名连不上。
+        </div>
       </a-form-item>
 
       <a-row :gutter="12">
         <a-col :span="15">
-          <a-form-item label="IPv6 地址">
-            <a-input v-model:value="form.ipv6_address" placeholder="例如:2602:fed2:7116:2110::1" />
+          <a-form-item label="IPv6 地址 / 域名">
+            <a-input
+              v-model:value="form.ipv6_address"
+              placeholder="例如:2602:fed2:7116:2110::1 或 v6.example.com"
+            />
           </a-form-item>
         </a-col>
         <a-col :span="9">
@@ -517,7 +528,11 @@ async function doSubmit() {
       <div class="nf__help nf__help--row">
         IPv6 选填,只用于订阅下发。填写后订阅中额外生成
         「{{ form.display_name || form.name || '展示名称' }}-IPV6」条目,清空即撤下 ——
-        两种改动都不需要重新部署。
+        两种改动都不需要重新部署。这里同样可以填域名。
+        <br />
+        <strong>面板一次都不会解析这一栏</strong>:它不参与 SSH 与部署,
+        客户端拿到域名自己去查 AAAA。所以这里填一个只有 A 记录的域名,
+        面板发现不了,而用户的客户端会连到 IPv4 上去。
         <br />
         <strong>端口留空表示跟随左边的公网代理端口</strong>,以后改 IPv4 端口时它自动跟着变;
         只有两个协议栈映射到不同外部端口时才需要单独填(NAT 小鸡上很常见:

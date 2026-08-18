@@ -52,6 +52,8 @@ func (p *Pool) Do(ctx context.Context, nodeID int64, fn func(*Client) error) err
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
+	p.dropIfDomainMoved(ctx, nodeID, entry)
+
 	client, err := p.ensure(ctx, nodeID, entry)
 	if err != nil {
 		return err
@@ -75,6 +77,51 @@ func (p *Pool) Do(ctx context.Context, nodeID int64, fn func(*Client) error) err
 		return dialErr
 	}
 	return fn(client)
+}
+
+// dropIfDomainMoved 在复用连接之前重新解析域名,指向变了就把旧连接丢掉。
+// 调用方必须已持有 entry.mu。
+//
+// 这是"域名节点每次操作前实时解析"真正落地的地方。光靠 Dial 时解析是不够的:
+// 连接池按节点复用长连接,一条连接可能活几小时,而动态 DNS 的 IP 说变就变。
+// 不管的话,面板会抱着一条通往旧地址的 TCP 连接不放 —— 而旧地址上要么没人应答
+// (操作卡到超时),要么已经是**别人的机器**(那更糟,主机密钥校验会当场失败,
+// 而管理员看到的是"可能存在中间人攻击")。
+//
+// 解析失败时不动连接。DNS 抖一下就掐掉一条还能用的连接,是拿一个小概率故障
+// 换一个必然的故障 —— 而此时手上这条连接大概率仍然通着。
+func (p *Pool) dropIfDomainMoved(ctx context.Context, nodeID int64, entry *pooledConn) {
+	if entry.client == nil || !entry.client.HostIsDomain() {
+		return
+	}
+	host := entry.client.Host()
+	ips, err := ResolveHost(ctx, host, p.dialTimeout)
+	if err != nil {
+		p.logger.Warn("节点域名解析失败,继续用现有连接",
+			"node_id", nodeID, "host", host, "error", err)
+		return
+	}
+	current := entry.client.DialedIP()
+	if addressStillCurrent(ips, current) {
+		return
+	}
+	p.logger.Info("节点域名已指向新地址,丢弃旧连接",
+		"node_id", nodeID, "host", host, "old_ip", current, "new_ip", ips[0])
+	entry.closeLocked()
+}
+
+// addressStillCurrent 判断解析结果里还有没有我们正连着的那个 IP。
+//
+// 判据是"在不在集合里"而不是"是不是第一个":一个域名挂多条 A 记录时,
+// 解析顺序本来就会轮转(DNS 轮询),按第一个比会让面板每隔几十秒就把一条
+// 完全正常的连接丢掉重建 —— 而每次重建约 1.3 秒,还会打断正在进行的操作。
+func addressStillCurrent(ips []string, dialed string) bool {
+	for _, ip := range ips {
+		if ip == dialed {
+			return true
+		}
+	}
+	return false
 }
 
 // ensure 返回可用连接,必要时建立新连接。调用方必须已持有 entry.mu。

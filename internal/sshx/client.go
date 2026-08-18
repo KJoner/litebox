@@ -53,6 +53,63 @@ func (t Target) address() string {
 type Client struct {
 	target Target
 	ssh    *ssh.Client
+	// dialedIP 是本次实际连上的地址。Host 是 IP 字面量时与它相同;
+	// Host 是域名时它是那一刻解析到的结果 —— 连接池靠它发现域名改指向了。
+	dialedIP string
+}
+
+// Host 返回连接目标里配置的地址,可能是 IP 字面量,也可能是域名。
+func (c *Client) Host() string {
+	if c == nil {
+		return ""
+	}
+	return c.target.Host
+}
+
+// DialedIP 返回这条连接实际连上的 IP。
+func (c *Client) DialedIP() string {
+	if c == nil {
+		return ""
+	}
+	return c.dialedIP
+}
+
+// HostIsDomain 表示这个节点填的是域名而不是 IP 字面量。
+func (c *Client) HostIsDomain() bool {
+	return c != nil && net.ParseIP(c.target.Host) == nil && c.target.Host != ""
+}
+
+// ResolveHost 把节点地址解析成可以直接拨的 IPv4 列表。
+//
+// 只查 A 记录。面板的管理通道(SSH、探测、安装、部署、流量同步、资源采集)
+// 一律走 IPv4 —— 双栈里只留一条管理通道,不然"节点连不上"这件事会出现两种
+// 互相矛盾的结论,而两条路各报各的错。域名只有 AAAA 时在这里直接说清楚,
+// 不要让它退化成一个含糊的连接超时。
+func ResolveHost(ctx context.Context, host string, timeout time.Duration) ([]string, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []string{host}, nil
+	}
+	if timeout <= 0 {
+		timeout = DefaultDialTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip4", host)
+	if err != nil {
+		return nil, fmt.Errorf("解析节点域名 %s: %w", host, err)
+	}
+	ips := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		if v4 := a.To4(); v4 != nil {
+			ips = append(ips, v4.String())
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("域名 %s 没有解析到 IPv4 地址(A 记录);"+
+			"面板的管理通道只走 IPv4,请改填 IPv4 地址或给这个域名加上 A 记录", host)
+	}
+	return ips, nil
 }
 
 // Dial 建立一条新的 SSH 连接。
@@ -69,11 +126,31 @@ func Dial(ctx context.Context, target Target, timeout time.Duration) (*Client, e
 		Timeout:         timeout,
 	}
 
-	// 用 DialContext 建 TCP,以便调用方的 ctx 能中断建连。
-	dialer := &net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", target.address())
+	// 自己解析而不是把域名直接交给 dialer:必须知道这次连的是哪个 IP,
+	// 否则域名改指向之后,连接池没有任何依据判断手上这条连接是不是已经过时。
+	ips, err := ResolveHost(ctx, target.Host, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("连接 %s: %w", target.address(), err)
+		return nil, err
+	}
+
+	// 用 DialContext 建 TCP,以便调用方的 ctx 能中断建连。
+	// 多条 A 记录时逐个试,与 dialer 直接吃域名时的行为一致。
+	dialer := &net.Dialer{Timeout: timeout}
+	var conn net.Conn
+	var dialedIP string
+	var lastErr error
+	for _, ip := range ips {
+		addr := net.JoinHostPort(ip, strconv.Itoa(target.Port))
+		c, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		conn, dialedIP = c, ip
+		break
+	}
+	if conn == nil {
+		return nil, fmt.Errorf("连接 %s: %w", target.address(), lastErr)
 	}
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, target.address(), cfg)
@@ -81,7 +158,11 @@ func Dial(ctx context.Context, target Target, timeout time.Duration) (*Client, e
 		conn.Close()
 		return nil, fmt.Errorf("SSH 握手 %s: %w", target.address(), err)
 	}
-	return &Client{target: target, ssh: ssh.NewClient(sshConn, chans, reqs)}, nil
+	return &Client{
+		target:   target,
+		ssh:      ssh.NewClient(sshConn, chans, reqs),
+		dialedIP: dialedIP,
+	}, nil
 }
 
 // authMethods 组装认证方式:先公钥后口令。

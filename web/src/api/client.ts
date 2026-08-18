@@ -376,6 +376,11 @@ export interface ProbeResult {
   os_name: string
   mem_total_mb: number
   singbox_path: string
+  /**
+   * 这次连接实际连上的 IP。节点填 IP 字面量时与它相同;填域名时是**此刻**的
+   * 解析结果 —— 动态 DNS 的节点上,这是唯一能看到「域名现在指到哪儿」的地方。
+   */
+  resolved_ip: string
   singbox_version: string
   build_tags: string[]
   has_v2ray_api: boolean
@@ -1129,7 +1134,10 @@ export const api = {
   setNodeEnabled: (id: number, enabled: boolean) =>
     request<{ message: string }>(`/api/nodes/${id}/enabled`, { method: 'POST', body: { enabled } }),
   testNodeSSH: (id: number) =>
-    request<{ ok: boolean; uname: string }>(`/api/nodes/${id}/test-ssh`, { method: 'POST' }),
+    request<{ ok: boolean; uname: string; resolved_ip: string }>(
+      `/api/nodes/${id}/test-ssh`,
+      { method: 'POST' },
+    ),
   probeNode: (id: number) => request<ProbeResult>(`/api/nodes/${id}/probe`, { method: 'POST' }),
   installNode: (id: number) =>
     request<{

@@ -70,6 +70,21 @@ const trafficError = ref(false)
 /** 工具条上正在跑的动作名。同一时刻只允许一个。 */
 const running = ref('')
 
+/**
+ * 节点地址填的是域名而不是 IP 字面量。
+ *
+ * 判据与后端一致:能被解析成 IP 的就是字面量,否则就是域名。域名节点的
+ * "现在指到哪儿"只有在刚连过之后才知道 —— 所以解析结果只出现在
+ * 「测试 SSH」与「探测」的结果里,不放进常驻的信息卡片:
+ * 那会让每次打开详情页都去连一次节点。
+ */
+const hostIsDomain = computed(() => {
+  const host = node.value?.host ?? ''
+  if (!host) return false
+  // IPv4 字面量:四段数字。IPv6 字面量:含冒号。其余按域名看待。
+  return !/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && !host.includes(':')
+})
+
 /** 当前(期望)协议是 Shadowsocks —— 决定这一屏显示 REALITY 还是加密方法。 */
 const isSS = computed(() => node.value?.protocol === 'SHADOWSOCKS')
 
@@ -131,7 +146,7 @@ function reload() {
 // 结果贴在工具条下方的面板里,不用吐司:探测会写回架构、版本、构建标签,
 // 用一条三秒吐司交付「已更新 3 项」等于让管理员自己去 descriptions 里找哪里变了。
 
-const sshResult = ref<{ ok: boolean; text: string } | null>(null)
+const sshResult = ref<{ ok: boolean; text: string; ip?: string } | null>(null)
 const probe = ref<ProbeResult | null>(null)
 const diff = ref<ConfigDiff | null>(null)
 const destResults = ref<DestCheckResult[]>([])
@@ -163,7 +178,7 @@ async function readonlyAction(
 const doTestSSH = () =>
   readonlyAction('测试 SSH', 'ssh', async () => {
     const r = await api.testNodeSSH(props.nodeId!)
-    sshResult.value = { ok: true, text: r.uname }
+    sshResult.value = { ok: true, text: r.uname, ip: r.resolved_ip }
   })
 
 const doProbe = () =>
@@ -767,6 +782,12 @@ const subEntries = computed(() => {
           <a @click="panel = ''">收起</a>
         </div>
         <pre class="nd__pre lb-mono">{{ sshResult.text }}</pre>
+        <!-- 域名节点上这一行是关键信息:面板每次操作前重新解析,
+             而"连上了"与"连的是哪台机器"是两个问题。 -->
+        <div v-if="sshResult.ip && hostIsDomain" class="nd__panel-note">
+          <code class="lb-mono">{{ node.host }}</code> 当前解析到
+          <code class="lb-mono">{{ sshResult.ip }}</code> —— 这次就是连的它。
+        </div>
         <div v-if="!sshResult.ok" class="nd__panel-note">
           部署按钮此时仍然可点 —— 由后端拒绝并给出同样的原因,前端不自作主张禁用。
         </div>
@@ -778,6 +799,10 @@ const subEntries = computed(() => {
           <a @click="panel = ''">收起</a>
         </div>
         <div class="nd__kv">
+          <div v-if="hostIsDomain">
+            <span>域名解析到</span>
+            <b class="lb-mono">{{ probe.resolved_ip || '—' }}</b>
+          </div>
           <div><span>架构</span><b class="lb-mono">{{ probe.arch }}</b></div>
           <div><span>系统</span><b class="lb-mono">{{ probe.os_name }}</b></div>
           <div><span>内存</span><b class="lb-mono">{{ probe.mem_total_mb }} MB</b></div>
@@ -914,7 +939,10 @@ const subEntries = computed(() => {
               <div class="nd__card-head">连接与端口</div>
               <div class="nd__card-body">
                 <div class="nd__kv">
-                  <div><span>SSH</span><b class="lb-mono">{{ node.ssh_user }}@{{ node.host }}:{{ node.ssh_port }}</b></div>
+                  <div>
+                    <span>SSH{{ hostIsDomain ? '(域名,每次操作前重新解析)' : '' }}</span>
+                    <b class="lb-mono">{{ node.ssh_user }}@{{ node.host }}:{{ node.ssh_port }}</b>
+                  </div>
                   <div>
                     <span>代理端口</span>
                     <b class="lb-mono">公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}</b>

@@ -119,18 +119,21 @@ func NewResolver(store *Store, keys PanelKeyProvider, logger *slog.Logger) sshx.
 	}
 }
 
-// TestConnection 测试到节点的 SSH 连通性。
-func (s *Service) TestConnection(ctx context.Context, nodeID int64) (string, error) {
-	var output string
-	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+// TestConnection 测试到节点的 SSH 连通性,并返回这次实际连上的 IP。
+//
+// 填域名的节点上,「测试 SSH」是管理员最先点的那个按钮,所以解析结果要在
+// 这里就说出来 —— 否则他只知道"连上了/没连上",不知道连的是哪台机器。
+func (s *Service) TestConnection(ctx context.Context, nodeID int64) (output, resolvedIP string, err error) {
+	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		result, err := client.RunCheck(ctx, sshx.NewCommand("uname", "-a"))
 		if err != nil {
 			return err
 		}
 		output = strings.TrimSpace(result.Stdout)
+		resolvedIP = client.DialedIP()
 		return nil
 	})
-	return output, err
+	return output, resolvedIP, err
 }
 
 // ProbeNode 探测节点信息并落库。

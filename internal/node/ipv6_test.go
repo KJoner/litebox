@@ -40,6 +40,21 @@ func TestCreateNodeNormalizesIPv6(t *testing.T) {
 	}
 }
 
+// IPv6 栏同样收域名(动态 DNS)。它只进订阅,面板一次都不会去解析它 ——
+// 客户端拿到域名自己查 AAAA。
+func TestCreateAcceptsHostnameInIPv6Field(t *testing.T) {
+	store, _ := newTestStore(t)
+	p := defaultCreateParams()
+	p.IPv6Address = "v6.example.com"
+	n, err := store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatalf("IPv6 栏填域名失败: %v", err)
+	}
+	if n.IPv6Address != "v6.example.com" {
+		t.Errorf("= %q", n.IPv6Address)
+	}
+}
+
 func TestCreateNodeRejectsBadAddresses(t *testing.T) {
 	cases := []struct {
 		name string
@@ -50,7 +65,7 @@ func TestCreateNodeRejectsBadAddresses(t *testing.T) {
 		{"IPv4 非法", "999.999.1.1", ""},
 		{"IPv4 栏填了 IPv6", "2602:fed2::1", ""},
 		{"IPv6 栏填了 IPv4", "192.0.2.10", "198.51.100.7"},
-		{"IPv6 栏填了域名", "192.0.2.10", "la.example.com"},
+		{"IPv6 栏填了带括号的域名", "192.0.2.10", "[la.example.com]"},
 		{"IPv6 非法", "192.0.2.10", "2602:::1"},
 	}
 	for _, c := range cases {
@@ -113,37 +128,53 @@ func TestUpdateIPv6DoesNotTouchSSHOrDeploy(t *testing.T) {
 	}
 }
 
-// 存量节点可能用域名接入。改端口这类无关操作不该被"必须是 IPv4 字面量"拦住。
-func TestUpdateKeepsLegacyHostname(t *testing.T) {
-	store, db := newTestStore(t)
+// 域名节点(动态 DNS)在编辑里可以自由改成另一个域名,也可以改回 IP。
+//
+// 原来这里的规矩是"改动这一栏就必须是 IPv4 字面量",那时域名只是存量节点的
+// 历史包袱。现在它是这一栏的正式用法 —— 换 DDNS 服务商就是要改域名,
+// 拦住它等于逼管理员去删了节点重建,而重建会丢掉这台机器的全部历史数据。
+func TestUpdateSwitchesBetweenHostnameAndIP(t *testing.T) {
+	store, _ := newTestStore(t)
 	n, err := store.Create(t.Context(), defaultCreateParams())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE nodes SET host = ? WHERE id = ?`,
-		"la.example.com", n.ID); err != nil {
-		t.Fatal(err)
+
+	base := func(host string) UpdateParams {
+		return UpdateParams{
+			Name: n.Name, Host: host,
+			SSHPort: n.SSHPort, SSHUser: n.SSHUser,
+			ProxyPort: 443, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		}
 	}
 
-	updated, _, err := store.Update(t.Context(), n.ID, UpdateParams{
-		Name: n.Name, Host: "la.example.com",
-		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: 443, ListenPort: n.ListenPort, APIPort: n.APIPort,
-	})
+	for _, host := range []string{"la.example.com", "la2.example.com", "198.51.100.7"} {
+		updated, effect, err := store.Update(t.Context(), n.ID, base(host))
+		if err != nil {
+			t.Fatalf("改成 %s 失败: %v", host, err)
+		}
+		if updated.Host != host {
+			t.Errorf("host = %q,期望 %q", updated.Host, host)
+		}
+		// 换地址必须丢掉连接池里那条长连接,否则后续操作还连着旧机器。
+		if !effect.SSHChanged {
+			t.Errorf("改成 %s 后没有标记 SSHChanged", host)
+		}
+	}
+}
+
+// 新建就能直接填域名。与编辑收一样的东西 —— 两条路不一致会出现
+// "这个地址编辑得进去、新建填不进去"的怪事。
+func TestCreateAcceptsHostname(t *testing.T) {
+	store, _ := newTestStore(t)
+	p := defaultCreateParams()
+	p.Host = "node-01.ddns.example.com"
+	n, err := store.Create(t.Context(), p)
 	if err != nil {
-		t.Fatalf("保持原域名的编辑不该失败: %v", err)
+		t.Fatalf("新建域名节点失败: %v", err)
 	}
-	if updated.Host != "la.example.com" {
-		t.Errorf("host = %q", updated.Host)
-	}
-
-	// 真要改这一栏时就按新规矩来。
-	if _, _, err := store.Update(t.Context(), n.ID, UpdateParams{
-		Name: n.Name, Host: "la2.example.com",
-		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: 443, ListenPort: n.ListenPort, APIPort: n.APIPort,
-	}); err == nil {
-		t.Error("改成另一个域名应被拒")
+	if n.Host != "node-01.ddns.example.com" {
+		t.Errorf("host = %q", n.Host)
 	}
 }
 
