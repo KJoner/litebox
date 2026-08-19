@@ -38,6 +38,15 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '自建节点' },
       },
       {
+        // 节点详情整页。tab 进地址栏 —— 整页之后地址是可以分享的,
+        // 而「打开某台机器的入口列表」正是最常被转述的一件事;
+        // 只记住 /nodes/3 的话,对方点开落在概览上,还得再找一次。
+        path: '/nodes/:id/:tab?',
+        name: 'node-detail',
+        component: () => import('@/views/NodeDetailView.vue'),
+        meta: { title: '节点详情' },
+      },
+      {
         path: '/external-proxies',
         name: 'external-proxies',
         component: () => import('@/views/ExternalProxiesView.vue'),

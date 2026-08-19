@@ -4,6 +4,7 @@ import { message } from 'ant-design-vue'
 import {
   api,
   ApiError,
+  PROTOCOL_SHORT,
   type ChainApplyResult,
   type DeployResult,
   type ExternalProxy,
@@ -15,29 +16,61 @@ import { LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/components/lb
 import { color } from '@/theme/tokens'
 
 /**
- * 节点的「转发」面板:nginx 透传规则 + sing-box 链式出站。
+ * 节点的「入口」面板:这台机器对外提供的全部入口。
  *
- * 两块刻意分开显示,因为它们对用户的影响完全不同:
+ * 两类入口在同一个列表里,因为对管理员来说它们回答的是同一个问题
+ * ——「用户连这台机器的哪个端口、连上之后去哪」:
  *
- *   nginx 转发规则  改了只 reload,在途连接一条不断 → 普通确认;
- *   链式出站        改了要重启 sing-box,踢掉这台机器上全部在线连接,
- *                   而且连带部署另一台机器 → lbDangerConfirm,逐条列影响。
+ *   sing-box 入口   这台机器自己的入站。**至多一条** —— 见下方说明。
+ *                   出口可以是本机直连,也可以链到另一个落地。
+ *   nginx 转发入口  把字节原样搬到落地,可以有多条,各占一个端口。
  *
- * 合成一块之后,管理员会对「点这一下要不要挑时机」失去判断。
+ * 叫「入口」而不是「订阅」:面板里「订阅」已经是用户手上那条
+ * /sub/{token} 链接,同一个词两个意思会在后台与门户之间来回打架。
+ * 而「入口」与下面那一栏「出口」正好成对,一眼看得出方向。
+ *
+ * **两类入口的操作摩擦不同,必须让它们看起来不同**:
+ *   nginx 转发   改了只 reload,在途连接一条不断 → 普通确认;
+ *   sing-box     改了要重启,踢掉这台机器上全部在线连接,改出口还连带
+ *                部署另一台机器 → lbDangerConfirm,逐条列影响。
+ * 合成一种确认之后,管理员会对「点这一下要不要挑时机」失去判断。
  */
 const props = defineProps<{
   node: Node
-  /** 可作为落地的自建节点(已排除中转角色与自己) */
-  landingNodes: Node[]
-  externalProxies: ExternalProxy[]
+  /** 订阅展开(IPv4 + 可选 IPv6),由页面算好传进来 */
+  subEntries: { name: string; addr: string }[]
 }>()
 const emit = defineEmits<{
-  close: []
-  /** 有动作在跑时抬起,抽屉据此屏蔽遮罩点击与 ESC */
+  /** 有动作在跑时抬起,页面据此在弹窗上屏蔽遮罩点击与 ESC */
   busy: [label: string]
-  /** 链式变更后节点本身变了,让抽屉重新拉一次 */
+  /** 变更之后节点本身可能变了,让页面重新拉一次 */
   changed: []
 }>()
+
+/**
+ * 可作为落地的候选。在面板里现拉而不是让页面传:
+ * 它们只在配置入口时才需要,而节点详情每次打开都带着会白拉两个接口。
+ *
+ * 落地候选**排除中转角色的机器与节点自己**:前者上面没有 sing-box,
+ * 转发过去只会得到一条连不上的线路;后者会让流量绕回自己。
+ */
+const landingNodes = ref<Node[]>([])
+const externalProxies = ref<ExternalProxy[]>([])
+
+async function loadTargets() {
+  try {
+    const [ns, ps] = await Promise.all([api.nodes(), api.externalProxies()])
+    landingNodes.value = (ns.items ?? []).filter(
+      (n) => n.role !== 'RELAY' && n.id !== props.node.id,
+    )
+    externalProxies.value = ps.items ?? []
+  } catch {
+    // 拉不到候选不影响看现有入口 —— 那才是打开这个 Tab 最常见的目的。
+    // 下拉里会是空的,新增时立刻就能发现,而不是拿到一份错的列表。
+    landingNodes.value = []
+    externalProxies.value = []
+  }
+}
 
 const relays = ref<NodeRelay[]>([])
 const loading = ref(false)
@@ -65,16 +98,85 @@ const form = ref({
   public_remark: '',
 })
 
+/**
+ * 中转角色的机器上没有 sing-box 入站 —— 那一块整个不出现。
+ *
+ * 显示一个"未配置"的占位会让人以为可以去配一个,而角色一经创建不可更改:
+ * 要在这台机器上跑 sing-box,只能删了重建。
+ */
 const isRelayHost = computed(() => props.node.role === 'RELAY')
+
+/**
+ * sing-box 入口至多一条 —— 一个节点一个入站。
+ *
+ * 这不是界面上的限制,是数据模型的:协议、监听端口、公网端口、REALITY
+ * 参数、SS 密钥这十几个字段全挂在 nodes 那一行上,一行只能描述一个入站。
+ * 要多条得把它们搬进一张独立的表,那是一次架构级改动。
+ *
+ * 界面上把这一条明说出来,而不是让「新增入口」里的那一项默默变灰 ——
+ * 变灰的按钮只告诉人"不能点",不告诉人"为什么"和"要不要等以后"。
+ */
+const singboxEntryExists = computed(() => !isRelayHost.value)
+
+/**
+ * 当前选择的落地种类下有没有候选。
+ *
+ * 没有候选时下拉里一个选项都没有,而 v-model 还绑着 0 —— antd 会把它
+ * 原样渲染成一个 "0"。那既不是地址也不是名字,看起来像个 bug,
+ * 而真实情况是「这个面板上还没有第二台机器可以当落地」。
+ */
+const chainCandidates = computed(() =>
+  chainForm.value.target_kind === 'NODE' ? landingNodes.value : externalProxies.value,
+)
+const chainReason = computed(() => {
+  if (isRelayHost.value) return ''
+  if (chainCandidates.value.length > 0) return ''
+  return chainForm.value.target_kind === 'NODE'
+    ? '还没有别的落地节点可选 —— 中转角色的机器与这台机器自己都不能当落地。'
+    : '还没有可用的外部代理。链式落地本版本只支持 Shadowsocks 的外部代理。'
+})
+
+const singboxAddHint =
+  '一个节点一个 sing-box 入站:协议、端口、REALITY 参数这十几个字段都挂在节点自己那一行上,' +
+  '一行只能描述一个入站。要在同一台机器上开第二条(比如再加一个 Shadowsocks 入口),' +
+  '需要把这些字段拆到独立的表里,那是一次架构改动。'
+
+/**
+ * 协议标记读 deployed_protocol —— 节点上【已经生效】的那个。
+ *
+ * 读期望值的话,改协议到部署成功之间的窗口里这里会显示新协议,
+ * 而订阅下发的、用户实际连的还是旧的 —— 界面与事实分叉,
+ * 而分叉的那一头恰好是管理员会相信的那一头。
+ */
+const protocolMeta = computed<LbStatusMeta>(() => {
+  const p = props.node.deployed_protocol
+  if (!p) {
+    return {
+      text: '未部署',
+      shape: 'ring',
+      fg: color.neutral,
+      bg: color.neutralBg,
+      bd: color.neutralBorder,
+    }
+  }
+  const pending = p !== props.node.protocol
+  return {
+    text: pending ? `${PROTOCOL_SHORT[p]} → ${PROTOCOL_SHORT[props.node.protocol]} 待部署` : PROTOCOL_SHORT[p],
+    shape: pending ? 'triangle' : 'check',
+    fg: pending ? color.warning : color.success,
+    bg: pending ? color.warningBg : color.successBg,
+    bd: pending ? color.warningBorder : color.successBorder,
+  }
+})
 const chainEnabled = computed(() => props.node.chain_target_kind !== '')
 
 const chainTargetName = computed(() => {
   if (props.node.chain_target_kind === 'NODE') {
-    const n = props.landingNodes.find((x) => x.id === props.node.chain_target_node_id)
+    const n = landingNodes.value.find((x) => x.id === props.node.chain_target_node_id)
     return n ? n.display_name || n.name : `节点 #${props.node.chain_target_node_id}`
   }
   if (props.node.chain_target_kind === 'EXTERNAL') {
-    const p = props.externalProxies.find((x) => x.id === props.node.chain_target_external_id)
+    const p = externalProxies.value.find((x) => x.id === props.node.chain_target_external_id)
     return p ? p.display_name : `外部代理 #${props.node.chain_target_external_id}`
   }
   return ''
@@ -134,8 +236,8 @@ function openCreate() {
     listen_port: 0,
     public_port: 0,
     target_kind: 'NODE',
-    target_node_id: props.landingNodes[0]?.id ?? 0,
-    target_external_id: props.externalProxies[0]?.id ?? 0,
+    target_node_id: landingNodes.value[0]?.id ?? 0,
+    target_external_id: externalProxies.value[0]?.id ?? 0,
     access_tier_id: props.node.access_tier_id,
     sort_order: 0,
     subscription_enabled: true,
@@ -254,8 +356,8 @@ const chainForm = ref({
 function applyChain() {
   const targetName =
     chainForm.value.target_kind === 'NODE'
-      ? props.landingNodes.find((x) => x.id === chainForm.value.target_node_id)?.display_name
-      : props.externalProxies.find((x) => x.id === chainForm.value.target_external_id)
+      ? landingNodes.value.find((x) => x.id === chainForm.value.target_node_id)?.display_name
+      : externalProxies.value.find((x) => x.id === chainForm.value.target_external_id)
           ?.display_name
   if (!targetName) {
     message.warning('请选择落地')
@@ -337,28 +439,77 @@ async function runClearChain() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   load()
+  await loadTargets()
   chainForm.value.target_kind = props.node.chain_target_kind === 'EXTERNAL' ? 'EXTERNAL' : 'NODE'
   chainForm.value.target_node_id =
-    props.node.chain_target_node_id || props.landingNodes[0]?.id || 0
+    props.node.chain_target_node_id || landingNodes.value[0]?.id || 0
   chainForm.value.target_external_id =
-    props.node.chain_target_external_id || props.externalProxies[0]?.id || 0
+    props.node.chain_target_external_id || externalProxies.value[0]?.id || 0
 })
 </script>
 
 <template>
   <section class="nr">
     <div class="nr__head">
-      <span class="nr__title">转发</span>
+      <span class="nr__title">入口</span>
+      <span class="nr__note">这台机器对外提供的入口。用户连的是这里的端口。</span>
       <span v-if="running" class="nr__running">{{ running }}…</span>
       <span class="nr__spacer" />
       <a-button size="small" :loading="!!running" @click="checkNginx">检查 nginx</a-button>
-      <a-button size="small" :loading="!!running" @click="deployNow">立刻下发</a-button>
-      <a-button size="small" type="primary" :disabled="!!running" @click="openCreate">
-        新增线路
-      </a-button>
-      <a-button size="small" type="text" @click="emit('close')">收起</a-button>
+      <a-button size="small" :loading="!!running" @click="deployNow">下发转发配置</a-button>
+      <a-dropdown placement="bottomRight" :disabled="!!running">
+        <a-button size="small" type="primary">新增入口 ▾</a-button>
+        <template #overlay>
+          <a-menu>
+            <a-menu-item @click="openCreate">Nginx 转发入口</a-menu-item>
+            <!-- sing-box 那一项不做成灰按钮:灰按钮只说"不能点",
+                 不说为什么、也不说要不要等以后。这里直接把原因写出来。 -->
+            <a-menu-item disabled>
+              <span :title="singboxAddHint">sing-box 入口(每台机器一条)</span>
+            </a-menu-item>
+          </a-menu>
+        </template>
+      </a-dropdown>
+    </div>
+
+    <!-- sing-box 入口。中转角色的机器上没有,这一整块不出现 ——
+         显示一个"未配置"的占位会让人以为可以去配一个,而角色不可更改。 -->
+    <div v-if="singboxEntryExists" class="nr__sb">
+      <div class="nr__sb-head">
+        <span class="nr__kind">sing-box</span>
+        <span class="nr__sb-name">{{ node.display_name || node.name }}</span>
+        <LbStatusTag :meta="protocolMeta" />
+        <span class="nr__spacer" />
+      </div>
+      <div class="nr__sb-body lb-mono">
+        公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}
+        <template v-if="node.ipv6_address">
+          · IPv6 [{{ node.ipv6_address }}]:{{ node.ipv6_proxy_port || node.proxy_port }}
+        </template>
+      </div>
+      <div class="nr__sb-sub">
+        <div>
+          订阅里展开成:
+          <span v-for="e in subEntries" :key="e.name" class="nr__sb-entry">
+            {{ e.name }} <span class="lb-mono">{{ e.addr }}</span>
+          </span>
+        </div>
+        <!-- IPv6 不是第二条节点记录,而是同一条记录在订阅生成时的逻辑展开 ——
+             两条指向同一个入站,改 IPv6 保存即生效,不需要重新部署。 -->
+        <div v-if="node.ipv6_address">
+          两条指向<b>同一个入站</b>,UUID、REALITY 公钥、short ID 完全相同。
+        </div>
+        <div v-else>
+          填上 IPv6 会额外多一条「{{ node.display_name || node.name }}-IPV6」,
+          指向同一个入站,同样不需要重新部署。
+        </div>
+      </div>
+      <div v-if="!node.subscription_enabled" class="nr__warn">
+        已关闭「下发到用户订阅」,这一条不会进入新生成的订阅。
+        节点仍在运行,已导入旧订阅的客户端还能用。
+      </div>
     </div>
 
     <!-- nginx 现状。缺 stream 模块在两个发行版上都是默认情况,
@@ -385,7 +536,12 @@ onMounted(() => {
       </template>
     </div>
 
-    <!-- nginx 透传规则 -->
+    <!-- nginx 透传入口。与上面那块分开:两者的操作摩擦不同 ——
+         这些改了只 reload,在途连接一条不断。 -->
+    <div class="nr__section">
+      <span class="nr__kind">nginx 转发</span>
+      <span class="nr__note">把字节原样搬到落地。可以有多条,各占一个端口。</span>
+    </div>
     <div v-if="loadError" class="nr__warn">{{ loadError }}</div>
     <a-table
       v-if="!loadError"
@@ -426,17 +582,26 @@ onMounted(() => {
           <a-button size="small" type="link" danger @click="removeRelay(record)">删除</a-button>
         </template>
       </a-table-column>
+      <template #emptyText>
+        <!-- 只在读取成功且确实是零条时才说「还没有」。读取失败时上面那条
+             loadError 会先出现,表格根本不渲染 —— 否则「读不到」会被读成
+             「一条都没有」,而两者要做的事完全不同。 -->
+        <span class="nr__note">
+          还没有转发入口。点右上角「新增入口 → Nginx 转发入口」加一条。
+        </span>
+      </template>
     </a-table>
 
     <p class="nr__note">
-      转发规则的增删改只会 <b>reload nginx</b>,在途连接一条不断 ——
+      转发入口的增删改只会 <b>reload nginx</b>,在途连接一条不断 ——
       所以这里没有需要挑时机的操作。落地未就绪的线路不会出现在任何人的订阅里。
     </p>
 
     <!-- 链式出站。中转角色的机器没有自己的入站,这一块不出现。 -->
     <div v-if="!isRelayHost" class="nr__chain">
       <div class="nr__chain-head">
-        <span class="nr__title">出口去向</span>
+        <span class="nr__kind">出口</span>
+        <span class="nr__note">这台机器上的 sing-box 入口收到的流量从哪里出网。</span>
         <span class="nr__spacer" />
         <a-button v-if="chainEnabled" size="small" danger :disabled="!!running" @click="clearChain">
           改回本机直连
@@ -461,6 +626,8 @@ onMounted(() => {
           v-model:value="chainForm.target_node_id"
           size="small"
           class="nr__select"
+          placeholder="选择落地节点"
+          :disabled="!landingNodes.length"
           :options="landingNodes.map((n) => ({ value: n.id, label: n.display_name || n.name }))"
         />
         <a-select
@@ -468,12 +635,22 @@ onMounted(() => {
           v-model:value="chainForm.target_external_id"
           size="small"
           class="nr__select"
+          placeholder="选择外部代理"
+          :disabled="!externalProxies.length"
           :options="externalProxies.map((p) => ({ value: p.id, label: p.display_name }))"
         />
-        <a-button size="small" type="primary" :disabled="!!running" @click="applyChain">
+        <a-button
+          size="small"
+          type="primary"
+          :disabled="!!running || !!chainReason"
+          @click="applyChain"
+        >
           {{ chainEnabled ? '改出口' : '启用链式出口' }}
         </a-button>
       </div>
+      <!-- 按钮变灰时必须说出为什么。只变灰的话,管理员会以为是权限问题
+           或者页面坏了,而真实原因是「面板上还没有第二台机器」。 -->
+      <p v-if="chainReason" class="nr__note">{{ chainReason }}</p>
       <p class="nr__note">
         链式出口会 <b>重启这台机器的 sing-box</b>,全部在线连接会断开;落地是自建节点时,
         它也会重新部署一次。外部代理落地本版本只支持 Shadowsocks。
@@ -572,6 +749,59 @@ onMounted(() => {
 }
 .nr__title {
   font-weight: 600;
+}
+
+/* 入口种类标记。中性底色 —— 它描述的是"这是哪一类入口",不是状态,
+   上色会跟旁边真正表达状态的 LbStatusTag 抢注意力。取值来自 tokens.ts。 */
+.nr__kind {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: #f1f3f5;
+  color: #576070;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.nr__section {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* sing-box 入口块。用一层浅底把它与下面的转发列表分开 ——
+   两者的操作摩擦不同(这一块改了要重启,下面改了只 reload),
+   长得一样会让人对"点这一下要不要挑时机"失去判断。 */
+.nr__sb {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--lb-border);
+  border-radius: 6px;
+  background: #fafbfc;
+}
+.nr__sb-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.nr__sb-name {
+  font-weight: 600;
+}
+.nr__sb-body {
+  font-size: 12px;
+}
+.nr__sb-sub {
+  font-size: 12px;
+  color: var(--lb-text-secondary);
+  line-height: 1.7;
+}
+.nr__sb-entry {
+  margin-right: 10px;
 }
 .nr__spacer {
   flex: 1;

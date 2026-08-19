@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
   api,
@@ -11,7 +12,6 @@ import {
   type DeployResult,
   type DeploymentRecord,
   type DestCheckResult,
-  type ExternalProxy,
   type Node,
   type NodeCycleUsage,
   type NodeMetrics,
@@ -23,7 +23,8 @@ import { formatBytes, formatDuration, shortHash } from '@/utils/format'
 import DeployStepList from '@/components/DeployStepList.vue'
 import MetricsChart from '@/components/MetricsChart.vue'
 import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
-import NodeRelayPanel from '@/components/node/NodeRelayPanel.vue'
+import NodeEntriesPanel from '@/components/node/NodeEntriesPanel.vue'
+import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import {
   LbEmptyState,
   LbNameConfirm,
@@ -40,17 +41,31 @@ import { useNarrow } from '@/composables/useNarrow'
 import { color, threshold, usageColor } from '@/theme/tokens'
 
 /**
- * 节点详情。原实现是 12 个 size="small" 按钮排成一排 ——
- * 只读的「探测」和会抹掉节点服务的「卸载服务」尺寸完全相同,仅靠 danger 变红区分,
- * 手滑一格的代价差了几个数量级。
+ * 节点详情页。
  *
- * 这里分三层:
- *   只读检查(6 个)  常驻工具条。点错了最坏结果是白等几秒。
+ * 原来是一个 720 宽的抽屉,现在铺满整页 —— 抽屉里塞不下一个可增删改的入口列表,
+ * 而「这台机器对外提供哪些入口」正是节点详情要回答的第一个问题。
+ * 整页还带来一件抽屉给不了的东西:地址可以分享,`/nodes/3/entries`
+ * 直接打开那台机器的入口列表。
+ *
+ * 按钮仍然分三层,层次比抽屉时期更要紧 —— 页面宽了之后按钮更容易挨在一起:
+ *   只读检查(6 个)  常驻工具条,结果一律弹窗呈现。点错了最坏结果是白等几秒。
  *   部署            唯一的主按钮 —— 它是这个页面存在的理由。
  *   会改变节点的     全部进「⋯」,不可逆的四项在分隔线之下。
+ *
+ * **只读检查的结果全部走弹窗**,不再在工具条下方占一块。那一块会把 Tab 整个
+ * 推下去,而检查结果是看完就走的东西 —— 让它挤占常驻内容的位置,
+ * 等于每做一次检查都要重新找一遍自己刚才在看哪个 Tab。
  */
-const props = defineProps<{ nodeId: number | null; tiers: AccessTier[] }>()
-const emit = defineEmits<{ close: []; changed: []; edit: [node: Node] }>()
+const route = useRoute()
+const router = useRouter()
+
+const tiers = ref<AccessTier[]>([])
+/** 路由参数是字符串;非法值按「没有这个节点」处理,由 loadError 呈现。 */
+const nodeId = computed(() => {
+  const raw = Number(route.params.id)
+  return Number.isFinite(raw) && raw > 0 ? raw : null
+})
 
 /**
  * 抽屉宽度。窄屏必须占满,不能固定 720 ——
@@ -62,12 +77,43 @@ const narrow = useNarrow()
 const node = ref<Node | null>(null)
 const loading = ref(false)
 const loadError = ref<{ message: string; status?: number; at: string } | null>(null)
-const tab = ref('overview')
+/**
+ * 当前 Tab 与地址栏同步。
+ *
+ * 整页之后地址是可以分享的,而「打开某台机器的入口列表」正是最常被转述的
+ * 一件事 —— 只记住 /nodes/3 的话,对方点开落在概览上,还得再找一次。
+ * 非法的 tab 名回落到概览,不显示一个空白页。
+ */
+const TABS = ['overview', 'metrics', 'deploys', 'traffic', 'entries'] as const
+const tab = ref<string>(
+  TABS.includes(String(route.params.tab) as (typeof TABS)[number])
+    ? String(route.params.tab)
+    : 'overview',
+)
+
+function syncTabToRoute(key: unknown) {
+  // replace 而不是 push:切 Tab 不该在浏览器历史里堆一层,
+  // 否则连点五个 Tab 之后要按五次后退才回得到列表。
+  router.replace({ name: 'node-detail', params: { id: String(nodeId.value), tab: String(key) } })
+}
+
+/** 编辑表单由本页托管 —— 抽屉时期它挂在列表页上,而现在列表页不再知道谁被打开了。 */
+const editOpen = ref(false)
+const tierLoadError = ref(false)
 
 const deployments = ref<DeploymentRecord[]>([])
 const daily = ref<DailyPoint[]>([])
 const cycle = ref<NodeCycleUsage | null>(null)
 const trafficError = ref(false)
+/**
+ * 这台机器是否被面板计流量。中转主机为 false。
+ *
+ * 与 trafficError 分开:一个是「读不到」,一个是「本来就不计」——
+ * 前者要重试,后者重试一万次也不会有数字。混成一种的表现是
+ * 中转机的详情页上永远挂着一个红叉和一个没用的重试按钮。
+ */
+const metered = ref(true)
+const notMeteredReason = ref('')
 
 /** 工具条上正在跑的动作名。同一时刻只允许一个。 */
 const running = ref('')
@@ -89,6 +135,13 @@ const hostIsDomain = computed(() => {
 
 /** 当前(期望)协议是 Shadowsocks —— 决定这一屏显示 REALITY 还是加密方法。 */
 const isSS = computed(() => node.value?.protocol === 'SHADOWSOCKS')
+/**
+ * 中转角色:这台机器上不跑 sing-box。
+ *
+ * 它的协议、三个端口、REALITY 参数在库里都保持着建表时的默认值 ——
+ * 渲染出来就是一份从来没有生效过的配置,而那看起来像是配好了。
+ */
+const isRelay = computed(() => node.value?.role === 'RELAY')
 
 /**
  * 期望协议与节点上生效的协议不一致 —— 也就是「改了协议还没部署」。
@@ -125,11 +178,15 @@ async function load(id: number) {
     .then((r) => (deployments.value = r.items))
     .catch(() => (deployments.value = []))
   trafficError.value = false
+  metered.value = true
+  notMeteredReason.value = ''
   api
     .nodeTraffic(id, 30)
     .then((r) => {
       daily.value = r.daily
       cycle.value = r.cycle
+      metered.value = r.metered !== false
+      notMeteredReason.value = r.reason ?? ''
     })
     .catch(() => {
       daily.value = []
@@ -140,7 +197,7 @@ async function load(id: number) {
 }
 
 function reload() {
-  if (props.nodeId !== null) load(props.nodeId)
+  if (nodeId.value !== null) load(nodeId.value)
 }
 
 // ---------- 只读检查 ----------
@@ -153,36 +210,29 @@ const probe = ref<ProbeResult | null>(null)
 const diff = ref<ConfigDiff | null>(null)
 const destResults = ref<DestCheckResult[]>([])
 const tuning = ref<TuneReport | null>(null)
-/** 当前展开的结果面板。同一时刻只显示一个,免得往下堆四块。 */
-const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest' | 'tune' | 'relay'>('')
-
 /**
- * 「转发」面板要用到可选的落地清单。
- *
- * 在抽屉里现拉而不是让父组件传:这两份清单只在打开面板时才需要,
- * 而节点列表页每次渲染都带着它们会白拉两个接口。
- *
- * 落地候选里**排除中转角色的机器与节点自己**:前者上面没有 sing-box,
- * 转发过去只会得到一条连不上的线路;后者会让流量绕回自己。
+ * 当前弹窗里显示哪一种结果。同一时刻只可能有一种 ——
+ * 分成四个开关只是把同一份状态抄四遍,而四份状态迟早会有一份忘了清。
  */
-const landingNodes = ref<Node[]>([])
-const externalProxies = ref<ExternalProxy[]>([])
+const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest' | 'tune'>('')
 
-async function openRelayPanel() {
-  panel.value = 'relay'
-  try {
-    const [ns, ps] = await Promise.all([api.nodes(), api.externalProxies()])
-    landingNodes.value = (ns.items ?? []).filter(
-      (n) => n.role !== 'RELAY' && n.id !== props.nodeId,
-    )
-    externalProxies.value = ps.items ?? []
-  } catch {
-    // 拉不到候选不影响看现有规则 —— 那才是打开这个面板最常见的目的。
-    // 下拉里会是空的,新增时管理员会立刻发现,而不是拿到一份错的列表。
-    landingNodes.value = []
-    externalProxies.value = []
+/** 弹窗标题跟着内容走。缺省值只是为了让关闭动画期间标题不闪成空。 */
+const panelTitle = computed(() => {
+  switch (panel.value) {
+    case 'ssh':
+      return 'SSH 连通性'
+    case 'probe':
+      return '节点探测'
+    case 'diff':
+      return '配置比对'
+    case 'dest':
+      return '扫描握手目标'
+    case 'tune':
+      return 'TCP 调优'
+    default:
+      return '检查结果'
   }
-}
+})
 
 async function readonlyAction(
   label: string,
@@ -207,26 +257,26 @@ async function readonlyAction(
 
 const doTestSSH = () =>
   readonlyAction('测试 SSH', 'ssh', async () => {
-    const r = await api.testNodeSSH(props.nodeId!)
+    const r = await api.testNodeSSH(nodeId.value!)
     sshResult.value = { ok: true, text: r.uname, ip: r.resolved_ip }
   })
 
 const doProbe = () =>
   readonlyAction('探测', 'probe', async () => {
-    probe.value = await api.probeNode(props.nodeId!)
-    emit('changed')
+    probe.value = await api.probeNode(nodeId.value!)
+    reload()
     // 探测会写回节点档案,重新读一次让上面的字段跟着变。
-    node.value = await api.node(props.nodeId!)
+    node.value = await api.node(nodeId.value!)
   })
 
 const doDiff = () =>
   readonlyAction('比对配置', 'diff', async () => {
-    diff.value = await api.nodeConfigDiff(props.nodeId!)
+    diff.value = await api.nodeConfigDiff(nodeId.value!)
   })
 
 const doScanDests = () =>
   readonlyAction('扫描握手目标', 'dest', async () => {
-    destResults.value = (await api.scanNodeDests(props.nodeId!)).items
+    destResults.value = (await api.scanNodeDests(nodeId.value!)).items
   })
 
 /**
@@ -237,12 +287,12 @@ const doScanDests = () =>
  */
 const doTuning = () =>
   readonlyAction('TCP 调优检查', 'tune', async () => {
-    tuning.value = await api.tuningPreview(props.nodeId!)
+    tuning.value = await api.tuningPreview(nodeId.value!)
   })
 
 const doSyncTraffic = () =>
   readonlyAction('同步流量', '', async () => {
-    const r = await api.syncNodeTraffic(props.nodeId!)
+    const r = await api.syncNodeTraffic(nodeId.value!)
     // 这个只更新数字,结果就在页面上 —— 吐司 + 就地刷新即可,不用开面板。
     message.success(`流量已同步 · 新增 ${formatBytes(r.bytes_added)}`)
     panel.value = ''
@@ -251,10 +301,10 @@ const doSyncTraffic = () =>
 
 const doCollectMetrics = () =>
   readonlyAction('采集资源', '', async () => {
-    const m = await api.collectNodeMetrics(props.nodeId!)
+    const m = await api.collectNodeMetrics(nodeId.value!)
     message.success(`已采集 · 内存 ${memPercent(m).toFixed(0)}%`)
     panel.value = ''
-    await loadMetrics(props.nodeId!)
+    await loadMetrics(nodeId.value!)
   })
 
 /**
@@ -290,11 +340,10 @@ async function applyDest(dest: string) {
   running.value = '应用握手目标'
   try {
     // 「应用」不是纯保存:它会再实测一次目标、通过后才写库。
-    await api.checkNodeDest(props.nodeId!, dest, true)
+    await api.checkNodeDest(nodeId.value!, dest, true)
     message.success(`已应用 ${dest},需要部署才在节点上生效`)
     destResults.value = []
     panel.value = ''
-    emit('changed')
     reload()
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '应用失败')
@@ -338,14 +387,13 @@ async function doDeploy() {
   deployRunning.value = true
   running.value = '部署'
   try {
-    deployResult.value = await api.deployNode(props.nodeId!)
+    deployResult.value = await api.deployNode(nodeId.value!)
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '部署失败')
     deployOpen.value = false
   } finally {
     deployRunning.value = false
     running.value = ''
-    emit('changed')
     reload()
   }
 }
@@ -375,7 +423,6 @@ async function run(label: string, fn: () => Promise<unknown>, done: string) {
   try {
     await fn()
     message.success(done)
-    emit('changed')
     reload()
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : `${label}失败`)
@@ -386,7 +433,7 @@ async function run(label: string, fn: () => Promise<unknown>, done: string) {
 
 const doInstall = () =>
   run('安装 sing-box', async () => {
-    const r = await api.installNode(props.nodeId!)
+    const r = await api.installNode(nodeId.value!)
     message.success(`sing-box 与 ${r.init_system} 服务定义已就绪`)
     // 改了节点的 sshd 配置就必须说出来,而且要说清改了哪个文件、备份在哪。
     // 悄悄改别人机器上的 sshd_config 再报一句"安装完成",是不能接受的。
@@ -410,7 +457,7 @@ function confirmRestart() {
       `配置不变,重启后仍是 rev ${n.config_revision}`,
       '这是运维用的直接重启,不会先同步流量 —— 常规的用户变更请用「部署」',
     ],
-    onOk: () => run('重启', () => api.restartNode(props.nodeId!), '已重启'),
+    onOk: () => run('重启', () => api.restartNode(nodeId.value!), '已重启'),
   })
 }
 
@@ -458,7 +505,7 @@ const nameConfirmMeta = computed(() => {
 
 async function doNameConfirm() {
   const kind = nameConfirm.value
-  const id = props.nodeId
+  const id = nodeId.value
   if (!kind || id === null) return
   nameConfirmLoading.value = true
   try {
@@ -473,8 +520,10 @@ async function doNameConfirm() {
       message.success('节点已删除')
     }
     nameConfirm.value = null
-    emit('changed')
-    if (kind === 'delete') emit('close')
+    // 节点删掉之后这个页面已经没有对应的东西了,回列表 ——
+    // 留在原地会让下一次 reload 取回 404,页面显示「节点不存在」,
+    // 而那看起来像出了错,其实是刚刚那一下的正常结果。
+    if (kind === 'delete') router.push({ name: 'nodes' })
     else reload()
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '操作失败')
@@ -489,7 +538,7 @@ const bootstrapOpen = ref(false)
 const bootstrapPassword = ref('')
 
 async function doBootstrap() {
-  const id = props.nodeId!
+  const id = nodeId.value!
   const password = bootstrapPassword.value
   bootstrapOpen.value = false
   // 口令用完立刻抹掉,不留在组件状态里,也不进日志与审计详情。
@@ -499,7 +548,6 @@ async function doBootstrap() {
   try {
     const r = await api.bootstrapNode(id, password)
     message.success(r.already_present ? '节点上已有面板公钥,连接正常' : '面板公钥已装入并验证通过')
-    emit('changed')
     reload()
   } catch (err) {
     Modal.error({
@@ -531,7 +579,7 @@ async function loadMetrics(id: number) {
 }
 
 watch(metricsHours, () => {
-  if (props.nodeId !== null) loadMetrics(props.nodeId)
+  if (nodeId.value !== null) loadMetrics(nodeId.value)
 })
 
 function memPercent(m: NodeMetrics): number {
@@ -609,7 +657,7 @@ function durationOf(d: DeploymentRecord): string {
  * 提前引用会直接抛 ReferenceError,抽屉第一次挂载就初始化失败。
  */
 watch(
-  () => props.nodeId,
+  () => nodeId.value,
   (id) => {
     probe.value = null
     diff.value = null
@@ -620,12 +668,28 @@ watch(
     metricsHistory.value = []
     deployments.value = []
     cycle.value = null
-    tab.value = 'overview'
+    // **不重置 tab** —— 换的是节点,而地址里带着的 tab 是访问者的意图。
+    // 直接打开 /nodes/3/entries 却落在概览上,等于把分享出去的地址废掉一半。
     if (id !== null) load(id)
     else node.value = null
   },
   { immediate: true },
 )
+
+/**
+ * 等级清单只有编辑表单要用,进页面时拉一次。
+ *
+ * 拉不到不挡住整页 —— 那时看详情、做检查、管入口全都不受影响,
+ * 只有编辑表单打不开。把它做成整页的加载条件,会让一个次要接口
+ * 的抖动变成「节点详情打不开」。
+ */
+api
+  .accessTiers()
+  .then((r) => (tiers.value = r.items ?? []))
+  .catch(() => {
+    tiers.value = []
+    tierLoadError.value = true
+  })
 
 /** 订阅展开。IPv6 不是第二条节点记录,而是同一条记录在订阅生成时的逻辑展开。 */
 const subEntries = computed(() => {
@@ -645,20 +709,14 @@ const subEntries = computed(() => {
 </script>
 
 <template>
-  <!-- 有检查在跑时不接受遮罩点击与 ESC。
-       探测、扫描握手目标这类动作要几秒到十几秒,期间页面上只有一个按钮在转圈,
-       而抽屉外面整片都是遮罩 —— 随手点一下就把它关了,几秒后结果返回时已经
-       没有地方可以呈现,看起来就是「点了探测,等了一会儿,详情页自己没了」。
-       右上角的 × 照常可用:那是明确的关闭意图,不是误触。 -->
-  <a-drawer
-    :open="nodeId !== null"
-    :width="narrow ? '100%' : 720"
-    :mask-closable="running === ''"
-    :keyboard="running === ''"
-    :body-style="{ padding: '0 20px 20px' }"
-    @close="emit('close')"
-  >
-    <template #title>
+  <div class="nd">
+    <!-- 返回链接不是装饰:整页之后浏览器的后退键会离开整个面板,
+         而管理员多半只是想回到列表。
+         不做成完整面包屑 —— 顶栏已经有一条「分组 / 节点详情」,
+         再来一条只是把同一句话说两遍。 -->
+    <RouterLink class="nd__back" :to="{ name: 'nodes' }">← 返回自建节点</RouterLink>
+
+    <div class="nd__bar">
       <div class="nd__head">
         <div class="nd__title">
           <span class="nd__name">{{ node?.display_name || node?.name || '节点详情' }}</span>
@@ -672,21 +730,29 @@ const subEntries = computed(() => {
           </template>
         </div>
         <div v-if="node" class="nd__sub lb-mono">
-          {{ node.name }} · {{ node.host }} · 公网 {{ node.proxy_port }} → 主机
-          {{ node.listen_port }} · SSH {{ node.ssh_port }}
+          {{ node.name }} · {{ node.host }}
+          <!-- 中转角色没有自己的入站,那三个端口在库里是 0,写出来只会让人
+               以为配漏了。客户端连的端口在「入口」里,一条规则一个。 -->
+          <template v-if="node.role !== 'RELAY'">
+            · 公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}
+          </template>
+          · SSH {{ node.ssh_port }}
           <!-- 带端口显示 IPv6 必须加方括号:2a02:…::1:9443 分不清哪一段是端口。 -->
           <template v-if="node.ipv6_address">
             · IPv6 [{{ node.ipv6_address }}]:{{ node.ipv6_proxy_port || node.proxy_port }}
           </template>
         </div>
       </div>
-    </template>
 
-    <template #extra>
       <a-space v-if="node">
         <!-- 库里的配置已经在节点上生效时不做成主按钮:那一下点下去只会白白
              重启一次 sing-box、断掉全部在线连接,换回一模一样的配置。 -->
+        <!-- 中转机上没有 sing-box 配置可部署 —— 那一下点下去只会得到一句
+             「中转角色的节点没有 sing-box 配置」。它要下发的是 nginx 转发,
+             而那在「入口」里,连摩擦档次都不同(只 reload,不断连接)。 -->
+        <a-button v-if="isRelay" size="small" @click="tab = 'entries'">转发配置</a-button>
         <a-button
+          v-else
           :type="needsDeploy(node) ? 'primary' : 'default'"
           size="small"
           :loading="running === '部署'"
@@ -699,7 +765,7 @@ const subEntries = computed(() => {
           <template #overlay>
             <a-menu>
               <a-menu-item-group title="安装与配置">
-                <a-menu-item @click="emit('edit', node!)">编辑节点</a-menu-item>
+                <a-menu-item @click="editOpen = true">编辑节点</a-menu-item>
                 <a-menu-item @click="doInstall">安装 sing-box</a-menu-item>
                 <a-menu-item
                   @click="
@@ -723,13 +789,13 @@ const subEntries = computed(() => {
           </template>
         </a-dropdown>
       </a-space>
-    </template>
+    </div>
 
     <LbEmptyState
       v-if="loadError"
       variant="error"
       :title="loadError.status === 404 ? '节点不存在或已被删除' : loadError.message"
-      description="列表可能已经过期。关闭抽屉会自动刷新一次列表。"
+      description="它可能刚被删掉,或者这个地址是从别处复制来的。"
       :http-status="loadError.status"
       :occurred-at="loadError.at"
       @retry="reload"
@@ -766,11 +832,22 @@ const subEntries = computed(() => {
         <span class="nd__tools-label">只读检查</span>
         <a-button size="small" :loading="running === '测试 SSH'" @click="doTestSSH">测试 SSH</a-button>
         <a-button size="small" :loading="running === '探测'" @click="doProbe">探测</a-button>
-        <a-button size="small" :loading="running === '比对配置'" @click="doDiff">比对配置</a-button>
+        <!-- 比对配置、扫描握手目标、同步流量在中转机上都没有对应的东西:
+             它上面没有 sing-box 配置、不用 REALITY、也没有计数器。
+             留着只会让人点一下换回一句报错。 -->
+        <a-button
+          v-if="!isRelay"
+          size="small"
+          :loading="running === '比对配置'"
+          @click="doDiff"
+        >
+          比对配置
+        </a-button>
         <!-- Shadowsocks 节点上这一项仍然可点。它是切回 VLESS 的前置步骤 ——
              切协议要求握手目标已经实测通过,而实测只能从这里做。
              按钮上写清楚为什么它在一个不用 REALITY 的节点上出现。 -->
         <a-button
+          v-if="!isRelay"
           size="small"
           :loading="running === '扫描握手目标'"
           :title="isSS ? '当前协议不用 REALITY。实测通过后才能把这个节点切回 VLESS' : ''"
@@ -778,17 +855,20 @@ const subEntries = computed(() => {
         >
           扫描握手目标<template v-if="isSS">(切回 VLESS 用)</template>
         </a-button>
-        <a-button size="small" :loading="running === '同步流量'" @click="doSyncTraffic">同步流量</a-button>
+        <a-button
+          v-if="!isRelay"
+          size="small"
+          :loading="running === '同步流量'"
+          @click="doSyncTraffic"
+        >
+          同步流量
+        </a-button>
         <a-button size="small" :loading="running === '采集资源'" @click="doCollectMetrics">
           采集资源
         </a-button>
-        <a-button
-          size="small"
-          title="这台机器上的 nginx 转发规则与出口去向"
-          @click="openRelayPanel"
-        >
-          转发
-        </a-button>
+        <!-- 「转发」按钮去掉了:这台机器的入口(sing-box 与 nginx 转发)
+             统一在下面的「入口」Tab 里管,那是一个要增删改的列表,
+             不是一次看完就走的检查 —— 放进这一排会让两类东西长得一样。 -->
         <!-- 这一下只是算方案并与当前值对比,不写节点。要不要应用在面板里另点。 -->
         <a-button
           size="small"
@@ -801,12 +881,28 @@ const subEntries = computed(() => {
         <!-- 正在跑什么必须写出来。只有按钮上一个小转圈的话,管理员会以为没点上
              而反复点,也不明白为什么这时候点别处关不掉抽屉。 -->
         <span v-if="running" class="nd__tools-running">
-          {{ running }}中…&nbsp;结果稍后显示在下方,期间点击别处不会关掉本页
+          {{ running }}中…&nbsp;结果会弹窗显示
         </span>
         <span v-else class="nd__tools-note">都不改动节点状态</span>
       </div>
 
-      <!-- 只读动作的结果面板。探测会写回三四个字段,一条吐司交付不了。 -->
+      <!-- 只读动作的结果一律弹窗呈现。
+           探测会写回三四个字段,一条吐司交付不了;而铺在工具条下方会把 Tab
+           整个推下去 —— 结果是看完就走的东西,不该占常驻内容的位置。
+           一个弹窗装全部四种:同一时刻只可能有一种结果,分成四个弹窗
+           只是把同一份开关状态抄四遍。
+           检查还在跑时不接受遮罩点击与 ESC:那几秒里随手一点就关掉了,
+           而结果几秒后才回来,看起来就是「点了探测,页面什么也没发生」。
+           右上角的 × 照常可用 —— 那是明确的关闭意图,不是误触。 -->
+      <a-modal
+        :open="panel !== ''"
+        :title="panelTitle"
+        :width="narrow ? '100%' : 780"
+        :footer="null"
+        :mask-closable="running === ''"
+        :keyboard="running === ''"
+        @cancel="panel = ''"
+      >
       <section v-if="panel === 'ssh' && sshResult" class="nd__panel">
         <div class="nd__panel-head">
           <LbStatusTag
@@ -816,7 +912,6 @@ const subEntries = computed(() => {
                 : { text: 'SSH 连接失败', shape: 'cross', fg: '#B4291D', bg: '#FDECEA', bd: '#F3CFC9' }
             "
           />
-          <a @click="panel = ''">收起</a>
         </div>
         <pre class="nd__pre lb-mono">{{ sshResult.text }}</pre>
         <!-- 域名节点上这一行是关键信息:面板每次操作前重新解析,
@@ -833,7 +928,6 @@ const subEntries = computed(() => {
       <section v-else-if="panel === 'probe' && probe" class="nd__panel">
         <div class="nd__panel-head">
           <span class="nd__panel-title">探测完成 · 节点档案已更新</span>
-          <a @click="panel = ''">收起</a>
         </div>
         <div class="nd__kv">
           <div v-if="hostIsDomain">
@@ -894,7 +988,6 @@ const subEntries = computed(() => {
             <code class="lb-mono">{{ shortHash(diff.remote_sha256) || '(读不到)' }}</code>
             ↔ 库中 rev {{ diff.revision }}
           </span>
-          <a @click="panel = ''">收起</a>
         </div>
         <div v-if="diff.in_sync" class="nd__panel-ok">
           节点上跑的配置与库里当前应有的完全一致,没有需要下发的改动。
@@ -924,7 +1017,6 @@ const subEntries = computed(() => {
       <section v-else-if="panel === 'dest' && destResults.length" class="nd__panel">
         <div class="nd__panel-head">
           <span class="nd__panel-title">扫描握手目标 · 从节点本机实测 {{ destResults.length }} 个候选</span>
-          <a @click="panel = ''">收起</a>
         </div>
         <div class="nd__dest">
           <div class="nd__dest-row nd__dest-row--head">
@@ -968,19 +1060,9 @@ const subEntries = computed(() => {
         @busy="(label) => (running = label)"
         @close="panel = ''"
       />
+      </a-modal>
 
-      <NodeRelayPanel
-        v-else-if="panel === 'relay'"
-        :key="node.id"
-        :node="node"
-        :landing-nodes="landingNodes"
-        :external-proxies="externalProxies"
-        @busy="(label) => (running = label)"
-        @changed="reload"
-        @close="panel = ''"
-      />
-
-      <a-tabs v-model:activeKey="tab" size="small">
+      <a-tabs v-model:activeKey="tab" size="small" @change="syncTabToRoute">
         <a-tab-pane key="overview" tab="概览">
           <div class="nd__grid">
             <section class="nd__card">
@@ -991,11 +1073,21 @@ const subEntries = computed(() => {
                     <span>SSH{{ hostIsDomain ? '(域名,每次操作前重新解析)' : '' }}</span>
                     <b class="lb-mono">{{ node.ssh_user }}@{{ node.host }}:{{ node.ssh_port }}</b>
                   </div>
-                  <div>
-                    <span>代理端口</span>
-                    <b class="lb-mono">公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}</b>
+                  <!-- 中转机上没有 sing-box 入站,这三个端口在库里就是 0。
+                       显示「公网 0 → 主机 0」会让排查的人以为服务没起来,
+                       而真实情况是这台机器上根本没有这个概念 ——
+                       客户端连的端口在「入口」里,一条转发规则一个。 -->
+                  <template v-if="!isRelay">
+                    <div>
+                      <span>代理端口</span>
+                      <b class="lb-mono">公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}</b>
+                    </div>
+                    <div><span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b></div>
+                  </template>
+                  <div v-else>
+                    <span>入口</span>
+                    <b><a @click="tab = 'entries'">见「入口」</a></b>
                   </div>
-                  <div><span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b></div>
                   <div>
                     <span>IPv6</span>
                     <b class="lb-mono">
@@ -1015,7 +1107,7 @@ const subEntries = computed(() => {
                     <span>内存</span>
                     <b class="lb-mono">{{ node.mem_total_mb ? node.mem_total_mb + ' MB' : '未探测' }}</b>
                   </div>
-                  <div>
+                  <div v-if="!isRelay">
                     <span>UDP 会话超时</span>
                     <b class="lb-mono">
                       {{ node.udp_timeout || 'sing-box 默认 5m' }}
@@ -1035,7 +1127,10 @@ const subEntries = computed(() => {
               </div>
             </section>
 
-            <section class="nd__card">
+            <!-- 落地协议、握手目标、TFO 全是 sing-box 入站的属性。
+                 中转机上这些列保持着建表时的默认值,渲染出来就是一份
+                 从来没有生效过的配置 —— 看起来像是配好了。 -->
+            <section v-if="!isRelay" class="nd__card">
               <div class="nd__card-head">
                 落地协议与配置版本
                 <a v-if="!isSS" @click="doScanDests">扫描握手目标</a>
@@ -1135,8 +1230,13 @@ const subEntries = computed(() => {
                 </span>
               </div>
               <div class="nd__card-body">
+                <!-- 「不计」与「读不到」必须分开。后者带重试按钮,
+                     而前者重试一万次也不会有数字。 -->
+                <div v-if="!metered" class="nd__card-note">
+                  {{ notMeteredReason || '中转主机,面板不计流量' }}
+                </div>
                 <LbEmptyState
-                  v-if="trafficError"
+                  v-else-if="trafficError"
                   variant="error"
                   title="流量数据暂时读不到"
                   @retry="reload"
@@ -1337,8 +1437,11 @@ const subEntries = computed(() => {
         </a-tab-pane>
 
         <a-tab-pane key="traffic" tab="流量">
+          <div v-if="!metered" class="nd__card-note">
+            {{ notMeteredReason || '中转主机,面板不计流量' }}
+          </div>
           <LbEmptyState
-            v-if="trafficError"
+            v-else-if="trafficError"
             variant="error"
             title="流量数据暂时读不到"
             @retry="reload"
@@ -1351,31 +1454,18 @@ const subEntries = computed(() => {
           </template>
         </a-tab-pane>
 
-        <a-tab-pane key="sub" tab="订阅展开">
-          <div class="nd__sub-list">
-            <div v-for="e in subEntries" :key="e.name" class="nd__sub-item">
-              <span class="nd__sub-name">{{ e.name }}</span>
-              <span class="lb-mono nd__sub-addr">{{ e.addr }}</span>
-            </div>
-          </div>
-          <div class="nd__card-foot">
-            <template v-if="node.ipv6_address">
-              两条指向<strong>同一个 sing-box 入站</strong>,UUID、REALITY 公钥、short ID 完全相同。
-              改 IPv6 保存即生效,不需要重新部署。
-            </template>
-            <template v-else>
-              未配置 IPv6,订阅里只有一条。填上 IPv6 后会额外生成
-              「{{ node.display_name || node.name }}-IPV6」,同样不需要重新部署。
-            </template>
-          </div>
-          <div v-if="!node.subscription_enabled" class="nd__panel-warn">
-            该节点已关闭「下发到用户订阅」,以上条目不会进入新生成的订阅。
-            节点仍在运行,已导入旧订阅的客户端还能用。
-          </div>
+        <a-tab-pane key="entries" tab="入口">
+          <NodeEntriesPanel
+            :key="node.id"
+            :node="node"
+            :sub-entries="subEntries"
+            @busy="(label) => (running = label)"
+            @changed="reload"
+          />
         </a-tab-pane>
       </a-tabs>
     </template>
-  </a-drawer>
+  </div>
 
   <!-- 部署一旦发出就在节点上跑,关掉弹窗不会取消它 —— 所以执行中干脆不让关。
        z-index 高于 Modal.confirm 的默认 1000:确认框收起有一段淡出动画,
@@ -1455,9 +1545,43 @@ const subEntries = computed(() => {
     @update:open="(v) => (nameConfirm = v ? nameConfirm : null)"
     @confirm="doNameConfirm"
   />
+
+  <!-- 编辑表单由本页托管。抽屉时期它挂在列表页上,而整页之后列表页
+       不再知道谁被打开了 —— 让它继续留在那边,就要把"当前正在编辑哪个节点"
+       这件事在两个页面之间同步一遍,而那是一个必然会不同步的状态。 -->
+  <NodeFormModal
+    v-if="node"
+    :open="editOpen"
+    :node="node"
+    :tiers="tiers"
+    @update:open="(v) => (editOpen = v)"
+    @saved="reload"
+  />
 </template>
 
 <style scoped>
+/* 整页容器。抽屉时期外层 padding 由 body-style 给,现在由页面自己负责。 */
+.nd {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nd__back {
+  align-self: flex-start;
+  font-size: 13px;
+}
+
+/* 标题与操作按钮同一行。窄屏换行 —— 桌面的紧凑排布可以缩间距,
+   但不能把「部署」挤出可视区,那是这个页面唯一的主按钮。 */
+.nd__bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .nd__head {
   display: flex;
   flex-direction: column;
