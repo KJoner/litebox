@@ -1311,10 +1311,21 @@ export const api = {
     request<{ items: DeploymentRecord[] }>(`/api/nodes/${id}/deployments`, { query: { limit } }),
   nodeConfigDiff: (id: number) => request<ConfigDiff>(`/api/nodes/${id}/config-diff`),
   nodeTraffic: (id: number, days = 30) =>
-    request<{ node_id: number; cycle: NodeCycleUsage; daily: DailyPoint[] }>(
-      `/api/nodes/${id}/traffic`,
-      { query: { days } },
-    ),
+    request<{
+      node_id: number
+      /** 中转主机上没有任何计数,这里是 null 而不是一行 0 */
+      cycle: NodeCycleUsage | null
+      daily: DailyPoint[]
+      /**
+       * 这台机器是否被面板计流量。
+       *
+       * 中转主机为 false —— 它上面跑的是 nginx,接不了统计接口。
+       * 界面要据此显示「面板不计流量」,而不是画成「读不到」——
+       * 后者带一个永远好不了的重试按钮。
+       */
+      metered?: boolean
+      reason?: string
+    }>(`/api/nodes/${id}/traffic`, { query: { days } }),
   destCandidates: () =>
     request<{ items: string[]; max_record_size: number }>('/api/dest-candidates'),
 

@@ -81,6 +81,29 @@ func (s *Server) handleNodeTraffic(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 中转主机上跑的是 nginx,它不接 V2Ray API —— 面板在那台机器上
+	// 拿不到任何计数,周期用量查询也就查不出行来。
+	//
+	// **必须在这里分出来。** 不分的话 NodeCycleUsage 返回 ErrNoRows,
+	// 被翻译成 404「节点不存在」—— 而节点明明在,只是不计流量。
+	// 前端拿到 404 会画成「数据读不到,点这里重试」,那个重试永远好不了,
+	// 而管理员会一直以为是接口在抽风。
+	n, err := s.nodes.Store().Get(r.Context(), id)
+	if err != nil {
+		s.writeNodeError(w, err, "查询节点失败")
+		return
+	}
+	if n.Role.IsRelay() {
+		// cycle 给 null 而不是一行 0:0 与「真的没用过」长得一模一样,
+		// 而这里的真相是「这台机器上没有任何东西在计数」。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node_id": id, "cycle": nil, "daily": []any{},
+			"metered": false,
+			"reason":  "中转主机上跑的是 nginx,它不接流量统计接口,面板不计这台机器的流量",
+		})
+		return
+	}
+
 	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
 	daily, err := s.traffic.NodeDaily(r.Context(), id, days)
 	if err != nil {
@@ -99,7 +122,7 @@ func (s *Server) handleNodeTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_id": id, "cycle": cycle, "daily": daily,
+		"node_id": id, "cycle": cycle, "daily": daily, "metered": true,
 	})
 }
 

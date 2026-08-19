@@ -21,7 +21,19 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
-const selectedKeys = computed(() => [route.name as string])
+/**
+ * 详情页归属它的列表页。
+ *
+ * 侧栏按 route.name 高亮,而 /nodes/3 的 name 是 node-detail —— 不映射的话
+ * 一进详情页整个菜单就没有选中项了,「我在哪」这件事当场丢失。
+ * 面包屑同理:它靠同一个 key 找分组名,不映射会退化成一个没有分组的孤零零标题。
+ */
+const NAV_PARENT: Record<string, string> = {
+  'node-detail': 'nodes',
+}
+
+const navKey = computed(() => NAV_PARENT[route.name as string] ?? (route.name as string))
+const selectedKeys = computed(() => [navKey.value])
 
 /** 侧栏计数。取不到就不显示 —— 显示 0 会被读成「一个都没有」。 */
 const counts = ref<{
@@ -74,8 +86,15 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
 /** 面包屑:一级是分组名,二级是页面名。分组名不可点 —— 它不是页面。 */
 const crumb = computed(() => {
   for (const g of groups.value) {
-    const hit = g.items.find((i) => i.key === route.name)
-    if (hit) return { group: g.title, page: hit.label }
+    const hit = g.items.find((i) => i.key === navKey.value)
+    // 详情页借列表页的分组,但页面名取自己的 —— 顶栏写着「自建节点」
+    // 而地址在 /nodes/3 上,会让人以为点错了。
+    if (hit) {
+      return {
+        group: g.title,
+        page: navKey.value === route.name ? hit.label : ((route.meta.title as string) ?? hit.label),
+      }
+    }
   }
   return { group: '', page: (route.meta.title as string) ?? '' }
 })

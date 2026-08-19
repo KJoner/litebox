@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onErrorCaptured, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   api,
@@ -12,7 +13,6 @@ import {
   type NodeCycleUsage,
   type NodeMetrics,
 } from '@/api/client'
-import NodeDetailDrawer from '@/components/NodeDetailDrawer.vue'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import {
   LbBatchBar,
@@ -55,7 +55,18 @@ const cycleError = ref(false)
 const metrics = ref<Record<number, NodeMetrics>>({})
 const metricsError = ref(false)
 
-const detailId = ref<number | null>(null)
+/**
+ * 详情改成整页,列表这边只负责跳过去。
+ *
+ * 抽屉时期这里存着「当前打开的是哪个节点」,而那份状态要和抽屉里的加载、
+ * 编辑表单、错误兜底一起维护 —— 整页之后它归详情页自己,列表页不再知道
+ * 谁被打开了,也就不会有两处不同步的可能。
+ */
+const router = useRouter()
+
+function openDetail(id: number, tab?: string) {
+  router.push({ name: 'node-detail', params: { id: String(id), ...(tab ? { tab } : {}) } })
+}
 const panelKey = ref('')
 
 // ---------- 筛选 ----------
@@ -243,7 +254,7 @@ function runPrimary(n: Node) {
     case 'probe':
       return run(n.id, '探测', () => api.probeNode(n.id), '探测完成,节点档案已更新')
     default:
-      detailId.value = n.id
+      openDetail(n.id)
   }
 }
 
@@ -432,9 +443,10 @@ function protocolTitle(n: Node): string {
  * 否则下次排查时什么线索都没有。
  */
 onErrorCaptured((err) => {
-  if (detailId.value === null) return
-  detailId.value = null
-  message.error(`节点详情渲染失败,已关闭:${err instanceof Error ? err.message : String(err)}`)
+  // 详情已经不在这个页面里了,这里只兜住列表自身的渲染错误 ——
+  // 比如某个字段被后端发成了 null,而模板拿它当数组用。
+  // 不 return false:错误仍要冒泡到控制台,否则下次排查时什么线索都没有。
+  message.error(`节点列表渲染失败:${err instanceof Error ? err.message : String(err)}`)
 })
 
 const pager = usePagination('nodes', () => visible.value.length)
@@ -582,7 +594,7 @@ const keyOpen = ref(false)
         <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
           <template #head>
             <span class="nv__sort lb-mono">#{{ n.sort_order }}</span>
-            <a class="nv__card-name" @click="detailId = n.id">{{ n.display_name || n.name }}</a>
+            <a class="nv__card-name" @click="openDetail(n.id)">{{ n.display_name || n.name }}</a>
             <span v-if="n.role === 'RELAY'" class="nv__role">中转</span>
             <LbStatusTag kind="node" :status="n.status" />
           </template>
@@ -649,7 +661,7 @@ const keyOpen = ref(false)
               </a-button>
               <template #overlay>
                 <a-menu>
-                  <a-menu-item @click="detailId = n.id">详情</a-menu-item>
+                  <a-menu-item @click="openDetail(n.id)">详情</a-menu-item>
                   <a-menu-item @click="openEdit(n)">编辑节点</a-menu-item>
                   <a-menu-item @click="confirmDeploy(n)">部署</a-menu-item>
                 </a-menu>
@@ -690,7 +702,7 @@ const keyOpen = ref(false)
             >
               #{{ record.sort_order }}
             </span>
-            <a @click="detailId = record.id">{{ record.display_name || record.name }}</a>
+            <a @click="openDetail(record.id)">{{ record.display_name || record.name }}</a>
             <!-- 内部名称与展示名称都列:管理员按内部名称找机器,用户报的是展示名称。 -->
             <span v-if="record.display_name !== record.name" class="nv__inner">{{ record.name }}</span>
             <!-- 中转主机与落地节点在同一份列表里混着,而它们几乎没有共同点:
@@ -785,7 +797,7 @@ const keyOpen = ref(false)
               >
                 {{ actionLabel[primaryAction(record)] }}
               </a-button>
-              <a-button v-if="primaryAction(record) !== 'detail'" size="small" @click="detailId = record.id">
+              <a-button v-if="primaryAction(record) !== 'detail'" size="small" @click="openDetail(record.id)">
                 详情
               </a-button>
               <a-dropdown placement="bottomRight">
@@ -814,7 +826,7 @@ const keyOpen = ref(false)
                     </a-menu-item>
                     <!-- 删除、卸载、重置主机密钥这三个不可逆的在详情页的危险区,
                          那里才有空间把「删记录不动机器」和「动机器不删记录」说清楚。 -->
-                    <a-menu-item @click="detailId = record.id">更多操作(详情页)</a-menu-item>
+                    <a-menu-item @click="openDetail(record.id)">更多操作(详情页)</a-menu-item>
                   </a-menu>
                 </template>
               </a-dropdown>
@@ -832,23 +844,12 @@ const keyOpen = ref(false)
       @saved="
         (id) => {
           load()
-          if (!editing) detailId = id
+          // 新建之后直接进详情页:接下来要做的探测、安装、部署全在那里,
+          // 留在列表上等于让人再点一次。
+          if (!editing) openDetail(id)
         }
       "
       @deploy="(id) => run(id, '部署', () => api.deployNode(id), '部署已执行,详情见部署记录')"
-    />
-
-    <NodeDetailDrawer
-      :node-id="detailId"
-      :tiers="tiers"
-      @close="detailId = null"
-      @changed="load"
-      @edit="
-        (n) => {
-          detailId = null
-          openEdit(n)
-        }
-      "
     />
 
     <a-modal v-model:open="keyOpen" title="面板 SSH 公钥" :width="620" :footer="null">

@@ -143,7 +143,6 @@ function confirmRestore() {
   <section class="tn">
     <div class="tn__head">
       <span class="tn__title">{{ modeTitle }}</span>
-      <a @click="emit('close')">收起</a>
     </div>
 
     <!-- 依据先摆出来。方案是按这几个数算的,不显示的话「为什么给我这个值」
