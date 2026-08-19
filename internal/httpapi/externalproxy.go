@@ -283,6 +283,10 @@ func (s *Server) handleUpdateExternalProxy(w http.ResponseWriter, r *http.Reques
 			Detail:   strings.Join(effect.Changes, ";"),
 			ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 		})
+		// 机场换域名、换端口是常事,而那正是「面板一切正常、用户连不上」
+		// 的典型来源:这一行更新了,以它为落地的中转主机上
+		// proxy_pass 却还指着旧地址。
+		s.nodes.PropagateExternalChange(r.Context(), id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"proxy":  newExternalProxyView(p),
@@ -522,6 +526,10 @@ func (s *Server) handleDeleteExternalProxy(w http.ResponseWriter, r *http.Reques
 		s.writeProxyError(w, err, "查询外部代理失败")
 		return
 	}
+	// 依赖它的中转主机必须在打 deleted_at 之前取:之后就查不出来了,
+	// 而它们的 nginx 上还留着一个转向已删除落地的 server 块。
+	s.nodes.PropagateExternalChange(r.Context(), id)
+
 	if err := s.external.Store().Delete(r.Context(), id); err != nil {
 		s.writeProxyError(w, err, "删除外部代理失败")
 		return

@@ -31,14 +31,25 @@ func (s *Server) handlePortalNodes(w http.ResponseWriter, r *http.Request) {
 		s.writePortalError(w, err, "查询门户节点失败")
 		return
 	}
-	// 外部代理单独一个数组,不混进 items:混在一起的话它们的流量字段
-	// 只能填 0,而 0 与「真的没用过」长得一模一样。
+	// 外部代理与中转线路各自一个数组,都不混进 items:混在一起的话
+	// 它们的流量字段只能填 0,而 0 与「真的没用过」长得一模一样。
+	//
+	// 三组分开而不是两组:外部代理是「买来的成品线路」,中转线路的凭据
+	// 是我们发的、落地多半是自己的机器 —— 合成一组会让门户上的分类
+	// 与管理员在后台的心智模型对不上。
 	external, err := s.portalData.ExternalNodes(r.Context(), identity.ProxyUserID)
 	if err != nil {
 		s.writePortalError(w, err, "查询门户外部代理失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": nodes, "external": external})
+	relays, err := s.portalData.RelayNodes(r.Context(), identity.ProxyUserID)
+	if err != nil {
+		s.writePortalError(w, err, "查询门户中转线路失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": nodes, "external": external, "relays": relays,
+	})
 }
 
 func (s *Server) handlePortalTraffic(w http.ResponseWriter, r *http.Request) {

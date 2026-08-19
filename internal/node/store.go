@@ -63,6 +63,22 @@ type Node struct {
 	// 否则以后改 ProxyPort,IPv6 条目会停在旧端口上而管理员毫不知情。
 	IPv6ProxyPort int `json:"ipv6_proxy_port"`
 
+	// Role 是节点角色:LANDING 落地(默认),RELAY 纯中转机(不跑 sing-box 服务)。
+	// RELAY 上 Protocol / ListenPort / APIPort / Reality* / SS* 一律不参与渲染。
+	Role Role `json:"role"`
+
+	// ChainTargetKind 为空表示直连。链式出站只改 A 自己的配置,**不进订阅**
+	// —— 订阅里 A 还是原来那一条,客户端根本不知道它后面还有一跳。
+	ChainTargetKind       ChainTargetKind `json:"chain_target_kind"`
+	ChainTargetNodeID     int64           `json:"chain_target_node_id"`
+	ChainTargetExternalID int64           `json:"chain_target_external_id"`
+	// ChainCode 是链路凭据在【落地 B】的流量统计里的计数器名(chain_000001)。
+	// 它不是 proxy_users 里的一行 —— 见迁移 0018 的说明。
+	ChainCode string `json:"chain_code"`
+	// 两套链路凭据都存,不按落地当前协议分叉。永不出现在 API 响应里。
+	ChainUUID       string `json:"-"`
+	ChainSSPassword string `json:"-"`
+
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`
@@ -141,6 +157,8 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.proxy_port, n.listen_port, n.api_port, n.ipv6_proxy_port,
+	n.role, n.chain_target_kind, n.chain_target_node_id, n.chain_target_external_id,
+	n.chain_code, n.chain_uuid_encrypted, n.chain_ss_password_encrypted,
 	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
 	n.protocol, n.ss_method, n.ss_password_encrypted,
 	n.deployed_protocol, n.deployed_ss_method,
@@ -161,10 +179,15 @@ const nodeFrom = ` FROM nodes n JOIN access_tiers t ON t.id = n.access_tier_id `
 func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
 	var sshKeyEnc, realityKeyEnc, ssKeyEnc string
+	var chainUUIDEnc, chainSSEnc string
+	// 目标列可空:直连的节点这两列是 NULL,扫进 int64 会报错。
+	var chainNodeID, chainExternalID sql.NullInt64
 	err := scan(
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.IPv6ProxyPort,
+		&n.Role, &n.ChainTargetKind, &chainNodeID, &chainExternalID,
+		&n.ChainCode, &chainUUIDEnc, &chainSSEnc,
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
 		&n.Protocol, &n.SSMethod, &ssKeyEnc,
 		&n.DeployedProtocol, &n.DeployedSSMethod,
@@ -196,11 +219,29 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 			return nil, fmt.Errorf("解密节点 %d 的 Shadowsocks 密钥: %w", n.ID, err)
 		}
 	}
+	n.ChainTargetNodeID = chainNodeID.Int64
+	n.ChainTargetExternalID = chainExternalID.Int64
+	if chainUUIDEnc != "" {
+		if n.ChainUUID, err = s.cipher.Decrypt(chainUUIDEnc); err != nil {
+			return nil, fmt.Errorf("解密节点 %d 的链路 UUID: %w", n.ID, err)
+		}
+	}
+	if chainSSEnc != "" {
+		if n.ChainSSPassword, err = s.cipher.Decrypt(chainSSEnc); err != nil {
+			return nil, fmt.Errorf("解密节点 %d 的链路 Shadowsocks 密钥: %w", n.ID, err)
+		}
+	}
 	return &n, nil
 }
 
 // CreateParams 是新增节点所需的参数。
 type CreateParams struct {
+	// Role 留空按 LANDING。**一经创建不可更改** —— LANDING 改 RELAY 等于
+	// 卸掉 sing-box 并丢掉这台机器上全部用户凭据,RELAY 改 LANDING 则可能与
+	// 已有的转发规则抢端口。两个方向都属于"删了重建"的范畴,而重建会丢掉
+	// 这台机器的全部历史数据,所以要让管理员显式地那么做,而不是点一下开关。
+	Role string
+
 	Name string
 	// DisplayName 留空时复制 Name。订阅里的节点名不能为空:
 	// 客户端拿它识别条目,空名字会让用户面对一列无法区分的节点。
@@ -296,8 +337,8 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			access_tier_id, sort_order, tcp_fast_open,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
-			status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			role, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
 		p.Protocol, p.SSMethod, ssKeyEnc,
@@ -305,7 +346,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 		realityKeyEnc, keys.PublicKey, shortID,
 		p.AccessTierID, p.SortOrder, p.TCPFastOpen,
 		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay, p.TrafficBillingMode,
-		StatusPending, now, now)
+		p.Role, StatusPending, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
@@ -321,6 +362,11 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 
 func validateCreate(p *CreateParams) error {
 	var err error
+	role, err := ParseRole(p.Role)
+	if err != nil {
+		return err
+	}
+	p.Role = string(role)
 	if err = validateName(p.Name); err != nil {
 		return err
 	}
@@ -346,6 +392,28 @@ func validateCreate(p *CreateParams) error {
 	}
 	// SSH 私钥可以留空:留空表示这个节点用面板专用密钥,
 	// 由 Service.Bootstrap 在创建后把面板公钥装进节点。
+
+	// 中转机到此为止:它上面不跑 sing-box,三个端口与握手目标都没有意义。
+	// 端口全部归零而不是填一个看起来合理的默认值 —— 详情页显示一个
+	// 从来没有人监听过的端口,会让排查的人以为服务没起来。
+	// 客户端连的端口在 node_relays 里,一条规则一个。
+	//
+	// protocol 那一列保持它的默认值(迁移 0014 的 CHECK 不接受空串,
+	// 而为一个没人读的列重建整张表不值得)。RELAY 上没有任何代码路径读它。
+	if Role(p.Role).IsRelay() {
+		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort = 0, 0, 0, 0
+		p.RealityDest, p.RealityDestPort = "", 0
+		p.TCPFastOpen = false
+		// protocol 那一列的 CHECK(迁移 0014)不接受空串,所以只能写它的默认值。
+		// **它在中转机上没有任何意义,也没有任何代码路径读它** —— 渲染、订阅、
+		// 拨测全都不走这里。为一个没人读的列重建整张表不值得,
+		// 但界面上必须把它藏掉:显示一个从没生效过的协议,
+		// 会让排查的人以为这台机器该有一个 sing-box 入站。
+		p.Protocol = string(singbox.ProtocolVLESSReality)
+		p.SSMethod = ""
+		return nil
+	}
+
 	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
 		return err
 	}
@@ -613,8 +681,18 @@ type UpdateEffect struct {
 	// TierChanged 为真时节点上的用户集合已经变了,必须自动标脏重新部署。
 	// 这一条不能交给管理员挑时机:等级调高后,被移出的用户凭据还留在节点上,
 	// 拖多久就多能用多久 —— 那是权限没有真正收回。
-	TierChanged bool     `json:"tier_changed"`
-	Changes     []string `json:"changes"`
+	TierChanged bool `json:"tier_changed"`
+	// RelayTargetChanged 为真时,以这个节点为落地的中转主机全部过时了。
+	//
+	// 依赖有两条:nginx 的 proxy_pass 指着这个节点的【地址与公网端口】,
+	// 中转条目的协议参数取自这个节点。任何一项变了而不往下游传播,
+	// 表现是中转机把流量转到一个没人监听的端口、或者用户拿到一套
+	// 对不上的协议参数 —— **而面板上两台机器都显示正常**。
+	//
+	// 不细分是哪一项变了:判断"这次够不够格触发传播"本身就是会写漏的地方,
+	// 而多一次 nginx reload 不打断任何人。
+	RelayTargetChanged bool     `json:"relay_target_changed"`
+	Changes            []string `json:"changes"`
 }
 
 // Update 修改节点配置。
@@ -778,6 +856,15 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		string(old.Protocol) != p.Protocol || old.SSMethod != p.SSMethod ||
 		old.TCPFastOpen != fastOpen ||
 		effect.TierChanged
+
+	// 下游传播的判据与 NeedsDeploy 是两套:公网端口与主机地址不进本机配置
+	// (改了它们重启 sing-box 没有意义),但它们正是中转主机
+	// proxy_pass 的目标 —— 那边必须跟着改。
+	effect.RelayTargetChanged = old.Host != p.Host ||
+		old.ProxyPort != p.ProxyPort ||
+		string(old.Protocol) != p.Protocol || old.SSMethod != p.SSMethod ||
+		old.TCPFastOpen != fastOpen ||
+		old.IPv6Address != p.IPv6Address || old.IPv6ProxyPort != p.IPv6ProxyPort
 
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
 	_, err = s.db.ExecContext(ctx, `

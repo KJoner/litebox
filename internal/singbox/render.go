@@ -1,8 +1,10 @@
 package singbox
 
 import (
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // 节点配置中固定的标签与地址。
@@ -13,6 +15,10 @@ const (
 	// ShadowsocksInboundTag 是 Shadowsocks 入站的标签。
 	ShadowsocksInboundTag = "ss-in"
 	OutboundTag           = "direct"
+	// ChainOutboundTag 是链式出站的标签,同时也是 route.final 的取值。
+	// 两处必须取自这一个常量 —— 各写一个字面量的话,改名时漏掉一处的表现是
+	// sing-box 报 outbound not found,而配置看起来完全正常。
+	ChainOutboundTag = "chain-out"
 	// APIListenHost 固定为回环:V2Ray API 无鉴权,绝不能对外监听。
 	APIListenHost = "127.0.0.1"
 	// ProxyListenHost 为空串时 sing-box 监听全部地址。
@@ -57,6 +63,38 @@ type NodeParams struct {
 	// 以下只有 SHADOWSOCKS 用。SSPassword 是节点级 PSK(库里存的 32 字节 base64)。
 	SSMethod   SSMethod
 	SSPassword string
+
+	// Chain 非 nil 时这个节点的出站指向别处(链式中转)。
+	//
+	// 它不进订阅:订阅里这个节点还是原来那一条,客户端根本不知道
+	// 它后面还有一跳。
+	Chain *ChainOutbound
+}
+
+// ChainOutbound 是链式出站的参数,已经与"落地是自建节点还是外部代理"无关。
+//
+// 上层把两种来源都归一成它,渲染这边就不必知道落地是谁 ——
+// 否则每加一种落地来源都要改渲染,而渲染是全项目最不该分叉的地方。
+type ChainOutbound struct {
+	// Protocol 留空按 VLESS_REALITY。
+	Protocol   Protocol
+	Server     string
+	ServerPort int
+	// TCPFastOpen 跟随落地【已经生效】的 TFO 状态,不是它的期望值。
+	TCPFastOpen bool
+
+	// VLESS 专有。
+	UUID             string
+	RealityDest      string
+	RealityPublicKey string
+	RealityShortID   string
+
+	// Shadowsocks 专有。Password 是【已经拼好的】客户端密码 ——
+	// serverPSK:userPSK 的拼接只有 SSClientPassword 一处实现,
+	// 两处各拼一遍的话,某天改了编码方式只改到一处,
+	// 表现是"拨测通过但链路连不上",或者反过来。
+	SSMethod   SSMethod
+	SSPassword string
 }
 
 // Render 生成节点配置。
@@ -97,10 +135,16 @@ func Render(params NodeParams) (Config, error) {
 		statsUsers = append(statsUsers, u.Code)
 	}
 
+	outbounds, route, err := buildOutbounds(params)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		Log:       LogConfig{Level: logLevel, Timestamp: true},
 		Inbounds:  []Inbound{inbound},
-		Outbounds: []Outbound{{Type: "direct", Tag: OutboundTag}},
+		Outbounds: outbounds,
+		Route:     route,
 		Experimental: ExperimentalConfig{
 			V2RayAPI: V2RayAPIConfig{
 				Listen: fmt.Sprintf("%s:%d", APIListenHost, params.APIPort),
@@ -118,7 +162,125 @@ func Render(params NodeParams) (Config, error) {
 	if err := AssertStatsConsistent(cfg); err != nil {
 		return Config{}, err
 	}
+	if err := AssertChainRouted(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// buildOutbounds 生成出站列表与 route 段。
+//
+// **direct 出站永远保留。** 删掉它,链路一断整个节点就没有任何可用出站,
+// 而保留它至少让"改回直连"是一次纯配置变更。
+//
+// 两个返回值必须同生同灭:有链式出站就一定有 route.final 指向它。
+// 这个不变量由 AssertChainRouted 在渲染的最后一步再断言一次 ——
+// 因为它错了的时候没有任何一层会报错,见 Config.Route 的注释。
+func buildOutbounds(params NodeParams) ([]Outbound, *RouteConfig, error) {
+	outs := []Outbound{{Type: "direct", Tag: OutboundTag}}
+	if params.Chain == nil {
+		return outs, nil, nil
+	}
+	chain, err := buildChainOutbound(*params.Chain)
+	if err != nil {
+		return nil, nil, err
+	}
+	return append(outs, chain), &RouteConfig{Final: ChainOutboundTag}, nil
+}
+
+func buildChainOutbound(c ChainOutbound) (Outbound, error) {
+	if c.Protocol == "" {
+		c.Protocol = ProtocolVLESSReality
+	}
+	if err := ValidatePort(c.ServerPort, "链式落地"); err != nil {
+		return Outbound{}, err
+	}
+	if strings.TrimSpace(c.Server) == "" {
+		return Outbound{}, errors.New("链式落地地址不能为空")
+	}
+
+	out := Outbound{
+		Tag:         ChainOutboundTag,
+		Server:      c.Server,
+		ServerPort:  c.ServerPort,
+		TCPFastOpen: c.TCPFastOpen,
+	}
+	if c.Protocol == ProtocolShadowsocks {
+		if _, err := ParseSSMethod(string(c.SSMethod)); err != nil {
+			return Outbound{}, fmt.Errorf("链式落地的%w", err)
+		}
+		if c.SSPassword == "" {
+			return Outbound{}, errors.New("链式落地缺少 Shadowsocks 密码")
+		}
+		out.Type = "shadowsocks"
+		out.Method = string(c.SSMethod)
+		out.Password = c.SSPassword
+		return out, nil
+	}
+
+	if err := ValidateUUID(c.UUID); err != nil {
+		return Outbound{}, fmt.Errorf("链式落地的 %w", err)
+	}
+	if err := ValidateHandshakeServer(c.RealityDest); err != nil {
+		return Outbound{}, fmt.Errorf("链式落地的握手目标: %w", err)
+	}
+	if c.RealityPublicKey == "" || c.RealityShortID == "" {
+		return Outbound{}, errors.New("链式落地缺少 REALITY 公钥或 short_id")
+	}
+	out.Type = "vless"
+	out.UUID = c.UUID
+	out.Flow = FlowVision
+	out.TLS = &OutboundTLS{
+		Enabled:    true,
+		ServerName: c.RealityDest,
+		// 不带 utls 的 ClientHello 会被 REALITY 服务端直接拒掉。
+		UTLS: &OutboundUTLS{Enabled: true, Fingerprint: "chrome"},
+		Reality: &OutboundReality{
+			Enabled:   true,
+			PublicKey: c.RealityPublicKey,
+			ShortID:   c.RealityShortID,
+		},
+	}
+	return out, nil
+}
+
+// ErrChainNotRouted 表示配置里有链式出站却没有把流量指过去。
+var ErrChainNotRouted = errors.New("链式出站没有被 route.final 指向")
+
+// AssertChainRouted 断言「有链式出站 ⟺ route.final 指向它」。
+//
+// 这是整个链式中转仅有的安全网。V7 技术验证 §1 实测:少了 route.final 时
+// sing-box check 通过、服务启动、端口监听、客户端握手成功、网页照开,
+// 而流量从节点【自己的 IP】出去了 —— 出站定义在配置里,一次都没被用过。
+// 部署的三步健康检查全绿:拨测经 direct 回到本机 sshd,照样吐 SSH 横幅。
+//
+// 反过来也要拦:route.final 指向一个不存在的出站会让 sing-box 直接启动失败,
+// 那虽然不静默,但错误信息落在部署失败上,查起来一样绕。
+func AssertChainRouted(cfg Config) error {
+	hasChain := false
+	for _, out := range cfg.Outbounds {
+		if out.Tag == ChainOutboundTag {
+			hasChain = true
+			break
+		}
+	}
+	routed := cfg.Route != nil && cfg.Route.Final == ChainOutboundTag
+	if hasChain == routed {
+		return nil
+	}
+	if hasChain {
+		return fmt.Errorf("%w:出站 %q 存在,而 route.final 是 %q",
+			ErrChainNotRouted, ChainOutboundTag, routeFinalOf(cfg))
+	}
+	return fmt.Errorf("%w:route.final 指向 %q,但没有这个出站",
+		ErrChainNotRouted, routeFinalOf(cfg))
+}
+
+func routeFinalOf(cfg Config) string {
+	if cfg.Route == nil {
+		return ""
+	}
+	return cfg.Route.Final
 }
 
 // UDPTimeoutFor 按节点内存给出 UDP NAT 会话的最长驻留时间。

@@ -583,14 +583,22 @@ const keyOpen = ref(false)
           <template #head>
             <span class="nv__sort lb-mono">#{{ n.sort_order }}</span>
             <a class="nv__card-name" @click="detailId = n.id">{{ n.display_name || n.name }}</a>
+            <span v-if="n.role === 'RELAY'" class="nv__role">中转</span>
             <LbStatusTag kind="node" :status="n.status" />
           </template>
 
           <div class="nv__host lb-mono">
-            <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
-            {{ n.host }}:{{ n.proxy_port }} · {{ n.access_tier_name }}
-            <template v-if="n.ipv6_address"> · IPv6</template>
+            <template v-if="n.role !== 'RELAY'">
+              <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
+              {{ n.host }}:{{ n.proxy_port }} · {{ n.access_tier_name }}
+              <template v-if="n.ipv6_address"> · IPv6</template>
+            </template>
+            <!-- 中转机没有自己的协议与代理端口,渲染出来只会让人以为配漏了。 -->
+            <template v-else>
+              {{ n.host }} · {{ n.access_tier_name }} · 端口见转发规则
+            </template>
           </div>
+          <div v-if="n.chain_target_kind" class="nv__host">出口经中转</div>
           <div class="nv__stack nv__stack--row">
             <LbStatusTag
               :meta="configStatusMeta[configState(n)]"
@@ -603,7 +611,12 @@ const keyOpen = ref(false)
             />
           </div>
           <div v-if="n.maintenance_message" class="nv__card-maint">{{ n.maintenance_message }}</div>
+          <!-- 中转机上跑的是 nginx,它不接统计接口,面板在那台机器上
+               拿不到任何计数。这里写明「不计流量」而不是画一条 0 的进度条 ——
+               0 与「真的没用过」长得一模一样,那是最容易骗到管理员的一种失败。 -->
+          <div v-if="n.role === 'RELAY'" class="nv__reset">中转主机,面板不计流量</div>
           <LbQuotaBar
+            v-else
             :used-bytes="cycles[n.id]?.used_bytes ?? null"
             :quota-bytes="cycles[n.id]?.quota_bytes ?? n.traffic_quota_bytes"
             :warning-level="cycles[n.id]?.warning_level"
@@ -680,15 +693,31 @@ const keyOpen = ref(false)
             <a @click="detailId = record.id">{{ record.display_name || record.name }}</a>
             <!-- 内部名称与展示名称都列:管理员按内部名称找机器,用户报的是展示名称。 -->
             <span v-if="record.display_name !== record.name" class="nv__inner">{{ record.name }}</span>
+            <!-- 中转主机与落地节点在同一份列表里混着,而它们几乎没有共同点:
+                 中转上没有 sing-box、没有协议与端口、也没有任何流量数字。
+                 不标出来的话,管理员会对着一台中转机找它的协议为什么是空的。 -->
+            <span v-if="record.role === 'RELAY'" class="nv__role">中转</span>
+            <span
+              v-if="record.chain_target_kind"
+              class="nv__chain"
+              title="这台机器的出口指向别处(链式中转)。订阅内容不受影响。"
+              >经中转出网</span
+            >
             <div class="nv__host lb-mono">
               <!-- 协议放在地址前面。同一份列表里两种协议混着,不标的话
                    管理员分不出哪台机器的订阅条目是 ss:// —— 而排查
                    「某个客户端连不上」时那正是第一个要知道的事。 -->
-              <span class="nv__proto" :title="protocolTitle(record)">{{ protocolShort(record) }}</span>
-              {{ record.host }}:{{ record.proxy_port }}
-              <template v-if="record.listen_port !== record.proxy_port">
-                → :{{ record.listen_port }}
+              <template v-if="record.role !== 'RELAY'">
+                <span class="nv__proto" :title="protocolTitle(record)">{{ protocolShort(record) }}</span>
+                {{ record.host }}:{{ record.proxy_port }}
+                <template v-if="record.listen_port !== record.proxy_port">
+                  → :{{ record.listen_port }}
+                </template>
               </template>
+              <!-- 中转机没有自己的协议与代理端口:那些列在库里是 0 /
+                   保持默认值,渲染出来只会让人以为配漏了。
+                   客户端连的端口在「转发」面板里,一条规则一个。 -->
+              <template v-else>{{ record.host }} · 端口见转发规则</template>
               <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
               <template v-if="record.ipv6_address">
                 · IPv6<template
@@ -732,7 +761,10 @@ const keyOpen = ref(false)
           </template>
 
           <template v-else-if="column.key === 'cycle'">
+            <!-- 理由同上:中转主机没有任何计数,写明比画一条 0 更诚实。 -->
+            <div v-if="record.role === 'RELAY'" class="nv__reset">中转主机,面板不计流量</div>
             <LbQuotaBar
+              v-else
               :used-bytes="cycles[record.id]?.used_bytes ?? null"
               :quota-bytes="cycles[record.id]?.quota_bytes ?? record.traffic_quota_bytes"
               :warning-level="cycles[record.id]?.warning_level"
@@ -895,6 +927,21 @@ const keyOpen = ref(false)
 .nv__proto {
   display: inline-block;
   margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #f1f3f5;
+  color: #576070;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* 角色与链式标记。同样用中性底色 —— 它们描述的是「这台机器是什么」,
+   不是状态,上色会跟旁边真正表达状态的 LbStatusTag 抢注意力。
+   取值同样来自 tokens.ts(bgSubtle / text2)。 */
+.nv__role,
+.nv__chain {
+  display: inline-block;
+  margin-left: 6px;
   padding: 0 4px;
   border-radius: 3px;
   background: #f1f3f5;

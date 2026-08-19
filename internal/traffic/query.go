@@ -33,6 +33,20 @@ func NewQuerier(db *sql.DB) *Querier {
 	return &Querier{db: db}
 }
 
+// notChainCode 把链路凭据(chain_xxxxxx)排除在【全站合计】之外。
+//
+// 链路那份流量在两台机器上各记一份:中转主机按真实用户记一份,
+// 落地按 chain_xxxxxx 再记一份。**按节点看两份都对**(两台 VPS 确实
+// 各自都在计这笔),但全站合计里两份加起来就是同一批字节数了两遍 ——
+// 而仪表盘上那个数字会因此凭空多出一截,管理员对不上账。
+//
+// 只用在全站/按天的合计上。按节点、按用户的查询一律不加:
+// 前者本来就该看到链路那份,后者根本匹配不到 chain_ 前缀。
+//
+// LIKE 里的下划线是通配符,必须转义 —— 不转的话 chainX000001 这种
+// 也会被排除掉,而那正好是"多排除了一点点、谁都发现不了"的那类错。
+const notChainCode = ` AND user_code NOT LIKE 'chain\_%' ESCAPE '\'`
+
 // UserByNode 返回某用户在各节点上的流量分布。
 //
 // 数据来自 traffic_ledger 而非节点当前计数器:
@@ -115,7 +129,7 @@ func (q *Querier) SiteDaily(ctx context.Context, days int) ([]DailyPoint, error)
 	rows, err := q.db.QueryContext(ctx, `
 		SELECT day, COALESCE(SUM(uplink),0), COALESCE(SUM(downlink),0)
 		  FROM traffic_daily
-		 WHERE day >= ?
+		 WHERE day >= ?`+notChainCode+`
 		 GROUP BY day ORDER BY day`, since)
 	if err != nil {
 		return nil, err
@@ -141,8 +155,8 @@ func scanDaily(rows *sql.Rows) ([]DailyPoint, error) {
 func (q *Querier) TotalBytesSince(ctx context.Context, day string) (int64, error) {
 	var total int64
 	err := q.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(uplink + downlink), 0) FROM traffic_daily WHERE day >= ?`,
-		day).Scan(&total)
+		`SELECT COALESCE(SUM(uplink + downlink), 0) FROM traffic_daily
+		  WHERE day >= ?`+notChainCode, day).Scan(&total)
 	return total, err
 }
 

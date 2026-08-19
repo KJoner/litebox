@@ -162,11 +162,17 @@ func (d *Deployer) checkDial(ctx context.Context, client *sshx.Client, req Reque
 		return "", err
 	}
 
-	banner, err := dialThroughProxy(ctx, client, probePort, probeTargetPort(ctx, client, req.SSHPort))
+	host, port := "127.0.0.1", probeTargetPort(ctx, client, req.SSHPort)
+	via := "节点本机"
+	if req.DialHost != "" && req.DialPort > 0 {
+		host, port = req.DialHost, req.DialPort
+		via = "经落地绕回本机公网 SSH"
+	}
+	banner, err := dialThroughProxy(ctx, client, probePort, host, port)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("用户 %s 拨测成功(经代理读到 %q)", probeUser.Code, banner), nil
+	return fmt.Sprintf("用户 %s 拨测成功(%s,读到 %q)", probeUser.Code, via, banner), nil
 }
 
 // probeTargetPort 返回节点本机可连的 sshd 端口。
@@ -299,7 +305,9 @@ func probeOutbound(req Request, user singbox.User) (map[string]any, error) {
 
 // dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,
 // CONNECT 到目标后读取开头的若干字节。
-func dialThroughProxy(ctx context.Context, client *sshx.Client, socksPort, targetPort int) (string, error) {
+func dialThroughProxy(
+	ctx context.Context, client *sshx.Client, socksPort int, targetHost string, targetPort int,
+) (string, error) {
 	conn, err := client.DialThrough("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort)))
 	if err != nil {
 		return "", fmt.Errorf("连接探测客户端的 SOCKS 端口: %w", err)
@@ -312,7 +320,7 @@ func dialThroughProxy(ctx context.Context, client *sshx.Client, socksPort, targe
 	}
 	_ = conn.SetDeadline(deadline)
 
-	if err := socks5Connect(conn, "127.0.0.1", targetPort); err != nil {
+	if err := socks5Connect(conn, targetHost, targetPort); err != nil {
 		return "", err
 	}
 
@@ -329,14 +337,22 @@ func dialThroughProxy(ctx context.Context, client *sshx.Client, socksPort, targe
 }
 
 // socks5Connect 执行 SOCKS5 的无认证握手与 CONNECT 请求。
+//
+// 目标既收 IPv4 字面量也收域名:中转与链式的拨测要 CONNECT 到中转主机
+// **自己的公网地址**,而那一栏允许填域名(动态 DNS)。
+// 域名走 ATYP=3 交给探测客户端去解析 —— 主控这边解析再发 IP 的话,
+// 解析结果与节点看到的可能不是同一个,而那正是这次拨测要验证的东西。
 func socks5Connect(conn net.Conn, host string, port int) error {
 	// 参数校验必须先于任何 I/O:握手一旦开始就无法干净地中止。
-	ip := net.ParseIP(host).To4()
-	if ip == nil {
-		return fmt.Errorf("探测目标 %q 不是 IPv4 地址", host)
+	if host == "" {
+		return errors.New("探测目标为空")
 	}
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("探测目标端口 %d 非法", port)
+	}
+	ip4 := net.ParseIP(host).To4()
+	if ip4 == nil && len(host) > 255 {
+		return fmt.Errorf("探测目标 %q 过长", host)
 	}
 
 	// 握手:版本 5,一种方法,无认证。
@@ -351,9 +367,16 @@ func socks5Connect(conn net.Conn, host string, port int) error {
 		return fmt.Errorf("SOCKS5 握手被拒绝(版本 %d,方法 %d)", resp[0], resp[1])
 	}
 
-	req := make([]byte, 0, 10)
-	req = append(req, 0x05, 0x01, 0x00, 0x01) // CONNECT,IPv4
-	req = append(req, ip...)
+	req := make([]byte, 0, 262)
+	if ip4 != nil {
+		req = append(req, 0x05, 0x01, 0x00, 0x01) // CONNECT,IPv4
+		req = append(req, ip4...)
+	} else {
+		// ATYP=3:域名由探测客户端解析。长度是一个字节,所以上面卡了 255。
+		req = append(req, 0x05, 0x01, 0x00, 0x03)
+		req = append(req, byte(len(host)))
+		req = append(req, host...)
+	}
 	req = binary.BigEndian.AppendUint16(req, uint16(port))
 	if _, err := conn.Write(req); err != nil {
 		return fmt.Errorf("SOCKS5 CONNECT 写入失败: %w", err)

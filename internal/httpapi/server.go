@@ -19,6 +19,7 @@ import (
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
@@ -47,6 +48,7 @@ type Server struct {
 	portal       *portal.Service
 	portalAccts  *portal.Store
 	portalData   *portal.Querier
+	relays       *relay.Store
 	adjustments  *adjustment.Store
 	pool         *sshx.Pool
 	binaries     node.BinaryProvider
@@ -85,6 +87,7 @@ type Options struct {
 	Portal      *portal.Service
 	PortalAccts *portal.Store
 	PortalData  *portal.Querier
+	Relays      *relay.Store
 	Adjustments *adjustment.Store
 	Pool        *sshx.Pool
 	Binaries    node.BinaryProvider
@@ -115,6 +118,7 @@ func NewServer(opts Options) *Server {
 		portal:       opts.Portal,
 		portalAccts:  opts.PortalAccts,
 		portalData:   opts.PortalData,
+		relays:       opts.Relays,
 		adjustments:  opts.Adjustments,
 		pool:         opts.Pool,
 		binaries:     opts.Binaries,
@@ -176,6 +180,17 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/preview", longOperation(s.handleNodeTuningPreview))
 		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/apply", longOperation(s.handleNodeTuningApply))
 		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/restore", longOperation(s.handleNodeTuningRestore))
+		// 中转:转发规则的增删改只 reload nginx,不碰 sing-box。
+		authed.HandleFunc("GET /api/relays", s.handleListRelays)
+		authed.HandleFunc("GET /api/nodes/{id}/relays", s.handleListNodeRelays)
+		authed.HandleFunc("POST /api/nodes/{id}/relays", s.handleCreateRelay)
+		authed.HandleFunc("PUT /api/relays/{id}", s.handleUpdateRelay)
+		authed.HandleFunc("DELETE /api/relays/{id}", s.handleDeleteRelay)
+		authed.HandleFunc("POST /api/nodes/{id}/relays/deploy", longOperation(s.handleDeployRelays))
+		authed.HandleFunc("GET /api/nodes/{id}/nginx", longOperation(s.handleNodeNginxFacts))
+		// 链式出站是两台机器的复合操作,一定慢,走 longOperation。
+		authed.HandleFunc("POST /api/nodes/{id}/chain", longOperation(s.handleApplyChain))
+		authed.HandleFunc("DELETE /api/nodes/{id}/chain", longOperation(s.handleClearChain))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
 		authed.HandleFunc("GET /api/nodes/{id}/config-diff", longOperation(s.handleNodeConfigDiff))
 		authed.HandleFunc("GET /api/deployments", s.handleRecentDeployments)

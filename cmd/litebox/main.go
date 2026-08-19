@@ -38,6 +38,7 @@ import (
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
@@ -409,12 +410,16 @@ func cmdServe(args []string) error {
 		Logger: logger,
 	})
 
+	relayStore := relay.NewStore(db)
+
 	nodeService := node.NewService(node.ServiceOptions{
 		Store:            nodeStore,
 		Pool:             pool,
 		Deployer:         deployer,
 		DeployStore:      deployment.NewStore(db),
 		Users:            userStore,
+		Relays:           relayStore,
+		RelayHosts:       relayStore,
 		Keys:             panelKeys,
 		Layout:           layout,
 		Logger:           logger,
@@ -430,6 +435,8 @@ func cmdServe(args []string) error {
 		Debounce: cfg.Node.DeployDebounce,
 		MaxDelay: cfg.Node.DeployMaxDelay,
 	})
+	// 两者互为依赖,构造期的循环引用在这里显式打断。
+	nodeService.SetTrigger(coordinator)
 	go coordinator.Run(ctx)
 
 	userService := user.NewService(userStore, coordinator, logger)
@@ -495,6 +502,7 @@ func cmdServe(args []string) error {
 
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),
+		Relays:      relayStore,
 		PortalData:  portal.NewQuerier(db, userStore),
 		Adjustments: adjustment.NewStore(db),
 

@@ -25,6 +25,12 @@ const FlowVision = "xtls-rprx-vision"
 var (
 	// userCodePattern 与数据库中的 user_code 格式一致。
 	userCodePattern = regexp.MustCompile(`^user_\d{6}$`)
+	// chainCodePattern 是链路凭据的代码(见迁移 0018)。
+	//
+	// 它同样是流量统计里的一个计数器名,所以要跟 user_ 一样严格校验;
+	// 但两个空间必须永远不撞 —— 撞了的表现是一个真实用户的流量
+	// 被算进链路、或者反过来,两种都不报错。
+	chainCodePattern = regexp.MustCompile(`^chain_\d{6}$`)
 	// uuidPattern 是标准 UUID 的规范形式(小写,带连字符)。
 	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	// shortIDPattern:REALITY short_id 是 1~16 位十六进制,且长度必须为偶数。
@@ -41,14 +47,26 @@ var (
 	ErrStatsMismatch = errors.New("统计白名单与入站用户列表不一致")
 )
 
-// ValidateUserCode 校验用户代码格式。
-// 用户代码是流量统计的唯一标识,格式错误会导致统计对不上账。
+// ValidateUserCode 校验入站里一个条目的代码格式。
+//
+// 它是流量统计的唯一标识,格式错误会导致统计对不上账。
+// 两种前缀都收:user_ 是真实用户,chain_ 是中转主机在这个落地上的链路凭据。
+// 后者不是 proxy_users 里的一行,但在这份配置里与用户处在同一个位置 ——
+// 它要出现在 inbound.users 与 stats.users 里,否则经中转过来的流量
+// 在这台机器上一个字节都不会被计。
 func ValidateUserCode(code string) error {
-	if !userCodePattern.MatchString(code) {
-		return fmt.Errorf("用户代码 %q 格式非法,应为 user_000001 形式", code)
+	if !userCodePattern.MatchString(code) && !chainCodePattern.MatchString(code) {
+		return fmt.Errorf("用户代码 %q 格式非法,应为 user_000001 或 chain_000001 形式", code)
 	}
 	return nil
 }
+
+// IsChainCode 表示这个代码属于链路凭据而不是真实用户。
+//
+// 流量入账、额度判断与门户展示都要靠它把两者分开:
+// 链路那份流量算在【节点】头上是对的(那台 VPS 确实在计),
+// 算到任何一个用户头上都是错的。
+func IsChainCode(code string) bool { return chainCodePattern.MatchString(code) }
 
 // ValidateUUID 校验 VLESS UUID。
 // 必须在这里拦住:sing-box 会把任意字符串哈希成可用的 UUID 而不报错。

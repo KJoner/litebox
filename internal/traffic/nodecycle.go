@@ -292,7 +292,13 @@ func (q *Querier) NodeCycleUsage(ctx context.Context, nodeID int64) (*NodeCycleU
 
 // nodeCycleQueries 读取节点的额度配置。nodeID 为 0 表示取全部节点。
 func (q *Querier) nodeCycleQueries(ctx context.Context, nodeID int64) ([]NodeCycleQuery, error) {
-	where := "n.deleted_at IS NULL"
+	// 中转机不参与周期用量:那上面跑的是 nginx,它不接 V2Ray API,
+	// 面板在那台机器上拿不到任何计数。
+	//
+	// **整行不返回,而不是返回一行 0。** 0 与「真的没用过」长得一模一样,
+	// 而这是最容易骗到管理员的一种失败 —— 与不限量节点的 remaining_bytes
+	// 必须是 null 完全一致。前端拿不到这一行时显示「中转主机,面板不计流量」。
+	where := "n.deleted_at IS NULL AND n.role != 'RELAY'"
 	args := []any{}
 	if nodeID > 0 {
 		where += " AND n.id = ?"

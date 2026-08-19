@@ -25,6 +25,14 @@ import (
 // (配置生成、订阅)引用这个常量,不要另写等级判断。
 const EffectiveNodesView = "user_effective_nodes"
 
+// EffectiveRelaysView 是中转线路的有效性视图名(迁移 0018)。
+//
+// 它的规则比节点多一层:线路可见 ⟹ 用户在【落地】上确实有凭据。
+// 透传模式下客户端出示的是落地的凭据,少了这一层的表现是用户在订阅里
+// 看得见这条线路、连上去握手直接被拒 —— 而且跨了两台机器,
+// 排查的人会先去查中转主机。
+const EffectiveRelaysView = "user_effective_relays"
+
 // 三个内置等级的 code。程序内一律用 code 判断,不要用 name —— name 可改。
 const (
 	CodeNormal = "normal"
@@ -223,4 +231,36 @@ func NodesByUser(ctx context.Context, q Queryer) (map[int64][]int64, error) {
 		result[userID] = append(result[userID], nodeID)
 	}
 	return result, rows.Err()
+}
+
+// RelaysForUser 返回该用户当前可见的全部中转线路 ID。
+func RelaysForUser(ctx context.Context, q Queryer, userID int64) ([]int64, error) {
+	return scanIDs(ctx, q,
+		`SELECT relay_id FROM `+EffectiveRelaysView+` WHERE proxy_user_id = ? ORDER BY relay_id`,
+		userID)
+}
+
+// UsersForRelay 返回能看到这条线路的用户 ID。
+func UsersForRelay(ctx context.Context, q Queryer, relayID int64) ([]int64, error) {
+	return scanIDs(ctx, q,
+		`SELECT proxy_user_id FROM `+EffectiveRelaysView+` WHERE relay_id = ? ORDER BY proxy_user_id`,
+		relayID)
+}
+
+func scanIDs(ctx context.Context, q Queryer, query string, args ...any) ([]int64, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

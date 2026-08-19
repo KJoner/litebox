@@ -35,6 +35,22 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 		BinaryPath:  layout.BinaryPath,
 		ServiceName: layout.ServiceName,
 	}
+
+	// 中转机上**只放二进制,不装服务**。
+	//
+	// 那台机器上没有 sing-box 配置,装一个开机自启的服务只会得到一个
+	// 反复崩溃重启的进程 —— 而 systemd 的 Restart=on-failure 与 OpenRC 的
+	// supervise-daemon 会让它一直重试下去,日志被刷满,管理员还以为
+	// "装好了"。二进制本身要留:部署健康检查必须做真实拨测(本项目第一条铁律),
+	// 而拨测需要一个客户端,它只在部署的那几秒里跑,内存开销是零。
+	n, err := s.store.Get(ctx, nodeID)
+	if err != nil {
+		return result, err
+	}
+	installService := !n.Role.IsRelay()
+	if !installService {
+		result.ServiceName = ""
+	}
 	if len(binary) == 0 {
 		return result, fmt.Errorf("sing-box 二进制内容为空")
 	}
@@ -47,7 +63,7 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 	sum := sha256.Sum256(binary)
 	result.BinarySHA256 = hex.EncodeToString(sum[:])
 
-	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		// init 系统必须在传二进制之前就确认可用。
 		//
 		// 装到一半才失败是最坏的结果:28MB 已经过完跨洲链路,节点上留下一个
@@ -97,8 +113,13 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 			result.Detail = fmt.Sprintf("已上传 %d 字节", len(binary))
 		}
 
-		if err := init.InstallUnit(ctx, client, layout); err != nil {
-			return fmt.Errorf("写入 %s 服务定义: %w", init.Name(), err)
+		if installService {
+			if err := init.InstallUnit(ctx, client, layout); err != nil {
+				return fmt.Errorf("写入 %s 服务定义: %w", init.Name(), err)
+			}
+		} else {
+			result.Detail = strings.TrimSpace(result.Detail +
+				";中转主机不安装 sing-box 服务,二进制只用于部署时的拨测")
 		}
 
 		// 校验上传的二进制确实带 with_v2ray_api 标签。
@@ -155,6 +176,15 @@ func (s *Service) Uninstall(ctx context.Context, nodeID int64) error {
 		if init, err := deployment.DetectInit(ctx, client); err == nil {
 			init.Stop(ctx, client, layout)
 			init.RemoveUnit(ctx, client, layout)
+			// 中转用的 nginx 实例同样是 litebox- 前缀的托管服务,一并移除。
+			// 漏掉它的话,/opt/litebox 被删之后那个服务还在,
+			// 每次开机都会因为找不到配置而启动失败 —— 而机器上再也没有
+			// 任何东西能解释它是哪来的。
+			// 节点原本自带的 nginx 服务一个字不动。
+			if relayInit, ok := init.(deployment.RelayInit); ok {
+				relayInit.StopRelay(ctx, client, layout)
+				relayInit.RemoveRelayUnit(ctx, client, layout)
+			}
 		}
 		_, err := client.Run(ctx, sshx.NewCommand("rm", "-rf", layout.BaseDir))
 		return err

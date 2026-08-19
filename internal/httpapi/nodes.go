@@ -111,6 +111,9 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 }
 
 type createNodeRequest struct {
+	// Role 留空按 LANDING(落地)。**只有新建能定,之后不可更改** ——
+	// 两个方向的切换都等于"删了重建",而重建会丢掉这台机器的全部历史数据。
+	Role string `json:"role"`
 	Name string `json:"name"`
 	// DisplayName 留空表示与内部名称相同。
 	DisplayName string `json:"display_name"`
@@ -159,6 +162,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	admin := adminFromContext(r.Context())
 
 	n, err := s.nodes.Store().Create(r.Context(), node.CreateParams{
+		Role:               strings.ToUpper(strings.TrimSpace(req.Role)),
 		Name:               strings.TrimSpace(req.Name),
 		DisplayName:        strings.TrimSpace(req.DisplayName),
 		AccessTierID:       req.AccessTierID,
@@ -378,6 +382,15 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	if effect.TierChanged && s.users != nil {
 		s.users.SyncNode(id)
 	}
+	// 这个节点作为【落地】被别人依赖时,把下游的中转主机一并标脏。
+	//
+	// 判据与 NeedsDeploy 是两套:公网端口与主机地址不进本机配置(改了它们
+	// 重启 sing-box 没有意义),但它们正是中转主机 proxy_pass 的目标。
+	// 不传播的表现是中转机把流量转到一个没人监听的端口,
+	// **而面板上两台机器都显示正常**。
+	if effect.RelayTargetChanged {
+		s.nodes.PropagateTargetChange(r.Context(), id)
+	}
 
 	detail := strings.Join(effect.Changes, ";")
 	if detail == "" {
@@ -397,11 +410,30 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admin := adminFromContext(r.Context())
+
+	// **受影响的中转关系必须在打 deleted_at 之前取。**
+	// 打上标记之后这些关系就查不出来了,而遗留的后果分两档:
+	//   - 这台机器是别人的落地 —— 那些中转主机的配置渲染不出来
+	//     (落地查不到),状态一律变成「未知」,而真正在跑的配置
+	//     还指着一台已经不存在的机器;
+	//   - 这台机器自己链到别处 —— 落地上会永远留着一份没人用、
+	//     也没人知道是谁的链路凭据,那就是权限没有真正收回。
+	// 与「删除用户时的受影响节点必须在打标记之前取」是同一条。
+	orphanedHosts := s.nodes.ReleaseChainsTargeting(r.Context(), id)
+	chainTargets := s.nodes.ChainTargetsToRelease(r.Context(), id)
+	relayHosts, _ := s.relays.HostIDsTargetingNode(r.Context(), id)
+
 	if err := s.nodes.Store().Delete(r.Context(), id); err != nil {
 		s.writeNodeError(w, err, "删除节点失败")
 		return
 	}
 	s.pool.Invalidate(id)
+
+	// 被解除链式的中转主机要改回本机直连;
+	// 曾被这台机器链到的落地要撤掉那份链路凭据;
+	// 指向它的转发规则所在的机器要重新下发 nginx(那条线路已经没有落地了)。
+	s.nodes.MarkDirty(append(orphanedHosts, chainTargets...)...)
+	s.nodes.MarkRelaysDirty(relayHosts...)
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeDelete,
 		TargetType: "node", TargetID: strconv.FormatInt(id, 10),

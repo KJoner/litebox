@@ -11,6 +11,7 @@ import {
   type DeployResult,
   type DeploymentRecord,
   type DestCheckResult,
+  type ExternalProxy,
   type Node,
   type NodeCycleUsage,
   type NodeMetrics,
@@ -22,6 +23,7 @@ import { formatBytes, formatDuration, shortHash } from '@/utils/format'
 import DeployStepList from '@/components/DeployStepList.vue'
 import MetricsChart from '@/components/MetricsChart.vue'
 import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
+import NodeRelayPanel from '@/components/node/NodeRelayPanel.vue'
 import {
   LbEmptyState,
   LbNameConfirm,
@@ -152,7 +154,35 @@ const diff = ref<ConfigDiff | null>(null)
 const destResults = ref<DestCheckResult[]>([])
 const tuning = ref<TuneReport | null>(null)
 /** 当前展开的结果面板。同一时刻只显示一个,免得往下堆四块。 */
-const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest' | 'tune'>('')
+const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest' | 'tune' | 'relay'>('')
+
+/**
+ * 「转发」面板要用到可选的落地清单。
+ *
+ * 在抽屉里现拉而不是让父组件传:这两份清单只在打开面板时才需要,
+ * 而节点列表页每次渲染都带着它们会白拉两个接口。
+ *
+ * 落地候选里**排除中转角色的机器与节点自己**:前者上面没有 sing-box,
+ * 转发过去只会得到一条连不上的线路;后者会让流量绕回自己。
+ */
+const landingNodes = ref<Node[]>([])
+const externalProxies = ref<ExternalProxy[]>([])
+
+async function openRelayPanel() {
+  panel.value = 'relay'
+  try {
+    const [ns, ps] = await Promise.all([api.nodes(), api.externalProxies()])
+    landingNodes.value = (ns.items ?? []).filter(
+      (n) => n.role !== 'RELAY' && n.id !== props.nodeId,
+    )
+    externalProxies.value = ps.items ?? []
+  } catch {
+    // 拉不到候选不影响看现有规则 —— 那才是打开这个面板最常见的目的。
+    // 下拉里会是空的,新增时管理员会立刻发现,而不是拿到一份错的列表。
+    landingNodes.value = []
+    externalProxies.value = []
+  }
+}
 
 async function readonlyAction(
   label: string,
@@ -752,6 +782,13 @@ const subEntries = computed(() => {
         <a-button size="small" :loading="running === '采集资源'" @click="doCollectMetrics">
           采集资源
         </a-button>
+        <a-button
+          size="small"
+          title="这台机器上的 nginx 转发规则与出口去向"
+          @click="openRelayPanel"
+        >
+          转发
+        </a-button>
         <!-- 这一下只是算方案并与当前值对比,不写节点。要不要应用在面板里另点。 -->
         <a-button
           size="small"
@@ -929,6 +966,17 @@ const subEntries = computed(() => {
         :report="tuning"
         @update:report="(r) => (tuning = r)"
         @busy="(label) => (running = label)"
+        @close="panel = ''"
+      />
+
+      <NodeRelayPanel
+        v-else-if="panel === 'relay'"
+        :key="node.id"
+        :node="node"
+        :landing-nodes="landingNodes"
+        :external-proxies="externalProxies"
+        @busy="(label) => (running = label)"
+        @changed="reload"
         @close="panel = ''"
       />
 

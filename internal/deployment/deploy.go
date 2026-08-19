@@ -29,6 +29,16 @@ type Request struct {
 	RealityPublicKey string
 	// SSHPort 是节点的 SSH 端口,拨测时作为代理目标。
 	SSHPort int
+	// DialHost / DialPort 非空时,拨测 CONNECT 到这个地址而不是节点本机回环。
+	//
+	// 只有链式节点会用:直连节点走回环是对的(不引入任何外部网络依赖),
+	// 而链式节点的回环包会被送到落地那边,打在【落地自己的】sshd 上 ——
+	// 拨测碰巧还会通过,可它验证的已经不是这台机器了。
+	//
+	// 值必须来自数据库(nodes.host / nodes.ssh_port),不能问节点自己:
+	// NAT 机上 $SSH_CONNECTION 给出的是私网地址与本机端口。
+	DialHost string
+	DialPort int
 	// Revision 是本次配置版本号,通常取自数据库自增或时间戳。
 	Revision int64
 }
@@ -366,9 +376,21 @@ func (d *Deployer) rollback(
 
 // pruneBackups 只保留最近 keepLast 个配置备份。
 func (d *Deployer) pruneBackups(ctx context.Context, client *sshx.Client) error {
+	return d.pruneBackupsMatching(ctx, client, "config-*.json")
+}
+
+// pruneBackupsMatching 按文件名模式裁剪备份。
+//
+// sing-box 与 nginx 的备份放在同一个目录但文件名前缀不同,必须分别裁剪:
+// 合在一起数的话,一台既有 sing-box 又有中转规则的机器,两种备份会互相
+// 把对方挤出保留窗口 —— 而回滚时发现要的那一版已经没了,
+// 是在最不该出问题的时候出问题。
+func (d *Deployer) pruneBackupsMatching(
+	ctx context.Context, client *sshx.Client, pattern string,
+) error {
 	script := fmt.Sprintf(
-		"ls -1t %s/config-*.json 2>/dev/null | tail -n +%d | xargs -r rm -f",
-		d.layout.BackupDir, d.keepLast+1)
+		"ls -1t %s/%s 2>/dev/null | tail -n +%d | xargs -r rm -f",
+		d.layout.BackupDir, pattern, d.keepLast+1)
 	_, err := client.Run(ctx, sshx.NewCommand("sh", "-c", script))
 	return err
 }

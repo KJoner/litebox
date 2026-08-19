@@ -86,6 +86,9 @@ export const configStatusMeta: Record<string, LbStatusMeta> = {
   DEPLOY_FAILED: bad('部署失败', 'triangle'),
   NEVER_DEPLOYED: mute('未部署', 'ring'),
   UNKNOWN: mute('未知', 'ring'),
+  // 中转机上没有 sing-box,这个问题在它身上没有主语。
+  // 与「未知」分开:那一档的意思是"本该知道但算不出来",会催着人去查。
+  NOT_APPLICABLE: mute('不适用', 'minus'),
 }
 
 /** 门户只用这三种。用户看不懂 rev 与部署。 */
