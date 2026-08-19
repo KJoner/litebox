@@ -9,6 +9,7 @@ import {
   type Node,
   type NodeBillingMode,
   type NodeProtocol,
+  type NodeRole,
   type NodeSSMethod,
 } from '@/api/client'
 import { LbSensitiveField, lbDangerConfirm } from '@/components/lb'
@@ -58,6 +59,15 @@ type AccessMode = 'password' | 'local-key' | 'manual'
 const accessMode = ref<AccessMode>('password')
 
 const blank = {
+  /**
+   * 节点角色。**一经创建不可更改**,所以只在新增时出现。
+   *
+   * 落地改中转等于卸掉 sing-box 并丢掉这台机器上全部用户凭据;
+   * 中转改落地则可能与已有的转发规则抢端口。两个方向都属于"删了重建"
+   * 的范畴,而重建会丢掉这台机器的全部历史数据 —— 要让管理员显式地
+   * 那么做,而不是点一下开关。
+   */
+  role: 'LANDING' as NodeRole,
   name: '',
   display_name: '',
   access_tier_id: 1,
@@ -286,6 +296,7 @@ async function doSubmit() {
   try {
     if (!isEdit.value) {
       const result = await api.createNode({
+        role: form.role,
         name: form.name,
         display_name: form.display_name,
         access_tier_id: form.access_tier_id,
@@ -428,6 +439,20 @@ async function doSubmit() {
     />
 
     <a-form layout="vertical">
+      <a-form-item v-if="!isEdit" label="节点角色">
+        <a-radio-group v-model:value="form.role" button-style="solid">
+          <a-radio-button value="LANDING">落地节点</a-radio-button>
+          <a-radio-button value="RELAY">中转主机</a-radio-button>
+        </a-radio-group>
+        <div class="nf__help">
+          <b>落地节点</b>上跑 sing-box,有自己的协议、端口与用户,是流量真正出网的地方。<br />
+          <b>中转主机</b>上只跑 nginx,把字节原样搬到落地 —— 它不解密、不认证,
+          <b>也不产生任何流量数字</b>(nginx 接不了统计接口)。它没有自己的协议与端口,
+          客户端连的端口在「转发」面板里一条规则一个。<br />
+          <b>角色创建后不能改</b>:两个方向都等于删了重建,而重建会丢掉这台机器的全部历史数据。
+        </div>
+      </a-form-item>
+
       <a-form-item label="内部名称" required>
         <a-input v-model:value="form.name" placeholder="例如:LAX-cn2gia-到期20261201" />
         <div class="nf__help">只在管理后台出现。可以写机房、供应商、到期日。</div>

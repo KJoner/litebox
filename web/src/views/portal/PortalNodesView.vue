@@ -4,6 +4,7 @@ import {
   portalApi,
   ApiError,
   type PortalExternalNode,
+  type PortalRelayNode,
   type PortalNode,
 } from '@/api/client'
 import { formatBytes } from '@/utils/format'
@@ -24,6 +25,7 @@ const nodes = ref<PortalNode[]>([])
  * 给一个 0 会被读成「我一点都没用过」,那比不显示更糟。
  */
 const external = ref<PortalExternalNode[]>([])
+const relays = ref<PortalRelayNode[]>([])
 const loading = ref(true)
 const loadError = ref('')
 
@@ -34,10 +36,12 @@ async function load() {
     const r = await portalApi.nodes()
     nodes.value = r.items
     external.value = r.external ?? []
+    relays.value = r.relays ?? []
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '暂时读不到节点信息'
     nodes.value = []
     external.value = []
+    relays.value = []
   } finally {
     loading.value = false
   }
@@ -73,7 +77,10 @@ const summary = computed(() => {
       <a-skeleton active :paragraph="{ rows: 2 }" />
     </div>
 
-    <div v-else-if="nodes.length === 0 && external.length === 0" class="pn__card">
+    <div
+      v-else-if="nodes.length === 0 && external.length === 0 && relays.length === 0"
+      class="pn__card"
+    >
       <LbEmptyState
         variant="empty"
         title="还没有可用节点"
@@ -124,6 +131,37 @@ const summary = computed(() => {
         </div>
       </section>
     </div>
+
+    <!-- 中转线路单独一段。
+         与外部代理分成两段而不是合并:那些是买来的成品,这些的凭据是我们发的,
+         而两者对用户唯一的共同点只是「没有流量数字」。
+         这里不出现落地是谁 —— 那是内部拓扑。 -->
+    <template v-if="!loading && !loadError && relays.length">
+      <div class="pn__section">
+        <span class="pn__section-title">中转线路</span>
+        <span class="pn__section-note">
+          这些线路经过一台中转主机再到落地,因此没有单独的流量统计。用法与上面的节点完全一样。
+        </span>
+      </div>
+      <div class="pn__grid">
+        <section v-for="x in relays" :key="x.id" class="pn__node">
+          <div class="pn__node-head">
+            <span class="pn__node-name">{{ x.display_name }}</span>
+            <LbStatusTag :meta="portalNodeStatusMeta[x.status]" />
+            <span class="pn__node-tier">{{ x.tier_name }}</span>
+          </div>
+
+          <div v-if="x.status === 'maintenance'" class="pn__node-maint">
+            <div>该线路暂未下发到订阅,恢复后会自动出现,不需要你做任何操作。</div>
+          </div>
+          <div v-else-if="x.public_remark" class="pn__node-remark">{{ x.public_remark }}</div>
+
+          <div class="pn__node-foot">
+            {{ x.in_subscription ? '已在你的订阅里' : '当前不在你的订阅里' }}
+          </div>
+        </section>
+      </div>
+    </template>
 
     <!-- 外部代理单独一段。
          不混进上面的网格:那些卡片有流量数字,而这些没有 ——

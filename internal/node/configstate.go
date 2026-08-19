@@ -20,6 +20,12 @@ const (
 	ConfigDeployFailed ConfigState = "DEPLOY_FAILED"
 	// ConfigUnknown 面板也判定不了 —— 配置渲染不出来时的兜底。
 	ConfigUnknown ConfigState = "UNKNOWN"
+	// ConfigNotApplicable 中转机上没有 sing-box,这个问题在它身上没有主语。
+	//
+	// 不复用 UNKNOWN:那一档的意思是"我们本该知道但算不出来",
+	// 会催着管理员去查为什么;而中转机的配置状态本来就不存在。
+	// 也不报 IN_SYNC —— 那是在说一件不成立的事。
+	ConfigNotApplicable ConfigState = "NOT_APPLICABLE"
 )
 
 // ConfigStatus 计算节点的配置状态与「该不该提示部署」。
@@ -36,6 +42,12 @@ const (
 // 返回的第二个值是 needs_deploy,与状态分开给:前者驱动界面上的「该部署了」
 // 提示,后者只描述事实。不确定的时候不催 —— 催错了管理员会去重启一台正常的机器。
 func (s *Service) ConfigStatus(ctx context.Context, n *Node) (ConfigState, bool) {
+	// 中转机上不跑 sing-box,"库里的配置是否已在节点上生效"在它身上没有主语。
+	// 它的中转配置由「转发」面板下发,与这里说的配置是两件事。
+	if n.Role.IsRelay() {
+		return ConfigNotApplicable, false
+	}
+
 	// 已禁用的节点部署不了(Deploy 会直接拒绝),所以无论如何都不催。
 	// 状态本身照常算 —— 管理员恢复它之前也该看得出它落后了几版。
 	deployable := n.Status != StatusDisabled

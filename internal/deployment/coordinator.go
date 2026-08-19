@@ -10,8 +10,26 @@ import (
 // NodeDeployer 是协调器需要的部署能力,由 node.Service 实现。
 // 定义成接口是为了避免 deployment 反向依赖 node(node 已经依赖 deployment)。
 type NodeDeployer interface {
+	// Deploy 下发 sing-box 配置(会重启服务,踢掉全部在线连接)。
 	Deploy(ctx context.Context, nodeID int64) (Result, error)
+	// DeployRelays 下发 nginx 转发配置(reload,不打断在途连接)。
+	DeployRelays(ctx context.Context, nodeID int64) (Result, error)
 }
+
+// DirtyKind 区分同一台机器上两种互不相干的下发。
+//
+// 分开的理由是一条实打实的浪费:用户变更只改 sing-box 的入站用户列表,
+// **nginx 的转发规则一个字都不变**。合成一种的话,每改一个用户都会把
+// 这台机器上全部中转线路白 reload 一遍 —— 现在 nginx 是优雅 reload
+// 所以看不出来,但那等于在依赖一个与本条约束毫无关系的事实。
+type DirtyKind uint8
+
+const (
+	// DirtySingBox 节点自己的 sing-box 配置(用户、协议、监听选项、链式出站)。
+	DirtySingBox DirtyKind = 1 << iota
+	// DirtyRelays 这台机器上的 nginx 转发规则。
+	DirtyRelays
+)
 
 // Coordinator 把密集的用户变更合并成较少的部署。
 //
@@ -41,6 +59,9 @@ type Coordinator struct {
 type pendingNode struct {
 	firstMarked time.Time
 	lastMarked  time.Time
+	// kinds 是这一轮里累积到的下发种类。同一台机器上两种都脏时
+	// 只等一次 debounce,然后按固定顺序各下发一次。
+	kinds DirtyKind
 }
 
 type CoordinatorOptions struct {
@@ -80,8 +101,18 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 	}
 }
 
-// MarkDirty 把节点标记为待部署。重复标记只会推迟 debounce,不会排队多次部署。
+// MarkDirty 把节点的 sing-box 配置标记为待部署。
+// 重复标记只会推迟 debounce,不会排队多次部署。
 func (c *Coordinator) MarkDirty(nodeIDs ...int64) {
+	c.mark(DirtySingBox, nodeIDs...)
+}
+
+// MarkRelaysDirty 把节点上的 nginx 转发配置标记为待下发。
+func (c *Coordinator) MarkRelaysDirty(nodeIDs ...int64) {
+	c.mark(DirtyRelays, nodeIDs...)
+}
+
+func (c *Coordinator) mark(kind DirtyKind, nodeIDs ...int64) {
 	if len(nodeIDs) == 0 {
 		return
 	}
@@ -95,8 +126,9 @@ func (c *Coordinator) MarkDirty(nodeIDs ...int64) {
 	for _, id := range nodeIDs {
 		if entry, ok := c.pending[id]; ok {
 			entry.lastMarked = now
+			entry.kinds |= kind
 		} else {
-			c.pending[id] = &pendingNode{firstMarked: now, lastMarked: now}
+			c.pending[id] = &pendingNode{firstMarked: now, lastMarked: now, kinds: kind}
 		}
 	}
 	c.mu.Unlock()
@@ -145,7 +177,7 @@ func (c *Coordinator) dispatchReady(ctx context.Context) {
 	now := c.clock()
 
 	c.mu.Lock()
-	ready := make([]int64, 0, len(c.pending))
+	ready := make(map[int64]DirtyKind, len(c.pending))
 	for id, entry := range c.pending {
 		if c.inflight[id] {
 			continue
@@ -153,20 +185,20 @@ func (c *Coordinator) dispatchReady(ctx context.Context) {
 		quietEnough := now.Sub(entry.lastMarked) >= c.debounce
 		waitedTooLong := now.Sub(entry.firstMarked) >= c.maxDelay
 		if quietEnough || waitedTooLong {
-			ready = append(ready, id)
+			ready[id] = entry.kinds
 			delete(c.pending, id)
 			c.inflight[id] = true
 		}
 	}
 	c.mu.Unlock()
 
-	for _, id := range ready {
+	for id, kinds := range ready {
 		c.wg.Add(1)
-		go c.deployOne(ctx, id)
+		go c.deployOne(ctx, id, kinds)
 	}
 }
 
-func (c *Coordinator) deployOne(ctx context.Context, nodeID int64) {
+func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKind) {
 	defer c.wg.Done()
 	defer func() {
 		c.mu.Lock()
@@ -181,16 +213,39 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64) {
 	deployCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 	defer cancel()
 
-	result, err := c.deployer.Deploy(deployCtx, nodeID)
-	if err != nil {
-		c.logger.Error("合并部署失败",
-			"node_id", nodeID, "status", result.Status, "error", err,
-			"rollback", result.RollbackResult)
-		return
+	// 顺序固定:先 sing-box 后 nginx。
+	//
+	// sing-box 那一步会重启服务,而 nginx 只是 reload。反过来的话,
+	// 刚 reload 好的转发在几秒后被一次 sing-box 重启打断,
+	// 表现是"改了转发规则,结果所有人断了一下" —— 而那次断线
+	// 其实来自另一件事。
+	if kinds&DirtySingBox != 0 {
+		result, err := c.deployer.Deploy(deployCtx, nodeID)
+		if err != nil {
+			c.logger.Error("合并部署失败",
+				"node_id", nodeID, "status", result.Status, "error", err,
+				"rollback", result.RollbackResult)
+		} else {
+			c.logger.Info("合并部署成功",
+				"node_id", nodeID, "revision", result.Revision,
+				"config_sha256", shortHash(result.ConfigSHA256))
+		}
 	}
-	c.logger.Info("合并部署成功",
-		"node_id", nodeID, "revision", result.Revision,
-		"config_sha256", shortHash(result.ConfigSHA256))
+
+	// sing-box 那一步失败也照样下发 nginx:两者互不依赖,
+	// 因为一次失败就把中转配置一起搁下,只会让故障面变大。
+	if kinds&DirtyRelays != 0 {
+		result, err := c.deployer.DeployRelays(deployCtx, nodeID)
+		if err != nil {
+			c.logger.Error("中转配置下发失败",
+				"node_id", nodeID, "status", result.Status, "error", err,
+				"rollback", result.RollbackResult)
+			return
+		}
+		c.logger.Info("中转配置下发成功",
+			"node_id", nodeID, "revision", result.Revision,
+			"config_sha256", shortHash(result.ConfigSHA256))
+	}
 }
 
 // shutdown 冲刷所有待部署节点后返回。
@@ -202,10 +257,10 @@ func (c *Coordinator) shutdown() {
 		return
 	}
 	c.closed = true
-	remaining := make([]int64, 0, len(c.pending))
-	for id := range c.pending {
+	remaining := make(map[int64]DirtyKind, len(c.pending))
+	for id, entry := range c.pending {
 		if !c.inflight[id] {
-			remaining = append(remaining, id)
+			remaining[id] = entry.kinds
 			c.inflight[id] = true
 		}
 	}
@@ -214,9 +269,9 @@ func (c *Coordinator) shutdown() {
 
 	if len(remaining) > 0 {
 		c.logger.Info("关闭前冲刷待部署节点", "数量", len(remaining))
-		for _, id := range remaining {
+		for id, kinds := range remaining {
 			c.wg.Add(1)
-			go c.deployOne(context.Background(), id)
+			go c.deployOne(context.Background(), id, kinds)
 		}
 	}
 	c.wg.Wait()

@@ -13,10 +13,29 @@ import (
 // 配置一律由结构体序列化产生,不使用字符串模板拼接。
 
 type Config struct {
-	Log          LogConfig          `json:"log"`
-	Inbounds     []Inbound          `json:"inbounds"`
-	Outbounds    []Outbound         `json:"outbounds"`
+	Log       LogConfig  `json:"log"`
+	Inbounds  []Inbound  `json:"inbounds"`
+	Outbounds []Outbound `json:"outbounds"`
+	// Route 只在链式出站启用时出现,必须是指针 + omitempty:
+	// 直连的节点渲染出来要与 V7 之前逐字节相同,否则升级后十几台机器
+	// 同时被判成「需要部署」,而那次重启换不来任何配置变化。
+	//
+	// **它与链式出站必须同生同灭。** 实测:只加出站不写 route.final 时,
+	// sing-box check 通过、服务启动、端口监听、客户端握手成功、网页照开,
+	// 而流量从节点自己的 IP 出去了 —— 链式出站定义在配置里,一次都没被用过,
+	// 没有任何一层报错。部署健康检查也抓不到(拨测经 direct 回到本机 sshd
+	// 照样吐 banner)。所以这条不变量只能由渲染期保证,
+	// TestChainImpliesRouteFinal 是它仅有的安全网。
+	Route        *RouteConfig       `json:"route,omitempty"`
 	Experimental ExperimentalConfig `json:"experimental"`
+}
+
+// RouteConfig 只用到 final —— V7 不做多出口分流。
+//
+// 一个入站要分流到多个出站,就要引入 route.rules 与"哪个用户走哪条"的
+// 归属规则,而那会立刻把流量统计变成一个需要重新设计的问题。
+type RouteConfig struct {
+	Final string `json:"final"`
 }
 
 type LogConfig struct {
@@ -108,9 +127,55 @@ type RealityHandshake struct {
 	ServerPort int    `json:"server_port"`
 }
 
+// Outbound 既表达 direct 也表达链式的代理出站。
+//
+// **除 type 与 tag 外一律 omitempty**:direct 出站渲染出来必须与 V7 之前
+// 逐字节相同,compat_test.go 盯着这一点。
 type Outbound struct {
 	Type string `json:"type"`
 	Tag  string `json:"tag"`
+
+	Server     string `json:"server,omitempty"`
+	ServerPort int    `json:"server_port,omitempty"`
+
+	// VLESS 专有。
+	UUID string `json:"uuid,omitempty"`
+	Flow string `json:"flow,omitempty"`
+
+	// Shadowsocks 专有。Password 是已经拼好的客户端密码
+	// (serverPSK:userPSK,或外部代理原样给的那一串)—— 拼接只有
+	// SSClientPassword 一处实现,不在这里再拼一遍。
+	Method   string `json:"method,omitempty"`
+	Password string `json:"password,omitempty"`
+
+	// TCPFastOpen 跟随落地节点【已经生效】的 TFO 状态。
+	// 客户端开了而服务端没开,第一个包会白白多一次回落握手。
+	TCPFastOpen bool `json:"tcp_fast_open,omitempty"`
+
+	TLS *OutboundTLS `json:"tls,omitempty"`
+}
+
+// OutboundTLS 是链式出站的 TLS 段。
+type OutboundTLS struct {
+	Enabled    bool   `json:"enabled"`
+	ServerName string `json:"server_name"`
+	// UTLS 让链式这一跳的 ClientHello 与真实浏览器一致。
+	// REALITY 服务端会校验它,不带的话握手直接被拒。
+	UTLS    *OutboundUTLS    `json:"utls,omitempty"`
+	Reality *OutboundReality `json:"reality,omitempty"`
+}
+
+type OutboundUTLS struct {
+	Enabled     bool   `json:"enabled"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+type OutboundReality struct {
+	Enabled   bool   `json:"enabled"`
+	PublicKey string `json:"public_key"`
+	// ShortID 是单个值而不是列表 —— 出站侧只能选一个,
+	// 与入站的 short_id 数组不是同一个字段形状。
+	ShortID string `json:"short_id"`
 }
 
 type ExperimentalConfig struct {

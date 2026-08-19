@@ -9,8 +9,11 @@ import (
 
 // Record 是一条部署记录。
 type Record struct {
-	ID             int64   `json:"id"`
-	NodeID         int64   `json:"node_id"`
+	ID     int64 `json:"id"`
+	NodeID int64 `json:"node_id"`
+	// Kind 区分 sing-box 部署与中转配置下发。两者在同一台机器上互不相干,
+	// 而对用户的影响完全不同:前者重启服务踢掉全部在线连接,后者只 reload。
+	Kind           string  `json:"kind"`
 	Revision       int64   `json:"revision"`
 	ConfigSHA256   string  `json:"config_sha256"`
 	Status         string  `json:"status"`
@@ -32,6 +35,12 @@ func NewStore(db *sql.DB) *Store {
 
 // Save 写入一条部署记录。
 func (s *Store) Save(ctx context.Context, r Result) (int64, error) {
+	// Result 上不带 Kind:它是"这次下发做了什么"的产物,而"下发的是哪一种"
+	// 是调用方的上下文。空值按 SINGBOX —— 与迁移里那一列的默认值一致。
+	kind := r.Kind
+	if kind == "" {
+		kind = KindSingBox
+	}
 	stepsJSON, err := json.Marshal(r.Steps)
 	if err != nil {
 		return 0, err
@@ -39,10 +48,10 @@ func (s *Store) Save(ctx context.Context, r Result) (int64, error) {
 	finishedAt := r.FinishedAt.Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO deployments
-		  (node_id, revision, config_sha256, status, started_at, finished_at,
+		  (node_id, kind, revision, config_sha256, status, started_at, finished_at,
 		   error_message, rollback_result, steps_json, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		r.NodeID, r.Revision, r.ConfigSHA256, string(r.Status),
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		r.NodeID, string(kind), r.Revision, r.ConfigSHA256, string(r.Status),
 		r.StartedAt.Format(time.RFC3339), finishedAt,
 		r.ErrorMessage, r.RollbackResult, string(stepsJSON),
 		time.Now().UTC().Format(time.RFC3339))
@@ -58,7 +67,7 @@ func (s *Store) ListByNode(ctx context.Context, nodeID int64, limit int) ([]Reco
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, node_id, revision, config_sha256, status, started_at, finished_at,
+		SELECT id, node_id, kind, revision, config_sha256, status, started_at, finished_at,
 		       error_message, rollback_result, steps_json
 		  FROM deployments WHERE node_id = ? ORDER BY id DESC LIMIT ?`, nodeID, limit)
 	if err != nil {
@@ -74,7 +83,7 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]Record, error) {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, node_id, revision, config_sha256, status, started_at, finished_at,
+		SELECT id, node_id, kind, revision, config_sha256, status, started_at, finished_at,
 		       error_message, rollback_result, steps_json
 		  FROM deployments ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -89,7 +98,7 @@ func scanRecords(rows *sql.Rows) ([]Record, error) {
 	for rows.Next() {
 		var r Record
 		var stepsJSON string
-		if err := rows.Scan(&r.ID, &r.NodeID, &r.Revision, &r.ConfigSHA256, &r.Status,
+		if err := rows.Scan(&r.ID, &r.NodeID, &r.Kind, &r.Revision, &r.ConfigSHA256, &r.Status,
 			&r.StartedAt, &r.FinishedAt, &r.ErrorMessage, &r.RollbackResult, &stepsJSON); err != nil {
 			return nil, err
 		}

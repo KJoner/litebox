@@ -210,6 +210,26 @@ export const PROTOCOL_SHORT: Record<NodeProtocol, string> = {
   SHADOWSOCKS: 'SS2022',
 }
 
+/**
+ * 节点角色。
+ *
+ * LANDING 落地节点 —— V7 之前的全部节点。
+ * RELAY   纯中转机 —— 上面不跑 sing-box,只跑 nginx。它没有自己的协议、
+ *         端口与用户,也**不产生任何流量数字**(nginx 不接 V2Ray API)。
+ *
+ * 一经创建不可更改:两个方向都等于"删了重建",而重建会丢掉这台机器的
+ * 全部历史数据。
+ */
+export type NodeRole = 'LANDING' | 'RELAY'
+
+export const NODE_ROLE_LABEL: Record<NodeRole, string> = {
+  LANDING: '落地',
+  RELAY: '中转',
+}
+
+/** 链式出站的落地去向。空串表示本机直连。 */
+export type ChainTargetKind = '' | 'NODE' | 'EXTERNAL'
+
 export interface Node {
   id: number
   /** 内部名称,只在管理后台出现 */
@@ -286,6 +306,18 @@ export interface Node {
   reality_short_id: string
   handshake_max_record_size: number
   handshake_checked_at: string | null
+  role: NodeRole
+  /**
+   * 链式出站的去向。空串表示本机直连。
+   *
+   * 它**不进订阅** —— 订阅里这个节点还是原来那一条,客户端根本不知道
+   * 它后面还有一跳。
+   */
+  chain_target_kind: ChainTargetKind
+  chain_target_node_id: number
+  chain_target_external_id: number
+  /** 链路凭据在落地那台机器的流量统计里的计数器名。空串表示还没分配过。 */
+  chain_code: string
   status: NodeStatus
   last_heartbeat_at: string | null
   config_revision: number
@@ -311,12 +343,90 @@ export interface Node {
   needs_deploy?: boolean
 }
 
+/**
+ * 一条中转转发规则(nginx stream)。
+ *
+ * 它在订阅里是一条独立条目:**地址是中转主机的,协议参数与凭据是落地的**。
+ * 客户端与落地之间的协议完全端到端,中转主机不解密也不认证。
+ */
+export interface NodeRelay {
+  id: number
+  node_id: number
+  /** 中转主机的内部名称,只在后台出现 */
+  node_name: string
+  display_name: string
+  /** nginx 在中转主机上实际监听的端口 */
+  listen_port: number
+  /**
+   * 客户端连接的公网端口。0 表示跟随 listen_port。
+   *
+   * 存 0 而不是把当时的 listen_port 写进去 —— 那样以后改监听端口,
+   * 订阅条目会停在旧端口上,而管理员当初看到的是一个空输入框。
+   */
+  public_port: number
+  target_kind: 'NODE' | 'EXTERNAL'
+  target_node_id: number
+  target_external_id: number
+  /** 落地的展示名,只给后台看 */
+  target_name: string
+  /**
+   * 落地当前是否能给出可用的协议参数(自建节点要求已成功部署过)。
+   *
+   * 为 false 时这条线路**不会出现在任何人的订阅里** —— 界面上必须说出来,
+   * 否则管理员会对着一条"配好了却不在订阅里"的线路找半天。
+   */
+  target_ready: boolean
+  access_tier_id: number
+  access_tier_code: string
+  access_tier_name: string
+  access_tier_level: number
+  sort_order: number
+  subscription_enabled: boolean
+  public_remark: string
+  /** 关掉后 nginx 里不再渲染这个 server 块(与删除不同,配置还留着) */
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** 中转主机上 nginx 的实测现状 */
+export interface NginxFacts {
+  installed: boolean
+  binary_path: string
+  version: string
+  stream_built_in: boolean
+  stream_module_path: string
+  /** 为 false 时不能渲染任何转发配置 */
+  stream_available: boolean
+  /**
+   * 缺失时该装的包名。
+   *
+   * 实测:Debian 12 与 Alpine 上 `装了 nginx 但没有 stream 模块` 都是
+   * **默认情况**,而两边的报错都是同一句 unknown directive "stream",
+   * 没有提到缺哪个包 —— 所以这一栏必须显示出来。
+   */
+  missing_package: string
+  package_manager: string
+}
+
+/** 链式变更的编排结果:两台机器各一次部署 */
+export interface ChainApplyResult {
+  /** 落地那一次部署。落地是外部代理时为 null */
+  target_deploy: DeployResult | null
+  /** 中转主机那一次部署 */
+  host_deploy: DeployResult | null
+  /** 最终停在哪一步,失败时用来定位是哪台机器 */
+  stage: string
+}
+
 export type NodeConfigState =
   | 'NEVER_DEPLOYED'
   | 'IN_SYNC'
   | 'PENDING'
   | 'DEPLOY_FAILED'
   | 'UNKNOWN'
+  /** 中转机上没有 sing-box —— 这个问题在它身上没有主语 */
+  | 'NOT_APPLICABLE'
 
 export interface NodeMetrics {
   node_id: number
@@ -806,6 +916,28 @@ export interface PortalExternalNode {
   in_subscription: boolean
 }
 
+/**
+ * 门户里的一条中转线路。
+ *
+ * 与 PortalNode、PortalExternalNode 都分开:
+ *   - 不并进节点 —— 那一组每行都有流量数字,而中转主机上跑的是 nginx,
+ *     它不接 V2Ray API,面板在那台机器上拿不到任何计数。混进去只能填 0,
+ *     与「真的没用过」长得一模一样;
+ *   - 不并进外部代理 —— 那一组是「买来的成品线路」,而中转的凭据是我们发的。
+ *
+ * 刻意没有的东西:中转主机与落地的地址、端口、协议参数,以及**落地是谁**。
+ * 最后一条是内部拓扑,用户知道了只会引出「那我能不能直接连落地」。
+ */
+export interface PortalRelayNode {
+  id: number
+  display_name: string
+  tier_name: string
+  tier_code: string
+  status: 'normal' | 'maintenance'
+  public_remark: string
+  in_subscription: boolean
+}
+
 export const portalApi = {
   login: (username: string, password: string) =>
     request<PortalIdentity>('/api/portal/auth/login', {
@@ -827,7 +959,11 @@ export const portalApi = {
 
   dashboard: () => request<PortalDashboard>('/api/portal/dashboard'),
   nodes: () =>
-    request<{ items: PortalNode[]; external: PortalExternalNode[] }>('/api/portal/nodes'),
+    request<{
+      items: PortalNode[]
+      external: PortalExternalNode[]
+      relays: PortalRelayNode[]
+    }>('/api/portal/nodes'),
   traffic: (days = 30) => request<PortalTraffic>('/api/portal/traffic', { query: { days } }),
   subscription: () => request<PortalSubscription>('/api/portal/subscription'),
   regenerateSubscription: () =>
@@ -1181,6 +1317,36 @@ export const api = {
     ),
   destCandidates: () =>
     request<{ items: string[]; max_record_size: number }>('/api/dest-candidates'),
+
+  // 中转:转发规则的增删改只 reload nginx,不打断任何在途连接,
+  // 因此这一组接口的操作摩擦比「部署」低一档。
+  relays: () => request<{ items: NodeRelay[] }>('/api/relays'),
+  nodeRelays: (nodeID: number) =>
+    request<{ items: NodeRelay[] }>(`/api/nodes/${nodeID}/relays`),
+  createRelay: (nodeID: number, body: Record<string, unknown>) =>
+    request<{ relay: NodeRelay }>(`/api/nodes/${nodeID}/relays`, { method: 'POST', body }),
+  updateRelay: (id: number, body: Record<string, unknown>) =>
+    request<{ relay: NodeRelay }>(`/api/relays/${id}`, { method: 'PUT', body }),
+  deleteRelay: (id: number) =>
+    request<{ deleted: boolean }>(`/api/relays/${id}`, { method: 'DELETE' }),
+  deployRelays: (nodeID: number) =>
+    request<{ result: DeployResult; error?: string }>(`/api/nodes/${nodeID}/relays/deploy`, {
+      method: 'POST',
+    }),
+  /** 只读探测,不会在节点上安装任何东西 */
+  nodeNginx: (nodeID: number) => request<NginxFacts>(`/api/nodes/${nodeID}/nginx`),
+
+  // 链式出站是两台机器的复合操作:启用时先部署落地再部署中转主机,
+  // 解除时顺序相反。顺序由后端保证,前端只负责把两次部署的结果都显示出来。
+  applyChain: (nodeID: number, body: Record<string, unknown>) =>
+    request<{ result: ChainApplyResult; error?: string }>(`/api/nodes/${nodeID}/chain`, {
+      method: 'POST',
+      body,
+    }),
+  clearChain: (nodeID: number) =>
+    request<{ result: ChainApplyResult; error?: string }>(`/api/nodes/${nodeID}/chain`, {
+      method: 'DELETE',
+    }),
 
   // TCP 调优。preview 只读,apply/restore 会改节点上的内核参数。
   tuningPreview: (id: number) =>

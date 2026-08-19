@@ -129,10 +129,16 @@ func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, 
 //
 // 禁用与已删除的节点跳过;PENDING(尚未部署)的节点也跳过 ——
 // 它们上面还没有 sing-box 在跑,连过去只会白等一次超时。
+//
+// **中转机(role = RELAY)同样跳过**,理由完全一样:那上面跑的是 nginx,
+// 它不接 V2Ray API,连过去只会白等一次超时。中转主机的流量面板不计,
+// 界面上写明「中转主机,面板不计流量」而不是显示 0 ——
+// 0 与「真的没用过」长得一模一样。
 func (s *Scheduler) activeNodes(ctx context.Context) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id FROM nodes
-		 WHERE deleted_at IS NULL AND status IN ('ONLINE','OFFLINE','DEPLOY_FAILED')
+		 WHERE deleted_at IS NULL AND role != 'RELAY'
+		   AND status IN ('ONLINE','OFFLINE','DEPLOY_FAILED')
 		 ORDER BY id`)
 	if err != nil {
 		return nil, err

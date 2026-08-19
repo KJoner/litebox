@@ -11,10 +11,13 @@ import (
 
 // fakeDeployer 记录每个节点被部署的次数。
 type fakeDeployer struct {
-	mu      sync.Mutex
-	calls   []int64
-	blockCh chan struct{}
-	err     error
+	mu    sync.Mutex
+	calls []int64
+	// relayCalls 单独记:两种下发必须互不牵连 ——
+	// 用户变更只改 sing-box,nginx 的转发规则一个字都不变。
+	relayCalls []int64
+	blockCh    chan struct{}
+	err        error
 }
 
 func (f *fakeDeployer) Deploy(ctx context.Context, nodeID int64) (Result, error) {
@@ -25,6 +28,28 @@ func (f *fakeDeployer) Deploy(ctx context.Context, nodeID int64) (Result, error)
 	f.calls = append(f.calls, nodeID)
 	f.mu.Unlock()
 	return Result{NodeID: nodeID, Status: StatusSuccess}, f.err
+}
+
+func (f *fakeDeployer) DeployRelays(ctx context.Context, nodeID int64) (Result, error) {
+	if f.blockCh != nil {
+		<-f.blockCh
+	}
+	f.mu.Lock()
+	f.relayCalls = append(f.relayCalls, nodeID)
+	f.mu.Unlock()
+	return Result{NodeID: nodeID, Status: StatusSuccess}, f.err
+}
+
+func (f *fakeDeployer) relayCountFor(nodeID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, id := range f.relayCalls {
+		if id == nodeID {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeDeployer) countFor(nodeID int64) int {
@@ -222,6 +247,61 @@ func TestCoordinatorMarkDirtyWithNoIDsIsNoop(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if fake.total() != 0 {
 		t.Error("空的标脏调用触发了部署")
+	}
+}
+
+// 两种下发必须互不牵连。
+//
+// 用户变更只改 sing-box 的入站用户列表,**nginx 的转发规则一个字都不变**。
+// 合成一种的话,每改一个用户都会把这台机器上全部中转线路白 reload 一遍 ——
+// 现在 nginx 是优雅 reload 所以看不出来,但那等于在依赖一个与本条约束
+// 毫无关系的事实。反过来同理:改一条转发规则不该重启 sing-box,
+// 那会把这台机器上全部在线连接踢掉。
+func TestCoordinatorKeepsSingBoxAndRelaysIndependent(t *testing.T) {
+	fake := &fakeDeployer{}
+	c, cancel := newTestCoordinator(t, fake, 150*time.Millisecond, 3*time.Second)
+	defer cancel()
+
+	c.MarkDirty(1)       // 用户变更
+	c.MarkRelaysDirty(2) // 改了一条转发规则
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.countFor(1) == 1 && fake.relayCountFor(2) == 1
+	})
+	time.Sleep(400 * time.Millisecond)
+
+	if got := fake.relayCountFor(1); got != 0 {
+		t.Errorf("用户变更把节点 1 的 nginx 也下发了 %d 次 —— 转发规则一个字都没变", got)
+	}
+	if got := fake.countFor(2); got != 0 {
+		t.Errorf("改转发规则把节点 2 的 sing-box 重启了 %d 次 —— 那会踢掉全部在线连接", got)
+	}
+}
+
+// 同一台机器上两种都脏时只等一次 debounce,然后各下发一次。
+//
+// 顺序固定为先 sing-box 后 nginx:前者重启服务,后者只 reload。
+// 反过来的话,刚 reload 好的转发在几秒后被一次 sing-box 重启打断,
+// 表现是"改了转发规则,结果所有人断了一下" —— 而那次断线来自另一件事。
+func TestCoordinatorDeploysBothKindsOncePerNode(t *testing.T) {
+	fake := &fakeDeployer{}
+	c, cancel := newTestCoordinator(t, fake, 150*time.Millisecond, 3*time.Second)
+	defer cancel()
+
+	c.MarkDirty(5)
+	c.MarkRelaysDirty(5)
+	c.MarkDirty(5)
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.countFor(5) >= 1 && fake.relayCountFor(5) >= 1
+	})
+	time.Sleep(400 * time.Millisecond)
+
+	if got := fake.countFor(5); got != 1 {
+		t.Errorf("sing-box 被部署 %d 次,期望 1 次", got)
+	}
+	if got := fake.relayCountFor(5); got != 1 {
+		t.Errorf("nginx 被下发 %d 次,期望 1 次", got)
 	}
 }
 

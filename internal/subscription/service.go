@@ -166,9 +166,19 @@ func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, erro
 	if err != nil {
 		return nil, err
 	}
-	return s.mergeEntries(ctx,
-		s.entriesFor(Credentials{UUID: u.UUID, SSPassword: u.SSPassword}, nodes),
-		s.externalEntries(external)), nil
+	relays, err := s.relaysFor(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	cred := Credentials{UUID: u.UUID, SSPassword: u.SSPassword}
+
+	// 中转线路紧跟自建节点,排在外部代理之前。
+	//
+	// 它更接近"我们自己的线路"而不是"买来的成品":凭据是我们发的、
+	// 落地多半是我们自己的机器,而且它与某个自建节点是同一条链路的两个入口。
+	// 排到最后会让同一台落地机的两个入口在客户端列表里被外部代理隔开。
+	selfHosted := append(s.entriesFor(cred, nodes), s.relayEntries(cred, relays)...)
+	return s.mergeEntries(ctx, selfHosted, s.externalEntries(external)), nil
 }
 
 // entriesFor 把节点列表转成订阅条目。

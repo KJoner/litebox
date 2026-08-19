@@ -136,9 +136,42 @@ func TestStoreListRecentReturnsEmptySlice(t *testing.T) {
 	}
 }
 
-func TestSocks5ConnectRejectsNonIPv4Target(t *testing.T) {
-	// 拨测目标固定为节点回环地址,传入域名说明调用方用错了。
-	if err := socks5Connect(nil, "example.com", 22); err == nil {
-		t.Error("非 IPv4 目标应当被拒绝")
+// 参数校验必须全部发生在任何 I/O 之前 —— 握手一旦开始就无法干净地中止。
+//
+// 这里刻意传 nil 连接:凡是能走到写字节那一步的输入都会当场 panic,
+// 所以这个测试同时钉住了"拒绝"与"在写之前拒绝"两件事。
+func TestSocks5ConnectValidatesBeforeAnyIO(t *testing.T) {
+	cases := map[string]struct {
+		host string
+		port int
+	}{
+		"空目标":   {"", 22},
+		"端口为 0": {"127.0.0.1", 0},
+		"端口超范围": {"127.0.0.1", 70000},
+		"端口为负":  {"127.0.0.1", -1},
+		"域名过长":  {strings.Repeat("a", 256), 22},
 	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := socks5Connect(nil, c.host, c.port); err == nil {
+				t.Error("非法参数应当在任何 I/O 之前被拒绝")
+			}
+		})
+	}
+}
+
+// 域名目标**必须被接受**:中转与链式的拨测要 CONNECT 到中转主机自己的
+// 公网地址,而那一栏允许填域名(动态 DNS)。
+//
+// 主控这边不解析它 —— 解析结果与节点看到的可能不是同一个,
+// 而那正是这次拨测要验证的东西。域名走 SOCKS5 的 ATYP=3 交给探测客户端。
+//
+// 拿 nil 连接跑到写字节那一步会 panic,正好用来证明它没有在校验阶段被拒。
+func TestSocks5ConnectAcceptsDomainTarget(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("域名目标在写入之前就被拒绝了 —— 中转与链式的拨测会因此失败")
+		}
+	}()
+	_ = socks5Connect(nil, "relay.example.com", 58739)
 }

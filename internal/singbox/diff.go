@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 )
@@ -139,7 +140,91 @@ func compareNodeAttrs(old, new Config) []string {
 		changes = append(changes, fmt.Sprintf("V2Ray API 监听 %s → %s",
 			old.Experimental.V2RayAPI.Listen, new.Experimental.V2RayAPI.Listen))
 	}
+
+	changes = append(changes, compareChainAttrs(old, new)...)
 	return changes
+}
+
+// compareChainAttrs 比较链式出站。
+//
+// 凡是改变配置哈希的字段都必须出现在这里:配置状态(ConfigStatus)按整份
+// 配置的哈希算,而这份 diff 按字段白名单算 —— 只改渲染不改白名单,
+// 同一个抽屉里上面写着「待部署」、点开「配置比对」却说「配置无变化」,
+// 管理员只能二选一地相信,而两个都是我们自己给的。
+//
+// 出口去向是这一版里**后果最重**的一项:它决定用户的流量从哪台机器出去,
+// 而弄错了不会有任何报错(用户照样有网可上,只是落地不是管理员以为的那个)。
+// 所以它排在最前面。
+func compareChainAttrs(old, new Config) []string {
+	oldChain, newChain := chainOutboundOf(old), chainOutboundOf(new)
+	switch {
+	case oldChain == nil && newChain == nil:
+		return nil
+	case oldChain == nil:
+		return []string{fmt.Sprintf("出口改为经中转落地 %s(此前是本机直连)",
+			net.JoinHostPort(newChain.Server, fmt.Sprint(newChain.ServerPort)))}
+	case newChain == nil:
+		return []string{fmt.Sprintf("出口改回本机直连(此前经 %s)",
+			net.JoinHostPort(oldChain.Server, fmt.Sprint(oldChain.ServerPort)))}
+	}
+
+	var changes []string
+	if oldChain.Server != newChain.Server || oldChain.ServerPort != newChain.ServerPort {
+		changes = append(changes, fmt.Sprintf("中转落地 %s → %s",
+			net.JoinHostPort(oldChain.Server, fmt.Sprint(oldChain.ServerPort)),
+			net.JoinHostPort(newChain.Server, fmt.Sprint(newChain.ServerPort))))
+	}
+	if oldChain.Type != newChain.Type {
+		changes = append(changes, fmt.Sprintf("中转落地协议 %s → %s",
+			orDash(oldChain.Type), orDash(newChain.Type)))
+	}
+	if oldChain.Method != newChain.Method {
+		changes = append(changes, fmt.Sprintf("中转落地加密方法 %s → %s",
+			orDash(oldChain.Method), orDash(newChain.Method)))
+	}
+	// 凭据内容一律不出现在 diff 里,只说"已更换" —— 与节点 PSK、
+	// REALITY 私钥同一条规矩。
+	if oldChain.UUID != newChain.UUID || oldChain.Password != newChain.Password {
+		changes = append(changes, "中转链路凭据已更换")
+	}
+	if oldChain.TCPFastOpen != newChain.TCPFastOpen {
+		changes = append(changes, fmt.Sprintf("中转链路 TCP Fast Open %s → %s",
+			onOff(oldChain.TCPFastOpen), onOff(newChain.TCPFastOpen)))
+	}
+	changes = append(changes, compareChainTLS(oldChain.TLS, newChain.TLS)...)
+	return changes
+}
+
+func compareChainTLS(oldTLS, newTLS *OutboundTLS) []string {
+	if oldTLS == nil || newTLS == nil {
+		return nil
+	}
+	var changes []string
+	if oldTLS.ServerName != newTLS.ServerName {
+		changes = append(changes, fmt.Sprintf("中转落地握手目标 %s → %s",
+			orDash(oldTLS.ServerName), orDash(newTLS.ServerName)))
+	}
+	oldR, newR := oldTLS.Reality, newTLS.Reality
+	if oldR == nil || newR == nil {
+		return changes
+	}
+	if oldR.PublicKey != newR.PublicKey || oldR.ShortID != newR.ShortID {
+		changes = append(changes, "中转落地的 REALITY 参数已更换")
+	}
+	return changes
+}
+
+// chainOutboundOf 取出链式出站。
+//
+// 判据是 tag 而不是"出站数量大于 1":节点上的配置可能被人手工加过出站,
+// 而那不该被读成"链式启用了"。
+func chainOutboundOf(cfg Config) *Outbound {
+	for i := range cfg.Outbounds {
+		if cfg.Outbounds[i].Tag == ChainOutboundTag {
+			return &cfg.Outbounds[i]
+		}
+	}
+	return nil
 }
 
 // compareRealityAttrs 比较 REALITY 相关字段。
