@@ -10,6 +10,7 @@ import {
   type ChainApplyResult,
   type DeployResult,
   type DestCheckResult,
+  type AccessTier,
   type ExternalProxy,
   type NginxFacts,
   type Node,
@@ -18,7 +19,8 @@ import {
   type NodeRelay,
   type NodeSSMethod,
 } from '@/api/client'
-import { LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/components/lb'
+import { LbRowCard, LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/components/lb'
+import { useNarrow } from '@/composables/useNarrow'
 import { color } from '@/theme/tokens'
 
 /**
@@ -41,13 +43,24 @@ import { color } from '@/theme/tokens'
  *                改出口还连带部署另一台机器 → lbDangerConfirm,逐条列影响。
  * 合成一种确认之后,管理员会对「点这一下要不要挑时机」失去判断。
  */
-const props = defineProps<{ node: Node }>()
+const props = defineProps<{ node: Node; tiers: AccessTier[] }>()
 const emit = defineEmits<{
   /** 有动作在跑时抬起,页面据此在弹窗上屏蔽遮罩点击与 ESC */
   busy: [label: string]
   /** 变更之后节点本身可能变了,让页面重新拉一次 */
   changed: []
+  /**
+   * 部署与安装由页面执行,面板只负责把按钮放在管理员正在看的地方。
+   *
+   * 不在这里各写一遍:部署要走 lbDangerConfirm、开进度弹窗、失败后还要
+   * 展示步骤明细,而那一整套已经在页面上了。两处各一份的话,某天改了
+   * 确认文案只改到一处,而两处点下去做的是同一件事。
+   */
+  deploy: []
+  install: []
 }>()
+
+const narrow = useNarrow()
 
 /**
  * 可作为落地的候选。在面板里现拉而不是让页面传:
@@ -168,6 +181,88 @@ const enabledMeta: Record<'on' | 'off', LbStatusMeta> = {
   off: { text: '已停用', shape: 'minus', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
 }
 
+/**
+ * 两类入口合成一份列表。
+ *
+ * 它们回答的是同一个问题 ——「用户连这台机器的哪个端口、连上之后去哪」,
+ * 分成两张表之后要在两处之间来回看才拼得出这台机器对外的全貌。
+ *
+ * **但摩擦不同这件事必须留在界面上**:sing-box 那几行改了要重启、
+ * 会踢掉这台机器上全部入口的在线连接;nginx 那几行只 reload,在途连接
+ * 一条不断。所以每行都带类型标记,操作按钮也各走各的确认档次 ——
+ * 合成一种确认之后,管理员会对「点这一下要不要挑时机」失去判断。
+ *
+ * 排序:sing-box 在前、nginx 在后,各自按 sort_order。不按端口号混排 ——
+ * 那样两类会交错,类型标记就得逐行去认。
+ */
+type EntryRow =
+  | { key: string; kind: 'singbox'; inbound: NodeInbound }
+  | { key: string; kind: 'nginx'; relay: NodeRelay }
+
+const rows = computed<EntryRow[]>(() => [
+  ...inbounds.value.map((i) => ({ key: `i${i.id}`, kind: 'singbox' as const, inbound: i })),
+  ...relays.value.map((r) => ({ key: `r${r.id}`, kind: 'nginx' as const, relay: r })),
+])
+
+const kindLabel: Record<EntryRow['kind'], string> = {
+  singbox: 'sing-box',
+  nginx: 'nginx 转发',
+}
+
+function kindText(row: EntryRow): string {
+  return kindLabel[row.kind]
+}
+
+/** 一行的端口写法。两个端口相同时只写一个号码 —— 写两遍会让人以为配了转发。 */
+function portText(listen: number, pub: number): string {
+  const p = pub || listen
+  return p === listen ? `端口 ${listen}` : `公网 ${p} → 主机 ${listen}`
+}
+
+/**
+ * 一行的取值都走这几个小函数,而不是在模板里写三元。
+ *
+ * 模板里逐处判断 kind 的话,加一列就要在两个分支各写一遍(表格与窄屏卡片),
+ * 而漏掉其中一处的表现是「桌面上对、手机上空着」—— 那种差异不会有人主动去找。
+ */
+function rowName(row: EntryRow): string {
+  return row.kind === 'singbox' ? row.inbound.display_name : row.relay.display_name
+}
+
+function rowPort(row: EntryRow): string {
+  return row.kind === 'singbox'
+    ? portText(row.inbound.listen_port, row.inbound.public_port)
+    : portText(row.relay.listen_port, row.relay.public_port)
+}
+
+function rowTier(row: EntryRow): string {
+  return row.kind === 'singbox' ? row.inbound.access_tier_name : row.relay.access_tier_name
+}
+
+function rowEnabled(row: EntryRow): boolean {
+  return row.kind === 'singbox' ? row.inbound.enabled : row.relay.enabled
+}
+
+function rowSubText(row: EntryRow): string {
+  const on =
+    row.kind === 'singbox' ? row.inbound.subscription_enabled : row.relay.subscription_enabled
+  return on ? '在订阅里' : '已从订阅下架'
+}
+
+/**
+ * 「去向」这一列:这个入口收到的流量最终从哪里出去。
+ *
+ * 两类入口的答案形状不同,但问题是同一个 —— 合在一列里,管理员扫一眼
+ * 就能看出这台机器上哪些入口是本机出网、哪些绕到了别处。
+ */
+function destinationText(row: EntryRow): string {
+  if (row.kind === 'nginx') {
+    return `透传到 ${row.relay.target_name || '(落地已删除)'}`
+  }
+  const chain = chainTargetName(row.inbound)
+  return chain ? `经 ${chain}` : '本机直连'
+}
+
 /** 一个入口在订阅里展开成的条目(IPv4 + 可选 IPv6)。 */
 function subEntriesOf(i: NodeInbound) {
   const port = i.public_port || i.listen_port
@@ -222,7 +317,9 @@ function openCreateInbound() {
     public_port: 0,
     ipv6_public_port: 0,
     tcp_fast_open: false,
-    access_tier_id: props.node.access_tier_id,
+    // 默认普通组。不从别处继承 —— 机器已经没有等级了(迁移 0020),
+    // 而"跟着上一个入口走"会让新入口悄悄带上一个限制。
+    access_tier_id: props.tiers[0]?.id ?? 1,
     sort_order: inbounds.value.length,
     subscription_enabled: true,
     enabled: true,
@@ -545,7 +642,7 @@ function openCreate() {
     target_kind: 'INBOUND',
     target_inbound_id: landingInbounds.value[0]?.value ?? 0,
     target_external_id: externalProxies.value[0]?.id ?? 0,
-    access_tier_id: props.node.access_tier_id,
+    access_tier_id: props.tiers[0]?.id ?? 1,
     sort_order: 0,
     subscription_enabled: true,
     enabled: true,
@@ -664,121 +761,38 @@ onMounted(async () => {
       <span class="nr__title">入口</span>
       <span class="nr__note">这台机器对外提供的入口。用户连的是这里的端口。</span>
       <span v-if="running" class="nr__running">{{ running }}…</span>
-      <span class="nr__spacer" />
-      <a-button size="small" :loading="!!running" @click="checkNginx">检查 nginx</a-button>
-      <a-button size="small" :loading="!!running" @click="deployNow">下发转发配置</a-button>
-      <a-dropdown placement="bottomRight" :disabled="!!running">
-        <a-button size="small" type="primary">新增入口 ▾</a-button>
-        <template #overlay>
-          <a-menu>
-            <a-menu-item :disabled="isRelayHost" @click="openCreateInbound">
-              <span :title="isRelayHost ? '中转角色的机器上不跑 sing-box,角色一经创建不可更改' : ''">
-                sing-box 入口
-              </span>
-            </a-menu-item>
-            <a-menu-item @click="openCreate">Nginx 转发入口</a-menu-item>
-          </a-menu>
-        </template>
-      </a-dropdown>
     </div>
 
-    <!-- sing-box 入口。中转角色的机器上没有,这一整块不出现 ——
-         显示一个"未配置"的占位会让人以为可以去配一个,而角色不可更改。 -->
-    <template v-if="!isRelayHost">
-      <div class="nr__section">
-        <span class="nr__kind">sing-box</span>
-        <span class="nr__note">
-          这台机器自己的入站。可以有多条,各自的协议、端口、访问等级与出口互不相干。
-        </span>
-      </div>
-      <div v-if="!inbounds.length" class="nr__warn">
-        这台机器上一个入口都没有 —— sing-box 会正常运行,但谁都连不上。
-        点右上角「新增入口 → sing-box 入口」加一条。
-      </div>
-      <div v-for="i in inbounds" :key="i.id" class="nr__sb">
-        <div class="nr__sb-head">
-          <span class="nr__sb-name">{{ i.display_name }}</span>
-          <LbStatusTag :meta="protocolMeta(i)" />
-          <LbStatusTag v-if="!i.enabled" :meta="enabledMeta.off" />
-          <span class="nr__tag lb-mono">{{ i.tag }}</span>
-          <span class="nr__spacer" />
-          <a-button size="small" type="link" :disabled="!!running" @click="openEditInbound(i)">
-            编辑
-          </a-button>
-          <a-button
-            v-if="i.protocol === 'VLESS_REALITY'"
-            size="small"
-            type="link"
-            :disabled="!!running"
-            @click="openDest(i)"
-          >
-            握手目标
-          </a-button>
-          <a-button size="small" type="link" :disabled="!!running" @click="openChain(i)">
-            出口
-          </a-button>
-          <a-button size="small" type="link" danger :disabled="!!running" @click="removeInbound(i)">
-            删除
-          </a-button>
-        </div>
-        <div class="nr__sb-body lb-mono">
-          <!-- 两个端口相同时只写一个号码:写成「公网 443 → 主机 443」是把同一个
-               数字说两遍,而那正好会让人以为这台机器上配了端口转发。 -->
-          <template v-if="(i.public_port || i.listen_port) === i.listen_port">
-            端口 {{ i.listen_port }}
-          </template>
-          <template v-else>公网 {{ i.public_port }} → 主机 {{ i.listen_port }}</template>
-          <template v-if="node.ipv6_address">
-            · IPv6 [{{ node.ipv6_address }}]:{{ i.ipv6_public_port || i.public_port || i.listen_port }}
-          </template>
-          <template v-if="i.protocol === 'SHADOWSOCKS'"> · {{ i.ss_method }}</template>
-          <template v-else> · {{ i.reality_dest || '未设握手目标' }}</template>
-          <template v-if="i.tcp_fast_open"> · TFO</template>
-        </div>
-        <div class="nr__sb-sub">
-          <div>
-            出口:
-            <template v-if="i.chain_target_kind">
-              经 <b>{{ chainTargetName(i) }}</b>,链路凭据
-              <span class="lb-mono">{{ i.chain_code || '—' }}</span>
-              <a-button size="small" type="link" danger :disabled="!!running" @click="clearChain(i)">
-                改回直连
-              </a-button>
-            </template>
-            <template v-else>本机直连</template>
-          </div>
-          <div>
-            访问等级 {{ i.access_tier_name }} ·
-            {{ i.subscription_enabled ? '在订阅里' : '已从订阅下架' }} · 排序 {{ i.sort_order }}
-          </div>
-          <div>
-            订阅里展开成:
-            <span v-for="e in subEntriesOf(i)" :key="e.name" class="nr__sb-entry">
-              {{ e.name }} <span class="lb-mono">{{ e.addr }}</span>
-            </span>
-          </div>
-          <!-- IPv6 不是第二条节点记录,而是同一条记录在订阅生成时的逻辑展开 ——
-               两条指向同一个入站,改 IPv6 保存即生效,不需要重新部署。 -->
-          <div v-if="node.ipv6_address">
-            两条指向<b>同一个入站</b>,UUID、REALITY 公钥、short ID 完全相同。
-          </div>
-        </div>
-        <div v-if="!i.deployed_protocol" class="nr__warn">
-          这个入口还没有上过节点,<b>不会出现在任何人的订阅里</b>。部署这台机器之后才生效。
-        </div>
-      </div>
-      <div v-if="!node.subscription_enabled && inbounds.length" class="nr__warn">
-        这台机器的「下发到用户订阅」是关的,它上面全部入口都不会进入新生成的订阅。
-        节点仍在运行,已导入旧订阅的客户端还能用。
-      </div>
-      <p class="nr__note">
-        入口的增删改<b>不会自动部署</b>:那会重启 sing-box,把这台机器上全部入口的在线连接
-        一起踢掉。改完之后自己挑时机点上面的「部署」。
-        <br />
-        <b>流量拆不到入口。</b>同一个用户在这台机器上的流量是所有入口的合计 ——
-        计数器里没有入站这一维,不是暂时没做。
-      </p>
-    </template>
+    <!-- 按钮分两行,一行一类。
+         混在一排的话,「部署配置」(重启 sing-box、踢掉全部入口的在线连接)与
+         「下发转发配置」(只 reload,一条在途连接都不断)会长得一样重,
+         而这两件事该不该挑时机完全不同。 -->
+    <div v-if="!isRelayHost" class="nr__ops">
+      <span class="nr__kind">sing-box</span>
+      <a-button size="small" type="primary" :disabled="!!running" @click="openCreateInbound">
+        新增入口
+      </a-button>
+      <a-button size="small" :disabled="!!running" @click="emit('install')">安装 sing-box</a-button>
+      <a-button size="small" :disabled="!!running" @click="emit('deploy')">部署配置</a-button>
+      <span class="nr__note">改了要重启,这台机器上<b>全部入口</b>的在线连接都会断开。</span>
+    </div>
+    <div v-else class="nr__ops">
+      <span class="nr__kind">sing-box</span>
+      <a-button size="small" :disabled="!!running" @click="emit('install')">
+        安装 sing-box(仅二进制)
+      </a-button>
+      <!-- 中转机上不装服务:一个没有配置的 sing-box 只会反复崩溃重启,
+           而 supervise-daemon 会让它一直重试。二进制要留 ——
+           转发规则的健康检查要用它做真实拨测,只跑那几秒。 -->
+      <span class="nr__note">中转机上不装服务,这份二进制只在转发拨测时跑几秒。</span>
+    </div>
+    <div class="nr__ops">
+      <span class="nr__kind">nginx 转发</span>
+      <a-button size="small" :disabled="!!running" @click="openCreate">新增转发入口</a-button>
+      <a-button size="small" :loading="!!running" @click="checkNginx">检查 nginx</a-button>
+      <a-button size="small" :loading="!!running" @click="deployNow">下发转发配置</a-button>
+      <span class="nr__note">只 reload,在途连接一条不断 —— 不需要挑时机。</span>
+    </div>
 
     <!-- nginx 现状。缺 stream 模块在两个发行版上都是默认情况,
          而报错只说 unknown directive "stream",不提缺哪个包。 -->
@@ -804,65 +818,169 @@ onMounted(async () => {
       </template>
     </div>
 
-    <!-- nginx 透传入口。与上面那块分开:两者的操作摩擦不同 ——
-         这些改了只 reload,在途连接一条不断。 -->
-    <div class="nr__section">
-      <span class="nr__kind">nginx 转发</span>
-      <span class="nr__note">把字节原样搬到落地。可以有多条,各占一个端口。</span>
-    </div>
     <div v-if="loadError" class="nr__warn">{{ loadError }}</div>
+    <div v-else-if="!isRelayHost && !inbounds.length" class="nr__warn">
+      这台机器上一个 sing-box 入口都没有 —— 服务会正常运行,但谁都连不上。
+    </div>
+
+    <!-- <768 整表换卡片:横向滚动会把「操作」列推到屏幕外,手机上找不到它。 -->
+    <div v-if="!loadError && narrow" class="nr__cards">
+      <LbRowCard v-for="row in rows" :key="row.key">
+        <template #head>
+          <span class="nr__kind">{{ kindText(row) }}</span>
+          <span class="nr__sb-name">{{ rowName(row) }}</span>
+          <LbStatusTag v-if="row.kind === 'singbox'" :meta="protocolMeta(row.inbound)" />
+          <LbStatusTag v-else :meta="readyMeta[row.relay.target_ready ? 'yes' : 'no']" />
+        </template>
+        <div class="nr__sb-body lb-mono">{{ rowPort(row) }}</div>
+        <div class="nr__sb-sub">
+          <div>去向:{{ destinationText(row) }}</div>
+          <div>{{ rowTier(row) }} · {{ rowSubText(row) }}</div>
+        </div>
+        <template #foot>
+          <template v-if="row.kind === 'singbox'">
+            <a-button size="small" type="link" @click="openEditInbound(row.inbound)">编辑</a-button>
+            <a-button
+              v-if="row.inbound.protocol === 'VLESS_REALITY'"
+              size="small"
+              type="link"
+              @click="openDest(row.inbound)"
+            >
+              握手目标
+            </a-button>
+            <a-button size="small" type="link" @click="openChain(row.inbound)">出口</a-button>
+            <a-button size="small" type="link" danger @click="removeInbound(row.inbound)">
+              删除
+            </a-button>
+          </template>
+          <template v-else>
+            <a-button size="small" type="link" @click="openEdit(row.relay)">编辑</a-button>
+            <a-button size="small" type="link" danger @click="removeRelay(row.relay)">删除</a-button>
+          </template>
+        </template>
+      </LbRowCard>
+    </div>
+
     <a-table
-      v-if="!loadError"
-      :data-source="relays"
+      v-else-if="!loadError"
+      :data-source="rows"
       :loading="loading"
       :pagination="false"
-      row-key="id"
+      row-key="key"
       size="small"
     >
-      <a-table-column key="name" title="线路" data-index="display_name" />
-      <a-table-column key="port" title="端口">
+      <a-table-column key="kind" title="类型">
         <template #default="{ record }">
-          <span class="lb-mono">{{ record.listen_port }}</span>
-          <span v-if="record.public_port && record.public_port !== record.listen_port">
-            → 公网 <span class="lb-mono">{{ record.public_port }}</span>
+          <span class="nr__kind">{{ kindText(record) }}</span>
+        </template>
+      </a-table-column>
+      <a-table-column key="name" title="入口">
+        <template #default="{ record }">
+          <div class="nr__sb-name">{{ rowName(record) }}</div>
+          <span v-if="record.kind === 'singbox'" class="nr__tag lb-mono">
+            {{ record.inbound.tag }}
           </span>
         </template>
       </a-table-column>
-      <a-table-column key="target" title="落地">
+      <a-table-column key="port" title="端口">
         <template #default="{ record }">
-          <div>{{ record.target_name || '(已删除)' }}</div>
-          <LbStatusTag :meta="readyMeta[record.target_ready ? 'yes' : 'no']" />
+          <span class="lb-mono">{{ rowPort(record) }}</span>
         </template>
       </a-table-column>
-      <a-table-column key="tier" title="等级" data-index="access_tier_name" />
+      <a-table-column key="dest" title="去向">
+        <template #default="{ record }">
+          <!-- sing-box 那几行显示的是【已经生效】的协议,不是数据库里的期望值:
+               改协议到部署成功之间的窗口里,订阅下发的、用户实际连的还是旧的。 -->
+          <LbStatusTag v-if="record.kind === 'singbox'" :meta="protocolMeta(record.inbound)" />
+          <LbStatusTag v-else :meta="readyMeta[record.relay.target_ready ? 'yes' : 'no']" />
+          <div class="nr__sub">{{ destinationText(record) }}</div>
+        </template>
+      </a-table-column>
+      <a-table-column key="tier" title="等级">
+        <template #default="{ record }">{{ rowTier(record) }}</template>
+      </a-table-column>
       <a-table-column key="state" title="状态">
         <template #default="{ record }">
-          <LbStatusTag :meta="enabledMeta[record.enabled ? 'on' : 'off']" />
-          <span class="nr__sub">{{
-            record.subscription_enabled ? '在订阅里' : '已从订阅下架'
-          }}</span>
+          <LbStatusTag :meta="enabledMeta[rowEnabled(record) ? 'on' : 'off']" />
+          <div class="nr__sub">{{ rowSubText(record) }}</div>
+          <div
+            v-if="record.kind === 'singbox' && !record.inbound.deployed_protocol"
+            class="nr__warn"
+          >
+            还没上过节点
+          </div>
         </template>
       </a-table-column>
-      <a-table-column key="sort" title="排序" data-index="sort_order" />
       <a-table-column key="ops" title="操作">
         <template #default="{ record }">
-          <a-button size="small" type="link" @click="openEdit(record)">编辑</a-button>
-          <a-button size="small" type="link" danger @click="removeRelay(record)">删除</a-button>
+          <template v-if="record.kind === 'singbox'">
+            <a-button size="small" type="link" @click="openEditInbound(record.inbound)">
+              编辑
+            </a-button>
+            <a-button
+              v-if="record.inbound.protocol === 'VLESS_REALITY'"
+              size="small"
+              type="link"
+              @click="openDest(record.inbound)"
+            >
+              握手目标
+            </a-button>
+            <a-button size="small" type="link" @click="openChain(record.inbound)">出口</a-button>
+            <a-button size="small" type="link" danger @click="removeInbound(record.inbound)">
+              删除
+            </a-button>
+          </template>
+          <template v-else>
+            <a-button size="small" type="link" @click="openEdit(record.relay)">编辑</a-button>
+            <a-button size="small" type="link" danger @click="removeRelay(record.relay)">
+              删除
+            </a-button>
+          </template>
         </template>
       </a-table-column>
       <template #emptyText>
         <!-- 只在读取成功且确实是零条时才说「还没有」。读取失败时上面那条
              loadError 会先出现,表格根本不渲染 —— 否则「读不到」会被读成
              「一条都没有」,而两者要做的事完全不同。 -->
-        <span class="nr__note">
-          还没有转发入口。点右上角「新增入口 → Nginx 转发入口」加一条。
-        </span>
+        <span class="nr__note">还没有任何入口。用上面的「新增入口」加一条。</span>
       </template>
     </a-table>
 
-    <p class="nr__note">
-      转发入口的增删改只会 <b>reload nginx</b>,在途连接一条不断 ——
-      所以这里没有需要挑时机的操作。落地未就绪的线路不会出现在任何人的订阅里。
+    <!-- 订阅展开:一个 sing-box 入口在客户端里会变成一到两条,这里逐条写出来。 -->
+    <div v-if="!isRelayHost && inbounds.length" class="nr__sb-sub">
+      <div v-for="i in inbounds" :key="i.id">
+        <b>{{ i.display_name }}</b> 在订阅里展开成:
+        <span v-for="e in subEntriesOf(i)" :key="e.name" class="nr__sb-entry">
+          {{ e.name }} <span class="lb-mono">{{ e.addr }}</span>
+        </span>
+      </div>
+      <!-- IPv6 不是第二条节点记录,而是同一条记录在订阅生成时的逻辑展开 ——
+           两条指向同一个入站,改 IPv6 保存即生效,不需要重新部署。 -->
+      <div v-if="node.ipv6_address">
+        IPv6 与 IPv4 两条指向<b>同一个入站</b>,UUID、REALITY 公钥、short ID 完全相同。
+      </div>
+    </div>
+
+    <div v-if="!node.subscription_enabled" class="nr__warn">
+      这台机器的「下发到用户订阅」是关的,它上面全部入口都不会进入新生成的订阅。
+      节点仍在运行,已导入旧订阅的客户端还能用。
+    </div>
+
+    <!-- 中转机上没有「部署配置」那个按钮,也不产生任何流量数字 ——
+         这两句话照写会指向一个不存在的按钮和一份不存在的统计。 -->
+    <p v-if="!isRelayHost" class="nr__note">
+      sing-box 入口的增删改<b>不会自动部署</b>:那会重启服务,把这台机器上全部入口的
+      在线连接一起踢掉。改完之后自己挑时机点上面的「部署配置」。
+      转发入口只 reload nginx,不需要挑时机。
+      <br />
+      <b>流量拆不到入口。</b>同一个用户在这台机器上的流量是所有入口的合计 ——
+      计数器里没有入站这一维,不是暂时没做。
+    </p>
+    <p v-else class="nr__note">
+      转发入口的增删改只会 <b>reload nginx</b>,在途连接一条不断 —— 不需要挑时机。
+      落地未就绪的线路不会出现在任何人的订阅里。
+      <br />
+      中转主机上跑的是 nginx,它不接流量统计接口,<b>面板不计这台机器的流量</b>。
     </p>
 
     <!-- 两次部署的结果都要显示:失败时管理员必须知道卡在哪台机器上 -->
@@ -926,6 +1044,19 @@ onMounted(async () => {
           </a-checkbox>
           <div class="nr__hint">
             默认关。成败取决于用户到这台机器这一段路径上的中间设备,而那条路面板看不到。
+          </div>
+        </a-form-item>
+        <a-form-item label="访问等级">
+          <a-select
+            v-model:value="inboundForm.access_tier_id"
+            :options="tiers.map((t) => ({ value: t.id, label: t.name }))"
+          />
+          <div class="nr__hint">
+            等级不高于它的用户会自动拿到这个入口。<b>等级挂在入口上,不在机器上</b> ——
+            同一台机器可以有一个对所有人开放的入口和一个只给 VIP 的入口。
+            <br />
+            管理员在用户详情里对整台机器的「额外授权」<b>穿透这一档</b>:
+            那句话的意思就是「这台机器给他用」。
           </div>
         </a-form-item>
         <a-form-item label="排序">
@@ -1008,6 +1139,27 @@ onMounted(async () => {
       <!-- 按钮变灰时必须说出为什么。只变灰的话,管理员会以为是权限问题
            或者页面坏了,而真实原因是「面板上还没有第二台机器」。 -->
       <p v-if="chainReason" class="nr__warn">{{ chainReason }}</p>
+      <!-- 已经链出去的入口在这里改回直连。它属于「改这个入口的出口」这件事,
+           放回列表里会让那一行挤到第五个按钮,而它并不是常用操作。 -->
+      <div v-if="chainTarget?.chain_target_kind" class="nr__chain-now">
+        当前经 <b>{{ chainTargetName(chainTarget) }}</b> 出网,链路凭据
+        <span class="lb-mono">{{ chainTarget.chain_code || '—' }}</span>
+        <a-button
+          size="small"
+          type="link"
+          danger
+          :disabled="!!running"
+          @click="
+            () => {
+              const t = chainTarget
+              chainOpen = false
+              if (t) clearChain(t)
+            }
+          "
+        >
+          改回本机直连
+        </a-button>
+      </div>
     </a-modal>
 
     <!-- ---------------- nginx 转发表单 ---------------- -->
@@ -1054,6 +1206,17 @@ onMounted(async () => {
             「转发到它」是有歧义的,而流量进错入口不会有任何报错。
           </div>
         </a-form-item>
+        <a-form-item label="访问等级">
+          <a-select
+            v-model:value="form.access_tier_id"
+            :options="tiers.map((t) => ({ value: t.id, label: t.name }))"
+          />
+          <div class="nr__hint">
+            等级不高于它的用户才看得到这条线路。它与落地那个入口的等级是
+            <b>两道独立的闸门</b> —— 用户必须同时过得了两边,否则会拿到一条
+            订阅里看得见、连上去握手被拒的条目。
+          </div>
+        </a-form-item>
         <a-form-item label="排序">
           <a-input-number v-model:value="form.sort_order" />
         </a-form-item>
@@ -1079,11 +1242,27 @@ onMounted(async () => {
   border-radius: 8px;
   margin-bottom: 12px;
 }
-.nr__head {
+.nr__head,
+.nr__ops {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 一类操作一行。两类挤在一排的话,「部署配置」与「下发转发配置」
+   会长得一样重,而前者重启服务、后者只 reload。 */
+.nr__ops {
+  padding: 6px 8px;
+  border: 1px solid var(--lb-border);
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+.nr__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .nr__title {
   font-weight: 600;

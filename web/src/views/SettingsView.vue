@@ -71,7 +71,12 @@ const savingTier = ref(false)
 function tierUsage(t: AccessTier) {
   return {
     users: users.value.filter((u) => u.access_tier_id === t.id).length,
-    nodes: nodes.value.filter((n) => n.access_tier_id === t.id).length,
+    // 数的是【入口】不是机器:等级已经降到入口上(迁移 0020),
+    // 一台机器上可以既有普通组入口又有 VIP 入口。
+    inbounds: nodes.value.reduce(
+      (sum, n) => sum + (n.inbounds ?? []).filter((i) => i.access_tier_id === t.id).length,
+      0,
+    ),
   }
 }
 
@@ -288,7 +293,7 @@ onMounted(loadAll)
               <span class="lb-mono">{{ t.level }}</span>
               <span class="lb-ellipsis" :title="t.description">{{ t.description || '—' }}</span>
               <span class="lb-mono st__tier-use">
-                {{ tierUsage(t).users }} 用户 / {{ tierUsage(t).nodes }} 节点
+                {{ tierUsage(t).users }} 用户 / {{ tierUsage(t).inbounds }} 入口
               </span>
               <span><a @click="openTier(t)">编辑</a></span>
             </div>

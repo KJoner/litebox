@@ -81,6 +81,16 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	nodeID, _ := res.LastInsertId()
+	// 有效节点(user_effective_nodes)现在是入口那一层的投影(迁移 0020):
+	// 一台没有入口的机器,任何用户在上面都没有凭据,受影响节点自然是空的。
+	if _, err := db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			created_at, updated_at)
+		VALUES (?,'in-1','入口','VLESS_REALITY',24443,'www.apple.com','e','p','abcd','t','t')`,
+		nodeID); err != nil {
+		t.Fatal(err)
+	}
 
 	key, _ := crypto.GenerateMasterKey()
 	cipher, _ := crypto.NewCipher(key)

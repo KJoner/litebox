@@ -328,7 +328,7 @@ func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
 	id, _ := res.LastInsertId()
 	seedInbound(t, e.db, seededInbound{
 		NodeID: id, DisplayName: f.DisplayName, ListenPort: 24443, PublicPort: 24443,
-		SortOrder: f.SortOrder, Deployed: f.Deployed,
+		SortOrder: f.SortOrder, Deployed: f.Deployed, TierID: f.TierID,
 	})
 	e.nodeIDs = append(e.nodeIDs, id)
 	return id

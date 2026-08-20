@@ -754,7 +754,8 @@ const needsPortForward = computed(() =>
               :meta="configStatusMeta[configState(node)]"
               :suffix="`rev ${node.config_revision}`"
             />
-            <a-tag>{{ node.access_tier_name }}</a-tag>
+            <!-- 等级在「入口」里按条设置(迁移 0020),机器上没有这一栏。
+                 在标题旁边显示一个机器级的等级,会让人以为它管着整台机器。 -->
           </template>
         </div>
         <div v-if="node" class="nd__sub lb-mono">
@@ -778,15 +779,15 @@ const needsPortForward = computed(() =>
         <!-- 中转机上没有 sing-box 配置可部署 —— 那一下点下去只会得到一句
              「中转角色的节点没有 sing-box 配置」。它要下发的是 nginx 转发,
              而那在「入口」里,连摩擦档次都不同(只 reload,不断连接)。 -->
-        <a-button v-if="isRelay" size="small" @click="tab = 'entries'">转发配置</a-button>
+        <!-- 「部署」与「安装 sing-box」在【入口】Tab 里 —— 部署下发的正是那一屏
+             上列着的东西,而按钮离它要改的对象越远,就越难判断这一下会影响谁。
+             这里只留一个跳过去的入口,并把「该部署了」这件事说出来。 -->
         <a-button
-          v-else
           :type="needsDeploy(node) ? 'primary' : 'default'"
           size="small"
-          :loading="running === '部署'"
-          @click="confirmDeploy"
+          @click="tab = 'entries'"
         >
-          部署
+          {{ needsDeploy(node) ? '待部署 · 去入口' : '入口与部署' }}
         </a-button>
         <a-dropdown placement="bottomRight">
           <a-button size="small" :aria-label="`${node.name} 的更多操作`" title="更多操作">⋯</a-button>
@@ -794,7 +795,6 @@ const needsPortForward = computed(() =>
             <a-menu>
               <a-menu-item-group title="安装与配置">
                 <a-menu-item @click="editOpen = true">编辑节点</a-menu-item>
-                <a-menu-item @click="doInstall">安装 sing-box</a-menu-item>
                 <a-menu-item
                   @click="
                     () => {
@@ -1509,8 +1509,11 @@ const needsPortForward = computed(() =>
           <NodeEntriesPanel
             :key="node.id"
             :node="node"
+            :tiers="tiers"
             @busy="(label) => (running = label)"
             @changed="reload"
+            @deploy="confirmDeploy"
+            @install="doInstall"
           />
         </a-tab-pane>
       </a-tabs>

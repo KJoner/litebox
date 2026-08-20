@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/traffic"
@@ -77,15 +76,13 @@ type Node struct {
 	// 配置哈希会跟着抖,「已同步」与「待部署」两个状态来回跳。
 	MemTotalMB int `json:"mem_total_mb"`
 
-	// AccessTier* 是节点所属访问等级:等级不高于用户等级的节点会被自动继承。
+	// **机器没有访问等级**(V8.1,迁移 0020)。等级是【入口】的属性:
+	// 机器本身不接受任何连接,入口才接受。两层同时存在的时候,
+	// 「机器 VIP、其中一个入口对所有人开放」这件事做不到,而管理员会以为
+	// 把入口调成普通组就行 —— 结果那个入口谁都看不见,面板一个字都不说。
 	//
-	// 入站还有自己的一档,在这一层之上【再收一次】——
-	// 两层是交集关系,不是覆盖:能用这台机器,才谈得上能用它的哪个入口。
-	AccessTierID    int64  `json:"access_tier_id"`
-	AccessTierCode  string `json:"access_tier_code"`
-	AccessTierName  string `json:"access_tier_name"`
-	AccessTierLevel int    `json:"access_tier_level"`
-
+	// nodes.access_tier_id 那一列已冻结。user_nodes 的额外授权仍然是
+	// 机器级的:它的意思就是「这台机器给他用」,穿透入口等级。
 	SortOrder int `json:"sort_order"`
 	// SubscriptionEnabled 为假时不再下发到新生成的订阅,
 	// 但节点、历史流量与部署记录全部保留 —— 这是"进维护"而不是"删节点"。
@@ -131,16 +128,15 @@ const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.api_port, n.role,
 	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
-	n.access_tier_id, t.code, t.name, t.level,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
 	n.traffic_billing_mode,
 	n.status, n.last_heartbeat_at, n.config_revision, n.deployed_config_sha256,
 	n.created_at, n.updated_at`
 
-// nodeFrom 固定带上等级表。等级是节点的必备属性,分两次查会出现
-// "列表里有、详情里没有"这种前端只能靠猜的差异。
-const nodeFrom = ` FROM nodes n JOIN access_tiers t ON t.id = n.access_tier_id `
+// nodeFrom 不再 JOIN 等级表:等级是入口的属性(迁移 0020),
+// 而入口在 node_inbounds 上有自己的那一份。
+const nodeFrom = ` FROM nodes n `
 
 func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
@@ -150,7 +146,6 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.APIPort, &n.Role,
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
-		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
 		&n.TrafficBillingMode,
@@ -187,9 +182,7 @@ type CreateParams struct {
 	SSHPort     int
 	SSHUser     string
 	SSHKey      string
-	// AccessTierID 留 0 表示普通组。
-	AccessTierID int64
-	SortOrder    int
+	SortOrder   int
 	// TrafficQuotaBytes 留 0 表示不限量;TrafficResetCycle 留空按 NONE;
 	// TrafficBillingMode 留空按 EGRESS(与升级前的行为一致)。
 	TrafficQuotaBytes  int64
@@ -249,12 +242,6 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	if err := validateCreate(&p); err != nil {
 		return nil, err
 	}
-	// 迁移里没给 access_tier_id 写外键(SQLite 的 ADD COLUMN 限制),
-	// 这道校验就是唯一的拦截点 —— 指向不存在的等级会让节点从所有
-	// 有效节点查询里消失(视图是 INNER JOIN),表现为"节点在,但谁都用不到"。
-	if err := access.NewStore(s.db).Validate(ctx, p.AccessTierID); err != nil {
-		return nil, err
-	}
 
 	// 空私钥直接存空串而不是加密后的空串:读取侧用"是否为空"判断
 	// 该节点是否用面板密钥,加密后的空串不为空,会被当成一把解不开的私钥。
@@ -281,13 +268,13 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 			ssh_key_encrypted, ssh_host_key, api_port,
 			proxy_port, listen_port, ipv6_proxy_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			access_tier_id, sort_order,
+			sort_order,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
 			role, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,0,0,0,'','','','',?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,'',?,0,0,0,'','','','',?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.APIPort,
-		p.AccessTierID, p.SortOrder,
+		p.SortOrder,
 		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay, p.TrafficBillingMode,
 		p.Role, StatusPending, now, now)
 	if err != nil {
@@ -336,9 +323,6 @@ func validateCreate(p *CreateParams) error {
 	}
 	if err := normalizeDisplayName(p.Name, &p.DisplayName); err != nil {
 		return err
-	}
-	if p.AccessTierID == 0 {
-		p.AccessTierID = access.TierNormalID
 	}
 	if err := normalizeSSH(&p.SSHPort, &p.SSHUser); err != nil {
 		return err
@@ -590,11 +574,7 @@ type UpdateParams struct {
 	// 把用量显示成一半,而管理员看到的是额度绰绰有余。
 	TrafficBillingMode string
 
-	// AccessTierID 为 0 表示保持原等级。不回落到普通组:
-	// 前端漏传这个字段时把 VIP 节点悄悄降成普通组,等于给全体用户开门,
-	// 而且不报任何错。
-	AccessTierID int64
-	SortOrder    int
+	SortOrder int
 	// SubscriptionEnabled 为 nil 表示保持原值,理由同上 ——
 	// 漏传会把节点从所有人的订阅里摘掉,只有用户来反馈才会发现。
 	SubscriptionEnabled *bool
@@ -610,10 +590,10 @@ type UpdateEffect struct {
 	// 端口类变更不自动部署:部署会重启 sing-box 踢掉全部在线连接,
 	// 何时切换由管理员配合 NAT/nginx 的改动决定。
 	NeedsDeploy bool `json:"needs_deploy"`
-	// TierChanged 为真时节点上的用户集合已经变了,必须自动标脏重新部署。
-	// 这一条不能交给管理员挑时机:等级调高后,被移出的用户凭据还留在节点上,
-	// 拖多久就多能用多久 —— 那是权限没有真正收回。
-	TierChanged bool `json:"tier_changed"`
+	// **没有 TierChanged**:访问等级已经是入口的属性(迁移 0020),
+	// 它由 InboundEffect 带出来。在这里留一个恒为 false 的字段,
+	// 会让下一个人以为节点这一层还能改等级。
+	//
 	// RelayTargetChanged 为真时,以这个节点为落地的中转主机全部过时了。
 	//
 	// 依赖有两条:nginx 的 proxy_pass 指着这个节点的【地址与公网端口】,
@@ -673,12 +653,6 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if err := s.normalizeAPIPort(ctx, id, old, &p.APIPort); err != nil {
 		return nil, effect, err
 	}
-	if p.AccessTierID == 0 {
-		p.AccessTierID = old.AccessTierID
-	}
-	if err := access.NewStore(s.db).Validate(ctx, p.AccessTierID); err != nil {
-		return nil, effect, err
-	}
 	subEnabled := old.SubscriptionEnabled
 	if p.SubscriptionEnabled != nil {
 		subEnabled = *p.SubscriptionEnabled
@@ -710,7 +684,6 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	track("SSH 端口", old.SSHPort != p.SSHPort, old.SSHPort, p.SSHPort)
 	track("SSH 用户", old.SSHUser != p.SSHUser, old.SSHUser, p.SSHUser)
 	track("API 端口", old.APIPort != p.APIPort, old.APIPort, p.APIPort)
-	track("访问等级", old.AccessTierID != p.AccessTierID, old.AccessTierID, p.AccessTierID)
 	track("排序", old.SortOrder != p.SortOrder, old.SortOrder, p.SortOrder)
 	track("下发订阅", old.SubscriptionEnabled != subEnabled, old.SubscriptionEnabled, subEnabled)
 	track("公开备注", old.PublicRemark != p.PublicRemark, old.PublicRemark, p.PublicRemark)
@@ -746,8 +719,9 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// 入站那一侧的变更(协议、端口、TFO、入站等级)不在这里判 ——
 	// 它们由 UpdateInbound 返回 InboundEffect,由上层各自处理。
 	// 在两处都判一遍的话,判据迟早分叉,而分叉的表现是"改了却没标脏"。
-	effect.TierChanged = old.AccessTierID != p.AccessTierID
-	effect.NeedsDeploy = old.APIPort != p.APIPort || effect.TierChanged
+	//
+	// 访问等级也不在这里:它已经是入口的属性(迁移 0020)。
+	effect.NeedsDeploy = old.APIPort != p.APIPort
 
 	// 下游传播的判据与 NeedsDeploy 是两套:主机地址不进本机配置
 	// (改了它重启 sing-box 没有意义),但它正是中转主机 proxy_pass 的目标
@@ -761,7 +735,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		       ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
 		       api_port = ?,
-		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
+		       sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, maintenance_message = ?,
 		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
 		       traffic_billing_mode = ?,
@@ -771,7 +745,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
 		p.APIPort,
-		p.AccessTierID, p.SortOrder, subEnabled,
+		p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,
 		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
 		p.TrafficBillingMode,

@@ -69,7 +69,6 @@ const blank = {
   role: 'LANDING' as NodeRole,
   name: '',
   display_name: '',
-  access_tier_id: 1,
   sort_order: 0,
   host: '',
   ipv6_address: '',
@@ -105,14 +104,13 @@ watch(
     const n = props.node
     if (!n) {
       accessMode.value = 'password'
-      Object.assign(form, blank, { access_tier_id: props.tiers[0]?.id ?? 1 })
+      Object.assign(form, blank)
     } else {
       const q = fromBytes(n.traffic_quota_bytes)
       accessMode.value = 'manual'
       Object.assign(form, blank, {
         name: n.name,
         display_name: n.display_name,
-        access_tier_id: n.access_tier_id,
         sort_order: n.sort_order,
         host: n.host,
         ipv6_address: n.ipv6_address,
@@ -139,7 +137,6 @@ watch(
 const fieldLabels: Record<string, string> = {
   name: '内部名称',
   display_name: '展示名称',
-  access_tier_id: '访问等级',
   sort_order: '排序',
   host: 'IPv4 地址 / 域名',
   ipv6_address: 'IPv6 地址 / 域名',
@@ -245,7 +242,6 @@ async function doSubmit() {
         role: form.role,
         name: form.name,
         display_name: form.display_name,
-        access_tier_id: form.access_tier_id,
         sort_order: form.sort_order,
         host: form.host,
         ipv6_address: form.ipv6_address,
@@ -307,7 +303,6 @@ async function doSubmit() {
       ssh_user: form.ssh_user,
       ssh_key: form.ssh_key,
       api_port: form.api_port,
-      access_tier_id: form.access_tier_id,
       sort_order: form.sort_order,
       subscription_enabled: form.subscription_enabled,
       public_remark: form.public_remark,
@@ -406,24 +401,14 @@ async function doSubmit() {
         </div>
       </a-form-item>
 
-      <a-row :gutter="12">
-        <a-col :span="14">
-          <a-form-item label="访问等级">
-            <a-select v-model:value="form.access_tier_id">
-              <a-select-option v-for="t in props.tiers" :key="t.id" :value="t.id">
-                {{ t.name }}
-              </a-select-option>
-            </a-select>
-          </a-form-item>
-        </a-col>
-        <a-col :span="10">
-          <a-form-item label="排序">
-            <a-input-number v-model:value="form.sort_order" style="width: 100%" />
-          </a-form-item>
-        </a-col>
-      </a-row>
+      <a-form-item label="排序">
+        <a-input-number v-model:value="form.sort_order" style="width: 100%" />
+      </a-form-item>
       <div class="nf__help nf__help--row">
-        等级不高于该等级的用户会自动继承这个节点。数值小的排在订阅前面。
+        数值小的排在订阅与门户前面。
+        <br />
+        <strong>访问等级在「入口」里按条设置</strong> —— 机器本身不接受任何连接,
+        入口才接受;同一台机器上可以有一个对所有人开放的入口和一个只给 VIP 的入口。
       </div>
 
       <template v-if="isEdit">
