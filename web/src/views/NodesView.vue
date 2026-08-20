@@ -9,6 +9,7 @@ import {
   PROTOCOL_SHORT,
   type AccessTier,
   type Node,
+  type NodeHealth,
   type NodeConfigState,
   type NodeCycleUsage,
   type NodeMetrics,
@@ -190,6 +191,7 @@ function loadColumns() {
 
 onMounted(async () => {
   await load()
+  void loadHealth()
   api.panelKey().then((r) => (panelKey.value = r.public_key)).catch(() => (panelKey.value = ''))
 })
 
@@ -374,10 +376,55 @@ async function retryOne(item: LbResultItem) {
 
 // 节点列左固定、操作列右固定:768–1279 中间那一档要横向滚动,
 // 不固定的话滚动之后既看不出这是哪台机器,也够不着操作按钮。
+
+/**
+ * 服务巡检结果,按节点 ID 索引。
+ *
+ * 与「运行状态」分成两列:那一列答的是"上次探测能不能连上、上次部署成不成功",
+ * 这一列答的是"此刻 sing-box / nginx 还在不在跑"。一台 ONLINE 的机器完全可能
+ * 跑着一个已经死掉的 sing-box —— 挤在一格里就再也看不出这件事了。
+ */
+const health = ref<Record<number, NodeHealth>>({})
+const healthEnabled = ref(true)
+const healthError = ref('')
+const runningHealth = ref(false)
+
+async function loadHealth() {
+  healthError.value = ''
+  try {
+    const r = await api.nodeHealth()
+    healthEnabled.value = r.enabled
+    const map: Record<number, NodeHealth> = {}
+    for (const h of r.items) map[h.node_id] = h
+    health.value = map
+  } catch (err) {
+    // **列级失败不升级成整表失败。** 只让这一列显示「—」,
+    // 并在表格上方说出来 —— 否则一整列的「—」看起来像所有机器都挂了。
+    health.value = {}
+    healthError.value = err instanceof ApiError ? err.message : '巡检结果读取失败'
+  }
+}
+
+async function runHealthNow() {
+  runningHealth.value = true
+  try {
+    const r = await api.runNodeHealth()
+    const map: Record<number, NodeHealth> = {}
+    for (const h of r.items) map[h.node_id] = h
+    health.value = map
+    message.success('已巡检一轮')
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '巡检失败')
+  } finally {
+    runningHealth.value = false
+  }
+}
+
 const columns = [
   { title: '节点', key: 'node', width: 250, fixed: 'left' as const },
   { title: '运行状态', key: 'run', width: 160 },
   { title: '配置状态', key: 'config', width: 160 },
+  { title: '服务巡检', key: 'health', width: 150 },
   { title: '最后同步', key: 'sync', width: 110 },
   { title: '本周期流量', key: 'cycle', width: 215 },
   { title: '操作', key: 'actions', width: 190, fixed: 'right' as const },
@@ -520,6 +567,9 @@ const keyOpen = ref(false)
       <a-space>
         <a-button @click="keyOpen = true">复制面板 SSH 公钥</a-button>
         <a-button :loading="loading" @click="load">刷新</a-button>
+        <!-- 立刻巡检一轮。它可能顺带触发自动恢复,所以要几秒到十几秒;
+             不放在「刷新」里 —— 刷新是纯读,而这一下会去连每一台机器。 -->
+        <a-button :loading="runningHealth" @click="runHealthNow">立即巡检</a-button>
         <a-button type="primary" @click="openCreate">添加节点</a-button>
       </a-space>
     </div>
@@ -551,6 +601,25 @@ const keyOpen = ref(false)
     </div>
 
     <!-- 列级降级要显式说出来:一整列的「—」看起来像所有机器都挂了。 -->
+    <a-alert
+      v-if="healthError && !loadError"
+      type="warning"
+      show-icon
+      :message="`「服务巡检」列暂时读不到(${healthError}),其余数据正常`"
+    >
+      <template #action>
+        <a-button size="small" @click="loadHealth">只重试这一列</a-button>
+      </template>
+    </a-alert>
+    <!-- 巡检整个没启用是另一回事:那不是"读不到",是"根本没在查"。
+         显示成一样的话,管理员会去重试一个永远不会有结果的接口。 -->
+    <a-alert
+      v-else-if="!healthEnabled && !loadError"
+      type="info"
+      show-icon
+      message="服务巡检未启用 —— 没有人在定期检查 sing-box / nginx 还在不在跑"
+    />
+
     <a-alert
       v-if="(cycleError || metricsError) && !loadError"
       type="warning"
@@ -785,6 +854,29 @@ const keyOpen = ref(false)
             </div>
           </template>
 
+          <template v-else-if="column.key === 'health'">
+            <div v-if="health[record.id]" class="nv__stack">
+              <span v-if="record.role !== 'RELAY'" class="nv__hitem">
+                <span class="nv__hname">sing-box</span>
+                <LbStatusTag kind="service" :status="health[record.id].singbox" small />
+              </span>
+              <span
+                v-if="health[record.id].nginx !== 'NOT_APPLICABLE'"
+                class="nv__hitem"
+              >
+                <span class="nv__hname">nginx</span>
+                <LbStatusTag kind="service" :status="health[record.id].nginx" small />
+              </span>
+              <span v-if="health[record.id].recover_error" class="nv__hfail">
+                自动恢复失败
+              </span>
+              <span v-else-if="health[record.id].recovered" class="nv__hok">已自动拉起</span>
+            </div>
+            <!-- 读不到时显示「—」,不显示 0 也不显示「正常」 ——
+                 读不到和真的正常长得一模一样,那是最容易骗到人的一种失败。 -->
+            <span v-else class="nv__dash">—</span>
+          </template>
+
           <template v-else-if="column.key === 'run'">
             <div class="nv__stack">
               <LbStatusTag kind="node" :status="record.status" />
@@ -993,6 +1085,27 @@ const keyOpen = ref(false)
   color: #576070;
   font-size: 10px;
   letter-spacing: 0.02em;
+}
+
+.nv__hitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.nv__hname {
+  font-size: 12px;
+  color: #6B7480;
+}
+.nv__hfail {
+  font-size: 12px;
+  color: #B4291D;
+}
+.nv__hok {
+  font-size: 12px;
+  color: #1B7A4B;
+}
+.nv__dash {
+  color: #8A93A0;
 }
 
 .nv__stack {

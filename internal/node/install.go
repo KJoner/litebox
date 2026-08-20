@@ -47,6 +47,11 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 	if err != nil {
 		return result, err
 	}
+	// 服务定义里的 -c 指向配置文件,而配置放磁盘还是内存是节点级设置。
+	// 用全局默认布局写这份 unit 的话,开了「配置不落盘」的机器上
+	// sing-box 会去读一个永远不存在的路径 —— 服务起不来,
+	// 而报错是一句"配置文件不存在",看不出是这一项设置造成的。
+	layout = layout.WithConfigInRAM(n.ConfigInRAM)
 	installService := !n.Role.IsRelay()
 	if !installService {
 		result.ServiceName = ""
@@ -54,7 +59,7 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 	if len(binary) == 0 {
 		return result, fmt.Errorf("sing-box 二进制内容为空")
 	}
-	for _, path := range []string{layout.BinaryPath, layout.ConfigPath} {
+	for _, path := range []string{layout.BinaryPath, layout.ConfigPath()} {
 		if err := singbox.ValidateRemotePath(path); err != nil {
 			return result, err
 		}
@@ -88,7 +93,9 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 			return err
 		}
 
-		for _, dir := range []string{layout.BaseDir, layout.BackupDir} {
+		for _, dir := range []string{
+			layout.BaseDir, layout.BackupDir, layout.ConfigDir(), layout.ConfigBackupDir(),
+		} {
 			if _, err := client.RunCheck(ctx, sshx.NewCommand("mkdir", "-p", dir)); err != nil {
 				return err
 			}
@@ -186,7 +193,12 @@ func (s *Service) Uninstall(ctx context.Context, nodeID int64) error {
 				relayInit.RemoveRelayUnit(ctx, client, layout)
 			}
 		}
-		_, err := client.Run(ctx, sshx.NewCommand("rm", "-rf", layout.BaseDir))
+		// RuntimeDir 一并删掉。**不能只删 BaseDir** —— 开了「配置不落盘」的
+		// 机器上,配置与备份都在 /run/litebox 下,而那里面正是全部用户的
+		// 凭据。卸载之后留着它,等于在一台"已经不归面板管"的机器上
+		// 留下一份完整的凭据,直到下次重启才消失。
+		_, err := client.Run(ctx, sshx.NewCommand(
+			"rm", "-rf", layout.BaseDir, layout.RuntimeDir))
 		return err
 	})
 }

@@ -18,6 +18,7 @@ const (
 	actionRelayDelete = "relay.delete"
 	actionRelayDeploy = "relay.deploy"
 	actionChainApply  = "node.chain_apply"
+	actionConfigInRAM = "node.config_in_ram"
 	actionChainClear  = "node.chain_clear"
 )
 
@@ -335,4 +336,44 @@ func auditRelayDetail(req relayRequest) string {
 		b.WriteString("#" + strconv.FormatInt(req.TargetExternalID, 10))
 	}
 	return b.String()
+}
+
+// handleSetConfigInRAM 切换「配置不落盘」。
+//
+// 走 longOperation:它内部要实测 /run、重写服务定义、跑一次完整部署
+// (15~25 秒),失败时还要按相反顺序回退回去。
+func (s *Server) handleSetConfigInRAM(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	admin := adminFromContext(r.Context())
+
+	result, err := s.nodes.SetConfigInRAM(r.Context(), id, req.Enabled)
+	detail := "配置不落盘 " + onOff(req.Enabled) + ",停在:" + result.Stage
+	if result.RuntimeFS != "" {
+		detail += ";/run 是 " + result.RuntimeFS
+	}
+	if err != nil {
+		detail += ";" + err.Error()
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionConfigInRAM,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
+	})
+	if err != nil {
+		// 与链式切换同一个形状:200 带 error 字段。这是一个多阶段操作,
+		// 停在哪一步与错误本身一样重要,而 4xx 的响应体里放不下 result。
+		writeJSON(w, http.StatusOK, map[string]any{"result": result, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }

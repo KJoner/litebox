@@ -37,6 +37,7 @@ import (
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/notify"
 	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
@@ -429,11 +430,31 @@ func cmdServe(args []string) error {
 
 	// 用户变更不直接部署,而是标脏后由协调器合并 ——
 	// 连续编辑多个用户只会让同一节点重启一次。
+	// notifier 先建出来:协调器要在无人值守的部署失败时用它,
+	// 而协调器必须在 nodeService.SetTrigger 之前构造。
+	notifier := notify.New(settingsStore, logger)
+	go notifier.Run(ctx)
+
 	coordinator := deployment.NewCoordinator(deployment.CoordinatorOptions{
 		Deployer: nodeService,
 		Logger:   logger,
 		Debounce: cfg.Node.DeployDebounce,
 		MaxDelay: cfg.Node.DeployMaxDelay,
+		OnFailure: func(nodeID int64, kind string, result deployment.Result, err error) {
+			// 不带 DedupKey:这是由一次具体的变更触发的,
+			// 压掉的话管理员改完东西不会知道它没生效。
+			notifier.Notify(notify.Event{
+				Kind:  notify.KindDeployFailed,
+				Level: notify.LevelWarning,
+				Title: "自动下发失败",
+				Body: fmt.Sprintf(
+					`节点 #%d 的%s下发失败。
+这次下发是一次变更顺带触发的,没有人在等它。
+%v
+回滚:%s`,
+					nodeID, kind, err, result.RollbackResult),
+			})
+		},
 	})
 	// 两者互为依赖,构造期的循环引用在这里显式打断。
 	nodeService.SetTrigger(coordinator)
@@ -467,6 +488,19 @@ func cmdServe(args []string) error {
 		logger.Info("节点资源监控已关闭(node.metrics_interval 为负)")
 	}
 
+	// 节点服务巡检。与资源监控分开:那个可以整个关掉,而这个不能 ——
+	// 它回答的是"节点还能不能用",而不是"它忙不忙"。
+	watchdog := node.NewWatchdog(node.WatchdogOptions{
+		Service:  nodeService,
+		Notifier: notifier,
+		Logger:   logger,
+		Interval: cfg.Node.HealthInterval,
+		AutoRecover: func(ctx context.Context) bool {
+			return settingsStore.AutoRecoverEnabled(ctx)
+		},
+	})
+	go watchdog.Run(ctx)
+
 	// 外部代理源的自动同步。每个源自己的间隔决定何时拉,
 	// 这里的巡检只是「多久看一眼有没有到点的」。
 	// 默认所有源都关着自动同步 —— 打开之前管理员应该先手工同步一次看结果。
@@ -497,6 +531,8 @@ func cmdServe(args []string) error {
 		Scheduler: scheduler,
 		Metrics:   metricsStore,
 		Monitor:   monitor,
+		Watchdog:  watchdog,
+		Notifier:  notifier,
 		Settings:  settingsStore,
 		Tiers:     access.NewStore(db),
 

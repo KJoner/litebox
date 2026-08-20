@@ -416,6 +416,54 @@ GET  /api/metrics/status
   也不区分 IPv4 与 IPv6 —— 两个订阅条目指向同一个 sing-box 入站与同一个计数器;
 * **超额只预警**:不会停 sing-box、不禁用节点、不关订阅开关,也不删用户凭据。
 
+## 巡检与推送接口
+
+```text
+GET  /api/nodes/health              巡检结果(内存态,面板重启后为空)
+POST /api/nodes/health/run          立刻巡检一轮,可能顺带触发自动恢复
+POST /api/nodes/{id}/config-in-ram  切换「配置不落盘」
+
+GET  /api/settings/notify           推送设置。**响应里没有任何凭据**
+PUT  /api/settings/notify           保存
+POST /api/settings/notify/test      同步发一条测试消息,逐渠道返回结果
+```
+
+### 巡检结果里 UNREACHABLE 与 STOPPED 是两回事
+
+| 值 | 含义 | 会不会自动恢复 |
+| --- | --- | --- |
+| `RUNNING` | 在跑 | — |
+| `STOPPED` | 服务定义在,进程没跑 | **会** |
+| `UNREACHABLE` | SSH 都通不了,服务是死是活不知道 | 不会(做不了任何事) |
+| `NOT_APPLICABLE` | 这台机器上没有这个服务 | — |
+
+`UNREACHABLE` 连续两轮才推送(一次多半是机器在重启),`STOPPED` 一轮就推。
+
+### 推送凭据从不随接口返回
+
+Bark 的整条地址与 Telegram 的 API 地址、代理密钥都打了 `json:"-"`,
+`GET /api/settings/notify` 里**没有位置可填**。要知道配没配过,
+看 `bark_configured` / `telegram_configured`。
+
+保存时这三个字段用**指针语义**:
+
+```text
+不传(null) → 保持原值        传空串 → 清空        传值 → 覆盖
+```
+
+界面上凭据永远不回显,所以「没动那一栏」必须能与「我要清空它」分开 ——
+用普通字符串的话,改一下分组名就会把推送地址一起清掉,而界面上什么都不会说。
+
+### kinds 为空数组表示全开
+
+不是全关。反过来的话,以后新增的事件类型会默默不推,
+而管理员根本不知道有这么一种事件存在。
+
+### 切换「配置不落盘」是多阶段操作
+
+与链式切换同一个形状:返回 200 带 `result` 与可选的 `error`,
+`result.stage` 说明停在哪一步。失败时面板已经把服务定义与设置回退到原样。
+
 ## 外部代理接口
 
 外部代理是「不属于本面板、不由本面板部署的成品线路」(机场订阅或朋友给的链接)。

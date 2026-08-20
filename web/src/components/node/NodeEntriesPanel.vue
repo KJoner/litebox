@@ -1277,7 +1277,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 12px;
   padding: 12px;
-  border: 1px solid var(--lb-border);
+  border: 1px solid #E3E6EA;
   border-radius: 8px;
   margin-bottom: 12px;
 }
@@ -1293,7 +1293,7 @@ onMounted(async () => {
    会长得一样重,而前者重启服务、后者只 reload。 */
 .nr__ops {
   padding: 6px 8px;
-  border: 1px solid var(--lb-border);
+  border: 1px solid #E3E6EA;
   border-radius: 6px;
   background: #fafbfc;
 }
@@ -1323,7 +1323,7 @@ onMounted(async () => {
    但对日常操作没有意义 —— 所以弱化,不与名字抢注意力。 */
 .nr__tag {
   font-size: 11px;
-  color: var(--lb-text-secondary);
+  color: #6B7480;
 }
 
 .nr__section {
@@ -1342,7 +1342,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--lb-border);
+  border: 1px solid #E3E6EA;
   border-radius: 6px;
   background: #fafbfc;
 }
@@ -1360,7 +1360,7 @@ onMounted(async () => {
 }
 .nr__sb-sub {
   font-size: 12px;
-  color: var(--lb-text-secondary);
+  color: #6B7480;
   line-height: 1.7;
 }
 .nr__sb-entry {
@@ -1371,18 +1371,18 @@ onMounted(async () => {
 }
 .nr__running {
   font-size: 12px;
-  color: var(--lb-text-secondary);
+  color: #6B7480;
 }
 .nr__note,
 .nr__hint {
   font-size: 12px;
-  color: var(--lb-text-secondary);
+  color: #6B7480;
   margin: 0;
   line-height: 1.6;
 }
 .nr__warn {
   font-size: 12px;
-  color: var(--lb-danger);
+  color: #B4291D;
 }
 .nr__nginx {
   font-size: 12px;
@@ -1390,13 +1390,13 @@ onMounted(async () => {
 }
 .nr__sub {
   font-size: 12px;
-  color: var(--lb-text-secondary);
+  color: #6B7480;
   margin-left: 6px;
 }
 .nr__result {
   font-size: 12px;
   line-height: 1.7;
-  border-top: 1px dashed var(--lb-border);
+  border-top: 1px dashed #E3E6EA;
   padding-top: 8px;
 }
 .nr__step {
@@ -1407,7 +1407,7 @@ onMounted(async () => {
   min-width: 180px;
 }
 .nr__step-detail {
-  color: var(--lb-text-secondary);
+  color: #6B7480;
   word-break: break-all;
 }
 </style>

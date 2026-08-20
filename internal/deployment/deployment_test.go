@@ -14,10 +14,10 @@ func TestLayoutPaths(t *testing.T) {
 	l := DefaultLayout()
 
 	// 临时文件必须与正式配置同目录,否则 mv 会跨文件系统而失去原子性。
-	if filepath.ToSlash(filepath.Dir(l.tempConfigPath())) != filepath.ToSlash(filepath.Dir(l.ConfigPath)) {
-		t.Errorf("临时配置 %s 与正式配置 %s 不同目录", l.tempConfigPath(), l.ConfigPath)
+	if filepath.ToSlash(filepath.Dir(l.tempConfigPath())) != filepath.ToSlash(filepath.Dir(l.ConfigPath())) {
+		t.Errorf("临时配置 %s 与正式配置 %s 不同目录", l.tempConfigPath(), l.ConfigPath())
 	}
-	if !strings.HasPrefix(l.backupPath(7), l.BackupDir) {
+	if !strings.HasPrefix(l.backupPath(7), l.ConfigBackupDir()) {
 		t.Errorf("备份路径不在备份目录下:%s", l.backupPath(7))
 	}
 	if l.backupPath(7) == l.backupPath(8) {

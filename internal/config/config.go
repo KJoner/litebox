@@ -62,6 +62,13 @@ type NodeConfig struct {
 	MetricsInterval time.Duration `yaml:"metrics_interval"`
 	// MetricsRetention 是资源采样的保留期。这不是计费数据,丢了不影响任何结算。
 	MetricsRetention time.Duration `yaml:"metrics_retention"`
+	// HealthInterval 是节点服务巡检的间隔(sing-box / nginx 还在不在跑)。
+	//
+	// **没有"关闭"这个取值**,与资源采集不同:采集关掉只是少看几条曲线,
+	// 而巡检关掉意味着一台挂掉的机器要等到有人来问才被发现 ——
+	// 而这个功能存在的全部理由就是不让那件事发生。
+	// 想少打扰节点就把间隔调长。
+	HealthInterval time.Duration `yaml:"health_interval"`
 	// BootstrapKeyDirs 是新增节点时搜索主控本机私钥的目录。
 	// 未填写节点 root 密码时,面板从这些目录里找一把能登录节点的私钥,
 	// 用它把面板专用公钥装进节点。留空则用默认清单($HOME/.ssh、/etc/litebox/keys)。
@@ -135,6 +142,7 @@ func Default() Config {
 			DeployDebounce:   4 * time.Second,
 			DeployMaxDelay:   30 * time.Second,
 			MetricsInterval:  5 * time.Minute,
+			HealthInterval:   2 * time.Minute,
 			MetricsRetention: 7 * 24 * time.Hour,
 		},
 		Traffic: TrafficConfig{
@@ -188,6 +196,7 @@ func applyEnv(cfg *Config) {
 	envDuration("LITEBOX_DEPLOY_DEBOUNCE", &cfg.Node.DeployDebounce)
 	envDuration("LITEBOX_TRAFFIC_SYNC_INTERVAL", &cfg.Traffic.SyncInterval)
 	envDuration("LITEBOX_NODE_METRICS_INTERVAL", &cfg.Node.MetricsInterval)
+	envDuration("LITEBOX_NODE_HEALTH_INTERVAL", &cfg.Node.HealthInterval)
 	envStr("LITEBOX_LOG_LEVEL", &cfg.Log.Level)
 	envStr("LITEBOX_LOG_FORMAT", &cfg.Log.Format)
 }

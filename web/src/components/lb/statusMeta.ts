@@ -142,8 +142,26 @@ export const staleMeta: LbStatusMeta = {
 /** 节点停发订阅 —— subscription_enabled=false,与 DISABLED 是两回事。 */
 export const subscriptionOffMeta: LbStatusMeta = paused('停发订阅')
 
+/**
+ * 巡检里一个服务的状态。
+ *
+ * 「连不上」与「没在跑」都是红的,但**必须分得开**:前者是
+ * "SSH 都通不了,服务是死是活我们并不知道"(机器可能只是在重启),
+ * 后者是"服务定义在、进程确实没跑"。混成一个的话,管理员在一次
+ * 正常重启后收到"服务停了",几次之后就再也不看这个状态了。
+ * 形状也不同 —— 只靠颜色的话打印与投屏下两者一模一样。
+ */
+export const serviceStateMeta: Record<string, LbStatusMeta> = {
+  RUNNING: ok('在跑'),
+  STOPPED: bad('没在跑', 'triangle'),
+  UNREACHABLE: bad('连不上', 'cross'),
+  // 中转机上没有 sing-box,没配过转发的机器上没有 nginx。
+  // 不是故障,但也绝不能显示成"正常" —— 那会让人以为它在服务用户。
+  NOT_APPLICABLE: mute('不适用', 'minus'),
+}
+
 export type LbStatusKind =
-  | 'user' | 'node' | 'deploy' | 'config' | 'portalNode' | 'externalProxy'
+  | 'user' | 'node' | 'deploy' | 'config' | 'portalNode' | 'externalProxy' | 'service'
 
 const tables: Record<LbStatusKind, Record<string, LbStatusMeta>> = {
   user: userStatusMeta,
@@ -152,6 +170,7 @@ const tables: Record<LbStatusKind, Record<string, LbStatusMeta>> = {
   config: configStatusMeta,
   portalNode: portalNodeStatusMeta,
   externalProxy: externalProxyStatusMeta,
+  service: serviceStateMeta,
 }
 
 export function statusMeta(kind: LbStatusKind, status: string): LbStatusMeta {

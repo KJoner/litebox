@@ -32,6 +32,21 @@ const (
 	// KeySubscriptionUserAgent 是拉取机场订阅时用的 UA。
 	// 部分机场按 UA 返回不同格式,留空用 externalproxy.DefaultUserAgent。
 	KeySubscriptionUserAgent = "subscription_fetch_user_agent"
+
+	// 消息推送。三个带 Secret 后缀的**必须**走 GetSecret/SetSecret ——
+	// Bark 的设备 key 与 Telegram 的 bot token 都在地址的路径里,
+	// 整条地址就是凭据,拿到的人可以往管理员手机上推任何东西。
+	KeyNotifyEnabled          = "notify_enabled"
+	KeyNotifyKinds            = "notify_kinds"
+	KeyNotifyBarkEnabled      = "notify_bark_enabled"
+	KeyNotifyBarkURLSecret    = "notify_bark_url"
+	KeyNotifyBarkGroup        = "notify_bark_group"
+	KeyNotifyBarkSound        = "notify_bark_sound"
+	KeyNotifyTGEnabled        = "notify_telegram_enabled"
+	KeyNotifyTGAPIBaseSecret  = "notify_telegram_api_base"
+	KeyNotifyTGProxyKeySecret = "notify_telegram_proxy_key"
+	KeyNotifyTGChatID         = "notify_telegram_chat_id"
+	KeyNotifyTGThreadID       = "notify_telegram_thread_id"
 )
 
 // Store 读写 system_settings。需要还原的敏感值用主密钥加密。

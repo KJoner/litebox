@@ -54,6 +54,8 @@ type Request struct {
 	SSHPort int
 	// Revision 是本次配置版本号,通常取自数据库自增或时间戳。
 	Revision int64
+	// ConfigInRAM 决定这次把配置写到磁盘还是内存文件系统。见 Layout。
+	ConfigInRAM bool
 }
 
 // probeFor 取出某个入站的拨测参数。
@@ -98,6 +100,13 @@ func NewDeployer(opts Options) *Deployer {
 	}
 }
 
+// Layout 返回这台部署器用的路径布局。
+//
+// 巡检需要它去问服务状态、去看 nginx 配置在不在。只读地暴露出去,
+// 而不是让调用方各自 DefaultLayout() 一份 —— 那样某天布局改了,
+// 巡检会去看一个没人写过的路径,然后报告一台好机器坏了。
+func (d *Deployer) Layout() Layout { return d.layout }
+
 // Deploy 执行完整的部署事务。
 //
 //	强制同步流量(失败即中止)
@@ -115,6 +124,18 @@ func NewDeployer(opts Options) *Deployer {
 //
 // 同一节点的部署由连接池的节点级锁串行化,不会并发。
 func (d *Deployer) Deploy(ctx context.Context, req Request) (Result, error) {
+	// **按节点复制一份 Deployer,只改 layout。**
+	//
+	// 配置放磁盘还是内存是节点级设置,而 d.layout 是全局那一份。
+	// 就地改它的话,同时进行的两次部署会互相看见对方的取值 ——
+	// 而那种错误的表现是配置被写到另一台机器该用的路径上,
+	// 两台机器的 sing-box 都指不到自己的配置。
+	// 复制的是值:pool、syncer、logger 都是指针,共享是刻意的。
+	if req.ConfigInRAM != d.layout.ConfigInRAM {
+		cp := *d
+		cp.layout = d.layout.WithConfigInRAM(req.ConfigInRAM)
+		d = &cp
+	}
 	result := Result{
 		NodeID:    req.NodeID,
 		Revision:  req.Revision,
@@ -243,7 +264,7 @@ func (d *Deployer) runTransaction(
 	// 步骤 1:确保目录存在并上传临时配置。
 	tempPath := d.layout.tempConfigPath()
 	if err := rec.run("上传临时配置", func() (string, error) {
-		for _, dir := range []string{d.layout.BaseDir, d.layout.BackupDir} {
+		for _, dir := range []string{d.layout.BaseDir, d.layout.ConfigDir(), d.layout.ConfigBackupDir()} {
 			if _, err := client.RunCheck(ctx, sshx.NewCommand("mkdir", "-p", dir)); err != nil {
 				return "", err
 			}
@@ -279,14 +300,14 @@ func (d *Deployer) runTransaction(
 	backupPath := d.layout.backupPath(req.Revision)
 	hasBackup := false
 	if err := rec.run("备份当前配置", func() (string, error) {
-		exists, err := d.fileExists(ctx, client, d.layout.ConfigPath)
+		exists, err := d.fileExists(ctx, client, d.layout.ConfigPath())
 		if err != nil {
 			return "", err
 		}
 		if !exists {
 			return "首次部署,无需备份", nil
 		}
-		if _, err := client.RunCheck(ctx, sshx.NewCommand("cp", d.layout.ConfigPath, backupPath)); err != nil {
+		if _, err := client.RunCheck(ctx, sshx.NewCommand("cp", d.layout.ConfigPath(), backupPath)); err != nil {
 			return "", err
 		}
 		hasBackup = true
@@ -297,8 +318,8 @@ func (d *Deployer) runTransaction(
 
 	// 步骤 4:原子替换。同目录 rename 是原子的,不会出现半截配置。
 	if err := rec.run("原子替换配置", func() (string, error) {
-		_, err := client.RunCheck(ctx, sshx.NewCommand("mv", tempPath, d.layout.ConfigPath))
-		return d.layout.ConfigPath, err
+		_, err := client.RunCheck(ctx, sshx.NewCommand("mv", tempPath, d.layout.ConfigPath()))
+		return d.layout.ConfigPath(), err
 	}); err != nil {
 		return err
 	}
@@ -397,7 +418,7 @@ func (d *Deployer) rollback(
 	}
 
 	rbErr := rec.run("回滚到上一版本", func() (string, error) {
-		if _, err := client.RunCheck(rbCtx, sshx.NewCommand("cp", backupPath, d.layout.ConfigPath)); err != nil {
+		if _, err := client.RunCheck(rbCtx, sshx.NewCommand("cp", backupPath, d.layout.ConfigPath())); err != nil {
 			return "", err
 		}
 		if err := init.Restart(rbCtx, client, d.layout); err != nil {
@@ -483,7 +504,7 @@ func (d *Deployer) pruneBackupsMatching(
 ) error {
 	script := fmt.Sprintf(
 		"ls -1t %s/%s 2>/dev/null | tail -n +%d | xargs -r rm -f",
-		d.layout.BackupDir, pattern, d.keepLast+1)
+		d.layout.ConfigBackupDir(), pattern, d.keepLast+1)
 	_, err := client.Run(ctx, sshx.NewCommand("sh", "-c", script))
 	return err
 }
