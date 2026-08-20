@@ -18,6 +18,7 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/notify"
 	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
@@ -41,6 +42,8 @@ type Server struct {
 	scheduler    *traffic.Scheduler
 	metrics      *node.MetricsStore
 	monitor      *node.Monitor
+	watchdog     *node.Watchdog
+	notifier     *notify.Notifier
 	settings     *settings.Store
 	tiers        *access.Store
 	external     *externalproxy.Service
@@ -75,6 +78,8 @@ type Options struct {
 	Scheduler *traffic.Scheduler
 	Metrics   *node.MetricsStore
 	Monitor   *node.Monitor
+	Watchdog  *node.Watchdog
+	Notifier  *notify.Notifier
 	Settings  *settings.Store
 	Tiers     *access.Store
 	// External 为 nil 时外部代理相关路由整体不注册。
@@ -113,6 +118,8 @@ func NewServer(opts Options) *Server {
 		scheduler:    opts.Scheduler,
 		metrics:      opts.Metrics,
 		monitor:      opts.Monitor,
+		watchdog:     opts.Watchdog,
+		notifier:     opts.Notifier,
 		settings:     opts.Settings,
 		tiers:        opts.Tiers,
 		portal:       opts.Portal,
@@ -198,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 			longOperation(s.handleApplyInboundDest))
 		// 链式出站是两台机器的复合操作,一定慢,走 longOperation。
 		// 主体是【入站】而不是节点:同机的两个入口可以走两个不同的出口。
+		authed.HandleFunc("POST /api/nodes/{id}/config-in-ram", longOperation(s.handleSetConfigInRAM))
 		authed.HandleFunc("POST /api/inbounds/{id}/chain", longOperation(s.handleApplyChain))
 		authed.HandleFunc("DELETE /api/inbounds/{id}/chain", longOperation(s.handleClearChain))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
@@ -300,6 +308,15 @@ func (s *Server) Handler() http.Handler {
 	if s.settings != nil {
 		authed.HandleFunc("GET /api/settings", s.handleGetSettings)
 		authed.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+		authed.HandleFunc("GET /api/settings/notify", s.handleGetNotifySettings)
+		authed.HandleFunc("PUT /api/settings/notify", s.handleUpdateNotifySettings)
+		authed.HandleFunc("POST /api/settings/notify/test", longOperation(s.handleTestNotify))
+	}
+	// 巡检结果即使没启用也要有接口:前端据此显示「巡检未启用」,
+	// 而不是让那一块永远转圈。
+	authed.HandleFunc("GET /api/nodes/health", s.handleNodeHealth)
+	if s.watchdog != nil {
+		authed.HandleFunc("POST /api/nodes/health/run", longOperation(s.handleRunNodeHealth))
 	}
 	if s.tiers != nil {
 		authed.HandleFunc("GET /api/access-tiers", s.handleListTiers)

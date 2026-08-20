@@ -14,11 +14,12 @@ import {
   type DestCheckResult,
   type Node,
   type NodeCycleUsage,
+  type NodeHealth,
   type NodeMetrics,
   type ProbeResult,
   type TuneReport,
 } from '@/api/client'
-import { formatBytes, formatDuration, shortHash } from '@/utils/format'
+import { formatBytes, formatDuration, formatUTCTime, shortHash } from '@/utils/format'
 import DeployStepList from '@/components/DeployStepList.vue'
 import MetricsChart from '@/components/MetricsChart.vue'
 import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
@@ -212,6 +213,91 @@ async function load(id: number) {
 
 function reload() {
   if (nodeId.value !== null) load(nodeId.value)
+}
+
+
+// ---------- 服务巡检 ----------
+
+/**
+ * 这台机器上 sing-box / nginx 还在不在跑。
+ *
+ * 与「节点状态」是两回事:那个说的是"上次探测能不能连上、上次部署成不成功",
+ * 而这个说的是"此刻还能不能服务用户"。一台 ONLINE 的机器完全可能
+ * 跑着一个已经死掉的 sing-box。
+ */
+const health = ref<NodeHealth | null>(null)
+
+async function loadHealth() {
+  try {
+    const r = await api.nodeHealth()
+    health.value = r.items.find((h) => h.node_id === nodeId.value) ?? null
+  } catch {
+    // 巡检读不到不该影响这一页的其余部分 —— 列级失败不升级成整页失败。
+    health.value = null
+  }
+}
+
+// ---------- 配置不落盘 ----------
+
+const configRAMBusy = ref(false)
+
+/**
+ * 打开/关闭「配置不落盘」。
+ *
+ * 归到打字确认那一档不合适(它可撤回),但影响面大到必须逐条列清楚:
+ * 它会重装服务定义、跑一次完整部署(重启 sing-box,踢掉这台机器上
+ * 全部入口的在线连接),还会删掉旧位置的配置与备份。
+ */
+function toggleConfigRAM(next: boolean) {
+  const n = node.value
+  if (!n) return
+  lbDangerConfirm({
+    title: next
+      ? `把「${n.display_name}」的配置改成不落盘?`
+      : `把「${n.display_name}」的配置改回写在磁盘上?`,
+    impacts: next
+      ? [
+          '面板会先实测 /run 真的是内存文件系统 —— 不是就直接拒绝,不会假装开好了',
+          '服务定义会被重写(-c 指向新路径),然后完整部署一次',
+          '这台机器上的 sing-box 会重启,全部入口的在线连接都会断开',
+          '部署成功后,磁盘上的配置与全部历史备份会被删除',
+          '**这台机器重启后 sing-box 起不来** —— 内存里的配置随重启消失,' +
+            '要等巡检把它重新下发回去(默认最长几分钟)',
+          '所以请确认「服务巡检自动恢复」是开着的,否则重启后要手工部署',
+        ]
+      : [
+          '服务定义会被重写,然后完整部署一次,sing-box 会重启',
+          '配置与备份会重新写回磁盘 —— 那份文件里有全部用户的凭据',
+          '内存里那份会被清掉',
+        ],
+    okText: next ? '改成不落盘' : '改回磁盘',
+    onOk: () => {
+      void applyConfigRAM(next)
+    },
+  })
+}
+
+async function applyConfigRAM(next: boolean) {
+  const id = nodeId.value
+  if (id === null) return
+  configRAMBusy.value = true
+  running.value = '切换配置存放位置'
+  try {
+    const r = await api.setConfigInRAM(id, next)
+    if (r.error) {
+      message.error(`${r.result.stage}:${r.error}`)
+    } else {
+      const cleaned = r.result.cleaned.length ? `,已清理 ${r.result.cleaned.length} 处旧文件` : ''
+      message.success(next ? `配置已改为不落盘${cleaned}` : `配置已改回磁盘${cleaned}`)
+    }
+    await reload()
+    await loadHealth()
+  } catch (e) {
+    message.error(e instanceof ApiError ? e.message : '切换失败')
+  } finally {
+    configRAMBusy.value = false
+    running.value = ''
+  }
 }
 
 // ---------- 只读检查 ----------
@@ -692,8 +778,13 @@ watch(
     cycle.value = null
     // **不重置 tab** —— 换的是节点,而地址里带着的 tab 是访问者的意图。
     // 直接打开 /nodes/3/entries 却落在概览上,等于把分享出去的地址废掉一半。
-    if (id !== null) load(id)
-    else node.value = null
+    health.value = null
+    if (id !== null) {
+      load(id)
+      void loadHealth()
+    } else {
+      node.value = null
+    }
   },
   { immediate: true },
 )
@@ -853,6 +944,30 @@ const needsPortForward = computed(() =>
         <span v-if="node.maintenance_message" class="nd__maint">
           {{ node.maintenance_message }}
         </span>
+      </div>
+
+      <!-- 服务巡检。与上面那排状态是两回事:那些说的是"上次探测能不能连上、
+           上次部署成不成功",这一行说的是"此刻还能不能服务用户"。
+           一台 ONLINE 的机器完全可能跑着一个已经死掉的 sing-box。 -->
+      <div v-if="health" class="nd__health">
+        <span class="nd__health-label">服务巡检</span>
+        <template v-if="node.role !== 'RELAY'">
+          <span class="nd__health-item" :title="health.singbox_detail">
+            sing-box
+            <LbStatusTag kind="service" :status="health.singbox" small />
+          </span>
+        </template>
+        <span class="nd__health-item" :title="health.nginx_detail">
+          nginx 转发
+          <LbStatusTag kind="service" :status="health.nginx" small />
+        </span>
+        <span v-if="health.recovered" class="nd__health-note nd__health-note--ok">
+          面板刚刚自动把它拉起来了
+        </span>
+        <span v-else-if="health.recover_error" class="nd__health-note nd__health-note--bad">
+          自动恢复失败:{{ health.recover_error }}
+        </span>
+        <span class="nd__health-time">{{ formatUTCTime(health.checked_at) }}</span>
       </div>
 
       <!-- 只读检查常驻工具条。这一排都不改动节点状态。 -->
@@ -1126,6 +1241,34 @@ const needsPortForward = computed(() =>
                       <b><a @click="tab = 'entries'">一个都没有 —— 去「入口」加一条</a></b>
                     </div>
                     <div><span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b></div>
+                    <div>
+                      <span>配置存放</span>
+                      <b>
+                        <a-switch
+                          :checked="node.config_in_ram"
+                          :loading="configRAMBusy"
+                          :disabled="node.role === 'RELAY' || !!running"
+                          size="small"
+                          @change="(v: unknown) => toggleConfigRAM(v === true)"
+                        />
+                        <span class="nd__ram-state">
+                          {{ node.config_in_ram ? '内存(/run/litebox,磁盘不留)' : '磁盘(/opt/litebox)' }}
+                        </span>
+                        <span class="nd__ram-help">
+                          <template v-if="node.role === 'RELAY'">
+                            中转主机上没有 sing-box 配置,这一项不适用。
+                          </template>
+                          <template v-else-if="node.config_in_ram">
+                            磁盘上没有配置与备份 —— 快照、镜像、商家手里的旧硬盘上都拿不到。
+                            代价:<b>机器重启后 sing-box 起不来</b>,要等巡检重新下发。
+                          </template>
+                          <template v-else>
+                            配置里有这台机器全部入口的用户凭据,以及它链出去的落地账号。
+                            改成不落盘可以让磁盘上一个字节都不留。
+                          </template>
+                        </span>
+                      </b>
+                    </div>
                   </template>
                   <div v-else>
                     <span>入口</span>
@@ -1699,6 +1842,47 @@ const needsPortForward = computed(() =>
   gap: 14px;
   margin-top: 8px;
   font-size: 12px;
+}
+
+.nd__health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #E3E6EA;
+  border-radius: 6px;
+  background: #FFFFFF;
+  font-size: 13px;
+}
+.nd__health-label {
+  color: #6B7480;
+}
+.nd__health-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.nd__health-note--ok {
+  color: #1B7A4B;
+}
+.nd__health-note--bad {
+  color: #B4291D;
+}
+.nd__health-time {
+  margin-left: auto;
+  color: #8A93A0;
+}
+.nd__ram-state {
+  margin-left: 8px;
+}
+.nd__ram-help {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #6B7480;
 }
 
 .nd__badges {

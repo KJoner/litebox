@@ -2,7 +2,17 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node, type PanelSettings, type ProxyUser } from '@/api/client'
+import {
+  api,
+  ApiError,
+  type AccessTier,
+  type Node,
+  type NotifyKind,
+  type NotifyResult,
+  type NotifySettings,
+  type PanelSettings,
+  type ProxyUser,
+} from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { LbCopyField, LbEmptyState } from '@/components/lb'
 
@@ -28,6 +38,7 @@ const loadError = ref<string>('')
 
 const sections = [
   { id: 'sub', label: '订阅地址' },
+  { id: 'notify', label: '监控与推送' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
   { id: 'pwd', label: '管理员密码' },
@@ -146,6 +157,114 @@ async function changePassword() {
   }
 }
 
+
+// ---------- 监控与推送 ----------
+
+const notify = ref<NotifySettings | null>(null)
+const savingNotify = ref(false)
+const testingNotify = ref(false)
+const notifyError = ref('')
+const testResults = ref<NotifyResult[]>([])
+
+/**
+ * 三个凭据输入框。
+ *
+ * **它们永远是空的** —— 后端从不回显凭据。所以「没动这一栏」与
+ * 「我要清空它」必须分得开:留空表示不改(发 null),点了「清除」
+ * 才发空串。用一个普通字符串的话,管理员改一下分组名就会把推送地址
+ * 一起清掉,而界面上什么都不会说。
+ */
+const secrets = reactive({
+  bark_url: '',
+  telegram_api_base: '',
+  telegram_proxy_key: '',
+})
+const clearing = reactive({
+  bark_url: false,
+  telegram_api_base: false,
+  telegram_proxy_key: false,
+})
+
+function secretPayload(key: keyof typeof secrets): string | null {
+  if (clearing[key]) return ''
+  const v = secrets[key].trim()
+  return v === '' ? null : v
+}
+
+/** 勾选的事件。**空数组表示全开**,所以界面上默认全勾。 */
+const chosenKinds = ref<NotifyKind[]>([])
+
+async function loadNotify() {
+  notifyError.value = ''
+  try {
+    const n = await api.notifySettings()
+    notify.value = n
+    chosenKinds.value = n.kinds.length ? [...n.kinds] : n.available_kinds.map((k) => k.kind)
+    secrets.bark_url = ''
+    secrets.telegram_api_base = ''
+    secrets.telegram_proxy_key = ''
+    clearing.bark_url = false
+    clearing.telegram_api_base = false
+    clearing.telegram_proxy_key = false
+  } catch (err) {
+    notifyError.value = err instanceof ApiError ? err.message : '加载推送设置失败'
+  }
+}
+
+async function saveNotify() {
+  const n = notify.value
+  if (!n) return
+  savingNotify.value = true
+  notifyError.value = ''
+  try {
+    const saved = await api.updateNotifySettings({
+      enabled: n.enabled,
+      bark_enabled: n.bark_enabled,
+      bark_url: secretPayload('bark_url'),
+      bark_group: n.bark_group,
+      bark_sound: n.bark_sound,
+      telegram_enabled: n.telegram_enabled,
+      telegram_api_base: secretPayload('telegram_api_base'),
+      telegram_proxy_key: secretPayload('telegram_proxy_key'),
+      telegram_chat_id: n.telegram_chat_id,
+      telegram_thread_id: n.telegram_thread_id,
+      // 全勾等于不限制:发空数组,这样以后新增的事件类型会自动被收到。
+      kinds: chosenKinds.value.length === n.available_kinds.length ? [] : chosenKinds.value,
+      auto_recover: n.auto_recover,
+    })
+    notify.value = saved
+    chosenKinds.value = saved.kinds.length
+      ? [...saved.kinds]
+      : saved.available_kinds.map((k) => k.kind)
+    secrets.bark_url = ''
+    secrets.telegram_api_base = ''
+    secrets.telegram_proxy_key = ''
+    clearing.bark_url = false
+    clearing.telegram_api_base = false
+    clearing.telegram_proxy_key = false
+    message.success('已保存,下一条通知就走新配置')
+  } catch (err) {
+    notifyError.value = err instanceof ApiError ? err.message : '保存失败'
+  } finally {
+    savingNotify.value = false
+  }
+}
+
+/** 先保存再测:测的必须是刚填进去的那份,不是上一次保存的那份。 */
+async function testNotify() {
+  testingNotify.value = true
+  testResults.value = []
+  try {
+    await saveNotify()
+    const r = await api.testNotify()
+    testResults.value = r.results
+  } catch (err) {
+    notifyError.value = err instanceof ApiError ? err.message : '发送失败'
+  } finally {
+    testingNotify.value = false
+  }
+}
+
 // ---------- 取数 ----------
 
 async function loadAll() {
@@ -162,6 +281,8 @@ async function loadAll() {
   api.accessTiers().then((r) => (tiers.value = r.items)).catch(() => (tiers.value = []))
   api.users().then((r) => (users.value = r.items)).catch(() => (users.value = []))
   api.nodes().then((r) => (nodes.value = r.items)).catch(() => (nodes.value = []))
+  // 推送设置读不到不影响这一页的其余部分 —— 与等级表同样的降级。
+  void loadNotify()
 }
 
 onMounted(loadAll)
@@ -236,6 +357,159 @@ onMounted(loadAll)
               保存订阅地址
             </a-button>
           </div>
+        </div>
+      </section>
+
+
+      <!-- ② 监控与推送 -->
+      <section id="set-notify" class="st__card">
+        <div class="st__card-head">
+          <span>监控与推送</span>
+          <span class="st__badge st__badge--ok">改完立即生效</span>
+        </div>
+        <div class="st__card-body">
+          <div v-if="notifyError" class="st__note st__note--danger">{{ notifyError }}</div>
+
+          <div class="st__field">
+            <label class="st__label">服务巡检自动恢复</label>
+            <a-switch v-if="notify" v-model:checked="notify.auto_recover" />
+            <div class="st__help">
+              面板每隔几分钟连一次每台机器,看 sing-box 与 nginx 还在不在跑。
+              <strong>只在「服务确实没跑」时才动手</strong> —— 那一刻没有在线连接会被踢掉,
+              所以重启是零代价的。先直接拉起,拉不起来再重新下发配置。
+              <br />
+              「配置有差异」<strong>永远不会</strong>触发自动部署:那会重启 sing-box,
+              在你没准备好的时候断掉全部人。
+              <br />
+              SSH 连不上时什么都不做 —— 那时候服务是死是活我们并不知道,机器可能只是在重启。
+            </div>
+          </div>
+
+          <div class="st__field">
+            <label class="st__label">消息推送</label>
+            <a-switch v-if="notify" v-model:checked="notify.enabled" />
+            <div class="st__help">总开关。关掉之后下面两个渠道都不发。</div>
+          </div>
+
+          <template v-if="notify">
+            <div class="st__field">
+              <label class="st__label">推送哪些事</label>
+              <a-checkbox-group v-model:value="chosenKinds">
+                <a-checkbox v-for="k in notify.available_kinds" :key="k.kind" :value="k.kind">
+                  {{ k.label }}
+                </a-checkbox>
+              </a-checkbox-group>
+              <div class="st__help">
+                「自动恢复成功」建议留着:只报警不报恢复的话,你半夜爬起来打开面板发现
+                一切正常,下次就不会再爬起来了。
+              </div>
+            </div>
+
+            <!-- Bark -->
+            <div class="st__sub-head">
+              Bark
+              <a-switch v-model:checked="notify.bark_enabled" size="small" />
+              <span v-if="notify.bark_configured" class="st__ok-chip">已配置</span>
+            </div>
+            <a-form layout="vertical">
+              <a-form-item label="推送地址">
+                <a-input
+                  v-model:value="secrets.bark_url"
+                  :disabled="clearing.bark_url"
+                  placeholder="https://bark.example.com/你的设备Key"
+                />
+                <div class="st__help">
+                  <strong>整条地址就是凭据</strong>(设备 Key 在路径里),所以它主密钥加密存储、
+                  永远不回显,也不进日志与审计。
+                  <span v-if="notify.bark_configured">留空表示不改。</span>
+                  <a-checkbox v-model:checked="clearing.bark_url" class="st__clear">
+                    清除已保存的地址
+                  </a-checkbox>
+                </div>
+              </a-form-item>
+              <a-row :gutter="12">
+                <a-col :span="12">
+                  <a-form-item label="分组">
+                    <a-input v-model:value="notify.bark_group" placeholder="LiteBox" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="提示音">
+                    <a-input v-model:value="notify.bark_sound" placeholder="留空用 Bark 的默认音" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </a-form>
+
+            <!-- Telegram -->
+            <div class="st__sub-head">
+              Telegram
+              <a-switch v-model:checked="notify.telegram_enabled" size="small" />
+              <span v-if="notify.telegram_configured" class="st__ok-chip">已配置</span>
+            </div>
+            <a-form layout="vertical">
+              <a-form-item label="API 地址">
+                <a-input
+                  v-model:value="secrets.telegram_api_base"
+                  :disabled="clearing.telegram_api_base"
+                  placeholder="https://api.telegram.org/bot你的Token"
+                />
+                <div class="st__help">
+                  填到 <code>sendMessage</code> <strong>之前</strong>那一段,方法名由面板拼。
+                  自建反代同理(<code>https://tgapi.example.com/你的路径</code>)。
+                  里面含 bot token,与 Bark 地址同级对待。
+                  <a-checkbox v-model:checked="clearing.telegram_api_base" class="st__clear">
+                    清除已保存的地址
+                  </a-checkbox>
+                </div>
+              </a-form-item>
+              <a-form-item label="代理密钥">
+                <a-input-password
+                  v-model:value="secrets.telegram_proxy_key"
+                  :disabled="clearing.telegram_proxy_key"
+                  placeholder="走 X-TG-Proxy-Key 请求头,官方 API 不需要"
+                />
+                <div class="st__help">
+                  <a-checkbox v-model:checked="clearing.telegram_proxy_key" class="st__clear">
+                    清除已保存的密钥
+                  </a-checkbox>
+                </div>
+              </a-form-item>
+              <a-row :gutter="12">
+                <a-col :span="12">
+                  <a-form-item label="chat_id" required>
+                    <a-input v-model:value="notify.telegram_chat_id" placeholder="-1001234567890" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="话题 ID">
+                    <a-input
+                      v-model:value="notify.telegram_thread_id"
+                      placeholder="留空发到主话题"
+                    />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </a-form>
+
+            <div v-if="testResults.length" class="st__results">
+              <div v-for="r in testResults" :key="r.channel" class="st__result">
+                <span :class="r.ok ? 'st__ok' : 'st__danger'">{{ r.ok ? '成功' : '失败' }}</span>
+                <b>{{ r.channel }}</b>
+                <span v-if="r.error" class="st__result-err">{{ r.error }}</span>
+              </div>
+            </div>
+
+            <div class="st__note">
+              「发送测试」会<strong>先保存再发</strong> —— 测的必须是你刚填进去的那份。
+              测试消息不受上面的事件开关限制。
+            </div>
+
+            <div class="st__actions">
+              <a-button :loading="testingNotify" @click="testNotify">发送测试</a-button>
+              <a-button type="primary" :loading="savingNotify" @click="saveNotify">保存</a-button>
+            </div>
+          </template>
         </div>
       </section>
 
@@ -522,6 +796,18 @@ onMounted(loadAll)
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* 输入框要占满一行,但开关不能 —— 它是点选控件,
+     被 flex 拉满之后既难看,命中区也变成一整行。 */
+  align-items: flex-start;
+}
+.st__field > :deep(.ant-input),
+.st__field > :deep(.ant-input-affix-wrapper),
+.st__field > :deep(.ant-select) {
+  width: 100%;
+}
+.st__field > .st__help,
+.st__field > .st__label {
+  width: 100%;
 }
 
 .st__label {
@@ -610,6 +896,47 @@ onMounted(loadAll)
   background: #fdecea;
   border-color: #f3cfc9;
   color: #8e2117;
+}
+
+.st__sub-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 8px;
+  font-weight: 600;
+  border-top: 1px solid #E3E6EA;
+  padding-top: 14px;
+}
+.st__ok-chip {
+  font-size: 12px;
+  font-weight: 400;
+  color: #1B7A4B;
+}
+.st__clear {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+}
+.st__results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+.st__result {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.st__result-err {
+  color: #B4291D;
+}
+.st__ok {
+  color: #1B7A4B;
+}
+.st__danger {
+  color: #B4291D;
 }
 
 .st__actions {

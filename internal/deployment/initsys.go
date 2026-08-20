@@ -128,7 +128,7 @@ WantedBy=multi-user.target
 `
 
 func (s Systemd) InstallUnit(ctx context.Context, client *sshx.Client, layout Layout) error {
-	unit := fmt.Sprintf(systemdUnitTemplate, layout.BinaryPath, layout.ConfigPath, layout.BaseDir)
+	unit := fmt.Sprintf(systemdUnitTemplate, layout.BinaryPath, layout.ConfigPath(), layout.BaseDir)
 	if err := client.Upload(ctx, s.unitPath(layout), []byte(unit), 0o644); err != nil {
 		return err
 	}
@@ -146,7 +146,19 @@ func (s Systemd) RemoveUnit(ctx context.Context, client *sshx.Client, layout Lay
 	return err
 }
 
+// Restart 先 reset-failed 再 restart。
+//
+// **那一步不是多余的。** 服务连续快速失败几次之后,systemd 会把它标成
+// start-limit-hit,此后 systemctl restart 直接返回
+// "start request repeated too quickly" 而根本不去尝试 ——
+// 于是部署与巡检都会失败,报的却是一个与真实原因毫无关系的错误。
+//
+// 这条路径在「配置不落盘」之后变成常态:机器重启后 /run 是空的,
+// sing-box 找不到配置、每 3 秒失败一次,几轮就撞上限制;而巡检
+// 正是要在这时候把它救回来。reset-failed 对一个正常的服务是空操作,
+// 失败也不影响后面的 restart,所以用 Run 而不是 RunCheck。
 func (Systemd) Restart(ctx context.Context, client *sshx.Client, layout Layout) error {
+	_, _ = client.Run(ctx, sshx.NewCommand("systemctl", "reset-failed", layout.ServiceName))
 	_, err := client.RunCheck(ctx, sshx.NewCommand("systemctl", "restart", layout.ServiceName))
 	return err
 }
@@ -241,7 +253,7 @@ depend() {
 func openrcScript(layout Layout) string {
 	logPath := OpenRC{}.logPath(layout)
 	return fmt.Sprintf(openrcScriptTemplate,
-		layout.ServiceName, layout.BinaryPath, layout.ConfigPath, logPath, logPath)
+		layout.ServiceName, layout.BinaryPath, layout.ConfigPath(), logPath, logPath)
 }
 
 func (o OpenRC) InstallUnit(ctx context.Context, client *sshx.Client, layout Layout) error {

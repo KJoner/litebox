@@ -313,7 +313,12 @@ func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResul
 	var remoteJSON []byte
 	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		var readErr error
-		remoteJSON, readErr = client.Download(ctx, s.layout.ConfigPath)
+		// 按这台机器自己的设置取路径:配置进了内存文件系统之后,
+		// 拿全局默认的那个路径去读,永远读不到 —— 而"读不到"会被
+		// 呈现成「节点上尚无配置」,管理员看到的是一台明明在服务用户、
+		// 却显示从未部署过的机器。
+		remoteJSON, readErr = client.Download(
+			ctx, s.layout.WithConfigInRAM(n.ConfigInRAM).ConfigPath())
 		return readErr
 	})
 	if err != nil {
@@ -530,11 +535,12 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	}
 
 	req := deployment.Request{
-		NodeID:   nodeID,
-		Params:   nodeParams(n, inbounds),
-		Probes:   probes,
-		SSHPort:  n.SSHPort,
-		Revision: revision,
+		NodeID:      nodeID,
+		Params:      nodeParams(n, inbounds),
+		Probes:      probes,
+		SSHPort:     n.SSHPort,
+		Revision:    revision,
+		ConfigInRAM: n.ConfigInRAM,
 	}
 
 	result, deployErr := s.deployer.Deploy(ctx, req)

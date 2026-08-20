@@ -50,6 +50,13 @@ type Coordinator struct {
 	// inflight 记录正在部署的节点,保证同一节点不并发部署。
 	inflight map[int64]bool
 
+	// onFailure 在一次**无人值守**的部署失败时调用。
+	//
+	// 只挂在协调器上,不挂在 Deploy 本身:管理员手工点的部署,
+	// 他正看着屏幕,结果就在他眼前;而协调器这条路是用户变更、
+	// 等级调整这些事顺带触发的,失败了没有任何人会知道。
+	onFailure func(nodeID int64, kind string, result Result, err error)
+
 	wake   chan struct{}
 	done   chan struct{}
 	closed bool
@@ -73,6 +80,8 @@ type CoordinatorOptions struct {
 	MaxDelay time.Duration
 	// Clock 供测试注入,默认 time.Now。
 	Clock func() time.Time
+	// OnFailure 可空。见 Coordinator.onFailure。
+	OnFailure func(nodeID int64, kind string, result Result, err error)
 }
 
 func NewCoordinator(opts CoordinatorOptions) *Coordinator {
@@ -89,15 +98,16 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 		clock = time.Now
 	}
 	return &Coordinator{
-		deployer: opts.Deployer,
-		logger:   opts.Logger,
-		debounce: debounce,
-		maxDelay: maxDelay,
-		clock:    clock,
-		pending:  make(map[int64]*pendingNode),
-		inflight: make(map[int64]bool),
-		wake:     make(chan struct{}, 1),
-		done:     make(chan struct{}),
+		deployer:  opts.Deployer,
+		logger:    opts.Logger,
+		debounce:  debounce,
+		maxDelay:  maxDelay,
+		clock:     clock,
+		onFailure: opts.OnFailure,
+		pending:   make(map[int64]*pendingNode),
+		inflight:  make(map[int64]bool),
+		wake:      make(chan struct{}, 1),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -225,6 +235,7 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 			c.logger.Error("合并部署失败",
 				"node_id", nodeID, "status", result.Status, "error", err,
 				"rollback", result.RollbackResult)
+			c.notifyFailure(nodeID, "sing-box 配置", result, err)
 		} else {
 			c.logger.Info("合并部署成功",
 				"node_id", nodeID, "revision", result.Revision,
@@ -240,12 +251,20 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 			c.logger.Error("中转配置下发失败",
 				"node_id", nodeID, "status", result.Status, "error", err,
 				"rollback", result.RollbackResult)
+			c.notifyFailure(nodeID, "nginx 转发配置", result, err)
 			return
 		}
 		c.logger.Info("中转配置下发成功",
 			"node_id", nodeID, "revision", result.Revision,
 			"config_sha256", shortHash(result.ConfigSHA256))
 	}
+}
+
+func (c *Coordinator) notifyFailure(nodeID int64, kind string, result Result, err error) {
+	if c.onFailure == nil {
+		return
+	}
+	c.onFailure(nodeID, kind, result, err)
 }
 
 // shutdown 冲刷所有待部署节点后返回。

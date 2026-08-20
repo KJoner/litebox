@@ -442,6 +442,10 @@ func (d *Deployer) rollbackRelay(
 // Systemd 与 OpenRC 都实现了它;分成两个接口是为了让"管哪个服务"
 // 由方法名而不是参数来表达 —— 那个参数迟早会有人传错,
 // 而传错的表现是重启了另一个服务。
+// AsRelayInit 是它的导出版本,供巡检用 —— 巡检要问的正是同一个服务,
+// 自己再做一次类型断言的话,「哪些 init 系统支持中转」就有了两个答案。
+func AsRelayInit(init InitSystem) (RelayInit, error) { return asRelayInit(init) }
+
 func asRelayInit(init InitSystem) (RelayInit, error) {
 	r, ok := init.(RelayInit)
 	if !ok {

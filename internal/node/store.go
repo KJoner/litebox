@@ -54,6 +54,12 @@ type Node struct {
 	// 也就只有一个 API 端点。全部入站的统计都从这一个端口读出来。
 	APIPort int `json:"api_port"`
 
+	// ConfigInRAM 为真时,这台机器上的 sing-box 配置与备份放在内存文件系统
+	// (/run/litebox)里,磁盘上一个字节都不留。
+	//
+	// 机器重启后配置就没了,sing-box 起不来 —— 靠服务巡检重新下发救回来。
+	// 所以它与「自动恢复」是配套的,单独打开反而危险。
+	ConfigInRAM bool `json:"config_in_ram"`
 	// Role 是节点角色:LANDING 落地(默认),RELAY 纯中转机(不跑 sing-box 服务)。
 	// RELAY 上没有任何 node_inbounds 行。
 	Role Role `json:"role"`
@@ -126,7 +132,7 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 // 让同一件事有两个来源,而两个来源迟早分叉。
 const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
-	n.api_port, n.role,
+	n.api_port, n.role, n.config_in_ram,
 	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
@@ -144,7 +150,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	err := scan(
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
-		&n.APIPort, &n.Role,
+		&n.APIPort, &n.Role, &n.ConfigInRAM,
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
@@ -799,6 +805,18 @@ func (s *Store) ResetHostKey(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE nodes SET ssh_host_key = '', updated_at = ? WHERE id = ?`,
 		time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// SetConfigInRAM 只改这一列。
+//
+// 不走通用的 Update:那条路会跑一遍全量校验并算出「哪些字段变了」,
+// 而这一项的切换是一个自带顺序与回滚的复合操作(见 Service.SetConfigInRAM),
+// 它需要能把这一列单独改回去。
+func (s *Store) SetConfigInRAM(ctx context.Context, id int64, enabled bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE nodes SET config_in_ram = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		enabled, time.Now().UTC().Format(time.RFC3339), id)
 	return err
 }
 

@@ -379,6 +379,8 @@ export interface Node {
    * V8 之前它们是节点的属性,那时一台机器只有一个入站。
    */
   inbounds: NodeInbound[]
+  /** 配置与备份放在内存文件系统里,磁盘上不留。机器重启后靠巡检重新下发 */
+  config_in_ram: boolean
   arch: string
   singbox_version: string
   singbox_build_tags: string
@@ -1138,6 +1140,83 @@ export interface ExternalProxy {
   updated_at: string
 }
 
+/**
+ * 切换「配置不落盘」的结果。
+ *
+ * 与链式切换同一个形状:多阶段、可能中途失败,而失败时最要紧的信息
+ * 是**停在哪一步**。
+ */
+export interface ConfigRAMResult {
+  enabled: boolean
+  stage: string
+  /** /run 实测到的文件系统类型。不是 tmpfs 就不让开 */
+  runtime_fs?: string
+  deploy?: DeployResult
+  /** 被清掉的旧位置文件。让管理员看得见"磁盘上那份真的没了" */
+  cleaned: string[]
+}
+
+/** 推送事件类型。程序内用常量判断,展示名从 available_kinds 里取。 */
+export type NotifyKind =
+  | 'SERVICE_DOWN'
+  | 'SERVICE_RECOVERED'
+  | 'RECOVER_FAILED'
+  | 'DEPLOY_FAILED'
+  | 'NODE_QUOTA'
+
+/**
+ * 推送设置。
+ *
+ * **凭据不在里面。** Bark 的整条地址与 Telegram 的 bot token / 代理密钥
+ * 都是凭据(设备 key 与 token 在路径里),后端的结构体上打了 json:"-",
+ * 所以它们根本没有位置可填。要知道配没配过,看 *_configured。
+ */
+export interface NotifySettings {
+  enabled: boolean
+  bark_enabled: boolean
+  bark_group: string
+  bark_sound: string
+  bark_configured: boolean
+  telegram_enabled: boolean
+  telegram_chat_id: string
+  telegram_thread_id: string
+  telegram_configured: boolean
+  /** 空数组表示全开 —— 新加的事件类型会自动被收到 */
+  kinds: NotifyKind[]
+  auto_recover: boolean
+  available_kinds: { kind: NotifyKind; label: string }[]
+}
+
+/** 单个渠道的发送结果。 */
+export interface NotifyResult {
+  channel: string
+  ok: boolean
+  error?: string
+}
+
+/** 巡检里一个服务的状态。 */
+export type ServiceState = 'RUNNING' | 'STOPPED' | 'UNREACHABLE' | 'NOT_APPLICABLE'
+
+/**
+ * 一台机器的巡检结果。
+ *
+ * UNREACHABLE 与 STOPPED 严格分开:前者是「SSH 连不上,服务是死是活
+ * 我们并不知道」,后者是「服务定义在、进程没跑」。混为一谈会让管理员
+ * 在一次正常重启后收到"服务停了"。
+ */
+export interface NodeHealth {
+  node_id: number
+  node_name: string
+  checked_at: string
+  singbox: ServiceState
+  singbox_detail: string
+  nginx: ServiceState
+  nginx_detail: string
+  recovered: boolean
+  recover_error?: string
+  fail_streak: number
+}
+
 export type ProxySourceSyncStatus = 'NEVER' | 'OK' | 'FAILED'
 
 export interface ProxySource {
@@ -1596,6 +1675,21 @@ export const api = {
   checkExternalProxy: (id: number) =>
     request<ProxyCheckResult>(`/api/external-proxies/${id}/check`, { method: 'POST' }),
   /** 粘贴分享链接解析,不落库。响应里没有密码 */
+  notifySettings: () => request<NotifySettings>('/api/settings/notify'),
+  updateNotifySettings: (body: Record<string, unknown>) =>
+    request<NotifySettings>('/api/settings/notify', { method: 'PUT', body }),
+  testNotify: () =>
+    request<{ results: NotifyResult[] }>('/api/settings/notify/test', { method: 'POST' }),
+  nodeHealth: () =>
+    request<{ items: NodeHealth[]; enabled: boolean }>('/api/nodes/health'),
+  runNodeHealth: () =>
+    request<{ items: NodeHealth[] }>('/api/nodes/health/run', { method: 'POST' }),
+  setConfigInRAM: (id: number, enabled: boolean) =>
+    request<{ result: ConfigRAMResult; error?: string }>(`/api/nodes/${id}/config-in-ram`, {
+      method: 'POST',
+      body: { enabled },
+    }),
+
   parseProxyURI: (uri: string) =>
     request<{
       protocol: ExternalProtocol
