@@ -181,3 +181,56 @@ func TestSHA256IsStable(t *testing.T) {
 		t.Errorf("哈希长度 = %d", len(SHA256(data)))
 	}
 }
+
+// 加一个入站不该被报成「用户更换了凭据」。
+//
+// 用户在新入站上多出一份凭据是加入站这件事本身的结果,不是轮换。
+// 报成更换的话,每次加入口都会出现一句「N 个用户更换了凭据」,
+// 而真正的凭据轮换正是靠这句话被看见的 —— 狼来了几次之后就没人看了。
+func TestAddingInboundIsNotCredentialReset(t *testing.T) {
+	base := validParams()
+	base.Inbounds[0].ID, base.Inbounds[0].Tag = 1, LegacyVLESSInboundTag
+
+	second := validParams().Inbounds[0]
+	second.ID, second.Tag, second.ListenPort = 2, "in-2", 8443
+
+	before, err := Render(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grown := base
+	grown.Inbounds = append([]InboundParams{base.Inbounds[0]}, second)
+	after, err := Render(grown)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := Compare(before, after)
+	if len(d.Users.UUIDReset) > 0 {
+		t.Errorf("加入站被报成凭据更换:%v", d.Users.UUIDReset)
+	}
+	if len(d.Users.Added) > 0 || len(d.Users.Removed) > 0 {
+		t.Errorf("加入站不该改变用户集合:+%v -%v", d.Users.Added, d.Users.Removed)
+	}
+	if !d.Changed {
+		t.Error("加了一个入站却报告「配置无变化」")
+	}
+	if !strings.Contains(d.Summary, "新增入站") {
+		t.Errorf("摘要里没写新增入站:%q", d.Summary)
+	}
+
+	// 反过来:真正换掉凭据仍然要报出来。
+	rotated := base
+	rotated.Inbounds = []InboundParams{base.Inbounds[0]}
+	rotated.Inbounds[0].Users = []User{
+		{Code: "user_000001", UUID: "9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f"},
+		{Code: "user_000002", UUID: "094337c0-92c9-4e54-9da1-6333035b298f"},
+	}
+	rot, err := Render(rotated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := Compare(before, rot); len(d.Users.UUIDReset) != 1 {
+		t.Errorf("真正换凭据没有被报出来:%+v", d.Users)
+	}
+}
