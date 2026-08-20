@@ -159,7 +159,7 @@ DELETE /api/nodes/{id}
 POST   /api/nodes/{id}/enabled
 POST   /api/nodes/{id}/test-ssh
 POST   /api/nodes/{id}/probe
-POST   /api/nodes/{id}/dest-check     握手目标实测
+POST   /api/nodes/{id}/dest-check     握手目标实测(只检测,不写入)
 POST   /api/nodes/{id}/dest-scan      候选目标批量扫描
 POST   /api/nodes/{id}/bootstrap      装面板公钥
 POST   /api/nodes/{id}/install        装 sing-box 与服务
@@ -169,6 +169,13 @@ POST   /api/nodes/{id}/restart
 POST   /api/nodes/{id}/reset-host-key
 GET    /api/nodes/{id}/deployments
 GET    /api/nodes/{id}/config-diff
+GET    /api/nodes/{id}/inbounds       这台机器上的 sing-box 入口
+POST   /api/nodes/{id}/inbounds       新增入口
+PUT    /api/inbounds/{id}
+DELETE /api/inbounds/{id}
+POST   /api/inbounds/{id}/dest-check  实测握手目标并写入这一个入口
+POST   /api/inbounds/{id}/chain       启用/改变这个入口的链式出口
+DELETE /api/inbounds/{id}/chain       改回本机直连
 GET    /api/panel-key
 GET    /api/dest-candidates
 GET    /api/deployments
@@ -176,6 +183,13 @@ GET    /api/deployments
 
 节点有两个名称:`name` 是内部名称,只在管理后台出现;`display_name` 是
 发给用户与订阅的名字。留空创建时 `display_name` 复制 `name`。
+
+**协议、端口、REALITY、TFO 与出口去向是【入口】的属性,不是节点的**(V8)。
+一台落地机器可以有多个 sing-box 入口,各自的协议、端口、访问等级与出口
+互不相干,`GET /api/nodes` 与 `GET /api/nodes/{id}` 的每一项都带
+`inbounds` 数组(中转角色恒为空数组)。`POST /api/nodes` 仍然收那几项 ——
+它们是这台机器的**第一个入口**,由创建事务一并建出来;之后改它们走
+`/api/inbounds/{id}`。
 
 `GET /api/nodes` 与 `GET /api/nodes/{id}` 的每一项额外带两个**算出来的**字段
 (创建与更新的响应里没有,调用方随后都会重新拉列表):
@@ -207,13 +221,12 @@ GET    /api/deployments
 * `traffic_quota_bytes` 为 **null** 表示保持原额度(0 是"改成不限量",
   所以不能用零值表达"没传");
 * `traffic_reset_cycle` 留空、`traffic_reset_day` 为 0 表示保持原值;
-* `protocol`、`ss_method` 留空表示保持原值。漏传会把一台 Shadowsocks 节点
-  悄悄改回 VLESS,下一次部署就把这台机器上的全部用户踢下线 ——
-  而管理员那次操作可能只是改了个排序;
 * `ipv6_address` 留空表示**清空 IPv6**,与上面几个正好相反 ——
   清空是管理员的显式动作(把 IPv6 条目从订阅撤下来),必须有办法表达。
-  `ipv6_proxy_port` 同理:0 表示「跟随 IPv4」,不是「保持原值」。
-  它与 `ipv6_address` 总是一起提交,不存在只漏传一个的情况。
+  清空时这台机器上全部入口的 `ipv6_public_port` 一并归零:留着它们,
+  下次重填 IPv6 会静默套用一个几个月前的端口,而那个端口未必还转发着;
+* 协议、代理端口与 TFO **不在这个接口里** —— 它们是入口的属性,
+  走 `PUT /api/inbounds/{id}`。
 
 前四个不回落到零值,是因为漏传的后果是静默的:VIP 节点被降成普通组等于
 给全体用户开门,订阅开关被关掉等于把节点从所有人的订阅里摘掉,
@@ -253,7 +266,8 @@ GET    /api/deployments
 ```
 
 `protocol` 只接受 `VLESS_REALITY`(默认)与 `SHADOWSOCKS`。
-一个节点只跑一种协议 —— 端口、访问等级、额度、IPv6 这些设置对两者完全一样。
+协议是**入口级**的(V8):一台机器上可以有一个 VLESS 入口和一个 SS 入口,
+各占一个端口、各有自己的访问等级与出口。流量额度、IPv6 地址这些仍在机器上。
 
 `ss_method` 只接受 SS2022 三种:`2022-blake3-aes-128-gcm`(默认)、
 `2022-blake3-aes-256-gcm`、`2022-blake3-chacha20-poly1305`。
@@ -274,12 +288,24 @@ GET    /api/deployments
 
 改协议或改加密方法会让响应里的 `needs_deploy` 为真,但**不会自动部署**:
 与访问等级变更不同,那一条是安全问题,协议变更是可用性问题,
-立刻部署会让全部在线用户在管理员没准备好时断线。
+立刻部署会让全部在线用户在管理员没准备好时断线。多入站之后这一点更重:
+一次部署重启整台机器的 sing-box,会把**全部入口**的在线连接一起踢掉,
+而管理员动的只是其中一个。
 
-**切换到 `VLESS_REALITY` 要求该节点已完成握手目标实测**
+**切换到 `VLESS_REALITY` 要求该入口已完成握手目标实测**
 (`reality_dest` 非空且 `handshake_checked_at` 不为空),否则返回 400。
-握手目标必须经 `POST /api/nodes/{id}/dest-check` 在节点本机实测才能写入。
-新建 Shadowsocks 节点时不要求握手目标,`reality_dest` 留空。
+握手目标必须经 `POST /api/inbounds/{id}/dest-check` 在节点本机实测才能写入
+—— 节点级的 `dest-check` **只检测不写入**:多入站之后「写到这个节点上」
+已经不再指向一个确定的对象,而悄悄挑一个入口写进去是这类接口最容易出的那种错。
+新建 Shadowsocks 入口时不要求握手目标,`reality_dest` 留空。
+
+入口的增删改一律**不自动部署**,响应里的 `needs_deploy` 为真。
+删除是软删除:那个入站在下一次部署之前仍然跑在节点上,但它立刻退出订阅
+—— 少发一条即将消失的条目,比多发一条安全。
+
+**入口的访问等级在节点等级之上再收一次。** 两层是交集:能用这台机器,
+才谈得上能用它的哪个入口。等级变更与节点那一层同档 —— 自动标脏重新部署,
+因为它是安全问题(被移出的用户凭据还留在节点上)。
 
 Shadowsocks 节点的部署事务多一步:**检查节点时钟**。
 SS2022 的 AEAD 头带时间戳,节点与真实时间相差超过 30 秒时全部用户连不上,

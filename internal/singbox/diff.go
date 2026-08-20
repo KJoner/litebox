@@ -41,8 +41,15 @@ type Diff struct {
 func Compare(old, new Config) Diff {
 	var d Diff
 
-	oldUsers := userMap(old)
-	newUsers := userMap(new)
+	// 只比较【两边都有】的入站上的凭据。
+	//
+	// 加一个入站会让这个用户在这台机器上多出一份凭据(新入站上的那一份),
+	// 而那不是"凭据被更换" —— 报成更换的话,每次加入口都会出现一句
+	// 「N 个用户更换了凭据」,而真正的凭据轮换正是靠这句话被看见的。
+	// 入站的增减在 compareNodeAttrs 里已经单独报过。
+	common := commonInboundTags(old, new)
+	oldUsers := userMap(old, common)
+	newUsers := userMap(new, common)
 
 	for code, uuid := range newUsers {
 		oldUUID, existed := oldUsers[code]
@@ -78,9 +85,12 @@ func Compare(old, new Config) Diff {
 // 协议不同则形状也不同)。指纹取【全部入站上凭据的有序拼接】——
 // 只取第一个入站的话,管理员在另一个入站上重置了凭据,这里会说"无变化",
 // 而那次部署恰恰会把那个入站上的在线用户全部踢掉。
-func userMap(cfg Config) map[string]string {
+func userMap(cfg Config, tags map[string]bool) map[string]string {
 	parts := make(map[string][]string)
 	for _, in := range cfg.Inbounds {
+		if !tags[in.Tag] {
+			continue
+		}
 		for _, u := range in.Users {
 			parts[u.Name] = append(parts[u.Name], in.Tag+"="+u.Credential())
 		}
@@ -91,6 +101,32 @@ func userMap(cfg Config) map[string]string {
 		users[name] = credentialFingerprint(strings.Join(list, "\n"))
 	}
 	return users
+}
+
+// commonInboundTags 是两份配置都有的入站 tag。
+//
+// 一边为空(节点上还没有配置)时退化成另一边的全部 tag —— 那时的差异
+// 本来就是「全部用户都是新增的」,取交集会让它变成一句「无变化」。
+func commonInboundTags(old, new Config) map[string]bool {
+	if len(old.Inbounds) == 0 || len(new.Inbounds) == 0 {
+		all := make(map[string]bool)
+		both := append(append([]Inbound{}, old.Inbounds...), new.Inbounds...)
+		for _, in := range both {
+			all[in.Tag] = true
+		}
+		return all
+	}
+	oldTags := make(map[string]bool, len(old.Inbounds))
+	for _, in := range old.Inbounds {
+		oldTags[in.Tag] = true
+	}
+	common := make(map[string]bool, len(new.Inbounds))
+	for _, in := range new.Inbounds {
+		if oldTags[in.Tag] {
+			common[in.Tag] = true
+		}
+	}
+	return common
 }
 
 func credentialFingerprint(credential string) string {
