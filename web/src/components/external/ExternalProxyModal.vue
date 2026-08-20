@@ -6,6 +6,7 @@ import {
   ApiError,
   LOCKABLE_FIELD_LABEL,
   type AccessTier,
+  type ExternalProtocol,
   type ExternalProxy,
 } from '@/api/client'
 
@@ -35,6 +36,20 @@ const parsing = ref(false)
 
 /** 新建时的两种填法。粘链接是默认 —— 手填九个字段太苦。 */
 const mode = ref<'uri' | 'manual'>('uri')
+
+/**
+ * 这条线路的协议。
+ *
+ * 新建时由「解析」得出,而不是让管理员自己选:他手上只有一条链接,
+ * 而链接的 scheme 已经把答案写在最前面了 —— 多一个下拉只是多一个填错的机会,
+ * 填错的表现还很难查(按 VMess 存下一条 Trojan,订阅照常下发,用户连不上)。
+ */
+const protocol = ref<ExternalProtocol>('SHADOWSOCKS')
+/** 解析结果里的几句人话,给管理员一眼确认「解出来的和我预期的一样」。 */
+const parsedNote = ref('')
+
+/** Shadowsocks 之外的协议不按字段拼链接,那几个输入框整个不显示。 */
+const isSS = computed(() => protocol.value === 'SHADOWSOCKS')
 
 const blank = {
   uri: '',
@@ -73,11 +88,14 @@ watch(
     if (!open) return
     serverError.value = ''
     mode.value = 'uri'
+    parsedNote.value = ''
     const p = props.proxy
     if (!p) {
+      protocol.value = 'SHADOWSOCKS'
       Object.assign(form, blank, { access_tier_id: props.tiers[0]?.id ?? 1 })
       return
     }
+    protocol.value = p.protocol
     Object.assign(form, blank, {
       name: p.name,
       // 编辑时填的是「覆盖值」:留空表示跟随上游/原名。
@@ -109,6 +127,7 @@ async function parseURI() {
   serverError.value = ''
   try {
     const r = await api.parseProxyURI(uri)
+    protocol.value = r.protocol
     form.server = r.server
     form.port = r.port
     form.method = r.method
@@ -116,7 +135,16 @@ async function parseURI() {
     form.plugin_opts = r.plugin_opts
     if (!form.display_name) form.display_name = r.display_name
     if (!form.name) form.name = r.display_name
-    message.success(`已解析:${r.protocol} ${r.server}:${r.port}`)
+    const bits = [r.protocol_label]
+    if (r.transport) bits.push(r.transport)
+    if (r.tls) bits.push('TLS')
+    // 「能不能当出口」在这里就说清楚。等他配到入口的出口那一步才被拒的话,
+    // 他早忘了这条线路是什么协议,而报错出现在另一个页面上。
+    if (!r.dialable_by_node) {
+      bits.push('走 QUIC,节点拨不了它 —— 只能直连给用户用,不能当入口的出口,也不能被 nginx 透传')
+    }
+    parsedNote.value = bits.join(' · ')
+    message.success(`已解析:${r.protocol_label} ${r.server}:${r.port}`)
   } catch (err) {
     serverError.value = err instanceof ApiError ? err.message : '链接解析失败'
   } finally {
@@ -143,7 +171,7 @@ async function submit() {
         uri: mode.value === 'uri' ? form.uri.trim() : '',
         name: form.name,
         display_name: form.display_name,
-        protocol: 'SHADOWSOCKS',
+        protocol: protocol.value,
         server: form.server,
         port: form.port ?? 0,
         method: form.method,
@@ -160,8 +188,11 @@ async function submit() {
       message.success('已添加')
     } else {
       const id = props.proxy!.id
-      // 手工条目才允许改地址与凭据,而且只在真的填了新密码时才发。
-      if (!endpointReadonly.value && form.password) {
+      // 手工条目才允许改地址与凭据。Shadowsocks 按字段改(填了新密码才发),
+      // 别的协议只能整条链接换 —— 与新建同一条规矩。
+      if (!endpointReadonly.value && !isSS.value && form.uri.trim()) {
+        await api.replaceExternalProxyEndpoint(id, { uri: form.uri.trim() })
+      } else if (!endpointReadonly.value && isSS.value && form.password) {
         await api.replaceExternalProxyEndpoint(id, {
           server: form.server,
           port: form.port ?? 0,
@@ -229,6 +260,10 @@ async function submit() {
             粘链接是推荐做法:面板会<strong>原样保留原始链接</strong>,订阅按分享链接
             下发时直接透传它 —— 本面板不认识的参数(混淆插件、私有扩展)才不会被丢掉。
             丢掉之后用户能连上、网页能开,只有 UDP 不通,而这种问题很难查。
+            <br />
+            <strong>手工填写只支持 Shadowsocks。</strong>别的协议一律粘链接:
+            VMess 的 base64(JSON)、VLESS/Trojan 的查询串各家写法都不一样,
+            面板不去拼这类链接 —— 拼出来的那条丢掉的正是我们没解析的那些参数。
           </div>
         </a-form-item>
 
@@ -241,7 +276,19 @@ async function submit() {
             />
             <a-button :loading="parsing" style="width: 88px" @click="parseURI">解析</a-button>
           </a-input-group>
-          <div class="ep__help">目前只支持 Shadowsocks(ss://),两种方言都认。</div>
+          <div class="ep__help">
+            支持 <code>ss://</code>(两种方言)、<code>vmess://</code>、<code>vless://</code>、
+            <code>trojan://</code>、<code>hysteria2://</code>(<code>hy2://</code>)、
+            <code>tuic://</code>。
+          </div>
+          <a-alert
+            v-if="parsedNote"
+            type="info"
+            show-icon
+            class="ep__gap"
+            :message="parsedNote"
+            description="解析出来的只用于 sing-box 格式的订阅与「当作某个入口的出口」。分享链接与 base64 两种格式下发的是你粘进来的那条原文,一个字节都不改。"
+          />
         </a-form-item>
       </template>
 
@@ -274,7 +321,7 @@ async function submit() {
         description="这些字段是你改过的,下次同步不会被上游覆盖。要让它重新跟随上游,把对应输入框清空即可。"
       />
 
-      <a-row :gutter="12">
+      <a-row v-if="isSS" :gutter="12">
         <a-col :span="14">
           <a-form-item label="服务器地址">
             <a-input v-model:value="form.server" :disabled="endpointReadonly" />
@@ -293,14 +340,35 @@ async function submit() {
         </a-col>
       </a-row>
 
-      <a-form-item label="加密方法">
+      <a-form-item v-if="isSS" label="加密方法">
         <a-select v-model:value="form.method" :disabled="endpointReadonly">
           <a-select-option v-for="m in methods" :key="m" :value="m">{{ m }}</a-select-option>
         </a-select>
+        <div class="ep__help">
+          传统 AEAD(<code>chacha20-ietf-poly1305</code> 那几种)也收:那是别人配好的
+          线路,我们只负责登记与转发,拦住它不会让任何人更安全。
+          <strong>自建节点仍然只跑 2022 系列</strong> —— 那是两件事。
+        </div>
       </a-form-item>
 
-      <a-form-item :label="isEdit ? '密码(留空表示不改)' : '密码'">
+      <a-form-item v-if="isSS" :label="isEdit ? '密码(留空表示不改)' : '密码'">
         <a-input-password v-model:value="form.password" :disabled="endpointReadonly" />
+      </a-form-item>
+
+      <a-descriptions v-if="!isSS" :column="2" size="small" bordered class="ep__gap">
+        <a-descriptions-item label="协议">{{ protocol }}</a-descriptions-item>
+        <a-descriptions-item label="地址">{{ form.server }}:{{ form.port }}</a-descriptions-item>
+      </a-descriptions>
+      <div v-if="!isSS" class="ep__help ep__help--row">
+        这类线路的地址与凭据只跟着<strong>分享链接</strong>走,面板不按字段拼它们。
+        换了地址或密码,把新链接整条粘进来。
+      </div>
+
+      <a-form-item v-if="isEdit && !isSS && !endpointReadonly" label="更换分享链接">
+        <a-input v-model:value="form.uri" placeholder="留空表示不改" />
+        <div class="ep__help">
+          填了就整条换掉:地址、端口、凭据与原文一起更新。
+        </div>
       </a-form-item>
 
       <a-alert

@@ -119,6 +119,18 @@ type NodeParams struct {
 // 上层把两种来源都归一成它,渲染这边就不必知道落地是谁 ——
 // 否则每加一种落地来源都要改渲染,而渲染是全项目最不该分叉的地方。
 type ChainOutbound struct {
+	// Prebuilt 非空时,落地的协议参数已经由上层拼好了,这一层只补 tag。
+	//
+	// 外部代理走这条路:机场卖的协议(VMess / VLESS / Trojan / ...)由
+	// externalproxy.SingBoxOutbound 一处翻译成出站,订阅、链式出口与
+	// 中转拨测三个调用方共用同一份结果。**不在这里再照着 Params 拼一遍** ——
+	// 那会让"用户客户端里的那份"与"节点上跑的那份"各写各的,
+	// 而两者不一致的表现是用户连得上直连、连不上中转,谁都不报错。
+	//
+	// 自建节点的落地不走它:那边的参数来自 deployed_*,而且 VLESS 那一支
+	// 要拼 REALITY,SS 那一支要拼 serverPSK:userPSK,都与外部代理无关。
+	Prebuilt *Outbound
+
 	// Protocol 留空按 VLESS_REALITY。
 	Protocol   Protocol
 	Server     string
@@ -276,6 +288,23 @@ func buildOutbounds(inbounds []InboundParams) ([]Outbound, *RouteConfig, error) 
 }
 
 func buildChainOutbound(c ChainOutbound, tag string) (Outbound, error) {
+	if c.Prebuilt != nil {
+		out := *c.Prebuilt
+		out.Tag = tag
+		// tag 由这一层给,而且只由这一层给:route.rules 里那个 outbound
+		// 取自 ChainTagFor,上层自己填一个的话两者可能对不上,
+		// 而对不上的表现是 sing-box 报 outbound not found —— 部署失败。
+		if strings.TrimSpace(out.Type) == "" {
+			return Outbound{}, errors.New("链式落地的出站类型为空")
+		}
+		if err := ValidatePort(out.ServerPort, "链式落地"); err != nil {
+			return Outbound{}, err
+		}
+		if strings.TrimSpace(out.Server) == "" {
+			return Outbound{}, errors.New("链式落地地址不能为空")
+		}
+		return out, nil
+	}
 	if c.Protocol == "" {
 		c.Protocol = ProtocolVLESSReality
 	}
@@ -293,7 +322,11 @@ func buildChainOutbound(c ChainOutbound, tag string) (Outbound, error) {
 		TCPFastOpen: c.TCPFastOpen,
 	}
 	if c.Protocol == ProtocolShadowsocks {
-		if _, err := ParseSSMethod(string(c.SSMethod)); err != nil {
+		// 出站用 ParseOutboundSSMethod 而不是 ParseSSMethod:后者答的是
+		// "我们自己愿意跑哪几种",拿它来校验别人的线路会把机场里最常见的
+		// chacha20-ietf-poly1305 拦在这里 —— 而拦下来的时机是部署中途,
+		// 结果是一次回滚。
+		if _, err := ParseOutboundSSMethod(string(c.SSMethod)); err != nil {
 			return Outbound{}, fmt.Errorf("链式落地的%w", err)
 		}
 		if c.SSPassword == "" {

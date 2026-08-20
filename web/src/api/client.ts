@@ -1065,6 +1065,17 @@ export type ExternalProtocol =
   | 'TUIC'
   | 'UNKNOWN'
 
+/** 给人看的协议名。程序内一律用常量判断,不要拿它做判断 —— 展示名以后会改。 */
+export const EXTERNAL_PROTOCOL_LABEL: Record<ExternalProtocol, string> = {
+  SHADOWSOCKS: 'Shadowsocks',
+  VMESS: 'VMess',
+  VLESS: 'VLESS',
+  TROJAN: 'Trojan',
+  HYSTERIA2: 'Hysteria2',
+  TUIC: 'TUIC',
+  UNKNOWN: '未知协议',
+}
+
 /** ACTIVE 正常 / DISABLED 手工停用 / EXCLUDED 上游有但我不要 */
 export type ExternalProxyStatus = 'ACTIVE' | 'DISABLED' | 'EXCLUDED'
 
@@ -1112,6 +1123,17 @@ export interface ExternalProxy {
   last_check_ok: boolean | null
   last_check_message: string
   last_check_latency_ms: number | null
+  /**
+   * 能不能把它当成某个入口的「出口」。
+   *
+   * 说的不是面板认不认识这个协议 —— Hysteria2 与 TUIC 走 QUIC,而节点上的
+   * sing-box 是精简构建(不含 with_quic),拨不动它们。这两种线路照常进订阅、
+   * 用户自己的客户端照常能用,只有「让我们的节点去连它」做不了。
+   * 由后端算:构建选项前端没有办法知道。
+   */
+  dialable_by_node: boolean
+  /** 能不能用 nginx 透传到它。QUIC 系是纯 UDP,而 stream 这边只搬 TCP 字节 */
+  relayable: boolean
   created_at: string
   updated_at: string
 }
@@ -1576,7 +1598,12 @@ export const api = {
   /** 粘贴分享链接解析,不落库。响应里没有密码 */
   parseProxyURI: (uri: string) =>
     request<{
-      protocol: string
+      protocol: ExternalProtocol
+      protocol_label: string
+      transport: string
+      tls: boolean
+      dialable_by_node: boolean
+      relayable: boolean
       display_name: string
       server: string
       port: number

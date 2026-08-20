@@ -7,6 +7,7 @@ import {
   type AccessTier,
   type ExternalProxy,
   type ProxySource,
+  EXTERNAL_PROTOCOL_LABEL,
 } from '@/api/client'
 import ExternalProxyModal from '@/components/external/ExternalProxyModal.vue'
 import ProxySourceModal from '@/components/external/ProxySourceModal.vue'
@@ -298,6 +299,18 @@ function sourceStatusTags(src: ProxySource): LbStatusMeta[] {
   return out
 }
 
+/**
+ * 走 QUIC 的那两种(Hysteria2 / TUIC)不能当自建入口的出口,也不能被 nginx 透传。
+ * 界限不在协议身上,在我们这一侧 —— 说清楚是哪一侧,管理员才知道这不是他配错了。
+ */
+function protocolLabel(p: ExternalProxy): string {
+  return EXTERNAL_PROTOCOL_LABEL[p.protocol] ?? p.protocol
+}
+
+const quicNote =
+  '走 QUIC:节点上的 sing-box 是精简构建(不含 with_quic)拨不动它,' +
+  'nginx 透传也只搬 TCP 字节。照常下发给用户直连,但不能当入口的出口或转发落地。'
+
 const columns = [
   { title: '条目', key: 'item' },
   { title: '地址', key: 'addr', width: 240 },
@@ -472,7 +485,13 @@ const columns = [
             </span>
           </div>
           <div class="xp__note">
+            {{ protocolLabel(record) }} ·
             {{ record.source_id ? `来自 ${record.source_name}` : '手工添加' }}
+            <!-- 「不能当出口」要在列表里就看得见。等管理员在节点详情里选到一半
+                 才发现列表里没有这一条,他会先怀疑是权限或者页面坏了。 -->
+            <span v-if="!record.dialable_by_node" class="xp__warn" :title="quicNote">
+              · 只能直连
+            </span>
           </div>
           <div v-if="sourceExpiredNote(record)" class="xp__warn">
             {{ sourceExpiredNote(record) }}

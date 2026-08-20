@@ -1,7 +1,7 @@
 package subscription
 
 import (
-	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -48,25 +48,42 @@ type ExternalProxy struct {
 // 用户能连上、网页能开,只有 UDP 不通或者某些场景降速 ——
 // 这种问题没有人会往「订阅生成时丢了一个参数」上想。
 func EntryForExternal(p ExternalProxy) (Entry, error) {
-	if p.Protocol != externalproxy.ProtocolShadowsocks {
-		return Entry{}, errors.New("本版本只支持 Shadowsocks 的外部代理")
+	if !p.Protocol.Supported() {
+		return Entry{}, fmt.Errorf("不支持的外部代理协议 %q", p.Protocol)
 	}
 
 	uri := p.RawURI
-	if uri == "" {
+	switch {
+	case uri != "":
+		uri = replaceFragment(uri, p.DisplayName)
+	case p.Protocol == externalproxy.ProtocolShadowsocks:
+		// 手工新增的 Shadowsocks 没有原始链接,按字段生成一条 SIP002。
 		uri = ShadowsocksShareURI(p.Params.Method, p.Params.Password,
 			p.Server, p.Port, p.DisplayName, p.Params)
-	} else {
-		uri = replaceFragment(uri, p.DisplayName)
+	default:
+		// 别的协议不由面板拼分享链接,所以手工新增时【必须】给原始链接
+		// (externalproxy.Store 在保存时就拦住了)。真走到这里说明库里有一条
+		// 不该存在的记录 —— 报错让它被跳过并记日志,而不是下发一条空链接:
+		// 空行会让客户端解析出一个残缺条目,而那比少一条难查得多。
+		return Entry{}, fmt.Errorf("%s 外部代理缺少原始分享链接,无法下发", p.Protocol.Label())
 	}
 
-	return Entry{
-		DisplayName: p.DisplayName,
-		URI:         uri,
-		Outbound: func(o OutboundOptions) any {
-			return externalShadowsocksOutbound(o, p)
-		},
-	}, nil
+	entry := Entry{DisplayName: p.DisplayName, URI: uri}
+
+	// 协议翻译只有 externalproxy.SingBoxOutbound 一处实现,与链式出口、
+	// 中转拨测共用。**先拼一次**再包成闭包:闭包里拼的话,失败时只能返回
+	// nil,而那个 nil 会被原样序列化成 outbounds 里的一个 null ——
+	// sing-box 拒绝启动,而分享链接格式的同一份订阅完全正常。
+	// 拼不出来就让 Outbound 保持 nil,AssignTags 会整条跳过它。
+	tmpl, err := externalproxy.SingBoxOutbound("", "", p.Protocol, p.Server, p.Port, p.Params)
+	if err == nil {
+		entry.Outbound = func(o OutboundOptions) any {
+			out := tmpl
+			out.Tag, out.Detour = o.Tag, o.Detour
+			return out
+		}
+	}
+	return entry, nil
 }
 
 // replaceFragment 换掉分享链接末尾的 #name。
@@ -82,27 +99,4 @@ func replaceFragment(uri, name string) string {
 		return uri
 	}
 	return uri + "#" + url.PathEscape(name)
-}
-
-// externalShadowsocksOutbound 生成外部代理的 sing-box 出站。
-//
-// plugin 原样带上:sing-box 认识 obfs-local 与 v2ray-plugin,
-// 丢掉它会让带混淆的机场节点在 sing-box 客户端里连不上,
-// 而同一条在 v2rayN 里(走 URI 原文)是好的 —— 两个用户会各执一词。
-func externalShadowsocksOutbound(o OutboundOptions, p ExternalProxy) clientSSOutbound {
-	out := clientSSOutbound{
-		Type:       "shadowsocks",
-		Tag:        o.Tag,
-		Server:     p.Server,
-		ServerPort: p.Port,
-		Method:     p.Params.Method,
-		Password:   p.Params.Password,
-		Detour:     o.Detour,
-	}
-	out.Plugin = p.Params.Plugin
-	out.PluginOpts = p.Params.PluginOpts
-	if p.Params.UDPOverTCP {
-		out.UDPOverTCP = &udpOverTCP{Enabled: true}
-	}
-	return out
 }

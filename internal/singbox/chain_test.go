@@ -358,6 +358,115 @@ func TestChainShadowsocksOutbound(t *testing.T) {
 	}
 }
 
+// 落地是外部代理时,协议形状由上层拼好后整块塞进来 —— 这一层只补 tag。
+//
+// tag 只能由渲染这一层给:route.rules 里那个 outbound 取自 ChainTagFor,
+// 上层自己填一个的话两者可能对不上,而对不上的表现是 sing-box 报
+// outbound not found,部署失败。
+func TestChainPrebuiltOutboundGetsTagAndRoute(t *testing.T) {
+	params := chainedParams()
+	params.Inbounds[0].Chain = &ChainOutbound{
+		Prebuilt: &Outbound{
+			// 上层给的 tag 是空的,而且就算给了也会被覆盖。
+			Type: "trojan", Server: "a.example.com", ServerPort: 443, Password: "pw",
+			TLS: &OutboundTLS{Enabled: true, ServerName: "a.example.com"},
+		},
+	}
+	cfg, err := Render(params)
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+	chain := findOutbound(cfg, testChainTag)
+	if chain == nil {
+		t.Fatalf("没有渲染出链式出站: %+v", cfg.Outbounds)
+	}
+	if chain.Type != "trojan" || chain.Password != "pw" {
+		t.Errorf("上层拼好的字段没有原样带过来: %+v", chain)
+	}
+	// AssertChainRouted 已经在 Render 里跑过一遍,这里再确认规则确实指过来。
+	if cfg.Route == nil || len(cfg.Route.Rules) != 1 ||
+		cfg.Route.Rules[0].Outbound != testChainTag {
+		t.Fatalf("链式出站没有被路由规则指向: %+v", cfg.Route)
+	}
+}
+
+// 上层拼出来的东西照样要过基本校验:少了类型或地址,sing-box 起不来,
+// 而错误会落在部署失败上 —— 在渲染期拦住,报的是这条链路的名字。
+func TestChainPrebuiltRejectsIncomplete(t *testing.T) {
+	cases := map[string]Outbound{
+		"缺类型":  {Server: "a.example.com", ServerPort: 443},
+		"缺地址":  {Type: "trojan", ServerPort: 443},
+		"端口非法": {Type: "trojan", Server: "a.example.com"},
+	}
+	for name, out := range cases {
+		t.Run(name, func(t *testing.T) {
+			params := chainedParams()
+			prebuilt := out
+			params.Inbounds[0].Chain = &ChainOutbound{Prebuilt: &prebuilt}
+			if _, err := Render(params); err == nil {
+				t.Fatal("残缺的链式落地被渲染出来了")
+			}
+		})
+	}
+}
+
+// 链式落地是机场的传统 AEAD 线路时也必须渲染得出来。
+//
+// 这是一条真实故障的回归:管理员把一个 chacha20-ietf-poly1305 的外部代理
+// 设成 VLESS 入站的出口,登记、连通性检查、订阅全绿,而部署到「渲染配置」
+// 那一步失败并回滚 —— 因为渲染期拿【入站】那张只有 SS2022 的表去校验了
+// 一条【出站】。
+func TestChainAcceptsEveryOutboundSSMethod(t *testing.T) {
+	for _, method := range OutboundSSMethods() {
+		t.Run(method, func(t *testing.T) {
+			params := chainedParams()
+			params.Inbounds[0].Chain = &ChainOutbound{
+				Protocol:   ProtocolShadowsocks,
+				Server:     "203.0.113.9",
+				ServerPort: 8443,
+				SSMethod:   SSMethod(method),
+				SSPassword: "somepassword",
+			}
+			cfg, err := Render(params)
+			if err != nil {
+				t.Fatalf("方法 %s 的链式落地渲染失败: %v", method, err)
+			}
+			chain := findOutbound(cfg, testChainTag)
+			if chain == nil || chain.Method != method {
+				t.Fatalf("出站的 method = %+v,期望 %s", chain, method)
+			}
+		})
+	}
+}
+
+// 出站放宽了,入站那张表一个字都不能跟着松:传统 AEAD 的多用户没有 EIH,
+// 服务端要逐个用户试解密,也没有 replay 防护。
+func TestOutboundMethodsDoNotLeakIntoInbound(t *testing.T) {
+	for _, method := range OutboundSSMethods() {
+		if strings.HasPrefix(method, "2022-blake3-") {
+			continue
+		}
+		if _, err := ParseSSMethod(method); err == nil {
+			t.Errorf("入站接受了 %q —— 自建节点不该跑传统 AEAD", method)
+		}
+	}
+	// 反过来,入站能跑的三种一定也拨得出去 —— 链式落地常常就是我们自己的
+	// 另一台机器,那三种在这里被拒的话,自建节点之间根本串不起来。
+	for _, m := range []SSMethod{SSMethodAES128GCM, SSMethodAES256GCM, SSMethodChaCha20} {
+		if _, err := ParseOutboundSSMethod(string(m)); err != nil {
+			t.Errorf("出站拒绝了自建节点在跑的 %q: %v", m, err)
+		}
+	}
+}
+
+// 出站的方法是落地那一端的事实,空串不能回落到默认值 ——
+// 猜一个的表现是握手静默失败,而配置本身完全合法。
+func TestOutboundSSMethodRejectsEmpty(t *testing.T) {
+	if _, err := ParseOutboundSSMethod("  "); err == nil {
+		t.Fatal("空的加密方法被接受了")
+	}
+}
+
 // 链式参数不全时必须在渲染期就拒绝,而不是产出一份 sing-box 起不来的配置。
 func TestChainRejectsIncompleteParams(t *testing.T) {
 	cases := map[string]func(*ChainOutbound){

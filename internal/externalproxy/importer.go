@@ -133,12 +133,16 @@ func (s *Store) fetchAndParse(ctx context.Context, f *Fetcher, url string) (pars
 	for _, line := range lines {
 		parsed, err := ParseURI(line)
 		if err != nil {
-			if parsed.Protocol != ProtocolShadowsocks {
+			if !parsed.Protocol.Supported() {
+				// 本版本压根不收的种类(ssr:// 之类)按类型报数就够了。
 				skipCount[parsed.Protocol]++
 				batch.skipN++
 				continue
 			}
-			// 是 ss:// 却解析不出来 —— 这条要让管理员看见原文。
+			// **支持的协议却解析不出来,要让管理员看见原文。**
+			// 归进"按类型跳过"的话,报出来的是「跳过 3 条 VMess」——
+			// 他会读成"这个面板不支持 VMess",然后不再管它,
+			// 而真正的原因可能只是那三条链接的 base64 被截断了。
 			batch.errs = append(batch.errs, truncate(line, 120)+" —— "+err.Error())
 			continue
 		}
@@ -361,7 +365,7 @@ func (s *Store) applyUpstream(
 	// 加密是带随机 nonce 的,同一份明文两次加密的密文不同 ——
 	// 不能拿密文比是否有变化,只能比解密后的值。
 	changed := old.Server != item.Server || old.Port != item.Port ||
-		old.Params != item.Params || old.RawURI != item.RawURI ||
+		!old.Params.Equal(item.Params) || old.RawURI != item.RawURI ||
 		old.RawName != item.Name || old.DisplayName != displayName ||
 		old.MissingRounds != 0
 

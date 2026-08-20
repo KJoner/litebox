@@ -470,29 +470,54 @@ func TestSyncReportsSkippedByProtocol(t *testing.T) {
 	e := newEnv(t)
 	a := newAirport(t, b64List(
 		sip002("aes-128-gcm", "pw", "hk1.example.com", 8388, "香港 01"),
-		"vmess://eyJ2IjoiMiJ9",
-		"vmess://eyJ2IjoiMyJ9",
 		"trojan://pw@a.example.com:443#trojan节点",
+		"ssr://c29tZXRoaW5n",
+		"ssr://YW5vdGhlcg",
 	))
 	src := e.newSource(t, a.server.URL)
 	r := e.sync(t, src, SyncOptions{})
 
-	if r.Added != 1 {
-		t.Errorf("只应导入 1 条 Shadowsocks,实际 %d", r.Added)
+	if r.Added != 2 {
+		t.Errorf("Shadowsocks 与 Trojan 都该导入,实际 %d", r.Added)
 	}
-	if r.Skipped != 3 {
-		t.Errorf("跳过 %d 条,期望 3", r.Skipped)
+	if r.Skipped != 2 {
+		t.Errorf("跳过 %d 条,期望 2", r.Skipped)
 	}
 	counts := map[string]int{}
 	for _, g := range r.SkippedByPro {
 		counts[g.Protocol] = g.Count
 	}
-	if counts["VMESS"] != 2 || counts["TROJAN"] != 1 {
+	if counts["UNKNOWN"] != 2 {
 		t.Errorf("按协议报数不对:%v", counts)
 	}
-	// 摘要里要写清跳过了什么 —— 不写的话管理员会以为这个机场只有 1 个节点。
-	if !strings.Contains(r.Summary(), "VMess") {
+	// 摘要里要写清跳过了什么 —— 不写的话管理员会以为这个机场只有 2 个节点。
+	if !strings.Contains(r.Summary(), ProtocolUnknown.Label()) {
 		t.Errorf("摘要里没写清跳过了什么:%s", r.Summary())
+	}
+}
+
+// 支持的协议解析失败时,要报原文而不是按类型记一笔「跳过」。
+// 后者会被读成「这个面板不支持 VMess」,而真正的原因可能只是链接被截断了。
+func TestSyncReportsBrokenLinkOfSupportedProtocol(t *testing.T) {
+	e := newEnv(t)
+	a := newAirport(t, b64List(
+		sip002("aes-128-gcm", "pw", "hk1.example.com", 8388, "香港 01"),
+		"vmess://eyJ2IjoiMiJ9",
+	))
+	src := e.newSource(t, a.server.URL)
+	r := e.sync(t, src, SyncOptions{})
+
+	if r.Added != 1 {
+		t.Errorf("只有那条 Shadowsocks 该进来,实际 %d", r.Added)
+	}
+	if r.Skipped != 0 {
+		t.Errorf("坏链接不该记成「按协议跳过」,实际跳过 %d 条", r.Skipped)
+	}
+	if len(r.ParseErrors) == 0 {
+		t.Fatal("坏掉的 vmess 链接没有出现在错误里 —— 管理员不会知道少了一条")
+	}
+	if !strings.Contains(strings.Join(r.ParseErrors, " "), "vmess://") {
+		t.Errorf("错误里没有原文:%v", r.ParseErrors)
 	}
 }
 

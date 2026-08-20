@@ -55,11 +55,27 @@ func ProtocolOf(uri string) Protocol {
 func ParseURI(uri string) (Parsed, error) {
 	uri = strings.TrimSpace(uri)
 	protocol := ProtocolOf(uri)
-	if protocol != ProtocolShadowsocks {
+	var (
+		p   Parsed
+		err error
+	)
+	switch protocol {
+	case ProtocolShadowsocks:
+		p, err = parseShadowsocks(uri)
+	case ProtocolVMess:
+		p, err = parseVMess(uri)
+	case ProtocolVLESS:
+		p, err = parseVLESS(uri)
+	case ProtocolTrojan:
+		p, err = parseTrojan(uri)
+	case ProtocolHysteria2:
+		p, err = parseHysteria2(uri)
+	case ProtocolTUIC:
+		p, err = parseTUIC(uri)
+	default:
 		return Parsed{Protocol: protocol, RawURI: uri},
 			fmt.Errorf("%w:%s", ErrUnsupported, protocol.Label())
 	}
-	p, err := parseShadowsocks(uri)
 	if err != nil {
 		return Parsed{Protocol: protocol, RawURI: uri}, err
 	}
