@@ -301,10 +301,11 @@ async function doSave() {
           跳过
           {{ preview.skipped.reduce((n, g) => n + g.count, 0) }} 条:
           {{ preview.skipped.map((g) => `${g.label} ${g.count} 条`).join('、') }}
-          —— 本版本只支持 Shadowsocks。
+          —— 本版本不收这些种类。已支持 Shadowsocks、VMess、VLESS、Trojan、
+          Hysteria2 与 TUIC。
         </div>
         <div v-if="preview.parse_errors.length" class="ps__note ps__note--warn">
-          {{ preview.parse_errors.length }} 条 ss:// 链接解析失败:
+          {{ preview.parse_errors.length }} 条链接解析失败(协议是支持的,是链接本身有问题):
           <div v-for="(e, i) in preview.parse_errors.slice(0, 3)" :key="i" class="lb-mono ps__errline">
             {{ e }}
           </div>

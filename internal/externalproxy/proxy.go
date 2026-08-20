@@ -16,8 +16,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/litebox/litebox/internal/singbox"
 )
 
 var (
@@ -64,53 +67,111 @@ func (p Protocol) Label() string {
 }
 
 // Supported 表示本版本会把这个协议落库。
-func (p Protocol) Supported() bool { return p == ProtocolShadowsocks }
+func (p Protocol) Supported() bool { return p != ProtocolUnknown && p != "" }
+
+// DialableByNode 表示【我们自己的节点】能不能把它当成链式出口去拨。
+//
+// 这不是"面板认不认识",而是节点上那个二进制的能力边界:sing-box 的
+// Hysteria2 与 TUIC 走 QUIC,需要 with_quic 构建标签,而本项目的节点二进制
+// 刻意用精简标签集(见 scripts/build-singbox.sh —— 完整标签 58MB / 实占 27MB,
+// 对 128MB 的机器差距明显)。
+//
+// 用户自己的客户端是完整构建,所以这两种协议照常进订阅、照常能用;
+// 只有「让我们的节点去连它」这一件事做不了。**必须在配置的时候就说清楚**:
+// 放它过去的话,失败会发生在部署的渲染或启动那一步,而错误信息是
+// sing-box 的一句 "QUIC is not included in this build" ——
+// 管理员不会想到那是节点二进制的构建选项。
+func (p Protocol) DialableByNode() bool {
+	switch p {
+	case ProtocolShadowsocks, ProtocolVMess, ProtocolVLESS, ProtocolTrojan:
+		return true
+	}
+	return false
+}
+
+// RelayableByNginx 表示能不能用 nginx 透传到它。
+//
+// nginx stream 这边只渲染 TCP 的 server 块,而 Hysteria2 与 TUIC 是纯 UDP。
+// 透传"不理解协议"这句话只对 TCP 成立 —— 给一条 UDP 线路配 TCP 转发,
+// nginx 起得来、规则也下发得下去,只是用户永远连不上,而面板全绿。
+func (p Protocol) RelayableByNginx() bool {
+	switch p {
+	case ProtocolHysteria2, ProtocolTUIC:
+		return false
+	}
+	return p.Supported()
+}
 
 // ssMethods 是外部代理允许的 Shadowsocks 加密方法。
 //
-// **传统 AEAD 必须支持**,与自建节点的规矩相反:那是别人配好的线路,
-// 我们只负责登记与转发。把它挡在门外不会让任何人更安全,
-// 只会让一半机场用不了。
-var ssMethods = map[string]bool{
-	// SS2022
-	"2022-blake3-aes-128-gcm":       true,
-	"2022-blake3-aes-256-gcm":       true,
-	"2022-blake3-chacha20-poly1305": true,
-	// 传统 AEAD
-	"aes-128-gcm":             true,
-	"aes-192-gcm":             true,
-	"aes-256-gcm":             true,
-	"chacha20-ietf-poly1305":  true,
-	"xchacha20-ietf-poly1305": true,
-	"none":                    true,
+// **不在这里另列一份。** 这个问题只有一个正确答案 ——「sing-box 作为客户端
+// 能拨哪几种」—— 而那个答案属于 singbox 包。曾经这里自己写了一张表,
+// 它比渲染器那张宽:于是 chacha20-ietf-poly1305 的机场线路登记得进来、
+// 连通性检查是绿的、订阅也正常,唯独被设成某个入站的链式出口时,
+// 部署在渲染那一步失败并回滚,而报错出现在另一个页面上。
+func ssMethodAllowed(method string) bool {
+	_, err := singbox.ParseOutboundSSMethod(method)
+	return err == nil
 }
 
 // SSMethods 按固定顺序返回可选的加密方法,供表单下拉用。
-func SSMethods() []string {
-	return []string{
-		"2022-blake3-aes-128-gcm",
-		"2022-blake3-aes-256-gcm",
-		"2022-blake3-chacha20-poly1305",
-		"aes-128-gcm",
-		"aes-192-gcm",
-		"aes-256-gcm",
-		"chacha20-ietf-poly1305",
-		"xchacha20-ietf-poly1305",
-		"none",
-	}
-}
+func SSMethods() []string { return singbox.OutboundSSMethods() }
 
 // Params 是一条外部代理的协议参数。
 //
 // 存成加密 JSON 而不是分列:外部协议种类会越来越多,分列会让表爆炸,
 // 而这些参数是**透传给客户端**的,面板从来不需要按它们查询。
 // 索引列只有 protocol / server / port。
+//
+// 一个结构体装全部协议而不是每种一个:这些字段大量重叠(几乎每种都有
+// TLS 那一组,ws/grpc 传输层在 VMess、VLESS、Trojan 上完全一样),
+// 拆开之后 JSON 里要多一层类型判别,而**旧记录里没有那一层** ——
+// 加字段是向后兼容的,换形状不是。
 type Params struct {
+	// Shadowsocks。Password 同时也是 Trojan / Hysteria2 / TUIC 的密码 ——
+	// 它们在各自的协议里就叫 password,不给每种再起一个名字。
 	Method     string `json:"method,omitempty"`
 	Password   string `json:"password,omitempty"`
 	Plugin     string `json:"plugin,omitempty"`
 	PluginOpts string `json:"plugin_opts,omitempty"`
 	UDPOverTCP bool   `json:"udp_over_tcp,omitempty"`
+
+	// VMess / VLESS / TUIC 的用户标识。
+	UUID string `json:"uuid,omitempty"`
+	// AlterID 只有老式 VMess(MD5 认证)非零。sing-box 仍然认,
+	// 但那是 2020 年前的东西,现在的机场一律给 0。
+	AlterID int `json:"alter_id,omitempty"`
+	// Security 是 VMess 的加密方式(auto / none / aes-128-gcm ...)。
+	Security string `json:"security,omitempty"`
+	// Flow 是 VLESS 的 xtls-rprx-vision 之类。
+	Flow string `json:"flow,omitempty"`
+
+	// 传输层。空表示裸 TCP。
+	Network     string `json:"network,omitempty"`      // ws / grpc / http / httpupgrade
+	Path        string `json:"path,omitempty"`         // ws / http / httpupgrade
+	Host        string `json:"host,omitempty"`         // Host 头
+	ServiceName string `json:"service_name,omitempty"` // grpc
+
+	// TLS。TLS 为 false 时下面几项一律不渲染 —— 挂一个空的 tls 段
+	// sing-box 不报错,而排查的人会先怀疑配置串了。
+	TLS         bool     `json:"tls,omitempty"`
+	SNI         string   `json:"sni,omitempty"`
+	ALPN        []string `json:"alpn,omitempty"`
+	Insecure    bool     `json:"insecure,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"` // uTLS
+	// REALITY(机场也有卖 VLESS+REALITY 的)。
+	RealityPublicKey string `json:"reality_public_key,omitempty"`
+	RealityShortID   string `json:"reality_short_id,omitempty"`
+
+	// Hysteria2。
+	Obfs         string `json:"obfs,omitempty"` // 目前只有 salamander
+	ObfsPassword string `json:"obfs_password,omitempty"`
+	UpMbps       int    `json:"up_mbps,omitempty"`
+	DownMbps     int    `json:"down_mbps,omitempty"`
+
+	// TUIC。
+	CongestionControl string `json:"congestion_control,omitempty"`
+	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`
 }
 
 func (p Params) Marshal() (string, error) {
@@ -132,20 +193,58 @@ func ParseParams(raw string) (Params, error) {
 	return p, nil
 }
 
-// Validate 校验 Shadowsocks 参数。
+// Equal 比较两份参数是否一致。
+//
+// 不能用 == :ALPN 是切片。而这个比较的用途是同步时判断"上游改了没有",
+// 判错的方向都不好 —— 多报会让审计里出现一堆没有内容的变更,
+// 漏报会让机场换了密码之后面板还留着旧的那一份,用户连不上而面板全绿。
+func (p Params) Equal(other Params) bool {
+	// 空切片与 nil 在 DeepEqual 眼里不同,而它们表达的是同一件事:
+	// 没有 alpn。不归一化的话,同一条线路会在每一轮同步里都被判成"变了"。
+	if len(p.ALPN) == 0 {
+		p.ALPN = nil
+	}
+	if len(other.ALPN) == 0 {
+		other.ALPN = nil
+	}
+	return reflect.DeepEqual(p, other)
+}
+
+// Validate 校验协议参数。
+//
+// 每种协议只校验**没有它就一定连不上**的那几项,不校验"看起来应该填"的东西。
+// 过严的后果是拦住一条其实能用的机场线路,而管理员没有任何办法绕过 ——
+// 那条线路在他自己的客户端里是好的,他只会认为面板坏了。
 func (p Params) Validate(protocol Protocol) error {
-	if protocol != ProtocolShadowsocks {
+	switch protocol {
+	case ProtocolShadowsocks:
+		method := strings.ToLower(strings.TrimSpace(p.Method))
+		if method == "" {
+			return errors.New("加密方法不能为空")
+		}
+		if !ssMethodAllowed(method) {
+			return fmt.Errorf("未知的加密方法 %q", p.Method)
+		}
+		if p.Password == "" {
+			return errors.New("密码不能为空")
+		}
+	case ProtocolVMess, ProtocolVLESS:
+		if strings.TrimSpace(p.UUID) == "" {
+			return errors.New("UUID 不能为空")
+		}
+	case ProtocolTrojan, ProtocolHysteria2:
+		if p.Password == "" {
+			return errors.New("密码不能为空")
+		}
+	case ProtocolTUIC:
+		if strings.TrimSpace(p.UUID) == "" {
+			return errors.New("UUID 不能为空")
+		}
+		if p.Password == "" {
+			return errors.New("密码不能为空")
+		}
+	default:
 		return fmt.Errorf("%w:%s", ErrUnsupported, protocol.Label())
-	}
-	method := strings.ToLower(strings.TrimSpace(p.Method))
-	if method == "" {
-		return errors.New("加密方法不能为空")
-	}
-	if !ssMethods[method] {
-		return fmt.Errorf("未知的加密方法 %q", p.Method)
-	}
-	if p.Password == "" {
-		return errors.New("密码不能为空")
 	}
 	return nil
 }

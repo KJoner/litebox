@@ -421,6 +421,26 @@ GET  /api/metrics/status
 外部代理是「不属于本面板、不由本面板部署的成品线路」(机场订阅或朋友给的链接)。
 面板只负责登记与下发,**统计不到它们的流量**。
 
+支持的协议:`SHADOWSOCKS`(SS2022 与传统 AEAD 都收)、`VMESS`、`VLESS`、
+`TROJAN`、`HYSTERIA2`、`TUIC`。
+
+三种能力不是一回事,接口上分别由 `dialable_by_node` 与 `relayable` 回答:
+
+| | 进订阅给用户直连 | 当某个入口的出口(链式) | 被 nginx 透传 |
+|---|---|---|---|
+| Shadowsocks / VMess / VLESS / Trojan | ✅ | ✅ | ✅ |
+| Hysteria2 / TUIC | ✅ | ❌ | ❌ |
+
+后两列的「❌」与协议本身无关,是**我们这一侧**的边界:节点上的 sing-box 是
+精简构建(`with_utls,with_v2ray_api,badlinkname,tfogo_checklinkname0`,
+不含 `with_quic`),拨不动 QUIC;nginx stream 那边只渲染 TCP 的 server 块,
+而 Hysteria2 与 TUIC 是纯 UDP。用户自己的客户端是完整构建,所以这两种线路
+照常进订阅、照常能用。
+
+**Shadowsocks 之外的协议必须带 `uri`。** 面板不按字段拼这类分享链接:
+VMess 的 base64(JSON) 与 VLESS/Trojan 的查询串各家写法都不一样,自己拼一条
+丢掉的正是没解析的那些参数,而丢掉之后用户能连上、只有某些场景不通。
+
 ```text
 GET    /api/external-proxies                      ?source_id=&include_excluded=1
 POST   /api/external-proxies                      带 uri 时按分享链接解析
@@ -480,9 +500,13 @@ POST /api/proxy-sources/import    →  建源 + 按 selected_keys 导入
 * `announcement: true` —— 疑似公告而非节点(机场常把「剩余流量」「套餐到期」
   这类信息伪装成节点)。`suggested` 为 false,即默认不勾选,
   但**仍然列出** —— 识别规则一定会误伤;
-* `skipped` —— 按协议分组报数的、本版本不落库的条目(vmess / trojan …)。
+* `skipped` —— 按协议分组报数的、本版本不落库的条目(ssr:// 之类)。
   **不静默丢弃**:导入 50 条只进来 12 条而面板一声不吭,
   管理员会以为这个机场就只有 12 个节点。
+
+**支持的协议解析失败时进 `parse_errors` 而不是 `skipped`**,并带上原文。
+归进按类型报数的话,管理员看到的是「跳过 3 条 VMess」—— 他会读成
+「这个面板不支持 VMess」然后不再管它,而真正的原因可能只是那三条链接被截断了。
 
 **没勾选的条目仍然入库**,状态为 `EXCLUDED` 且不进订阅。不入库的话,
 下次同步它们会作为「新增」再进来一遍。

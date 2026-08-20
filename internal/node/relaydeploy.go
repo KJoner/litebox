@@ -293,25 +293,35 @@ func (s *Service) externalRelayTarget(
 
 // externalProbeOutbound 为外部代理构造探测出站。
 //
-// 只有 Shadowsocks 能表达成 sing-box 出站(V4 既有限制)。别的协议返回 nil
-// 并说明原因 —— 那条线路照常转发,只是这一次部署没有验证过它的落地。
+// 拨测客户端跑在中转机上,而那台机器上的 sing-box 不含 QUIC ——
+// 落地是 Hysteria2 / TUIC 时拨不了,返回 nil 并说明原因。
+// 那条转发规则照常下发(nginx 不理解协议),只是这一次部署没有验证过它,
 // **这一点必须写进部署记录**:报成功等于对一份没验证过的配置说验证过了。
+//
+// 出站的形状走 externalproxy.SingBoxOutbound,与订阅、链式出口同一处实现:
+// 手工在这里拼一份的话,拨测测的就不是用户真正会走的那套参数,
+// 而给一份错配置发绿灯比不拨测更坏。
 func externalProbeOutbound(target *ChainExternalTarget, listenPort int) (map[string]any, string) {
-	if target.Protocol != externalproxy.ProtocolShadowsocks {
-		return nil, fmt.Sprintf("落地是 %s 外部代理,本版本只能拨测 Shadowsocks",
+	if !target.Protocol.DialableByNode() {
+		return nil, fmt.Sprintf(
+			"落地是 %s 外部代理,节点上的 sing-box 不含 QUIC 支持,这一次没有拨测它",
 			target.Protocol.Label())
 	}
-	if target.Params.Method == "" || target.Params.Password == "" {
-		return nil, fmt.Sprintf("外部代理「%s」缺少加密方法或密码,无法拨测", target.DisplayName)
+	// 先按【落地的真实地址】构造,再把连接目标换成本机的转发端口。
+	// 顺序不能反:没写 sni 的线路要靠服务器地址回填 server_name,
+	// 而拿 127.0.0.1 去回填,握手会用一个落地那边根本不认的名字 ——
+	// 表现是拨测失败、一份完全正确的转发被回滚掉。
+	out, err := externalproxy.SingBoxOutbound(
+		"probe-out", "", target.Protocol, target.Server, target.Port, target.Params)
+	if err != nil {
+		return nil, fmt.Sprintf("外部代理「%s」的参数拨测不了:%v", target.DisplayName, err)
 	}
-	return map[string]any{
-		"tag":         "probe-out",
-		"type":        "shadowsocks",
-		"server":      "127.0.0.1",
-		"server_port": listenPort,
-		"method":      target.Params.Method,
-		"password":    target.Params.Password,
-	}, ""
+	out.Server, out.ServerPort = "127.0.0.1", listenPort
+	m, err := out.AsMap()
+	if err != nil {
+		return nil, fmt.Sprintf("外部代理「%s」的探测出站序列化失败:%v", target.DisplayName, err)
+	}
+	return m, ""
 }
 
 // ProbeNginx 只读探测中转主机上的 nginx 现状,不安装任何东西。

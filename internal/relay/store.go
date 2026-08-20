@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/externalproxy"
 )
 
 // Store 读写 node_relays。
@@ -354,14 +355,22 @@ func (s *Store) checkTarget(ctx context.Context, kind TargetKind, nodeID, extern
 		if externalID == 0 {
 			return errors.New("请选择落地的外部代理")
 		}
-		var count int
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM external_proxies WHERE id = ? AND deleted_at IS NULL`,
-			externalID).Scan(&count); err != nil {
+		var name, protocol string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT display_name, protocol FROM external_proxies
+			  WHERE id = ? AND deleted_at IS NULL`, externalID).Scan(&name, &protocol)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("外部代理不存在: id=%d", externalID)
+		}
+		if err != nil {
 			return err
 		}
-		if count == 0 {
-			return fmt.Errorf("外部代理不存在: id=%d", externalID)
+		// nginx stream 这边只渲染 TCP,而 Hysteria2 与 TUIC 是纯 UDP。
+		// 「透传不理解协议」这句话只对 TCP 成立 —— 配下去的话 nginx 起得来、
+		// 规则也下发得下去,只是用户永远连不上,而面板从头到尾全绿。
+		if p := externalproxy.Protocol(protocol); !p.RelayableByNginx() {
+			return fmt.Errorf("外部代理「%s」是 %s,走的是 UDP,而 nginx 透传只搬 TCP 字节",
+				name, p.Label())
 		}
 		return nil
 	}

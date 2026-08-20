@@ -62,10 +62,12 @@ func (p Protocol) UsesReality() bool { return p == ProtocolVLESSReality }
 
 // SSMethod 是 Shadowsocks 2022 的加密方法。
 //
-// 只提供 2022 系列三种,不提供传统 AEAD(aes-128-gcm 等):后者的多用户
-// 没有 EIH,服务端要对每个用户试解密,而且没有 replay 防护 ——
-// 自建节点没有理由用它。外部代理那边必须支持传统方法,那是另一回事:
-// 那是别人配好的,我们只负责登记与转发。
+// 这个类型同时用于两件事,但两件事的取值范围不同:
+// 【入站】只提供 2022 系列三种,不提供传统 AEAD(aes-128-gcm 等)——
+// 后者的多用户没有 EIH,服务端要对每个用户试解密,而且没有 replay 防护,
+// 自建节点没有理由用它;【出站】(链式落地、外部代理、订阅里的客户端配置)
+// 必须连传统方法一起支持,那是别人配好的线路,我们只负责登记与转发。
+// 两个范围分别由 ParseSSMethod 与 ParseOutboundSSMethod 把关。
 type SSMethod string
 
 const (
@@ -111,6 +113,71 @@ func ParseSSMethod(raw string) (SSMethod, error) {
 
 // KeyLen 返回该方法要求的密钥字节数。
 func (m SSMethod) KeyLen() int { return ssKeyLen[m] }
+
+// outboundSSMethods 是 sing-box 作为【客户端】能拨的 Shadowsocks 加密方法。
+//
+// 它与 ssKeyLen 回答的是两个不同的问题,不能互相代替:
+//
+//   - ssKeyLen 是「我们愿意在自己的机器上跑哪几种」—— 只有 SS2022 三种,
+//     理由见 SSMethod 的注释(传统 AEAD 的多用户没有 EIH,服务端要逐个用户
+//     试解密,也没有 replay 防护);
+//   - 这一张是「sing-box 能连别人的哪几种」。别人的线路是别人配的,
+//     传统 AEAD 在机场里至今是主流(chacha20-ietf-poly1305 尤其常见),
+//     拦住它不会让任何人更安全,只会让一半机场没法当出口用。
+//
+// **分成两张表可以,但客户端这一张只能有一份。** 这个函数存在的原因正是
+// 曾经有两份:externalproxy 那边放行了 chacha20-ietf-poly1305,登记、
+// 连通性检查、订阅全部正常,而把它设成某个入站的链式出口时,渲染期拿
+// 【服务端】那张表去校验,于是部署在十几秒后失败并回滚 —— 报错出现在
+// 另一个页面上,而管理员刚刚才看到这条线路是绿的。
+var outboundSSMethods = []SSMethod{
+	SSMethodAES128GCM,
+	SSMethodAES256GCM,
+	SSMethodChaCha20,
+	// 传统 AEAD。顺序照抄客户端里的习惯顺序,不按字母排 ——
+	// 这个列表会原样出现在表单下拉里。
+	"aes-128-gcm",
+	"aes-192-gcm",
+	"aes-256-gcm",
+	"chacha20-ietf-poly1305",
+	"xchacha20-ietf-poly1305",
+	// none 是「不加密,只做代理」,sing-box 认它。极少用,排在最后。
+	"none",
+}
+
+var outboundSSMethodSet = func() map[SSMethod]bool {
+	set := make(map[SSMethod]bool, len(outboundSSMethods))
+	for _, m := range outboundSSMethods {
+		set[m] = true
+	}
+	return set
+}()
+
+// OutboundSSMethods 按固定顺序返回出站可用的加密方法,供表单下拉与文档用。
+func OutboundSSMethods() []string {
+	out := make([]string, 0, len(outboundSSMethods))
+	for _, m := range outboundSSMethods {
+		out = append(out, string(m))
+	}
+	return out
+}
+
+// ParseOutboundSSMethod 校验一个【出站】用的加密方法。
+//
+// 与 ParseSSMethod 不同,空串是错误而不是回落到默认值:出站的方法是
+// 落地那一端的事实,不是我们的选择。猜一个默认值的表现是握手静默失败,
+// 而配置本身完全合法 —— sing-box 不会说"你的方法和对面对不上"。
+func ParseOutboundSSMethod(raw string) (SSMethod, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return "", errors.New("缺少 Shadowsocks 加密方法")
+	}
+	m := SSMethod(trimmed)
+	if !outboundSSMethodSet[m] {
+		return "", fmt.Errorf("未知的 Shadowsocks 加密方法 %q", raw)
+	}
+	return m, nil
+}
 
 var errSSKeyFormat = errors.New("Shadowsocks 密钥非法,应为 32 字节的标准 base64")
 

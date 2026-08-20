@@ -165,6 +165,30 @@ func (s *Store) SetChain(
 		}
 	}
 
+	if kind == ChainTargetExternal {
+		var name, protocol string
+		err := tx.QueryRowContext(ctx,
+			`SELECT display_name, protocol FROM external_proxies
+			  WHERE id = ? AND deleted_at IS NULL`, targetID).Scan(&name, &protocol)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: 外部代理 id=%d", ErrNotFound, targetID)
+		}
+		if err != nil {
+			return err
+		}
+		// **在写库这一步就拦住**,不等到渲染。放它过去的话,数据库改了、
+		// 界面显示"出口已改",而下一次部署会在渲染那一步失败并回滚 ——
+		// 报错落在部署记录里,写着一句 sing-box 的
+		// "QUIC is not included in this build",而管理员不会想到
+		// 那是节点二进制的构建选项。
+		if p := externalproxy.Protocol(protocol); !p.DialableByNode() {
+			return fmt.Errorf(
+				"外部代理「%s」是 %s,走 QUIC,而节点上的 sing-box 是精简构建(不含 with_quic),"+
+					"拨不动它;这条线路可以照常进订阅给用户直连,只是不能当入口的出口",
+				name, p.Label())
+		}
+	}
+
 	code := existingCode
 	uuidEnc, ssEnc := "", ""
 	if code == "" {
@@ -470,11 +494,17 @@ func (s *Store) chainExternalTarget(ctx context.Context, id int64) (*ChainExtern
 		return nil, err
 	}
 	t.Protocol = externalproxy.Protocol(protocol)
-	// 只有 Shadowsocks 能表达成 sing-box 出站(V4 既有限制)。
-	// 这里拦住而不是渲染出一个空壳:空壳会让中转起不来,
-	// 而错误信息落在"部署失败"上,查起来绕得多。
-	if t.Protocol != externalproxy.ProtocolShadowsocks {
-		return nil, fmt.Errorf("外部代理 %s 是 %s,链式出站本版本只支持 Shadowsocks",
+	// 拦在这里而不是渲染出一个空壳:空壳会让 sing-box 起不来,
+	// 而错误落在"部署失败"上,查起来绕得多。
+	//
+	// 界限不是"面板认不认识这个协议",而是**节点上那个二进制拨不拨得动**:
+	// Hysteria2 与 TUIC 走 QUIC,需要 with_quic 构建标签,而节点二进制
+	// 刻意用精简标签集。它们照常进订阅、用户自己的客户端照常能用,
+	// 只有"让我们的节点去连它"这一件事做不了。
+	if !t.Protocol.DialableByNode() {
+		return nil, fmt.Errorf(
+			"外部代理 %s 是 %s,节点上的 sing-box 不含 QUIC 支持(with_quic),拨不了它;"+
+				"这条线路可以照常进订阅给用户直连,但不能当成入口的出口",
 			t.DisplayName, t.Protocol.Label())
 	}
 	if paramsEnc != "" {

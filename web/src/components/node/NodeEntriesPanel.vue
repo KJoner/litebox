@@ -485,14 +485,45 @@ const chainForm = ref({
  * 原样渲染成一个 "0"。那既不是地址也不是名字,看起来像个 bug,
  * 而真实情况是「这个面板上还没有第二台机器可以当落地」。
  */
+/**
+ * 能当链式出口的外部代理。
+ *
+ * `dialable_by_node` 由后端算:Hysteria2 与 TUIC 走 QUIC,而节点上的
+ * sing-box 是精简构建,拨不动它们。**在这里就滤掉,而不是选完再报错** ——
+ * 那时错误会出现在十几秒后的部署记录里,读起来像是那台机器出了问题。
+ * 滤掉的那些照常在订阅里发给用户直连,只是不能当出口。
+ */
+const chainableProxies = computed(() => externalProxies.value.filter((p) => p.dialable_by_node))
+
+/**
+ * 能被 nginx 透传到的外部代理。
+ *
+ * QUIC 系(Hysteria2 / TUIC)是纯 UDP,而 stream 这边只渲染 TCP 的 server 块。
+ * 配下去的话 nginx 起得来、规则也下发得下去,只是用户永远连不上,
+ * 而面板从头到尾全绿 —— 这是最难查的一种。
+ */
+const relayableProxies = computed(() => externalProxies.value.filter((p) => p.relayable))
+const hiddenRelayTargets = computed(
+  () => externalProxies.value.length - relayableProxies.value.length,
+)
+
 const chainCandidates = computed(() =>
-  chainForm.value.target_kind === 'INBOUND' ? landingInbounds.value : externalProxies.value,
+  chainForm.value.target_kind === 'INBOUND' ? landingInbounds.value : chainableProxies.value,
 )
 const chainReason = computed(() => {
-  if (chainCandidates.value.length > 0) return ''
-  return chainForm.value.target_kind === 'INBOUND'
-    ? '还没有别的落地入口可选 —— 中转角色的机器与这台机器自己都不能当落地。'
-    : '还没有可用的外部代理。链式落地本版本只支持 Shadowsocks 的外部代理。'
+  const hidden = externalProxies.value.length - chainableProxies.value.length
+  if (chainCandidates.value.length > 0) {
+    if (chainForm.value.target_kind === 'EXTERNAL' && hidden > 0) {
+      return `另有 ${hidden} 条外部代理走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们,没有列出来 —— 它们照常发给用户直连。`
+    }
+    return ''
+  }
+  if (chainForm.value.target_kind === 'INBOUND') {
+    return '还没有别的落地入口可选 —— 中转角色的机器与这台机器自己都不能当落地。'
+  }
+  return hidden > 0
+    ? `${hidden} 条外部代理都走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们。它们照常发给用户直连,只是不能当出口。`
+    : '还没有可用的外部代理。'
 })
 
 function openChain(i: NodeInbound) {
@@ -500,7 +531,7 @@ function openChain(i: NodeInbound) {
   chainForm.value = {
     target_kind: i.chain_target_kind === 'EXTERNAL' ? 'EXTERNAL' : 'INBOUND',
     target_inbound_id: i.chain_target_inbound_id || landingInbounds.value[0]?.value || 0,
-    target_external_id: i.chain_target_external_id || externalProxies.value[0]?.id || 0,
+    target_external_id: i.chain_target_external_id || chainableProxies.value[0]?.id || 0,
   }
   chainOpen.value = true
 }
@@ -511,7 +542,8 @@ function confirmChain() {
   const name =
     chainForm.value.target_kind === 'INBOUND'
       ? landingInbounds.value.find((x) => x.value === chainForm.value.target_inbound_id)?.label
-      : externalProxies.value.find((x) => x.id === chainForm.value.target_external_id)?.display_name
+      : chainableProxies.value.find((x) => x.id === chainForm.value.target_external_id)
+          ?.display_name
   if (!name) {
     message.warning('请选择落地')
     return
@@ -641,7 +673,7 @@ function openCreate() {
     public_port: 0,
     target_kind: 'INBOUND',
     target_inbound_id: landingInbounds.value[0]?.value ?? 0,
-    target_external_id: externalProxies.value[0]?.id ?? 0,
+    target_external_id: relayableProxies.value[0]?.id ?? 0,
     access_tier_id: props.tiers[0]?.id ?? 1,
     sort_order: 0,
     subscription_enabled: true,
@@ -1131,8 +1163,8 @@ onMounted(async () => {
             v-else
             v-model:value="chainForm.target_external_id"
             placeholder="选择外部代理"
-            :disabled="!externalProxies.length"
-            :options="externalProxies.map((p) => ({ value: p.id, label: p.display_name }))"
+            :disabled="!chainableProxies.length"
+            :options="chainableProxies.map((p) => ({ value: p.id, label: p.display_name }))"
           />
         </a-form-item>
       </a-form>
@@ -1199,11 +1231,18 @@ onMounted(async () => {
           <a-select
             v-else
             v-model:value="form.target_external_id"
-            :options="externalProxies.map((p) => ({ value: p.id, label: p.display_name }))"
+            :disabled="!relayableProxies.length"
+            :options="relayableProxies.map((p) => ({ value: p.id, label: p.display_name }))"
           />
           <div class="nr__hint">
             落地是一个<b>入口</b>而不是一台机器 —— 一台机器上有两个入口时,
             「转发到它」是有歧义的,而流量进错入口不会有任何报错。
+            <template v-if="form.target_kind === 'EXTERNAL' && hiddenRelayTargets">
+              <br />
+              另有 {{ hiddenRelayTargets }} 条外部代理走 QUIC(Hysteria2 / TUIC),
+              是纯 UDP,而 nginx 透传只搬 TCP 字节 —— 没有列出来。
+              给它们配转发的话,规则下发得下去,但用户永远连不上,面板还全绿。
+            </template>
           </div>
         </a-form-item>
         <a-form-item label="访问等级">

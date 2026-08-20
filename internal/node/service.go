@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/deployment"
+	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
@@ -484,15 +485,17 @@ func (s *Service) chainOutbound(ctx context.Context, in *Inbound) (*singbox.Chai
 
 	case ChainTargetExternal:
 		t := target.External
-		// 外部代理只有 Shadowsocks 能表达成 sing-box 出站(V4 既有限制),
-		// 别的协议在 ResolveChainTarget 里就被拦下了。
-		return &singbox.ChainOutbound{
-			Protocol:   singbox.ProtocolShadowsocks,
-			Server:     t.Server,
-			ServerPort: t.Port,
-			SSMethod:   singbox.SSMethod(t.Params.Method),
-			SSPassword: t.Params.Password,
-		}, nil
+		// 协议翻译只有 externalproxy.SingBoxOutbound 一处实现,订阅、
+		// 链式出口与中转拨测共用 —— 这里再照着 Params 拼一遍的话,
+		// "用户客户端里的那份"与"节点上跑的那份"会各写各的,
+		// 而两者不一致的表现是直连能用、走中转连不上,谁都不报错。
+		// tag 留空:它由渲染那一层按 ChainTagFor 补,只能有一处给。
+		out, err := externalproxy.SingBoxOutbound(
+			"", "", t.Protocol, t.Server, t.Port, t.Params)
+		if err != nil {
+			return nil, fmt.Errorf("外部代理 %s: %w", t.DisplayName, err)
+		}
+		return &singbox.ChainOutbound{Prebuilt: &out}, nil
 	}
 	return nil, fmt.Errorf("未知的链式去向 %q", target.Kind)
 }

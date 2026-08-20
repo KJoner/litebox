@@ -1,8 +1,11 @@
 package subscription
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -57,7 +60,12 @@ type RelayNodeLanding struct {
 // RelayExternalLanding 是落地为外部代理时的参数。
 type RelayExternalLanding struct {
 	Protocol externalproxy.Protocol
-	Params   externalproxy.Params
+	// Server 是落地的真实地址。**不进订阅的连接地址** —— 客户端连的是中转主机。
+	// 它只用来补 TLS 的 server_name:握手在落地那一端终结,而链接里没写
+	// sni 时客户端默认拿"连接地址"当 SNI,经中转之后那就成了中转主机的名字,
+	// 落地直接拒绝握手 —— 而直连同一条线路完全正常,两个用户会各执一词。
+	Server string
+	Params externalproxy.Params
 	// RawURI 是上游给的原始分享链接。非空时优先原样透传,
 	// 只替换 authority 与 #name。
 	RawURI string
@@ -118,13 +126,26 @@ func EntryForRelay(cred Credentials, r PhysicalRelay) (Entry, error) {
 			SSServerKey:      r.Node.SSServerKey,
 		})
 	case r.External != nil:
+		params := r.External.Params
+		// 链接里没写 sni 的 TLS 线路,把落地的地址补进去。见 Server 的注释。
+		// 这确实让落地的**名字**出现在用户的配置里,但那是握手必需的:
+		// 不补的话这条线路根本连不上,而"连不上"与"藏住了"是两件事。
+		// 连接地址仍然只有中转主机 —— 那才是这个功能要藏的东西。
+		rawURI := replaceAuthority(r.External.RawURI, r.Host, r.Port)
+		if params.TLS && params.SNI == "" {
+			params.SNI = r.External.Server
+			// 分享链接那一路也要补:换掉 authority 的同时,链接里那个
+			// **隐含的** SNI(= 原来的地址)也跟着变了。补回原值不是在改
+			// 这条链接的含义,恰恰是在保住它。
+			rawURI = pinSNI(rawURI, r.External.Server)
+		}
 		return EntryForExternal(ExternalProxy{
 			DisplayName: r.DisplayName,
 			Protocol:    r.External.Protocol,
 			Server:      r.Host,
 			Port:        r.Port,
-			Params:      r.External.Params,
-			RawURI:      replaceAuthority(r.External.RawURI, r.Host, r.Port),
+			Params:      params,
+			RawURI:      rawURI,
 		})
 	}
 	return Entry{}, fmt.Errorf("中转线路 %s 没有落地参数", r.DisplayName)
@@ -148,7 +169,20 @@ func replaceAuthority(uri, host string, port int) string {
 	if schemeEnd < 0 {
 		return ""
 	}
+	scheme := strings.ToLower(uri[:schemeEnd])
 	rest := uri[schemeEnd+3:]
+
+	// 地址不在 URI 语法里、而是藏在 base64 正文里的两种方言。
+	// **必须单独认出来**:照下面的通用做法处理的话,整块 base64 会被当成
+	// authority 换掉,产出 `vmess://中转地址:443` 这种既连不上、
+	// 也不像链接的东西 —— 而订阅照常下发,客户端里多出一条永远失败的节点。
+	if scheme == "vmess" {
+		return replaceVMessAuthority(uri, rest, host, port)
+	}
+	if scheme == "ss" && !strings.Contains(rest, "@") {
+		return replaceLegacySSAuthority(uri, rest, host, port)
+	}
+
 	// authority 到第一个 / ? # 为止。
 	end := len(rest)
 	for i, r := range rest {
@@ -162,9 +196,162 @@ func replaceAuthority(uri, host string, port int) string {
 	// userinfo 原样保留:ss:// 的 base64 凭据、vless:// 的 UUID 都在那里,
 	// 它们是落地的凭据,与地址无关。
 	userinfo := ""
+	hostport := authority
 	if at := strings.LastIndex(authority, "@"); at >= 0 {
-		userinfo = authority[:at+1]
+		userinfo, hostport = authority[:at+1], authority[at+1:]
+	}
+	// 换掉的必须确实是一个 host:port。不检查的话,任何认不出的形状都会被
+	// 当成地址替换掉,而那正是上面两种方言出问题的方式。
+	if !looksLikeHostPort(hostport) {
+		return ""
 	}
 	return uri[:schemeEnd+3] + userinfo +
 		net.JoinHostPort(host, strconv.Itoa(port)) + rest[end:]
+}
+
+// pinSNI 把原本隐含的 SNI 显式写进链接。
+//
+// 只在「开了 TLS 而链接里没写 sni」时调用。客户端默认拿连接地址当 SNI,
+// 而经中转之后连接地址成了中转主机 —— 落地会直接拒绝握手,
+// 同一条线路直连却完全正常,两个用户会各执一词。
+//
+// 已经写了 sni 的链接一个字不动:那是上游明确表达过的东西。
+func pinSNI(uri, sni string) string {
+	if uri == "" || sni == "" {
+		return uri
+	}
+	if strings.HasPrefix(strings.ToLower(uri), "vmess://") {
+		return pinVMessSNI(uri, sni)
+	}
+	// 片段留在最后。
+	frag := ""
+	body := uri
+	if idx := strings.Index(body, "#"); idx >= 0 {
+		frag, body = body[idx:], body[:idx]
+	}
+	sep := "?"
+	if qIdx := strings.Index(body, "?"); qIdx >= 0 {
+		q := body[qIdx+1:]
+		// 三个别名都要认:写了任何一个就说明上游表达过,不能再补。
+		for _, key := range []string{"sni=", "peer=", "servername="} {
+			if strings.Contains(q, key) {
+				return uri
+			}
+		}
+		sep = "&"
+		if q == "" {
+			sep = ""
+		}
+	}
+	return body + sep + "sni=" + url.QueryEscape(sni) + frag
+}
+
+func pinVMessSNI(uri, sni string) string {
+	body := strings.TrimPrefix(uri[len("vmess://"):], "")
+	frag := ""
+	if idx := strings.Index(body, "#"); idx >= 0 {
+		frag, body = body[idx:], body[:idx]
+	}
+	raw, ok := decodeAnyBase64(body)
+	if !ok {
+		return uri
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return uri
+	}
+	if v, _ := fields["sni"].(string); strings.TrimSpace(v) != "" {
+		return uri
+	}
+	fields["sni"] = sni
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return uri
+	}
+	return "vmess://" + base64.StdEncoding.EncodeToString(encoded) + frag
+}
+
+// looksLikeHostPort 只判形状:末尾是 :数字,而且前面还有东西。
+func looksLikeHostPort(s string) bool {
+	idx := strings.LastIndex(s, ":")
+	if idx <= 0 || idx == len(s)-1 {
+		return false
+	}
+	for _, r := range s[idx+1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceVMessAuthority 改 vmess://base64(JSON) 里的 add / port。
+//
+// 解码 → 只动那两个键 → 重新编码。**不按已知字段重建 JSON** ——
+// 各家往里塞的私有键(sni、fp、alpn、各种 v2rayN 扩展)必须原样留着,
+// 与「原样透传」是同一条道理,只是这里的"原样"要深一层。
+func replaceVMessAuthority(uri, body, host string, port int) string {
+	// 片段(#name)在 vmess 里通常没有,但有的客户端会加。
+	frag := ""
+	if idx := strings.Index(body, "#"); idx >= 0 {
+		frag, body = body[idx:], body[:idx]
+	}
+	raw, ok := decodeAnyBase64(body)
+	if !ok {
+		return ""
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return ""
+	}
+	fields["add"] = host
+	// port 写成字符串:v2rayN 生成的链接里它就是字符串,而两种写法都有人认。
+	// 写数字的话,只认字符串的那些客户端会把这条读成端口 0。
+	fields["port"] = strconv.Itoa(port)
+	// sni / host 不动:那是 TLS 与 Host 头要用的名字,与连哪个地址无关。
+	// 改掉的话握手会用中转主机的名字,落地那边直接拒绝。
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return ""
+	}
+	return "vmess://" + base64.StdEncoding.EncodeToString(encoded) + frag
+}
+
+// replaceLegacySSAuthority 改旧式 ss://base64(method:password@host:port)。
+//
+// 这一支在只支持 Shadowsocks 的那一版里就已经是错的:整块 base64 会被
+// 当成 authority 换掉,产出 `ss://中转地址:8443`。SIP002 那一支不受影响,
+// 所以只有拿着旧式链接的机场会碰上,而表现是"经中转的那条永远连不上"。
+func replaceLegacySSAuthority(uri, body, host string, port int) string {
+	frag := ""
+	if idx := strings.Index(body, "#"); idx >= 0 {
+		frag, body = body[idx:], body[:idx]
+	}
+	raw, ok := decodeAnyBase64(body)
+	if !ok {
+		return ""
+	}
+	at := strings.LastIndex(raw, "@")
+	if at < 0 {
+		return ""
+	}
+	replaced := raw[:at+1] + net.JoinHostPort(host, strconv.Itoa(port))
+	return "ss://" + base64.StdEncoding.EncodeToString([]byte(replaced)) + frag
+}
+
+// decodeAnyBase64 依次尝试四种变体 —— 机场生成器用哪一种都有。
+func decodeAnyBase64(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.RawURLEncoding, base64.URLEncoding,
+		base64.RawStdEncoding, base64.StdEncoding,
+	} {
+		if raw, err := enc.DecodeString(s); err == nil {
+			return string(raw), true
+		}
+	}
+	return "", false
 }

@@ -104,28 +104,20 @@ func TestParsePluginOptions(t *testing.T) {
 	}
 }
 
-// 不支持的协议:识别得出、报得出类型,但不落库。
+// 仍然不支持的协议:识别得出、报得出类型,但不落库。
 // **不静默丢弃** —— 导入 50 条只进来 12 条而面板一声不吭,
 // 管理员会以为这个机场就只有 12 个节点。
 func TestParseUnsupportedProtocolsReportType(t *testing.T) {
-	cases := map[string]Protocol{
-		"vmess://eyJ2IjoiMiJ9":     ProtocolVMess,
-		"vless://uuid@a.com:443":   ProtocolVLESS,
-		"trojan://pw@a.com:443":    ProtocolTrojan,
-		"hysteria2://pw@a.com:443": ProtocolHysteria2,
-		"tuic://a@a.com:443":       ProtocolTUIC,
-		"ssr://something":          ProtocolUnknown,
-		"这不是链接":                    ProtocolUnknown,
-	}
-	for uri, want := range cases {
+	for _, uri := range []string{"ssr://something", "这不是链接"} {
 		got, err := ParseURI(uri)
 		if err == nil {
 			t.Errorf("%q 应当被拒绝", uri)
+			continue
 		}
-		if got.Protocol != want {
-			t.Errorf("%q 的协议 = %q,期望 %q", uri, got.Protocol, want)
+		if got.Protocol != ProtocolUnknown {
+			t.Errorf("%q 的协议 = %q,期望 %q", uri, got.Protocol, ProtocolUnknown)
 		}
-		if !strings.Contains(err.Error(), want.Label()) {
+		if !strings.Contains(err.Error(), ProtocolUnknown.Label()) {
 			t.Errorf("%q 的错误里没写清是什么协议:%v", uri, err)
 		}
 	}

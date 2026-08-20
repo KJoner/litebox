@@ -166,17 +166,79 @@ type Outbound struct {
 	Method   string `json:"method,omitempty"`
 	Password string `json:"password,omitempty"`
 
+	// 以下几组是【外部代理】才会用到的字段:机场卖的是 VMess / VLESS /
+	// Trojan / Hysteria2 / TUIC,而自建节点只跑 VLESS+REALITY 与 SS2022。
+	//
+	// 全部 omitempty,而且插在这个位置是有讲究的:自建节点渲染出的出站
+	// 与加这些字段之前【逐字节相同】(compat_test.go 钉着),
+	// 外部 Shadowsocks 的客户端出站也与订阅里原来那份逐字节相同 ——
+	// 字段顺序一变,已经把订阅导进客户端的人会看到整份配置面目全非。
+
+	// VMess。
+	Security string `json:"security,omitempty"`
+	AlterID  int    `json:"alter_id,omitempty"`
+
+	// Shadowsocks 的混淆插件与 UDP over TCP。
+	Plugin     string      `json:"plugin,omitempty"`
+	PluginOpts string      `json:"plugin_opts,omitempty"`
+	UDPOverTCP *UDPOverTCP `json:"udp_over_tcp,omitempty"`
+
+	// Hysteria2。
+	Obfs     *OutboundObfs `json:"obfs,omitempty"`
+	UpMbps   int           `json:"up_mbps,omitempty"`
+	DownMbps int           `json:"down_mbps,omitempty"`
+
+	// TUIC。
+	CongestionControl string `json:"congestion_control,omitempty"`
+	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`
+
+	// Detour 让这个出站从另一个出站发出去。节点配置里【从不使用】——
+	// 它只出现在订阅下发的客户端配置里(V5 的落地节点)。
+	Detour string `json:"detour,omitempty"`
+
 	// TCPFastOpen 跟随落地节点【已经生效】的 TFO 状态。
 	// 客户端开了而服务端没开,第一个包会白白多一次回落握手。
 	TCPFastOpen bool `json:"tcp_fast_open,omitempty"`
 
-	TLS *OutboundTLS `json:"tls,omitempty"`
+	TLS       *OutboundTLS       `json:"tls,omitempty"`
+	Transport *OutboundTransport `json:"transport,omitempty"`
+}
+
+// UDPOverTCP 只有外部 Shadowsocks 会用到。
+type UDPOverTCP struct {
+	Enabled bool `json:"enabled"`
+}
+
+// OutboundObfs 是 Hysteria2 的混淆段,目前上游只有 salamander 一种。
+type OutboundObfs struct {
+	Type     string `json:"type"`
+	Password string `json:"password,omitempty"`
+}
+
+// OutboundTransport 是 v2ray 传输层(ws / grpc / http / httpupgrade)。
+//
+// Host 是 any 而不是 []string:同一个字段名在 http 传输里是数组、
+// 在 httpupgrade 里是字符串。硬定成一种,另一种会被 sing-box 拒绝,
+// 而错误信息是一句 JSON 解码错误,与"这条机场线路用的是哪种传输"毫无关系。
+type OutboundTransport struct {
+	Type string `json:"type"`
+	// Host 与 Headers 二选一:ws 把 Host 放进 headers,
+	// http / httpupgrade 有独立的 host 字段。
+	Host        any               `json:"host,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	ServiceName string            `json:"service_name,omitempty"`
 }
 
 // OutboundTLS 是链式出站的 TLS 段。
 type OutboundTLS struct {
 	Enabled    bool   `json:"enabled"`
 	ServerName string `json:"server_name"`
+	// Insecure 跳过证书校验。只有外部代理会用到 —— 不少小机场用自签证书,
+	// 而链接里的 allowInsecure=1 正是在说这件事。丢掉它的表现是握手失败,
+	// 而同一条线路在用户自己的客户端里是好的。
+	Insecure bool     `json:"insecure,omitempty"`
+	ALPN     []string `json:"alpn,omitempty"`
 	// UTLS 让链式这一跳的 ClientHello 与真实浏览器一致。
 	// REALITY 服务端会校验它,不带的话握手直接被拒。
 	UTLS    *OutboundUTLS    `json:"utls,omitempty"`
@@ -212,6 +274,23 @@ type StatsConfig struct {
 	// Users 是统计白名单。用户必须同时出现在这里才会被计数,
 	// 缺项会导致该用户能正常上网但零流量记录且无任何报错。
 	Users []string `json:"users"`
+}
+
+// AsMap 把出站转成 map,供部署时那份临时的探测客户端配置用。
+//
+// 走 JSON 往返而不是手工搬字段:拨测的意义是"用与真实配置【相同】的参数
+// 去连一次"。手工搬的话,某天加一个字段忘了搬,拨测会对着一份自己拼的、
+// 与节点上真正跑的不一样的配置发绿灯 —— 那比不拨测更坏。
+func (o Outbound) AsMap() (map[string]any, error) {
+	raw, err := json.Marshal(o)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // MarshalIndent 输出格式化的配置 JSON。

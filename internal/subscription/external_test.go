@@ -10,6 +10,7 @@ import (
 
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/settings"
+	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -94,7 +95,7 @@ func TestExternalOutboundCarriesPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := entry.Outbound(OutboundOptions{Tag: "t"}).(clientSSOutbound)
+	out := entry.Outbound(OutboundOptions{Tag: "t"}).(singbox.Outbound)
 	if out.Plugin != "obfs-local" || out.PluginOpts != "obfs=http;obfs-host=www.bing.com" {
 		t.Errorf("插件参数丢了:%+v", out)
 	}

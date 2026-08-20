@@ -246,6 +246,19 @@ func (s *Store) normalizeCreate(ctx context.Context, p *CreateParams) error {
 	if p.Protocol == "" {
 		p.Protocol = ProtocolShadowsocks
 	}
+	// Shadowsocks 之外的协议必须带原始分享链接。**这一条排在字段校验之前** ——
+	// 缺链接时报「UUID 不能为空」会把人引去找一个填 UUID 的输入框,
+	// 而那个输入框根本不存在,正确的动作是把整条链接粘进来。
+	//
+	// 面板刻意不为它们拼分享链接:VMess 的 base64(JSON) 与 VLESS/Trojan 的
+	// 查询串各家写法都不一样,自己拼一条出来,丢掉的正是我们没解析的那些
+	// 参数 —— 而丢掉之后用户能连上、网页能开,只有某些场景不通,
+	// 没有人会往「订阅生成时丢了一个参数」上想。
+	// 有原始链接就没有这个问题:URI 与 base64 格式一律原样透传。
+	if p.Protocol != ProtocolShadowsocks && strings.TrimSpace(p.RawURI) == "" {
+		return fmt.Errorf("%s 线路请粘贴它的分享链接添加,面板不按字段拼这类链接",
+			p.Protocol.Label())
+	}
 	if err := p.Params.Validate(p.Protocol); err != nil {
 		return err
 	}
@@ -591,6 +604,14 @@ func (s *Store) ReplaceEndpoint(
 	}
 	if old.Origin == OriginImported {
 		return nil, errors.New("从订阅源导入的条目不能直接改地址与凭据,请先转为手工条目")
+	}
+	// 与 Create 同一条规矩,同样排在字段校验之前:非 Shadowsocks 的凭据
+	// 只能整条链接换。少了这一句,改一次地址就会把原始链接清空,
+	// 而那条线路此后在订阅里下发不出来 —— 面板不报错,
+	// 只是它从用户的客户端里消失了。
+	if old.Protocol != ProtocolShadowsocks && strings.TrimSpace(rawURI) == "" {
+		return nil, fmt.Errorf("%s 线路请粘贴新的分享链接,面板不按字段拼这类链接",
+			old.Protocol.Label())
 	}
 	if err := params.Validate(old.Protocol); err != nil {
 		return nil, err

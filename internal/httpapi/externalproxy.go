@@ -93,6 +93,13 @@ type externalProxyView struct {
 	*externalproxy.Proxy
 	FinalDisplayName string   `json:"final_display_name"`
 	LockedList       []string `json:"locked_list"`
+	// DialableByNode / Relayable 说的不是"面板认不认识这个协议",而是
+	// **这条线路能不能被拿来当落地**:节点上的 sing-box 不含 QUIC,
+	// nginx 透传只搬 TCP 字节。由后端算而不是让前端按协议名判断 ——
+	// 那是节点二进制的构建选项,前端没有办法知道,而它猜错的方向是
+	// 让管理员选中一条永远部署不成功(或者部署成功却谁也连不上)的落地。
+	DialableByNode bool `json:"dialable_by_node"`
+	Relayable      bool `json:"relayable"`
 }
 
 func externalProxyViews(items []*externalproxy.Proxy) []externalProxyView {
@@ -111,7 +118,13 @@ func newExternalProxyView(p *externalproxy.Proxy) externalProxyView {
 			list = append(list, f)
 		}
 	}
-	return externalProxyView{Proxy: p, FinalDisplayName: p.EffectiveDisplayName(), LockedList: list}
+	return externalProxyView{
+		Proxy:            p,
+		FinalDisplayName: p.EffectiveDisplayName(),
+		LockedList:       list,
+		DialableByNode:   p.Protocol.DialableByNode(),
+		Relayable:        p.Protocol.RelayableByNginx(),
+	}
 }
 
 func (s *Server) handleGetExternalProxy(w http.ResponseWriter, r *http.Request) {
@@ -228,14 +241,23 @@ func (s *Server) handleParseProxyURI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"protocol":     string(parsed.Protocol),
-		"display_name": parsed.Name,
-		"server":       parsed.Server,
-		"port":         parsed.Port,
-		"method":       parsed.Params.Method,
-		"plugin":       parsed.Params.Plugin,
-		"plugin_opts":  parsed.Params.PluginOpts,
-		"has_password": parsed.Params.Password != "",
+		"protocol":       string(parsed.Protocol),
+		"protocol_label": parsed.Protocol.Label(),
+		"display_name":   parsed.Name,
+		"server":         parsed.Server,
+		"port":           parsed.Port,
+		"method":         parsed.Params.Method,
+		"plugin":         parsed.Params.Plugin,
+		"plugin_opts":    parsed.Params.PluginOpts,
+		"has_password":   parsed.Params.Password != "",
+		// transport / tls 只是给管理员一眼确认"解析出来的和我预期的一样",
+		// 前端不拿它们做任何判断 —— 真正下发的是原始链接。
+		"transport": parsed.Params.Network,
+		"tls":       parsed.Params.TLS,
+		// 这条线路能不能当成某个入口的出口。**在这里就说清楚**:
+		// 等他配到出口那一步才被拒,他已经忘了这条线路是什么协议了。
+		"dialable_by_node": parsed.Protocol.DialableByNode(),
+		"relayable":        parsed.Protocol.RelayableByNginx(),
 	})
 }
 

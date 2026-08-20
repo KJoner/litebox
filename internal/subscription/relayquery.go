@@ -45,7 +45,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		       COALESCE(b.reality_dest, ''), COALESCE(b.reality_pubkey, ''),
 		       COALESCE(b.reality_short_id, ''),
 		       COALESCE(p.protocol, ''), COALESCE(p.params_encrypted, ''),
-		       COALESCE(p.raw_uri_encrypted, '')
+		       COALESCE(p.raw_uri_encrypted, ''), COALESCE(p.server, '')
 		  FROM node_relays r
 		  JOIN `+access.EffectiveRelaysView+` er ON er.relay_id = r.id
 		  JOIN nodes a ON a.id = r.node_id
@@ -72,11 +72,12 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			tfo                                bool
 			realityDest, realityPub, realitySI string
 			extProtocol, extParamsEnc, extURI  string
+			extServer                          string
 		)
 		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port, &p.IPv6Port,
 			&kind, &protocol, &ssMethod, &tfo, &ssKeyEnc,
 			&realityDest, &realityPub, &realitySI,
-			&extProtocol, &extParamsEnc, &extURI); err != nil {
+			&extProtocol, &extParamsEnc, &extURI, &extServer); err != nil {
 			return nil, err
 		}
 
@@ -102,7 +103,10 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			p.Node = landing
 
 		case "EXTERNAL":
-			landing := &RelayExternalLanding{Protocol: externalproxy.Protocol(extProtocol)}
+			landing := &RelayExternalLanding{
+				Protocol: externalproxy.Protocol(extProtocol),
+				Server:   extServer,
+			}
 			if extParamsEnc != "" {
 				raw, err := s.cipher.Decrypt(extParamsEnc)
 				if err != nil {
