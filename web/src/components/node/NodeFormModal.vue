@@ -4,7 +4,6 @@ import { message, Modal } from 'ant-design-vue'
 import {
   api,
   ApiError,
-  PROTOCOL_LABEL,
   type AccessTier,
   type Node,
   type NodeBillingMode,
@@ -12,7 +11,7 @@ import {
   type NodeRole,
   type NodeSSMethod,
 } from '@/api/client'
-import { LbSensitiveField, lbDangerConfirm } from '@/components/lb'
+import { LbSensitiveField } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from '@/components/user/quota'
 import { formatUTCTime } from '@/utils/format'
 
@@ -117,25 +116,16 @@ watch(
         sort_order: n.sort_order,
         host: n.host,
         ipv6_address: n.ipv6_address,
-        // 0 回填成空输入框:「跟随 IPv4」不该显示成一个看起来像端口的 0。
-        ipv6_proxy_port: n.ipv6_proxy_port || null,
         quota_value: q.value,
         quota_unit: q.unit,
         traffic_reset_cycle: n.traffic_reset_cycle,
         traffic_reset_day: n.traffic_reset_day,
         traffic_billing_mode: n.traffic_billing_mode,
-        protocol: n.protocol,
-        // 协议不是 SS 时后端把方法清成空串。回填成默认值而不是空 ——
-        // 空值会让下拉框显示成一片空白,看起来像没加载出来。
-        ss_method: n.ss_method || '2022-blake3-aes-128-gcm',
-        // 回填期望值而不是已生效值:这一栏是"要改成什么",
-        // 已经生效的那个在详情页单独显示。
-        tcp_fast_open: n.tcp_fast_open,
+        // 协议、端口、TFO 与握手目标【不在这里回填】—— 它们已经是入站的属性,
+        // 一台机器上可以有好几组。改它们走节点详情的「入口」面板,
+        // 那里每一条各自成行。在这里留一份会变成第二个来源,而两个来源迟早分叉。
         ssh_port: n.ssh_port,
         ssh_user: n.ssh_user,
-        proxy_port: n.proxy_port,
-        // 与公网端口相同时按「未配置转发」展示,免得看起来像特意填了两个一样的值。
-        listen_port: n.listen_port === n.proxy_port ? 0 : n.listen_port,
         api_port: n.api_port,
         subscription_enabled: n.subscription_enabled,
         public_remark: n.public_remark,
@@ -193,26 +183,10 @@ const cycleDirty = computed(
       props.node.traffic_reset_day !== form.traffic_reset_day),
 )
 
+// 协议、端口与 TFO 只在【新增】时出现:那是这台机器的第一个入口。
+// 建好之后改它们走节点详情的「入口」面板 —— 一台机器上可以有好几个入口,
+// 而这个表单描述的是机器本身。
 const isSS = computed(() => form.protocol === 'SHADOWSOCKS')
-
-/** 编辑时协议被改动。它决定保存前要不要先拦一道。 */
-const protocolChanged = computed(() => !!props.node && props.node.protocol !== form.protocol)
-
-/**
- * 切到 VLESS 需要握手目标已经实测通过。后端也会拦(那才是唯一可靠的一道),
- * 这里提前说清楚,免得管理员填完整个表单才被一句错误退回来。
- *
- * 判据用 handshake_checked_at 而不是 reality_dest 是否为空:
- * 有值不等于测过 —— 而没测过的握手目标可能超过 8192 字节记录上限,
- * 那会让节点部署完之后所有人静默握手失败。
- */
-const needsHandshakeFirst = computed(
-  () =>
-    !!props.node &&
-    protocolChanged.value &&
-    form.protocol === 'VLESS_REALITY' &&
-    !props.node.handshake_checked_at,
-)
 
 function close() {
   emit('update:open', false)
@@ -232,38 +206,15 @@ function tryClose() {
 }
 
 /**
- * 保存入口。改协议时先过一道 lbDangerConfirm —— 按 V3 的分档规则它属于
- * 「可逆但影响面大」:一次重启踢掉全部在线连接,而且所有人的订阅条目
- * 从 vless:// 变成 ss://,不重新拉订阅的客户端会一直连不上。
+ * 保存。
  *
- * 不用 LbNameConfirm 的打字摩擦:协议改错了再改回来就是,
- * 给可逆操作也加打字,管理员很快会变成无脑复制粘贴,
- * 真正不可逆的那四个反而失去警示作用。
+ * 这个表单描述的是【机器】:名称、地址、SSH、额度、访问等级。
+ * 协议、端口、TFO 与出口去向已经是入口的属性,改它们走节点详情的
+ * 「入口」面板 —— 那里每一条各自成行,而这里改一次会影响哪一个入口
+ * 是说不清的。新增时表单里仍然有那几项:它们是这台机器的第一个入口。
  */
 async function submit() {
-  if (!protocolChanged.value) return doSubmit()
-
-  const from = PROTOCOL_LABEL[props.node!.protocol]
-  const to = PROTOCOL_LABEL[form.protocol]
-  lbDangerConfirm({
-    title: `把节点「${props.node!.display_name || props.node!.name}」的落地协议改为 ${to}?`,
-    impacts: [
-      `落地协议 ${from} → ${to},整份节点配置会被替换`,
-      '需要重新部署;部署时 sing-box 重启,这台机器上全部在线连接会断开',
-      `该节点在所有用户订阅中的条目会从 ${from === 'VLESS + REALITY' ? 'vless://' : 'ss://'} 变成 ${to === 'VLESS + REALITY' ? 'vless://' : 'ss://'}`,
-      '用户必须重新拉取订阅,不更新的客户端会一直连不上',
-    ],
-    okText: '改用 ' + to,
-    okType: 'primary',
-    footer:
-      '部署成功之前订阅里仍然是旧协议的条目,现在的用户不会立刻断线 —— ' +
-      '面板只下发节点上已经生效的那一种。保存后不会自动部署,时机由你定。',
-    // 不返回这个 Promise:AntD 只要拿到 Promise 就把确认框留在屏幕上转圈等它,
-    // 而保存成功后还要再开一个「是否立即部署」的确认框,两个 Modal 会叠在一起。
-    onOk: () => {
-      void doSubmit()
-    },
-  })
+  return doSubmit()
 }
 
 async function doSubmit() {
@@ -273,11 +224,6 @@ async function doSubmit() {
   }
   if (!form.host.trim()) {
     serverError.value = '请填写 IPv4 地址'
-    return
-  }
-  if (needsHandshakeFirst.value) {
-    serverError.value =
-      '切换到 VLESS + REALITY 之前,请先到节点详情里「扫描握手目标」并应用一个实测通过的目标。'
     return
   }
   if (!isEdit.value && accessMode.value === 'password' && !form.root_password) {
@@ -349,22 +295,17 @@ async function doSubmit() {
       name: form.name,
       display_name: form.display_name,
       host: form.host,
-      // 留空即清空 IPv6,订阅里的 IPv6 条目随即消失。
+      // 留空即清空 IPv6,订阅里的 IPv6 条目随即消失 ——
+      // 同时这台机器上全部入口的 IPv6 公网端口会一并归零(后端做),
+      // 免得下次重填 IPv6 时静默套用一个几个月前的端口。
       ipv6_address: form.ipv6_address,
-      // 留空发 0 —— 后端据此在订阅生成时回落到 IPv4 端口。
-      ipv6_proxy_port: form.ipv6_proxy_port ?? 0,
       traffic_quota_bytes: quota,
       traffic_reset_cycle: form.traffic_reset_cycle,
       traffic_reset_day: form.traffic_reset_day,
       traffic_billing_mode: form.traffic_billing_mode,
-      protocol: form.protocol,
-      ss_method: form.ss_method,
-      tcp_fast_open: form.tcp_fast_open,
       ssh_port: form.ssh_port,
       ssh_user: form.ssh_user,
       ssh_key: form.ssh_key,
-      proxy_port: form.proxy_port,
-      listen_port: form.listen_port,
       api_port: form.api_port,
       access_tier_id: form.access_tier_id,
       sort_order: form.sort_order,
@@ -532,22 +473,12 @@ async function doSubmit() {
           </a-form-item>
         </a-col>
         <a-col :span="9">
-          <a-form-item label="IPv6 公网端口">
-            <a-input-number
-              v-model:value="form.ipv6_proxy_port"
-              :min="1"
-              :max="65535"
-              :disabled="!form.ipv6_address.trim()"
-              :placeholder="
-                !form.ipv6_address.trim()
-                  ? '需先填 IPv6'
-                  : form.proxy_port
-                    ? `跟随 ${form.proxy_port}`
-                    : '跟随 IPv4'
-              "
-              style="width: 100%"
-            />
-          </a-form-item>
+          <!-- IPv6 公网端口已经是【入口】的属性(一台机器上可以有好几个入口,
+               各自映射到不同的号码),改它走节点详情的「入口」面板。
+               在这里留一份会变成第二个来源,而两个来源迟早分叉。 -->
+          <div class="nf__help nf__help--row">
+            IPv6 公网端口在「入口」里按条设置,默认跟随各自的 IPv4 公网端口。
+          </div>
         </a-col>
       </a-row>
       <div class="nf__help nf__help--row">
@@ -694,7 +625,10 @@ async function doSubmit() {
         help="用面板专用密钥的节点请一直留空;填入新私钥则给这个节点单独换一把。编辑态永不回显,空框不代表密钥丢了。"
       />
 
-      <a-row :gutter="12">
+      <!-- 端口、协议与 TFO 只在【新增】时出现:那是这台机器的第一个入口。
+           建好之后它们各自成行,在节点详情的「入口」面板里改 ——
+           一台机器上可以有好几个入口,而这个表单描述的是机器本身。 -->
+      <a-row v-if="!isEdit" :gutter="12">
         <a-col :span="8">
           <a-form-item label="公网代理端口">
             <a-input-number v-model:value="form.proxy_port" :min="1" :max="65535" style="width: 100%" />
@@ -717,28 +651,31 @@ async function doSubmit() {
           </a-form-item>
         </a-col>
       </a-row>
-      <div class="nf__help nf__help--row">
+      <div v-if="!isEdit" class="nf__help nf__help--row">
         公网端口写进订阅;主机端口是 sing-box 实际监听的那个,留空表示与公网相同;API 端口仅监听节点回环。
       </div>
+      <a-form-item v-else label="API 端口">
+        <a-input-number v-model:value="form.api_port" :min="1" :max="65535" style="width: 100%" />
+        <div class="nf__help">
+          仅监听节点回环,全部入口共用一个 —— 一台机器上只有一个 sing-box 进程。
+          代理端口在「入口」里按条设置。
+        </div>
+      </a-form-item>
 
-      <a-form-item label="落地协议">
+      <a-form-item v-if="!isEdit" label="落地协议">
         <a-select v-model:value="form.protocol">
           <a-select-option value="VLESS_REALITY">VLESS + REALITY —— 需要握手目标</a-select-option>
           <a-select-option value="SHADOWSOCKS">Shadowsocks 2022 —— 不需要握手目标</a-select-option>
         </a-select>
         <div class="nf__help">
-          一个节点只跑一种协议,端口、访问等级、额度这些设置对两种协议完全一样。
-          <template v-if="isEdit">
-            <br />
-            改协议要重新部署才生效;<strong>部署成功之前订阅里仍然是旧协议的条目</strong>,
-            现在的用户不会立刻断线。
-          </template>
+          这是这台机器【第一个入口】的协议。建好之后可以在「入口」里再加,
+          同一台机器上的两个入口可以跑不同的协议、不同的端口、不同的访问等级。
         </div>
       </a-form-item>
 
       <!-- TFO 默认关,而且刻意不按机器规格自动开:它的成败取决于用户到节点
            这一段路径上的中间设备,而面板的探测是从节点本机做的,与那条路无关。 -->
-      <a-form-item label="TCP Fast Open">
+      <a-form-item v-if="!isEdit" label="TCP Fast Open">
         <a-switch v-model:checked="form.tcp_fast_open" />
         <span class="nf__inline">{{ form.tcp_fast_open ? '开启' : '关闭(默认)' }}</span>
         <div class="nf__help">
@@ -752,14 +689,10 @@ async function doSubmit() {
           <br />
           只写进 sing-box 格式的订阅;分享链接里不加 <code>tfo=1</code> ——
           它不在标准里,各家客户端认不认无法验证。
-          <template v-if="isEdit">
-            <br />
-            改了要重新部署才生效;<strong>部署成功之前订阅里仍按旧值下发</strong>。
-          </template>
         </div>
       </a-form-item>
 
-      <a-form-item v-if="isSS" label="加密方法">
+      <a-form-item v-if="!isEdit && isSS" label="加密方法">
         <a-select v-model:value="form.ss_method">
           <a-select-option value="2022-blake3-aes-128-gcm">
             AES-128-GCM —— 默认,低配机器上更快
@@ -781,7 +714,7 @@ async function doSubmit() {
            拨测客户端跑在节点自己身上,与服务端共用同一个时钟。所以这里要先说,
            部署事务开头也会实测一次并在超限时中止。 -->
       <a-alert
-        v-if="isSS"
+        v-if="!isEdit && isSS"
         type="warning"
         show-icon
         class="nf__alert-gap"
@@ -794,7 +727,7 @@ async function doSubmit() {
            而 Alert 自身 margin 为 0 —— 不补的话负边距会把说明文字拉进 Alert 框里,
            两段字直接叠在一起。 -->
       <a-alert
-        v-if="form.listen_port && form.listen_port !== form.proxy_port"
+        v-if="!isEdit && form.listen_port && form.listen_port !== form.proxy_port"
         type="warning"
         show-icon
         class="nf__alert-gap"
@@ -802,21 +735,10 @@ async function doSubmit() {
         description="面板不会创建这条转发规则。NAT 主机由服务商的端口映射完成,自建则用 nginx stream 或 iptables DNAT;sing-box 只负责监听主机端口。"
       />
 
-      <div v-if="isEdit && !isSS" class="nf__help nf__help--row">
-        REALITY 握手目标不在这里改:它必须从节点本机实测通过才能保存。
-        到节点详情里「扫描握手目标」,检测后应用。
+      <div v-if="isEdit" class="nf__help nf__help--row">
+        协议、代理端口、TCP Fast Open 与 REALITY 握手目标都在节点详情的
+        「入口」面板里按条设置 —— 一台机器上可以有好几个入口,各自不同。
       </div>
-
-      <!-- 提前说清楚,免得管理员填完整个表单才被后端一句错误退回来。
-           后端那道校验才是唯一可靠的一道,这里只是省一次往返。 -->
-      <a-alert
-        v-if="needsHandshakeFirst"
-        type="error"
-        show-icon
-        class="nf__alert-gap"
-        message="这个节点还没有实测通过的握手目标"
-        description="切换到 VLESS + REALITY 之前,请先到节点详情里「扫描握手目标」并应用一个。握手目标必须在节点本机实测:CDN 按地域下发不同证书链,记录超过 8192 字节会让所有人静默握手失败。"
-      />
     </a-form>
 
     <div v-if="isEdit && dirtyFields.length" class="nf__foot">

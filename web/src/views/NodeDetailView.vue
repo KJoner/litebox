@@ -15,7 +15,6 @@ import {
   type Node,
   type NodeCycleUsage,
   type NodeMetrics,
-  type NodeProtocol,
   type ProbeResult,
   type TuneReport,
 } from '@/api/client'
@@ -133,8 +132,12 @@ const hostIsDomain = computed(() => {
   return !/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && !host.includes(':')
 })
 
-/** 当前(期望)协议是 Shadowsocks —— 决定这一屏显示 REALITY 还是加密方法。 */
-const isSS = computed(() => node.value?.protocol === 'SHADOWSOCKS')
+/** 这台机器上的入口。中转角色恒为空数组。 */
+const inbounds = computed(() => node.value?.inbounds ?? [])
+
+/** 有没有 VLESS 入口 —— 决定这一屏要不要出现「扫描握手目标」。 */
+const hasVLESS = computed(() => inbounds.value.some((i) => i.protocol === 'VLESS_REALITY'))
+
 /**
  * 中转角色:这台机器上不跑 sing-box。
  *
@@ -149,11 +152,22 @@ const isRelay = computed(() => node.value?.role === 'RELAY')
  * 从未部署过(deployed_protocol 为空)不算不一致:那台机器上还什么都没有,
  * 报「不一致」会让管理员以为是自己改坏了什么。
  */
-const protocolMismatch = computed(
-  () =>
-    !!node.value &&
-    !!node.value.deployed_protocol &&
-    node.value.deployed_protocol !== node.value.protocol,
+const protocolMismatch = computed(() =>
+  inbounds.value.some((i) => !!i.deployed_protocol && i.deployed_protocol !== i.protocol),
+)
+
+/**
+ * 「应用握手目标」要写到哪一个入口上。
+ *
+ * 多入站之后这不再有唯一答案:一台机器上可以有两个 REALITY 入口,
+ * 各自指向不同的目标。悄悄挑一个写进去,是这类操作最容易出的那种错 ——
+ * 所以扫描面板里有一个显式的下拉,默认选第一个 VLESS 入口。
+ */
+const destInboundID = ref(0)
+const destInboundOptions = computed(() =>
+  inbounds.value
+    .filter((i) => i.protocol === 'VLESS_REALITY')
+    .map((i) => ({ value: i.id, label: i.display_name })),
 )
 
 async function load(id: number) {
@@ -337,10 +351,18 @@ function destBlockReason(d: DestCheckResult): string {
 }
 
 async function applyDest(dest: string) {
+  if (!destInboundID.value) {
+    message.warning('请先选择要写入哪一个入口')
+    return
+  }
   running.value = '应用握手目标'
   try {
     // 「应用」不是纯保存:它会再实测一次目标、通过后才写库。
-    await api.checkNodeDest(nodeId.value!, dest, true)
+    const r = await api.applyInboundDest(destInboundID.value, dest)
+    if (r.error) {
+      message.error(r.error)
+      return
+    }
     message.success(`已应用 ${dest},需要部署才在节点上生效`)
     destResults.value = []
     panel.value = ''
@@ -691,21 +713,27 @@ api
     tierLoadError.value = true
   })
 
-/** 订阅展开。IPv6 不是第二条节点记录,而是同一条记录在订阅生成时的逻辑展开。 */
-const subEntries = computed(() => {
-  const n = node.value
-  if (!n) return []
-  const out = [{ name: n.display_name || n.name, addr: `${n.host}:${n.proxy_port}` }]
-  if (n.ipv6_address) {
-    // 端口为 0 表示跟随 IPv4 —— 这里的回落必须和后端 Expand 里的一致。
-    const port = n.ipv6_proxy_port || n.proxy_port
-    out.push({
-      name: `${n.display_name || n.name}-IPV6`,
-      addr: `[${n.ipv6_address}]:${port}`,
+/**
+ * 端口摘要:每个入口一段「公网 → 主机」。
+ *
+ * 写的是【公网端口】—— 那是用户实际要连的号码。NAT 机器上两者不同,
+ * 而那正是排查「连不上」时第一个要看的东西。
+ */
+const portSummary = computed(() =>
+  inbounds.value
+    .map((i) => {
+      const pub = i.public_port || i.listen_port
+      // 相同时只写一个号码。写成「公网 443 → 主机 443」是把同一个数字说两遍,
+      // 而那正好会让人以为这台机器上配了端口转发。
+      return pub === i.listen_port ? `${pub}` : `${pub}→${i.listen_port}`
     })
-  }
-  return out
-})
+    .join(' '),
+)
+
+/** 有没有入口的公网端口与主机监听端口不同 —— 那需要一条自建的端口转发。 */
+const needsPortForward = computed(() =>
+  inbounds.value.some((i) => i.public_port && i.public_port !== i.listen_port),
+)
 </script>
 
 <template>
@@ -733,14 +761,14 @@ const subEntries = computed(() => {
           {{ node.name }} · {{ node.host }}
           <!-- 中转角色没有自己的入站,那三个端口在库里是 0,写出来只会让人
                以为配漏了。客户端连的端口在「入口」里,一条规则一个。 -->
+          <!-- 写明「端口」二字:多入站之后这里是一串数字,不标的话
+               它看起来像是版本号或者别的什么。 -->
           <template v-if="node.role !== 'RELAY'">
-            · 公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}
+            · 端口 {{ portSummary || '无(一个入口都没有)' }}
           </template>
           · SSH {{ node.ssh_port }}
           <!-- 带端口显示 IPv6 必须加方括号:2a02:…::1:9443 分不清哪一段是端口。 -->
-          <template v-if="node.ipv6_address">
-            · IPv6 [{{ node.ipv6_address }}]:{{ node.ipv6_proxy_port || node.proxy_port }}
-          </template>
+          <template v-if="node.ipv6_address"> · IPv6 [{{ node.ipv6_address }}]</template>
         </div>
       </div>
 
@@ -843,17 +871,17 @@ const subEntries = computed(() => {
         >
           比对配置
         </a-button>
-        <!-- Shadowsocks 节点上这一项仍然可点。它是切回 VLESS 的前置步骤 ——
-             切协议要求握手目标已经实测通过,而实测只能从这里做。
-             按钮上写清楚为什么它在一个不用 REALITY 的节点上出现。 -->
+        <!-- 一个 VLESS 入口都没有时这一项仍然可点。它是把某个入口切到
+             VLESS 的前置步骤 —— 切协议要求握手目标已经实测通过,
+             而实测只能从这里做。按钮上写清楚它为什么在这里出现。 -->
         <a-button
           v-if="!isRelay"
           size="small"
           :loading="running === '扫描握手目标'"
-          :title="isSS ? '当前协议不用 REALITY。实测通过后才能把这个节点切回 VLESS' : ''"
+          :title="hasVLESS ? '' : '这台机器上还没有 VLESS 入口。实测通过后才能把某个入口切到 VLESS'"
           @click="doScanDests"
         >
-          扫描握手目标<template v-if="isSS">(切回 VLESS 用)</template>
+          扫描握手目标<template v-if="!hasVLESS">(切到 VLESS 用)</template>
         </a-button>
         <a-button
           v-if="!isRelay"
@@ -1017,6 +1045,15 @@ const subEntries = computed(() => {
       <section v-else-if="panel === 'dest' && destResults.length" class="nd__panel">
         <div class="nd__panel-head">
           <span class="nd__panel-title">扫描握手目标 · 从节点本机实测 {{ destResults.length }} 个候选</span>
+          <!-- 写到哪一个入口上必须显式选。多入站之后这不再有唯一答案 ——
+               悄悄挑一个写进去,是这类操作最容易出的那种错。 -->
+          <a-select
+            v-model:value="destInboundID"
+            size="small"
+            style="min-width: 180px"
+            placeholder="写入哪个入口"
+            :options="destInboundOptions"
+          />
         </div>
         <div class="nd__dest">
           <div class="nd__dest-row nd__dest-row--head">
@@ -1028,7 +1065,7 @@ const subEntries = computed(() => {
             <span class="lb-mono">{{ d.max_record_size || '—' }}</span>
             <span>
               <LbStatusTag
-                v-if="node.reality_dest === d.server"
+                v-if="inbounds.some((i) => i.reality_dest === d.server)"
                 :meta="{ text: '当前使用', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }"
               />
               <a-tooltip v-else-if="destBlockReason(d)" :title="destBlockReason(d)">
@@ -1078,9 +1115,15 @@ const subEntries = computed(() => {
                        而真实情况是这台机器上根本没有这个概念 ——
                        客户端连的端口在「入口」里,一条转发规则一个。 -->
                   <template v-if="!isRelay">
-                    <div>
-                      <span>代理端口</span>
-                      <b class="lb-mono">公网 {{ node.proxy_port }} → 主机 {{ node.listen_port }}</b>
+                    <div v-for="i in inbounds" :key="i.id">
+                      <span>{{ i.display_name }}</span>
+                      <b class="lb-mono">
+                        公网 {{ i.public_port || i.listen_port }} → 主机 {{ i.listen_port }}
+                      </b>
+                    </div>
+                    <div v-if="!inbounds.length">
+                      <span>入口</span>
+                      <b><a @click="tab = 'entries'">一个都没有 —— 去「入口」加一条</a></b>
                     </div>
                     <div><span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b></div>
                   </template>
@@ -1092,8 +1135,7 @@ const subEntries = computed(() => {
                     <span>IPv6</span>
                     <b class="lb-mono">
                       <template v-if="node.ipv6_address">
-                        [{{ node.ipv6_address }}]:{{ node.ipv6_proxy_port || node.proxy_port }}
-                        <template v-if="!node.ipv6_proxy_port">(端口跟随 IPv4)</template>
+                        [{{ node.ipv6_address }}](端口按入口设置)
                       </template>
                       <template v-else>未配置(订阅中只有 IPv4 条目)</template>
                     </b>
@@ -1122,78 +1164,93 @@ const subEntries = computed(() => {
                   </div>
                 </div>
               </div>
-              <div v-if="node.listen_port !== node.proxy_port" class="nd__card-foot">
-                公网端口与主机端口不同 —— 需自行配置端口转发,面板只让 sing-box 监听主机端口。
+              <div v-if="needsPortForward" class="nd__card-foot">
+                有入口的公网端口与主机端口不同 —— 需自行配置端口转发,
+                面板只让 sing-box 监听主机端口。
               </div>
             </section>
 
-            <!-- 落地协议、握手目标、TFO 全是 sing-box 入站的属性。
-                 中转机上这些列保持着建表时的默认值,渲染出来就是一份
-                 从来没有生效过的配置 —— 看起来像是配好了。 -->
+            <!-- 落地协议、握手目标、TFO 全是【入口】的属性,一台机器上
+                 可以有好几组。中转机上一个入口都没有,这一块整个不出现 ——
+                 渲染一份从来没有生效过的配置看起来像是配好了。 -->
             <section v-if="!isRelay" class="nd__card">
               <div class="nd__card-head">
-                落地协议与配置版本
-                <a v-if="!isSS" @click="doScanDests">扫描握手目标</a>
+                入口与配置版本
+                <a @click="tab = 'entries'">去「入口」管理</a>
               </div>
               <div class="nd__card-body">
-                <div class="nd__kv">
+                <div v-if="!inbounds.length" class="nd__card-note">
+                  这台机器上一个入口都没有 —— sing-box 会正常运行,但谁都连不上。
+                </div>
+                <div v-for="i in inbounds" :key="i.id" class="nd__kv">
                   <!-- 「期望」与「节点上生效」分两行,不合成一行。
                        合起来只能显示其中一个:显示期望值会让管理员以为切换已经
                        完成(而节点上还是旧协议),显示生效值又看不出他刚才改过。 -->
-                  <div>
-                    <span>期望协议</span>
-                    <b>{{ PROTOCOL_LABEL[node.protocol] }}</b>
+                  <div class="nd__kv-wide">
+                    <span>入口</span>
+                    <b>{{ i.display_name }} <span class="lb-mono">{{ i.tag }}</span></b>
                   </div>
-                  <div>
-                    <span>节点上生效</span>
-                    <b :style="{ color: protocolMismatch ? color.warning : undefined }">
-                      {{
-                        node.deployed_protocol
-                          ? PROTOCOL_LABEL[node.deployed_protocol]
-                          : '从未部署'
-                      }}
-                    </b>
-                  </div>
-                  <template v-if="isSS">
-                    <div class="nd__kv-wide">
-                      <span>加密方法</span>
-                      <b class="lb-mono">{{ node.ss_method || '—' }}</b>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div><span>握手目标</span><b class="lb-mono">{{ node.reality_dest || '未设置' }}<template v-if="node.reality_dest">:{{ node.reality_dest_port }}</template></b></div>
-                    <div>
-                      <span>最大 TLS 记录</span>
-                      <b
-                        class="lb-mono"
-                        :style="{
-                          color: node.handshake_max_record_size > 8192 ? color.danger : undefined,
-                        }"
-                      >
-                        {{ node.handshake_max_record_size || '未实测' }} / 8192
-                      </b>
-                    </div>
-                  </template>
-                  <!-- 与协议一样分两行。TFO 必须两端一致才有意义,而"改了没部署"
-                       的那段时间里订阅下发的是旧值 —— 只显示一个的话,
-                       管理员看到「已开启」会以为客户端那边也已经在用了。 -->
-                  <div>
-                    <span>TCP Fast Open</span>
-                    <b>{{ node.tcp_fast_open ? '已开启' : '未开启' }}</b>
-                  </div>
+                  <div><span>期望协议</span><b>{{ PROTOCOL_LABEL[i.protocol] }}</b></div>
                   <div>
                     <span>节点上生效</span>
                     <b
                       :style="{
                         color:
-                          node.tcp_fast_open !== node.deployed_tcp_fast_open
+                          i.deployed_protocol && i.deployed_protocol !== i.protocol
                             ? color.warning
                             : undefined,
                       }"
                     >
-                      {{ node.deployed_tcp_fast_open ? '已开启' : '未开启' }}
+                      {{ i.deployed_protocol ? PROTOCOL_LABEL[i.deployed_protocol] : '从未部署' }}
                     </b>
                   </div>
+                  <template v-if="i.protocol === 'SHADOWSOCKS'">
+                    <div class="nd__kv-wide">
+                      <span>加密方法</span>
+                      <b class="lb-mono">{{ i.ss_method || '—' }}</b>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div>
+                      <span>握手目标</span>
+                      <b class="lb-mono">
+                        {{ i.reality_dest || '未设置'
+                        }}<template v-if="i.reality_dest">:{{ i.reality_dest_port }}</template>
+                      </b>
+                    </div>
+                    <div>
+                      <span>最大 TLS 记录</span>
+                      <b
+                        class="lb-mono"
+                        :style="{
+                          color: i.handshake_max_record_size > 8192 ? color.danger : undefined,
+                        }"
+                      >
+                        {{ i.handshake_max_record_size || '未实测' }} / 8192
+                      </b>
+                    </div>
+                    <div class="nd__kv-wide">
+                      <span>上次实测</span>
+                      <b><LbTimeText :value="i.handshake_checked_at" empty="从未实测" /></b>
+                    </div>
+                  </template>
+                  <!-- 与协议一样分两行。TFO 必须两端一致才有意义,而"改了没部署"
+                       的那段时间里订阅下发的是旧值 —— 只显示一个的话,
+                       管理员看到「已开启」会以为客户端那边也已经在用了。 -->
+                  <div><span>TCP Fast Open</span><b>{{ i.tcp_fast_open ? '已开启' : '未开启' }}</b></div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      :style="{
+                        color:
+                          i.tcp_fast_open !== i.deployed_tcp_fast_open ? color.warning : undefined,
+                      }"
+                    >
+                      {{ i.deployed_tcp_fast_open ? '已开启' : '未开启' }}
+                    </b>
+                  </div>
+                </div>
+                <div class="nd__kv">
                   <div><span>配置版本</span><b class="lb-mono">rev {{ node.config_revision }}</b></div>
                   <div>
                     <span>已部署配置</span>
@@ -1204,17 +1261,11 @@ const subEntries = computed(() => {
                       {{ node.deployed_config_sha256 ? shortHash(node.deployed_config_sha256) : '从未部署' }}
                     </b>
                   </div>
-                  <div v-if="!isSS" class="nd__kv-wide">
-                    <span>上次实测</span>
-                    <b><LbTimeText :value="node.handshake_checked_at" empty="从未实测" /></b>
-                  </div>
                 </div>
               </div>
               <div v-if="protocolMismatch" class="nd__card-foot">
-                协议已改但还没部署。<strong>节点上仍在运行
-                {{ PROTOCOL_LABEL[node.deployed_protocol as NodeProtocol] }},
-                订阅里下发的也是它</strong> —— 现在的用户不会断线。
-                部署之后才会切换到 {{ PROTOCOL_LABEL[node.protocol] }},届时所有人都要重新拉一次订阅。
+                有入口改了协议但还没部署。<strong>节点上仍在运行旧协议,订阅里下发的也是它</strong>
+                —— 现在的用户不会断线。部署之后才切换,届时那个入口的用户都要重新拉一次订阅。
               </div>
             </section>
 
@@ -1458,7 +1509,6 @@ const subEntries = computed(() => {
           <NodeEntriesPanel
             :key="node.id"
             :node="node"
-            :sub-entries="subEntries"
             @busy="(label) => (running = label)"
             @changed="reload"
           />
