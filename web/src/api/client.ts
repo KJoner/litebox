@@ -204,6 +204,19 @@ export const PROTOCOL_LABEL: Record<NodeProtocol, string> = {
   SHADOWSOCKS: 'Shadowsocks 2022',
 }
 
+/**
+ * 加密方法的说明。**只在这里写一遍** —— 建节点表单与入口表单各抄一份的话,
+ * 某天改了措辞只改到一处,而两处说的是同一件事。
+ *
+ * 只提供 2022 系列:传统的 aes-128-gcm 那几种没有 replay 防护,
+ * 多用户也要逐个试解密。
+ */
+export const SS_METHOD_LABEL: Record<NodeSSMethod, string> = {
+  '2022-blake3-aes-128-gcm': 'AES-128-GCM —— 默认,低配机器上更快',
+  '2022-blake3-aes-256-gcm': 'AES-256-GCM',
+  '2022-blake3-chacha20-poly1305': 'ChaCha20-Poly1305 —— 无 AES 硬件加速的老 ARM',
+}
+
 /** 列表里的短标记。全称太长,会把展示名挤到换行。 */
 export const PROTOCOL_SHORT: Record<NodeProtocol, string> = {
   VLESS_REALITY: 'VLESS',
@@ -227,8 +240,100 @@ export const NODE_ROLE_LABEL: Record<NodeRole, string> = {
   RELAY: '中转',
 }
 
-/** 链式出站的落地去向。空串表示本机直连。 */
-export type ChainTargetKind = '' | 'NODE' | 'EXTERNAL'
+/**
+ * 链式出站的落地去向。空串表示本机直连。
+ *
+ * INBOUND 指的是【落地机器上的某一个入站】而不是整台机器:一台机器上有
+ * 两个入口时,「转发到 B」是有歧义的,而歧义的表现是流量进了管理员没打算
+ * 用的那个入口(协议、端口、等级都不同),没有任何一层会报错。
+ */
+export type ChainTargetKind = '' | 'INBOUND' | 'EXTERNAL'
+
+/**
+ * 一台落地机器上的一个 sing-box 入站(V8 多入站)。
+ *
+ * V8 之前这些字段直接挂在 Node 上,因为那时一台机器只有一个入站。
+ * 协议、端口、REALITY、TFO、访问等级与出口去向全部降到这一层 ——
+ * 同一台机器上的两个入口可以完全不同。
+ *
+ * **流量拆不到入口。** V2Ray 的用户计数器名里没有入站维度,同一用户在
+ * 同一台机器上的流量是所有入口的合计。按节点看的数字仍然完全正确,
+ * 但「这个人在 8443 那个入口用了多少」这个问题答不了。
+ */
+export interface NodeInbound {
+  id: number
+  node_id: number
+  /** 所属机器的内部名称与展示名称,只给后台用 */
+  node_name: string
+  node_display_name: string
+  /**
+   * sing-box 配置里的 inbound.tag,建库时分配、一经分配不可更改。
+   * 它同时是入站级流量计数器的名字。
+   */
+  tag: string
+  /** 订阅与门户里显示的名字 */
+  display_name: string
+  /** 期望协议。改了它必须重新部署,部署成功前订阅仍下发旧协议的条目。 */
+  protocol: NodeProtocol
+  /** 只在 SHADOWSOCKS 下有值 */
+  ss_method: NodeSSMethod | ''
+  /**
+   * 节点上【已经生效】的协议,只在部署成功时写入。空串表示这个入口
+   * 还没真正上过节点 —— 订阅据此过滤,而机器级的部署状态答不了这个问题。
+   */
+  deployed_protocol: NodeProtocol | ''
+  deployed_ss_method: NodeSSMethod | ''
+  /** sing-box 真正 bind 的端口 */
+  listen_port: number
+  /** 客户端连接的公网端口。0 表示跟随 listen_port。 */
+  public_port: number
+  /** IPv6 条目用的公网端口。0 表示跟随 public_port。 */
+  ipv6_public_port: number
+  tcp_fast_open: boolean
+  /** 节点上【已经生效】的 TFO。订阅只看它,理由同 deployed_protocol。 */
+  deployed_tcp_fast_open: boolean
+  reality_dest: string
+  reality_dest_port: number
+  reality_public_key: string
+  reality_short_id: string
+  handshake_max_record_size: number
+  handshake_checked_at: string | null
+  chain_target_kind: ChainTargetKind
+  chain_target_inbound_id: number
+  chain_target_external_id: number
+  /** 链路凭据在落地那台机器的流量统计里的计数器名。空串表示还没分配过。 */
+  chain_code: string
+  access_tier_id: number
+  access_tier_code: string
+  access_tier_name: string
+  access_tier_level: number
+  sort_order: number
+  /** 关掉后这个入口不再进新生成的订阅,但它仍然在节点上运行 */
+  subscription_enabled: boolean
+  public_remark: string
+  /** 关掉后这个入站不再渲染进 sing-box 配置(下次部署生效) */
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** 新增或编辑一个入口的请求体。新增与编辑收同一份字段。 */
+export interface NodeInboundInput {
+  display_name: string
+  protocol: NodeProtocol
+  ss_method?: NodeSSMethod | ''
+  listen_port: number
+  public_port: number
+  ipv6_public_port?: number
+  tcp_fast_open: boolean
+  reality_dest?: string
+  reality_dest_port?: number
+  access_tier_id?: number
+  sort_order?: number
+  subscription_enabled?: boolean
+  enabled?: boolean
+  public_remark?: string
+}
 
 export interface Node {
   id: number
@@ -250,13 +355,6 @@ export interface Node {
   /** 可选的公网 IPv6,只影响订阅:填了就多下发一条「展示名称-IPV6」 */
   ipv6_address: string
   /**
-   * IPv6 条目在订阅里用的公网端口。0 表示跟随 proxy_port。
-   *
-   * 存 0 而不是把当时的 proxy_port 写进去 —— 那样以后改 IPv4 公网端口,
-   * IPv6 条目会停在旧端口上,而管理员当初看到的是一个空输入框。
-   */
-  ipv6_proxy_port: number
-  /**
    * 0 表示不限量。只用于统计与预警,超额不会自动停服。
    * 按**主机计费口径**计,也就是 VPS 商账单上的那个数字。
    */
@@ -266,11 +364,18 @@ export interface Node {
   traffic_billing_mode: NodeBillingMode
   ssh_port: number
   ssh_user: string
-  /** 客户端连接的公网端口,写进订阅 */
-  proxy_port: number
-  /** sing-box 在节点上监听的端口,NAT / nginx 转发时与 proxy_port 不同 */
-  listen_port: number
+  /**
+   * V2Ray API 的回环端口,全部入站共用一个 —— 一台机器上只有一个
+   * sing-box 进程,也就只有一个 API 端点。
+   */
   api_port: number
+  /**
+   * 这台机器上的 sing-box 入口。中转角色恒为空数组。
+   *
+   * 协议、端口、REALITY、TFO、访问等级与出口去向都在这里,不在 Node 上 ——
+   * V8 之前它们是节点的属性,那时一台机器只有一个入站。
+   */
+  inbounds: NodeInbound[]
   arch: string
   singbox_version: string
   singbox_build_tags: string
@@ -281,49 +386,14 @@ export interface Node {
    * 所以第一次探测之后节点可能会变成「待部署」—— 那正是这一项要生效。
    */
   mem_total_mb: number
-  /** 期望的落地协议。改了它必须重新部署,部署成功前订阅仍下发旧协议的条目。 */
-  protocol: NodeProtocol
-  /** 只在 SHADOWSOCKS 下有值 */
-  ss_method: NodeSSMethod | ''
-  /**
-   * 节点上【已经生效】的协议,只在部署成功时写入。空串表示从未部署过。
-   *
-   * 订阅、门户与「节点上现在跑什么」一律看它,不看 protocol ——
-   * 两者不同就是「改了协议还没部署」,那段时间里用户手上的订阅仍然可用。
-   */
-  deployed_protocol: NodeProtocol | ''
-  deployed_ss_method: NodeSSMethod | ''
-  /**
-   * TCP Fast Open 的期望值。一个开关同时管两端:节点入站与订阅里下发给
-   * 客户端的 sing-box 出站 —— 只开一边不会有任何效果。
-   */
-  tcp_fast_open: boolean
-  /** 节点上【已经生效】的 TFO。订阅只看它,理由同 deployed_protocol。 */
-  deployed_tcp_fast_open: boolean
-  reality_dest: string
-  reality_dest_port: number
-  reality_public_key: string
-  reality_short_id: string
-  handshake_max_record_size: number
-  handshake_checked_at: string | null
   role: NodeRole
-  /**
-   * 链式出站的去向。空串表示本机直连。
-   *
-   * 它**不进订阅** —— 订阅里这个节点还是原来那一条,客户端根本不知道
-   * 它后面还有一跳。
-   */
-  chain_target_kind: ChainTargetKind
-  chain_target_node_id: number
-  chain_target_external_id: number
-  /** 链路凭据在落地那台机器的流量统计里的计数器名。空串表示还没分配过。 */
-  chain_code: string
   status: NodeStatus
   last_heartbeat_at: string | null
   config_revision: number
   deployed_config_sha256: string
   /**
    * 按 mem_total_mb 算出来的 UDP 会话超时,空串表示用 sing-box 的默认值(5m)。
+   * 它是【机器】的属性,全部入口共用同一个值。
    *
    * 后端算好下发,前端不按内存自己推 —— 分档边界只能有一处实现,
    * 各算一遍会在某个内存刚好卡在边界上的节点上分叉,而两边都不报错。
@@ -364,13 +434,14 @@ export interface NodeRelay {
    * 订阅条目会停在旧端口上,而管理员当初看到的是一个空输入框。
    */
   public_port: number
-  target_kind: 'NODE' | 'EXTERNAL'
-  target_node_id: number
+  target_kind: 'INBOUND' | 'EXTERNAL'
+  /** 落地是自建节点【某一个入口】的 id,不是机器的 id */
+  target_inbound_id: number
   target_external_id: number
-  /** 落地的展示名,只给后台看 */
+  /** 落地的展示名(机器 / 入口),只给后台看 */
   target_name: string
   /**
-   * 落地当前是否能给出可用的协议参数(自建节点要求已成功部署过)。
+   * 落地当前是否能给出可用的协议参数(自建入口要求已成功部署过)。
    *
    * 为 false 时这条线路**不会出现在任何人的订阅里** —— 界面上必须说出来,
    * 否则管理员会对着一条"配好了却不在订阅里"的线路找半天。
@@ -1294,10 +1365,17 @@ export const api = {
       `/api/nodes/${id}/install`,
       { method: 'POST' },
     ),
-  checkNodeDest: (id: number, dest: string, apply = false) =>
+  /**
+   * 从这台机器的出口实测一个握手目标。**只检测,不写入。**
+   *
+   * 写入必须指名道姓地写到某一个入口上(applyInboundDest)—— 多入站之后
+   * 一台机器上可以有两个 REALITY 入口,各自指向不同的目标,
+   * 而「写到这个节点上」已经不再指向一个确定的对象。
+   */
+  checkNodeDest: (id: number, dest: string) =>
     request<DestCheckResult>(`/api/nodes/${id}/dest-check`, {
       method: 'POST',
-      body: { dest, port: 443, apply },
+      body: { dest, port: 443 },
     }),
   scanNodeDests: (id: number) =>
     request<{ items: DestCheckResult[] }>(`/api/nodes/${id}/dest-scan`, { method: 'POST' }),
@@ -1329,6 +1407,34 @@ export const api = {
   destCandidates: () =>
     request<{ items: string[]; max_record_size: number }>('/api/dest-candidates'),
 
+  // sing-box 入口(V8 多入站)。一台落地机器可以有多个入口,
+  // 各自的协议、端口、访问等级与出口去向互不相干。
+  //
+  // 增删改一律【不自动部署】:那会重启 sing-box,把这台机器上全部入口的
+  // 在线连接一起踢掉,而管理员做的只是动其中一个。界面上写明「下次部署后生效」。
+  nodeInbounds: (nodeID: number) =>
+    request<{ items: NodeInbound[] }>(`/api/nodes/${nodeID}/inbounds`),
+  createInbound: (nodeID: number, body: Record<string, unknown>) =>
+    request<{ inbound: NodeInbound; needs_deploy: boolean }>(`/api/nodes/${nodeID}/inbounds`, {
+      method: 'POST',
+      body,
+    }),
+  updateInbound: (id: number, body: Record<string, unknown>) =>
+    request<{ inbound: NodeInbound; needs_deploy: boolean }>(`/api/inbounds/${id}`, {
+      method: 'PUT',
+      body,
+    }),
+  deleteInbound: (id: number) =>
+    request<{ deleted: boolean; needs_deploy: boolean }>(`/api/inbounds/${id}`, {
+      method: 'DELETE',
+    }),
+  /** 实测握手目标并在通过后写入这个入口;不通过时拒绝保存。 */
+  applyInboundDest: (id: number, dest: string) =>
+    request<{ result: DestCheckResult; error?: string }>(`/api/inbounds/${id}/dest-check`, {
+      method: 'POST',
+      body: { dest, port: 443 },
+    }),
+
   // 中转:转发规则的增删改只 reload nginx,不打断任何在途连接,
   // 因此这一组接口的操作摩擦比「部署」低一档。
   relays: () => request<{ items: NodeRelay[] }>('/api/relays'),
@@ -1349,13 +1455,13 @@ export const api = {
 
   // 链式出站是两台机器的复合操作:启用时先部署落地再部署中转主机,
   // 解除时顺序相反。顺序由后端保证,前端只负责把两次部署的结果都显示出来。
-  applyChain: (nodeID: number, body: Record<string, unknown>) =>
-    request<{ result: ChainApplyResult; error?: string }>(`/api/nodes/${nodeID}/chain`, {
+  applyChain: (inboundID: number, body: Record<string, unknown>) =>
+    request<{ result: ChainApplyResult; error?: string }>(`/api/inbounds/${inboundID}/chain`, {
       method: 'POST',
       body,
     }),
-  clearChain: (nodeID: number) =>
-    request<{ result: ChainApplyResult; error?: string }>(`/api/nodes/${nodeID}/chain`, {
+  clearChain: (inboundID: number) =>
+    request<{ result: ChainApplyResult; error?: string }>(`/api/inbounds/${inboundID}/chain`, {
       method: 'DELETE',
     }),
 

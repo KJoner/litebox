@@ -405,30 +405,63 @@ function billingNote(id: number): string {
 }
 
 /**
- * 列表里的协议标记。
+ * 列表里的协议标记。多入站之后一台机器上可以有好几种,这里做去重汇总。
  *
  * 取【已部署】的协议:列表回答的是「这台机器现在是什么样」,而
  * deployed_protocol 才是节点上真正在跑的那个。用期望值的话,改完协议
  * 还没部署的那段时间里,列表说 SS2022、用户订阅里却仍是 vless://。
  *
- * 从未部署过时回落到期望值并加问号 —— 那台机器上还什么都没有。
+ * 从未部署过的入口回落到期望值并加问号 —— 那个入口在节点上还不存在。
  */
 function protocolShort(n: Node): string {
-  if (!n.deployed_protocol) return PROTOCOL_SHORT[n.protocol] + '?'
-  return PROTOCOL_SHORT[n.deployed_protocol]
+  const seen = new Set<string>()
+  for (const i of n.inbounds ?? []) {
+    seen.add(i.deployed_protocol ? PROTOCOL_SHORT[i.deployed_protocol] : PROTOCOL_SHORT[i.protocol] + '?')
+  }
+  return [...seen].join(' / ') || '无入口'
 }
 
 function protocolTitle(n: Node): string {
-  if (!n.deployed_protocol) {
-    return `尚未部署过。部署后将使用 ${PROTOCOL_LABEL[n.protocol]}`
+  const list = n.inbounds ?? []
+  if (!list.length) {
+    return '这台机器上一个入口都没有 —— sing-box 会正常运行,但谁都连不上'
   }
-  const running = PROTOCOL_LABEL[n.deployed_protocol]
-  if (n.deployed_protocol === n.protocol) {
-    return `节点上正在运行 ${running},订阅里下发的也是它`
-  }
-  // 期望与生效不一致 —— 这正是「改了协议还没部署」。必须说全,
-  // 只显示其中一个会让管理员以为切换已经完成。
-  return `节点上正在运行 ${running}(订阅里下发的也是它);已改为 ${PROTOCOL_LABEL[n.protocol]},部署后生效`
+  return list
+    .map((i) => {
+      if (!i.deployed_protocol) {
+        return `${i.display_name}:尚未部署过,部署后将使用 ${PROTOCOL_LABEL[i.protocol]}`
+      }
+      const running = PROTOCOL_LABEL[i.deployed_protocol]
+      if (i.deployed_protocol === i.protocol) {
+        return `${i.display_name}:正在运行 ${running},订阅里下发的也是它`
+      }
+      // 期望与生效不一致 —— 这正是「改了协议还没部署」。必须说全,
+      // 只显示其中一个会让管理员以为切换已经完成。
+      return `${i.display_name}:正在运行 ${running};已改为 ${PROTOCOL_LABEL[i.protocol]},部署后生效`
+    })
+    .join('；')
+}
+
+/**
+ * 列表里的端口摘要。一台机器上的入口可能有好几个,逐个列全。
+ *
+ * 写的是【公网端口】——那是用户实际要连的号码。主机监听端口与它不同时
+ * 一并写出来:NAT 机器上两者的差别正是排查「连不上」时第一个要看的东西。
+ */
+function portSummary(n: Node): string {
+  const list = n.inbounds ?? []
+  if (!list.length) return '无入口'
+  return list
+    .map((i) => {
+      const pub = i.public_port || i.listen_port
+      return pub === i.listen_port ? `${pub}` : `${pub}→${i.listen_port}`
+    })
+    .join(' ')
+}
+
+/** 这台机器上有没有入口的出口指向别处(链式中转)。 */
+function hasChain(n: Node): boolean {
+  return (n.inbounds ?? []).some((i) => i.chain_target_kind !== '')
 }
 
 /**
@@ -602,7 +635,7 @@ const keyOpen = ref(false)
           <div class="nv__host lb-mono">
             <template v-if="n.role !== 'RELAY'">
               <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
-              {{ n.host }}:{{ n.proxy_port }} · {{ n.access_tier_name }}
+              {{ n.host }} · 端口 {{ portSummary(n) }} · {{ n.access_tier_name }}
               <template v-if="n.ipv6_address"> · IPv6</template>
             </template>
             <!-- 中转机没有自己的协议与代理端口,渲染出来只会让人以为配漏了。 -->
@@ -610,7 +643,7 @@ const keyOpen = ref(false)
               {{ n.host }} · {{ n.access_tier_name }} · 端口见转发规则
             </template>
           </div>
-          <div v-if="n.chain_target_kind" class="nv__host">出口经中转</div>
+          <div v-if="hasChain(n)" class="nv__host">出口经中转</div>
           <div class="nv__stack nv__stack--row">
             <LbStatusTag
               :meta="configStatusMeta[configState(n)]"
@@ -710,7 +743,7 @@ const keyOpen = ref(false)
                  不标出来的话,管理员会对着一台中转机找它的协议为什么是空的。 -->
             <span v-if="record.role === 'RELAY'" class="nv__role">中转</span>
             <span
-              v-if="record.chain_target_kind"
+              v-if="hasChain(record)"
               class="nv__chain"
               title="这台机器的出口指向别处(链式中转)。订阅内容不受影响。"
               >经中转出网</span
@@ -721,23 +754,14 @@ const keyOpen = ref(false)
                    「某个客户端连不上」时那正是第一个要知道的事。 -->
               <template v-if="record.role !== 'RELAY'">
                 <span class="nv__proto" :title="protocolTitle(record)">{{ protocolShort(record) }}</span>
-                {{ record.host }}:{{ record.proxy_port }}
-                <template v-if="record.listen_port !== record.proxy_port">
-                  → :{{ record.listen_port }}
-                </template>
+                {{ record.host }} · 端口 {{ portSummary(record) }}
               </template>
               <!-- 中转机没有自己的协议与代理端口:那些列在库里是 0 /
                    保持默认值,渲染出来只会让人以为配漏了。
                    客户端连的端口在「转发」面板里,一条规则一个。 -->
               <template v-else>{{ record.host }} · 端口见转发规则</template>
               <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
-              <template v-if="record.ipv6_address">
-                · IPv6<template
-                  v-if="record.ipv6_proxy_port && record.ipv6_proxy_port !== record.proxy_port"
-                >
-                  :{{ record.ipv6_proxy_port }}</template
-                >
-              </template>
+              <template v-if="record.ipv6_address"> · IPv6</template>
             </div>
           </template>
 
