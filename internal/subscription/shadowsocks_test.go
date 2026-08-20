@@ -3,6 +3,7 @@ package subscription
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -205,6 +206,21 @@ func (e *subEnv) addSSNode(t *testing.T, name string, deployedProtocol string) i
 		t.Fatal(err)
 	}
 	id, _ := res.LastInsertId()
+	// 订阅只反映【入站】上已经生效的那一列(deployed_protocol),
+	// 期望协议留在 protocol 上不动 —— 这正是本节要验证的窗口。
+	if _, err := e.db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
+			ss_password_encrypted, listen_port, public_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			deployed_protocol, deployed_ss_method, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, fmt.Sprintf("in-%d", id), name,
+		"SHADOWSOCKS", string(singbox.SSMethodAES128GCM), e.encrypt(t, ssServerKey),
+		8388, 8388, "www.fastly.com", "enc", "pubkey123", "abcd1234",
+		deployedProtocol, deployedProtocolMethod(deployedProtocol),
+		"2026-08-02T00:00:00Z", "2026-08-02T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
 	e.nodeIDs = append(e.nodeIDs, id)
 	return id
 }

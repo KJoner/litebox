@@ -8,11 +8,12 @@ import (
 	"strings"
 )
 
-// Protocol 是节点的落地协议。
+// Protocol 是一个入站的落地协议。
 //
-// 协议是节点级属性:一个节点一个入站,不在同一节点上同时跑两种协议。
-// AssertStatsConsistent 的"只有一个入站"断言正是靠这一点成立的 ——
-// 多入站会让流量统计的归属变成一个需要重新设计的问题。
+// V8 之前它是节点级属性(一个节点一个入站),现在降到入站级:
+// 同一台机器上可以同时跑一个 VLESS + REALITY 与一个 Shadowsocks 入站。
+// 流量归属没有因此变复杂 —— V2Ray 的用户计数器没有入站维度,
+// 同一个用户在同一台机器上的流量本来就是合并的,而那正是入账要的口径。
 //
 // 程序内一律用常量判断,不要拿 Label() 的中文名做判断:展示名以后会改。
 type Protocol string
@@ -44,18 +45,16 @@ func (p Protocol) Label() string {
 	}
 }
 
-// InboundTag 返回该协议的入站标签。
+// LegacyInboundTag 返回 V8 之前那一版按协议现算的入站标签。
 //
-// tag 随协议变,不做成协议无关的固定值:一个 shadowsocks 类型的入站
-// 却挂着 vless-in 的 tag,人工排查节点配置时会先怀疑配置串了。
-//
-// 更要紧的是存量节点:VLESS 的 tag 一个字不变,升级后渲染出的配置
-// 与升级前逐字节相同,不会凭空产生一次 diff 与一次部署。
-func (p Protocol) InboundTag() string {
+// 只有迁移 0019 与兼容测试需要它:多入站之后 tag 由数据库分配、
+// 一经分配不可更改,不再随协议变 —— 随协议变的话,同机两个 VLESS 入站
+// 会撞成同一个 tag,而 sing-box 对重名 tag 不报错,后者直接覆盖前者。
+func (p Protocol) LegacyInboundTag() string {
 	if p == ProtocolShadowsocks {
-		return ShadowsocksInboundTag
+		return LegacySSInboundTag
 	}
-	return InboundTag
+	return LegacyVLESSInboundTag
 }
 
 // UsesReality 表示该协议需要 REALITY 的握手目标、私钥与 short_id。

@@ -251,16 +251,31 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		return nil, err
 	}
 
+	// 门户里一行 = 一个【入口】,不是一台机器。
+	//
+	// 多入站(V8)之后一台机器可以有好几个入口,协议与端口各不相同 ——
+	// 按机器列的话,那些行的协议字段只能填其中一个,而用户在客户端里
+	// 看到的是好几条。两边对不上,用户会来问哪一条才是"这台机器"。
+	//
+	// ID 用的是入站 id:门户 DTO 里它只是个前端 key,而节点 id 在多入站
+	// 之后不再唯一标识一行。
+	//
+	// PublicRemark 取入口自己的,留空回落到机器的 —— 机器级的那句话
+	// (比如"晚高峰限速")对它上面每个入口都成立。
 	rows, err := q.db.QueryContext(ctx, `
-		SELECT n.id, n.display_name, t.name, t.code, n.status,
-		       n.proxy_port, n.public_remark, n.maintenance_message,
-		       n.subscription_enabled, n.deployed_config_sha256,
-		       n.ipv6_address != '', n.deployed_protocol
-		  FROM nodes n
-		  JOIN access_tiers t ON t.id = n.access_tier_id
-		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
-		 WHERE en.proxy_user_id = ? AND n.deleted_at IS NULL
-		 ORDER BY n.sort_order, n.id`, proxyUserID)
+		SELECT i.id, i.display_name, t.name, t.code, n.status,
+		       CASE WHEN i.public_port = 0 THEN i.listen_port ELSE i.public_port END,
+		       CASE WHEN i.public_remark != '' THEN i.public_remark ELSE n.public_remark END,
+		       n.maintenance_message,
+		       n.subscription_enabled AND i.subscription_enabled AND i.enabled,
+		       n.deployed_config_sha256,
+		       n.ipv6_address != '', i.deployed_protocol
+		  FROM node_inbounds i
+		  JOIN nodes n ON n.id = i.node_id
+		  JOIN access_tiers t ON t.id = i.access_tier_id
+		  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id
+		 WHERE ei.proxy_user_id = ? AND i.deleted_at IS NULL AND n.deleted_at IS NULL
+		 ORDER BY n.sort_order, n.id, i.sort_order, i.id`, proxyUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +290,12 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 			&n.PublicPort, &n.PublicRemark, &n.MaintenanceMessage,
 			&subEnabled, &deployedSHA, &n.SupportsIPv6, &deployedProtocol); err != nil {
 			return nil, err
+		}
+		// 这个入口自己有没有上过节点。机器级的 deployed_config_sha256
+		// 答不了这个问题:一台部署过很多次的机器上,刚加的入口还不存在,
+		// 而它照样会在门户里显示成"可用"。
+		if deployedProtocol == "" {
+			deployedSHA = ""
 		}
 		// 取节点上【已经生效】的协议,与订阅里那条条目是同一个来源。
 		// 用数据库里的期望值的话,管理员改完还没部署的那段时间里,
@@ -519,15 +540,20 @@ func (q *Querier) Subscription(ctx context.Context, proxyUserID int64, baseURL s
 		return sub, nil
 	}
 
-	// 节点数按订阅的实际过滤条件算,不能直接用有效节点数 ——
-	// 未部署与已下架的节点不会进订阅,数字对不上用户就会来问。
+	// 条目数按订阅的实际过滤条件算,不能直接用有效入站数 ——
+	// 未部署与已下架的入口不会进订阅,数字对不上用户就会来问。
+	//
+	// 数的是【入口】而不是机器:订阅里一个入口就是一条,
+	// 按机器数会比用户在客户端里看到的少一截。
 	if err := q.db.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(CASE WHEN n.ipv6_address != '' THEN 1 ELSE 0 END), 0)
-		  FROM nodes n
-		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
-		 WHERE en.proxy_user_id = ? AND n.deleted_at IS NULL
+		  FROM node_inbounds i
+		  JOIN nodes n ON n.id = i.node_id
+		  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id
+		 WHERE ei.proxy_user_id = ? AND i.deleted_at IS NULL AND n.deleted_at IS NULL
 		   AND n.status != 'DISABLED' AND n.subscription_enabled = 1
-		   AND n.deployed_config_sha256 != ''`, proxyUserID).
+		   AND i.subscription_enabled = 1 AND i.enabled = 1
+		   AND i.deployed_protocol != ''`, proxyUserID).
 		Scan(&sub.NodeCount, &sub.IPv6Count); err != nil {
 		return nil, err
 	}

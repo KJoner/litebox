@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -325,7 +326,63 @@ func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
 		t.Fatal(err)
 	}
 	id, _ := res.LastInsertId()
+	seedInbound(t, e.db, seededInbound{
+		NodeID: id, DisplayName: f.DisplayName, ListenPort: 24443, PublicPort: 24443,
+		SortOrder: f.SortOrder, Deployed: f.Deployed,
+	})
 	e.nodeIDs = append(e.nodeIDs, id)
+	return id
+}
+
+// seededInbound 是造数据用的入站参数。
+//
+// 多入站(V8)之后订阅的一条条目 = 一个入站,可见性走 user_effective_inbounds
+// (INNER JOIN)—— 一台没有入站的机器不会出现在任何人的订阅里。
+// 造数据时漏了这一步,用例会以"条目数 = 0"的形式失败,
+// 而那看起来像是等级或部署状态的规则错了。
+type seededInbound struct {
+	NodeID         int64
+	DisplayName    string
+	Protocol       string
+	SSMethod       string
+	SSPasswordEnc  string
+	ListenPort     int
+	PublicPort     int
+	IPv6PublicPort int
+	SortOrder      int
+	Deployed       bool
+	TierID         int64
+}
+
+func seedInbound(t *testing.T, db *sql.DB, in seededInbound) int64 {
+	t.Helper()
+	if in.Protocol == "" {
+		in.Protocol = "VLESS_REALITY"
+	}
+	if in.TierID == 0 {
+		in.TierID = 1
+	}
+	deployedProtocol, deployedMethod := "", ""
+	if in.Deployed {
+		deployedProtocol, deployedMethod = in.Protocol, in.SSMethod
+	}
+	res, err := db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
+			ss_password_encrypted, listen_port, public_port, ipv6_public_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			deployed_protocol, deployed_ss_method, access_tier_id, sort_order,
+			subscription_enabled, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+		in.NodeID, fmt.Sprintf("in-%d-%d", in.NodeID, in.ListenPort), in.DisplayName,
+		in.Protocol, in.SSMethod, in.SSPasswordEnc,
+		in.ListenPort, in.PublicPort, in.IPv6PublicPort,
+		"www.cloudflare.com", "enc", "pubkey123", "abcd1234",
+		deployedProtocol, deployedMethod, in.TierID, in.SortOrder,
+		"2026-08-02T00:00:00Z", "2026-08-02T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
 	return id
 }
 
@@ -624,6 +681,10 @@ func TestSubscriptionUsesPublicPortNotListenPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	nodeID, _ := res.LastInsertId()
+	seedInbound(t, env.db, seededInbound{
+		NodeID: nodeID, DisplayName: "NAT 节点",
+		ListenPort: 20443, PublicPort: 443, Deployed: true,
+	})
 
 	u, err := env.store.Create(t.Context(), user.CreateParams{
 		DisplayName: "用户", NodeIDs: []int64{nodeID},

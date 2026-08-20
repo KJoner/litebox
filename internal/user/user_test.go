@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,9 +50,45 @@ func seedNodes(t *testing.T, db *sql.DB, n int) []int64 {
 			t.Fatal(err)
 		}
 		id, _ := res.LastInsertId()
+		seedInbound(t, db, id, "VLESS_REALITY", 24443+i)
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// seedInbound 给一台机器建一个入站。
+//
+// 多入站(V8)之后用户的可见性走 user_effective_inbounds,而那个视图是
+// INNER JOIN —— 一台没有入站的机器上,任何用户都查不出来。
+// 造数据时漏了这一步,用例会以"用户数 = 0"的形式失败,
+// 而那看起来像是等级规则错了。
+func seedInbound(t *testing.T, db *sql.DB, nodeID int64, protocol string, port int) int64 {
+	t.Helper()
+	res, err := db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		nodeID, "in-"+strconv.FormatInt(nodeID, 10), "入口", protocol, port,
+		"www.apple.com", "enc", "pub", "abcd1234",
+		"2026-08-02T00:00:00Z", "2026-08-02T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// inboundOf 取出一台机器上唯一的那个入站。
+func inboundOf(t *testing.T, db *sql.DB, nodeID int64) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`SELECT id FROM node_inbounds WHERE node_id = ? AND deleted_at IS NULL`,
+		nodeID).Scan(&id); err != nil {
+		t.Fatalf("节点 %d 上没有入站: %v", nodeID, err)
+	}
+	return id
 }
 
 func TestCreateAllocatesSequentialUserCodes(t *testing.T) {
@@ -297,7 +334,7 @@ func TestUsersForNodeFiltersUnserviceableUsers(t *testing.T) {
 		}
 	})
 
-	users, err := store.UsersForNode(t.Context(), nodeID)
+	users, err := store.UsersForInbound(t.Context(), inboundOf(t, db, nodeID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +364,7 @@ func TestUsersForNodeExcludesDeletedUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	users, _ := store.UsersForNode(t.Context(), nodeID)
+	users, _ := store.UsersForInbound(t.Context(), inboundOf(t, db, nodeID))
 	if len(users) != 1 {
 		t.Fatalf("删除前应有 1 个用户,实际 %d", len(users))
 	}
@@ -340,7 +377,7 @@ func TestUsersForNodeExcludesDeletedUsers(t *testing.T) {
 		t.Errorf("删除应返回受影响节点 [%d],得到 %v", nodeID, affected)
 	}
 
-	users, _ = store.UsersForNode(t.Context(), nodeID)
+	users, _ = store.UsersForInbound(t.Context(), inboundOf(t, db, nodeID))
 	if len(users) != 0 {
 		t.Errorf("删除后仍有 %d 个用户", len(users))
 	}

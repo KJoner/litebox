@@ -20,7 +20,7 @@ type Config struct {
 	// 直连的节点渲染出来要与 V7 之前逐字节相同,否则升级后十几台机器
 	// 同时被判成「需要部署」,而那次重启换不来任何配置变化。
 	//
-	// **它与链式出站必须同生同灭。** 实测:只加出站不写 route.final 时,
+	// **它与链式出站必须同生同灭。** 实测:只加出站不写路由时,
 	// sing-box check 通过、服务启动、端口监听、客户端握手成功、网页照开,
 	// 而流量从节点自己的 IP 出去了 —— 链式出站定义在配置里,一次都没被用过,
 	// 没有任何一层报错。部署健康检查也抓不到(拨测经 direct 回到本机 sshd
@@ -30,12 +30,30 @@ type Config struct {
 	Experimental ExperimentalConfig `json:"experimental"`
 }
 
-// RouteConfig 只用到 final —— V7 不做多出口分流。
+// RouteConfig 把入站分派到出站。
 //
-// 一个入站要分流到多个出站,就要引入 route.rules 与"哪个用户走哪条"的
-// 归属规则,而那会立刻把流量统计变成一个需要重新设计的问题。
+// V8 之前只用 final,因为链式是节点级的、全机一条。多入站之后同一台机器上
+// 的两个入站可以走两个不同的出口,所以必须按入站分流 —— 那正是 rules
+// 存在的意义,而不是"多出口分流"那种按目标地址拆流量的功能(仍然不做:
+// 它需要"哪些流量走哪条"的归属规则,会把统计变成另一个问题)。
+//
+// **规则永远只按 inbound 匹配。** 加入任何按域名/IP 的条件,都会让
+// "这个入站的流量到底从哪里出去"变成一个要看具体请求才知道的问题,
+// 而管理员在界面上看到的是一行「出口:某某落地」。
 type RouteConfig struct {
+	// Rules 为空时整个 route 段不该存在(渲染侧保证),所以带 omitempty
+	// 只是为了让手工构造的配置也不至于渲染出 "rules": null。
+	Rules []RouteRule `json:"rules,omitempty"`
+	// Final 是没被任何规则命中的入站的去向,固定为 direct。
+	// 显式写出来而不是靠 sing-box 的默认值(第一个出站):
+	// 那个默认在配置里看不见,而半年后排查的人需要一眼看出来。
 	Final string `json:"final"`
+}
+
+// RouteRule 是一条按入站分派的路由规则。
+type RouteRule struct {
+	Inbound  []string `json:"inbound"`
+	Outbound string   `json:"outbound"`
 }
 
 type LogConfig struct {

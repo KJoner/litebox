@@ -44,11 +44,16 @@ func (r Role) Label() string {
 }
 
 // ChainTargetKind 是链式出站的去向种类。空串表示直连。
+//
+// V8 起 NODE 改称 INBOUND:落地是【一个入站】而不是一台机器。
+// 改名而不是沿用旧值,是为了让每一处调用点都必须被重新看过一遍 ——
+// 沿用的话,那些"按节点解析落地参数"的代码会继续编译通过,
+// 而它取到的是那台机器上恰好排在前面的那个入站。
 type ChainTargetKind string
 
 const (
 	ChainTargetNone     ChainTargetKind = ""
-	ChainTargetNode     ChainTargetKind = "NODE"
+	ChainTargetInbound  ChainTargetKind = "INBOUND"
 	ChainTargetExternal ChainTargetKind = "EXTERNAL"
 )
 
@@ -57,8 +62,8 @@ func ParseChainTargetKind(raw string) (ChainTargetKind, error) {
 	switch ChainTargetKind(raw) {
 	case ChainTargetNone:
 		return ChainTargetNone, nil
-	case ChainTargetNode:
-		return ChainTargetNode, nil
+	case ChainTargetInbound:
+		return ChainTargetInbound, nil
 	case ChainTargetExternal:
 		return ChainTargetExternal, nil
 	default:
@@ -66,5 +71,5 @@ func ParseChainTargetKind(raw string) (ChainTargetKind, error) {
 	}
 }
 
-// Enabled 表示这个节点的出站指向别处,而不是 direct。
+// Enabled 表示这个入站的出站指向别处,而不是 direct。
 func (k ChainTargetKind) Enabled() bool { return k != ChainTargetNone }

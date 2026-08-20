@@ -29,14 +29,17 @@ var (
 type TargetKind string
 
 const (
-	TargetNode     TargetKind = "NODE"
+	// TargetInbound 的落地是一个【入站】而不是一台机器:一台机器上有两个
+	// 入站时,"转发到 B"是有歧义的,而歧义的表现是流量进了管理员没打算用的
+	// 那个入口(协议、端口、等级都不同),没有任何一层会报错。
+	TargetInbound  TargetKind = "INBOUND"
 	TargetExternal TargetKind = "EXTERNAL"
 )
 
 func ParseTargetKind(raw string) (TargetKind, error) {
 	switch TargetKind(raw) {
-	case TargetNode:
-		return TargetNode, nil
+	case TargetInbound:
+		return TargetInbound, nil
 	case TargetExternal:
 		return TargetExternal, nil
 	default:
@@ -67,7 +70,7 @@ type Relay struct {
 	PublicPort int `json:"public_port"`
 
 	TargetKind       TargetKind `json:"target_kind"`
-	TargetNodeID     int64      `json:"target_node_id"`
+	TargetInboundID  int64      `json:"target_inbound_id"`
 	TargetExternalID int64      `json:"target_external_id"`
 	// TargetName 是落地的展示名,只给管理页面看。
 	TargetName string `json:"target_name"`

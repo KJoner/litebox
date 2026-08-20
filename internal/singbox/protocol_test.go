@@ -17,15 +17,18 @@ const (
 
 func ssParams() NodeParams {
 	return NodeParams{
-		Protocol:   ProtocolShadowsocks,
-		ListenPort: 8388,
-		APIPort:    28080,
-		SSMethod:   SSMethodAES128GCM,
-		SSPassword: testServerKey,
-		Users: []User{
-			{Code: "user_000001", SSPassword: testUserKey},
-			{Code: "user_000002", SSPassword: testUserKey2},
-		},
+		APIPort: 28080,
+		Inbounds: []InboundParams{{
+			Tag:        LegacySSInboundTag,
+			Protocol:   ProtocolShadowsocks,
+			ListenPort: 8388,
+			SSMethod:   SSMethodAES128GCM,
+			SSPassword: testServerKey,
+			Users: []User{
+				{Code: "user_000001", SSPassword: testUserKey},
+				{Code: "user_000002", SSPassword: testUserKey2},
+			},
+		}},
 	}
 }
 
@@ -205,12 +208,12 @@ func TestAssertStatsConsistentChecksInboundTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Experimental.V2RayAPI.Stats.Inbounds = []string{InboundTag}
+	cfg.Experimental.V2RayAPI.Stats.Inbounds = []string{LegacyVLESSInboundTag}
 	if err := AssertStatsConsistent(cfg); err == nil {
 		t.Error("入站 tag 与统计白名单不一致时应当报错")
 	}
 
-	cfg.Experimental.V2RayAPI.Stats.Inbounds = []string{ShadowsocksInboundTag, InboundTag}
+	cfg.Experimental.V2RayAPI.Stats.Inbounds = []string{LegacySSInboundTag, LegacyVLESSInboundTag}
 	if err := AssertStatsConsistent(cfg); err == nil {
 		t.Error("统计白名单里多出一个 tag 时应当报错")
 	}
@@ -220,7 +223,7 @@ func TestAssertStatsConsistentChecksInboundTag(t *testing.T) {
 // 另一个人永远是零流量 —— 而他的网络完全正常,没有任何地方会报错。
 func TestShadowsocksRejectsDuplicateUserKeys(t *testing.T) {
 	p := ssParams()
-	p.Users[1].SSPassword = p.Users[0].SSPassword
+	p.Inbounds[0].Users[1].SSPassword = p.Inbounds[0].Users[0].SSPassword
 	if _, err := Render(p); err == nil {
 		t.Error("两个用户共用同一 Shadowsocks 密钥时应当拒绝渲染")
 	}
@@ -229,10 +232,10 @@ func TestShadowsocksRejectsDuplicateUserKeys(t *testing.T) {
 // 协议之间互不校验对方的字段:SS 节点上 REALITY 那几列本来就是空的。
 func TestShadowsocksIgnoresRealityFields(t *testing.T) {
 	p := ssParams()
-	p.RealityDest = ""
-	p.RealityPrivateKey = ""
-	p.ShortID = ""
-	p.RealityPort = 0
+	p.Inbounds[0].RealityDest = ""
+	p.Inbounds[0].RealityPrivateKey = ""
+	p.Inbounds[0].ShortID = ""
+	p.Inbounds[0].RealityPort = 0
 	if _, err := Render(p); err != nil {
 		t.Errorf("Shadowsocks 节点不该被 REALITY 的规矩拦住: %v", err)
 	}
@@ -241,10 +244,10 @@ func TestShadowsocksIgnoresRealityFields(t *testing.T) {
 // 反过来:VLESS 节点上没有 Shadowsocks 密钥也照常渲染。
 func TestVLESSIgnoresShadowsocksFields(t *testing.T) {
 	p := v3Params()
-	p.SSMethod = ""
-	p.SSPassword = ""
-	for i := range p.Users {
-		p.Users[i].SSPassword = ""
+	p.Inbounds[0].SSMethod = ""
+	p.Inbounds[0].SSPassword = ""
+	for i := range p.Inbounds[0].Users {
+		p.Inbounds[0].Users[i].SSPassword = ""
 	}
 	if _, err := Render(p); err != nil {
 		t.Errorf("VLESS 节点不该被 Shadowsocks 的规矩拦住: %v", err)
@@ -254,13 +257,13 @@ func TestVLESSIgnoresShadowsocksFields(t *testing.T) {
 // 密钥长度不对时必须在渲染期失败,而不是把坏配置发到节点上等 check 报错。
 func TestShadowsocksRejectsBadKeys(t *testing.T) {
 	p := ssParams()
-	p.SSPassword = base64.StdEncoding.EncodeToString(make([]byte, 16))
+	p.Inbounds[0].SSPassword = base64.StdEncoding.EncodeToString(make([]byte, 16))
 	if _, err := Render(p); err == nil {
 		t.Error("节点密钥长度不对时应当拒绝渲染")
 	}
 
 	p = ssParams()
-	p.Users[0].SSPassword = "not-base64!!"
+	p.Inbounds[0].Users[0].SSPassword = "not-base64!!"
 	if _, err := Render(p); err == nil {
 		t.Error("用户密钥非法时应当拒绝渲染")
 	}
@@ -274,8 +277,8 @@ func TestDiffNeverLeaksCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := ssParams()
-	p.Users[0].SSPassword = testUserKey2
-	p.Users[1].SSPassword = testUserKey
+	p.Inbounds[0].Users[0].SSPassword = testUserKey2
+	p.Inbounds[0].Users[1].SSPassword = testUserKey
 	newCfg, err := Render(p)
 	if err != nil {
 		t.Fatal(err)
@@ -294,20 +297,26 @@ func TestDiffNeverLeaksCredentials(t *testing.T) {
 	}
 }
 
-// 切协议时 diff 必须把它排在最前面。它一变,下面几项的差异全是连锁反应 ——
-// 先看到"协议变了"才不会把那些当成独立的问题去查。
+// 切协议时 diff 必须把它排在这个入站那一组的最前面。它一变,下面几项的
+// 差异全是连锁反应 —— 先看到"协议变了"才不会把那些当成独立的问题去查。
+//
+// 两边刻意用【同一个 tag】:多入站之后 tag 由数据库分配、一经分配不变,
+// 所以"把某个入站从 VLESS 改成 SS"表现为同一个 tag 换了类型。
+// tag 不同的两份配置是「删掉一个入站、加了另一个」,那是另一件事。
 func TestDiffReportsProtocolSwitchFirst(t *testing.T) {
 	vless, err := Render(v3Params())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ss, err := Render(ssParams())
+	ssp := ssParams()
+	ssp.Inbounds[0].Tag = v3Params().Inbounds[0].Tag
+	ss, err := Render(ssp)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	d := Compare(vless, ss)
-	if len(d.NodeAttr) == 0 || !strings.HasPrefix(d.NodeAttr[0], "落地协议") {
+	if len(d.NodeAttr) == 0 || !strings.Contains(d.NodeAttr[0], "落地协议") {
 		t.Fatalf("协议变更没有排在首位:%v", d.NodeAttr)
 	}
 	if !strings.Contains(d.NodeAttr[0], "VLESS + REALITY") ||

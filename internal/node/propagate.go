@@ -42,9 +42,34 @@ func (s *Service) PropagateTargetChange(ctx context.Context, targetNodeID int64)
 			s.trigger.MarkRelaysDirty(hosts...)
 		}
 	}
-	if sources, err := s.store.ChainSourceIDs(ctx, targetNodeID); err != nil {
+	if sources, err := s.store.ChainSourceNodeIDs(ctx, targetNodeID); err != nil {
 		s.logger.Error("查询链到该落地的中转主机失败",
 			"target_node_id", targetNodeID, "error", err)
+	} else if len(sources) > 0 {
+		s.trigger.MarkDirty(sources...)
+	}
+}
+
+// PropagateInboundChange 在一个【入站】的对外参数变化之后,把依赖它的中转主机标脏。
+//
+// 与 PropagateTargetChange 的区别只是粒度:改一个入站时,同机别的入站没变,
+// 把指向它们的中转主机也标脏会白 reload 一遍 nginx、白重启一次 sing-box。
+// 而机器级的变更(地址、IPv6)走那一个。
+func (s *Service) PropagateInboundChange(ctx context.Context, inboundID int64) {
+	if s.trigger == nil {
+		return
+	}
+	if s.relayHosts != nil {
+		if hosts, err := s.relayHosts.HostIDsTargetingInbound(ctx, inboundID); err != nil {
+			s.logger.Error("查询指向该落地入站的中转主机失败",
+				"target_inbound_id", inboundID, "error", err)
+		} else if len(hosts) > 0 {
+			s.trigger.MarkRelaysDirty(hosts...)
+		}
+	}
+	if sources, err := s.store.ChainSourceNodeIDs(ctx, inboundID); err != nil {
+		s.logger.Error("查询链到该落地入站的中转主机失败",
+			"target_inbound_id", inboundID, "error", err)
 	} else if len(sources) > 0 {
 		s.trigger.MarkDirty(sources...)
 	}
@@ -66,7 +91,7 @@ func (s *Service) PropagateExternalChange(ctx context.Context, externalID int64)
 			s.trigger.MarkRelaysDirty(hosts...)
 		}
 	}
-	if sources, err := s.store.ChainSourceIDsForExternal(ctx, externalID); err != nil {
+	if sources, err := s.store.ChainSourceNodeIDsForExternal(ctx, externalID); err != nil {
 		s.logger.Error("查询链到该外部代理的中转主机失败",
 			"external_id", externalID, "error", err)
 	} else if len(sources) > 0 {
@@ -94,5 +119,6 @@ func (s *Service) MarkDirty(nodeIDs ...int64) {
 // RelayHostProvider 回答"哪些中转主机指向这个落地"。由 relay.Store 实现。
 type RelayHostProvider interface {
 	HostIDsTargetingNode(ctx context.Context, targetID int64) ([]int64, error)
+	HostIDsTargetingInbound(ctx context.Context, inboundID int64) ([]int64, error)
 	HostIDsTargetingExternal(ctx context.Context, targetID int64) ([]int64, error)
 }

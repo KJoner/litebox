@@ -20,27 +20,50 @@ type TrafficSyncer interface {
 	SyncNode(ctx context.Context, nodeID int64) error
 }
 
-// Request 是一次部署请求。
-type Request struct {
-	NodeID int64
-	// Params 是渲染节点配置所需的全部输入,来自数据库。
-	Params singbox.NodeParams
-	// RealityPublicKey 供健康检查的探测客户端使用。
+// ProbeTarget 是一个入站做真实拨测时需要的、渲染参数里没有的东西。
+//
+// 按 Tag 与 Params.Inbounds 对应。缺一条不是"少测一个",而是**这个入站
+// 完全没被验证过** —— 所以 runTransaction 会把缺失显式记成 SKIPPED
+// 并写明原因,不会让它混在成功里。
+type ProbeTarget struct {
+	Tag string
+	// RealityPublicKey 是这个入站的 REALITY 公钥,探测客户端要用。
+	// 它不在 NodeParams 里 —— 节点配置只写私钥。
 	RealityPublicKey string
-	// SSHPort 是节点的 SSH 端口,拨测时作为代理目标。
-	SSHPort int
-	// DialHost / DialPort 非空时,拨测 CONNECT 到这个地址而不是节点本机回环。
+	// DialHost / DialPort 非空时,这个入站的拨测 CONNECT 到这个地址
+	// 而不是节点本机回环。
 	//
-	// 只有链式节点会用:直连节点走回环是对的(不引入任何外部网络依赖),
-	// 而链式节点的回环包会被送到落地那边,打在【落地自己的】sshd 上 ——
+	// 只有链式入站会用:直连入站走回环是对的(不引入任何外部网络依赖),
+	// 而链式入站的回环包会被送到落地那边,打在【落地自己的】sshd 上 ——
 	// 拨测碰巧还会通过,可它验证的已经不是这台机器了。
 	//
 	// 值必须来自数据库(nodes.host / nodes.ssh_port),不能问节点自己:
 	// NAT 机上 $SSH_CONNECTION 给出的是私网地址与本机端口。
 	DialHost string
 	DialPort int
+}
+
+// Request 是一次部署请求。
+type Request struct {
+	NodeID int64
+	// Params 是渲染节点配置所需的全部输入,来自数据库。
+	Params singbox.NodeParams
+	// Probes 按入站 tag 给出拨测所需的补充信息。
+	Probes []ProbeTarget
+	// SSHPort 是节点的 SSH 端口,拨测时作为代理目标。
+	SSHPort int
 	// Revision 是本次配置版本号,通常取自数据库自增或时间戳。
 	Revision int64
+}
+
+// probeFor 取出某个入站的拨测参数。
+func (r Request) probeFor(tag string) (ProbeTarget, bool) {
+	for _, p := range r.Probes {
+		if p.Tag == tag {
+			return p, true
+		}
+	}
+	return ProbeTarget{}, false
 }
 
 // Deployer 执行部署事务。
@@ -204,7 +227,7 @@ func (d *Deployer) runTransaction(
 	// 步骤 0:节点时钟。放在最前面 —— 到这里为止节点上什么都还没动过,
 	// 中止的代价只是一次白跑,而 Shadowsocks 节点带着 30 秒以上的偏差跑起来,
 	// 表现是全部用户连不上而后面三步检查全绿。
-	skewDetail, skewSkipped, skewErr := checkClockSkew(ctx, client, req.Params.Protocol)
+	skewDetail, skewSkipped, skewErr := checkClockSkew(ctx, client, strictestProtocol(req.Params))
 	switch {
 	case skewErr != nil:
 		rec.steps = append(rec.steps, Step{
@@ -297,22 +320,45 @@ func (d *Deployer) runTransaction(
 		return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 	}
 
-	if err := rec.run("健康检查:端口监听", func() (string, error) {
-		return d.checkPortListening(ctx, client, req.Params.ListenPort)
-	}); err != nil {
-		return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
+	// 端口监听与拨测【逐入站各做一次】。
+	//
+	// 只查第一个入站等于对其余入站什么都没验证过 —— 而一个 bind 失败的
+	// 入站会让整个 sing-box 起不来(那一步会被服务状态抓到),
+	// 一个 flow/凭据写错的入站却完全不影响别的入站:服务在跑、端口在听、
+	// 别的入口的用户一切正常,只有这个入口的人全部连不上。
+	// 部署健康检查必须包含真实拨测是本项目第一条铁律,多入站不给它开口子。
+	if len(req.Params.Inbounds) == 0 {
+		// 一台落地机器上一个启用的入站都没有。这不是故障(管理员可能正在
+		// 重排入口),但必须显式记录 —— 否则"三步健康检查全过"会被读成
+		// "这台机器好着呢",而它此刻谁都连不上。
+		rec.skip("健康检查:端口监听", "这台机器上没有启用中的入站,没有端口可查")
+		rec.skip("健康检查:拨测", "这台机器上没有启用中的入站,无法拨测")
 	}
+	for _, in := range req.Params.Inbounds {
+		inbound := in
+		if err := rec.run(fmt.Sprintf("健康检查:端口监听(%s)", inbound.Tag),
+			func() (string, error) {
+				return d.checkPortListening(ctx, client, inbound.ListenPort)
+			}); err != nil {
+			return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
+		}
 
-	// 步骤名带上协议:部署记录是事后排查唯一的现场,
-	// 只写"拨测失败"会让人分不清那次跑的是哪一种链路。
-	dialStep := "健康检查:" + dialLabel(req.Params.Protocol) + "拨测"
-	if len(req.Params.Users) == 0 {
-		// 空配置没有用户可拨测。这不是故障,但必须显式记录,
-		// 否则会被误读成"三步健康检查全过"。
-		rec.skip(dialStep, "配置中没有用户,无法拨测")
-	} else {
+		// 步骤名带上入站与协议:部署记录是事后排查唯一的现场,
+		// 只写"拨测失败"会让人分不清那次跑的是哪一个入口、哪一种链路。
+		dialStep := fmt.Sprintf("健康检查:%s 拨测(%s)", dialLabel(inbound.Protocol), inbound.Tag)
+		if len(inbound.Users) == 0 {
+			// 没有用户可拨测。这不是故障,但必须显式记录,
+			// 否则会被误读成"健康检查全过"。
+			rec.skip(dialStep, "这个入站上没有用户,无法拨测")
+			continue
+		}
+		probe, ok := req.probeFor(inbound.Tag)
+		if !ok {
+			rec.skip(dialStep, "缺少这个入站的拨测参数(REALITY 公钥),无法拨测")
+			continue
+		}
 		if err := rec.run(dialStep, func() (string, error) {
-			return d.checkDial(ctx, client, req)
+			return d.checkDial(ctx, client, req, inbound, probe)
 		}); err != nil {
 			return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 		}
@@ -360,8 +406,16 @@ func (d *Deployer) rollback(
 		if _, err := d.checkServiceActive(rbCtx, client, init); err != nil {
 			return "", err
 		}
-		if _, err := d.checkPortListening(rbCtx, client, req.Params.ListenPort); err != nil {
-			return "", err
+		// 端口取自【备份文件本身】,不是这次要部署的那份参数。
+		//
+		// 两者未必一样:这次改动本来就可能是改端口或加/删入站,
+		// 而回滚之后节点上跑的是旧配置。拿新端口去查旧配置,
+		// 会把一次完全成功的回滚报成"回滚失败" —— 那是管理员最需要
+		// 准确信息的时刻,而错误的方向恰好是让他以为节点还坏着。
+		for _, port := range d.restoredListenPorts(rbCtx, client, backupPath) {
+			if _, err := d.checkPortListening(rbCtx, client, port); err != nil {
+				return "", err
+			}
 		}
 		return "已恢复上一版本并通过基础健康检查", nil
 	})
@@ -372,6 +426,45 @@ func (d *Deployer) rollback(
 		result.RollbackResult = "回滚成功,节点已恢复服务"
 	}
 	return cause
+}
+
+// restoredListenPorts 读出刚恢复的那份配置里的入站端口。
+//
+// 读不出来时返回空 —— 回滚只做服务状态检查,不因为"看不懂备份文件"
+// 把一次成功的回滚判成失败。备份是我们自己写的,读不出来说明它被人动过,
+// 而那时端口检查的结论本来也不可信。
+func (d *Deployer) restoredListenPorts(
+	ctx context.Context, client *sshx.Client, backupPath string,
+) []int {
+	result, err := client.Run(ctx, sshx.NewCommand("cat", backupPath))
+	if err != nil || result.ExitCode != 0 {
+		return nil
+	}
+	cfg, err := singbox.Parse([]byte(result.Stdout))
+	if err != nil {
+		return nil
+	}
+	ports := make([]int, 0, len(cfg.Inbounds))
+	for _, in := range cfg.Inbounds {
+		if in.ListenPort > 0 {
+			ports = append(ports, in.ListenPort)
+		}
+	}
+	return ports
+}
+
+// strictestProtocol 给出这台机器上"最挑剔"的那个协议。
+//
+// 时钟检查对 Shadowsocks 是硬闸门、对 VLESS 只记录。一台机器上两种入站
+// 都有时必须按 Shadowsocks 处理 —— 反过来的话,SS 那个入口的全部用户
+// 连不上,而三步健康检查全绿(拨测客户端与服务端共用同一个时钟)。
+func strictestProtocol(params singbox.NodeParams) singbox.Protocol {
+	for _, in := range params.Inbounds {
+		if in.Protocol == singbox.ProtocolShadowsocks {
+			return singbox.ProtocolShadowsocks
+		}
+	}
+	return singbox.ProtocolVLESSReality
 }
 
 // pruneBackups 只保留最近 keepLast 个配置备份。

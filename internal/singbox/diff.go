@@ -73,13 +73,22 @@ func Compare(old, new Config) Diff {
 // 存指纹而不是凭据原文:Diff 会经接口返回给前端、写进部署记录、进审计详情,
 // 而 UUID 与 Shadowsocks PSK 都是能直接拿去上网的东西。
 // 指纹只用来回答"这个用户的凭据变没变",那正是 diff 唯一需要知道的。
+//
+// 多入站之后一个用户在同一台机器上可以有好几份凭据(每个入站一份,
+// 协议不同则形状也不同)。指纹取【全部入站上凭据的有序拼接】——
+// 只取第一个入站的话,管理员在另一个入站上重置了凭据,这里会说"无变化",
+// 而那次部署恰恰会把那个入站上的在线用户全部踢掉。
 func userMap(cfg Config) map[string]string {
-	users := make(map[string]string)
-	if len(cfg.Inbounds) == 0 {
-		return users
+	parts := make(map[string][]string)
+	for _, in := range cfg.Inbounds {
+		for _, u := range in.Users {
+			parts[u.Name] = append(parts[u.Name], in.Tag+"="+u.Credential())
+		}
 	}
-	for _, u := range cfg.Inbounds[0].Users {
-		users[u.Name] = credentialFingerprint(u.Credential())
+	users := make(map[string]string, len(parts))
+	for name, list := range parts {
+		sort.Strings(list)
+		users[name] = credentialFingerprint(strings.Join(list, "\n"))
 	}
 	return users
 }
@@ -92,12 +101,75 @@ func credentialFingerprint(credential string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// compareNodeAttrs 比较两份配置里除用户之外的一切。
+//
+// 凡是改变配置哈希的字段都必须出现在这里:配置状态(node.ConfigStatus)
+// 按整份配置的哈希算,而这份 diff 按字段白名单算 —— 只改渲染不改白名单,
+// 同一个页面里上面写着「待部署」、点开「配置比对」却说「配置无变化」,
+// 管理员只能二选一地相信,而两个都是我们自己给的。
+// TestEveryRenderedChangeShowsUpInDiff 是给以后加字段的人留的安全网。
 func compareNodeAttrs(old, new Config) []string {
 	var changes []string
-	if len(old.Inbounds) == 0 || len(new.Inbounds) == 0 {
-		return changes
+
+	oldIn := indexInbounds(old)
+	newIn := indexInbounds(new)
+
+	// 入站的增删排在最前面:它一变,下面那些逐项差异全是它带来的连锁反应。
+	for _, in := range new.Inbounds {
+		if _, existed := oldIn[in.Tag]; !existed {
+			changes = append(changes, fmt.Sprintf("新增入站 %s(%s,主机端口 %d)",
+				in.Tag, protocolLabelOf(in), in.ListenPort))
+		}
 	}
-	oldIn, newIn := old.Inbounds[0], new.Inbounds[0]
+	for _, in := range old.Inbounds {
+		if _, still := newIn[in.Tag]; !still {
+			// 说清后果:入站被撤掉之后,只有那个入口的用户会全部断线,
+			// 而他们在别的入口上仍然正常 —— 光说"移除入站"看不出这一点。
+			changes = append(changes, fmt.Sprintf(
+				"移除入站 %s(%s,主机端口 %d),只连这个入口的用户重启后立即断线",
+				in.Tag, protocolLabelOf(in), in.ListenPort))
+		}
+	}
+
+	for _, in := range new.Inbounds {
+		o, existed := oldIn[in.Tag]
+		if !existed {
+			continue
+		}
+		changes = append(changes, prefixed("入站 "+in.Tag+":", compareInboundAttrs(o, in))...)
+		changes = append(changes, prefixed("入站 "+in.Tag+":",
+			compareChainAttrs(chainOutboundOf(old, in.Tag), chainOutboundOf(new, in.Tag)))...)
+	}
+
+	if old.Experimental.V2RayAPI.Listen != new.Experimental.V2RayAPI.Listen {
+		changes = append(changes, fmt.Sprintf("V2Ray API 监听 %s → %s",
+			old.Experimental.V2RayAPI.Listen, new.Experimental.V2RayAPI.Listen))
+	}
+	return changes
+}
+
+func indexInbounds(cfg Config) map[string]Inbound {
+	m := make(map[string]Inbound, len(cfg.Inbounds))
+	for _, in := range cfg.Inbounds {
+		m[in.Tag] = in
+	}
+	return m
+}
+
+func prefixed(prefix string, items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, s := range items {
+		out = append(out, prefix+s)
+	}
+	return out
+}
+
+// compareInboundAttrs 比较同一个 tag 的入站在两份配置里的差异。
+func compareInboundAttrs(oldIn, newIn Inbound) []string {
+	var changes []string
 
 	// 协议放在最前面。它一变,下面几项的差异全是它带来的连锁反应,
 	// 先看到"协议变了"才不会把那些当成独立的问题去查。
@@ -110,12 +182,7 @@ func compareNodeAttrs(old, new Config) []string {
 		changes = append(changes, fmt.Sprintf("主机代理端口 %d → %d", oldIn.ListenPort, newIn.ListenPort))
 	}
 
-	// 监听选项必须在这里出现,哪怕它们看起来"不重要"。
-	//
-	// 配置状态(node.ConfigStatus)是按整份配置的哈希算的,而这份 diff 是
-	// 按字段白名单算的。渲染里加了字段却不加进白名单,两者就会给出互相矛盾的
-	// 答案:同一个抽屉里,上面写着「待部署」,点开「配置比对」却说「配置无变化」。
-	// 管理员只能二选一地相信,而两个都是我们自己给的。
+	// 监听选项必须在这里出现,哪怕它们看起来"不重要"—— 见 compareNodeAttrs 的说明。
 	if oldIn.TCPFastOpen != newIn.TCPFastOpen {
 		changes = append(changes, fmt.Sprintf("TCP Fast Open %s → %s",
 			onOff(oldIn.TCPFastOpen), onOff(newIn.TCPFastOpen)))
@@ -131,32 +198,19 @@ func compareNodeAttrs(old, new Config) []string {
 		changes = append(changes, fmt.Sprintf("加密方法 %s → %s",
 			orDash(oldIn.Method), orDash(newIn.Method)))
 	}
-	// 节点 PSK 与 REALITY 私钥同理:只说"已更换",不出现内容。
+	// 入站 PSK 与 REALITY 私钥同理:只说"已更换",不出现内容。
 	if oldIn.Password != newIn.Password {
-		changes = append(changes, "节点 Shadowsocks 密钥已更换(所有客户端需重新拉取订阅)")
+		changes = append(changes, "Shadowsocks 密钥已更换(所有客户端需重新拉取订阅)")
 	}
-
-	if old.Experimental.V2RayAPI.Listen != new.Experimental.V2RayAPI.Listen {
-		changes = append(changes, fmt.Sprintf("V2Ray API 监听 %s → %s",
-			old.Experimental.V2RayAPI.Listen, new.Experimental.V2RayAPI.Listen))
-	}
-
-	changes = append(changes, compareChainAttrs(old, new)...)
 	return changes
 }
 
-// compareChainAttrs 比较链式出站。
-//
-// 凡是改变配置哈希的字段都必须出现在这里:配置状态(ConfigStatus)按整份
-// 配置的哈希算,而这份 diff 按字段白名单算 —— 只改渲染不改白名单,
-// 同一个抽屉里上面写着「待部署」、点开「配置比对」却说「配置无变化」,
-// 管理员只能二选一地相信,而两个都是我们自己给的。
+// compareChainAttrs 比较一个入站的链式出站。
 //
 // 出口去向是这一版里**后果最重**的一项:它决定用户的流量从哪台机器出去,
 // 而弄错了不会有任何报错(用户照样有网可上,只是落地不是管理员以为的那个)。
-// 所以它排在最前面。
-func compareChainAttrs(old, new Config) []string {
-	oldChain, newChain := chainOutboundOf(old), chainOutboundOf(new)
+// 所以它排在这个入站其余差异的后面单独一组,不与端口之类的混在一起。
+func compareChainAttrs(oldChain, newChain *Outbound) []string {
 	switch {
 	case oldChain == nil && newChain == nil:
 		return nil
@@ -214,13 +268,15 @@ func compareChainTLS(oldTLS, newTLS *OutboundTLS) []string {
 	return changes
 }
 
-// chainOutboundOf 取出链式出站。
+// chainOutboundOf 取出某个入站的链式出站。
 //
 // 判据是 tag 而不是"出站数量大于 1":节点上的配置可能被人手工加过出站,
-// 而那不该被读成"链式启用了"。
-func chainOutboundOf(cfg Config) *Outbound {
+// 而那不该被读成"链式启用了"。tag 由 ChainTagFor 算,与渲染同一处 ——
+// 各写一个字面量的话,这里会永远查不到,表现是「改了出口,配置比对说无变化」。
+func chainOutboundOf(cfg Config, inboundTag string) *Outbound {
+	want := ChainTagFor(inboundTag)
 	for i := range cfg.Outbounds {
-		if cfg.Outbounds[i].Tag == ChainOutboundTag {
+		if cfg.Outbounds[i].Tag == want {
 			return &cfg.Outbounds[i]
 		}
 	}

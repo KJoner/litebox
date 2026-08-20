@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// 这一版里最危险的失效模式:配置里有链式出站,却没有 route.final 指向它。
+// 这一版里最危险的失效模式:配置里有链式出站,却没有路由把流量指过去。
 //
 // V7 技术验证 §1 实测过这份坏配置的表现:
 //
@@ -22,12 +22,21 @@ import (
 // 面板决定不做运行期的出口校验(两种落地要一视同仁,而外部代理落地
 // 没有可读的计数器),所以这条不变量【只由渲染期保证】,
 // 本文件就是它仅有的安全网。删掉这些测试等于把上面那份配置放回可能性里。
+//
+// 多入站(V8)把它又放大了一层:同一台机器上两个入站各自指向不同的落地,
+// 规则里的入站 tag 写错会让两股流量互换出口 —— 两边都通、两边都有网、
+// 两边都不报错,而管理员在界面上看到的是两行不同的落地。
 
-func chainedParams() NodeParams {
-	return NodeParams{
+// testChainTag 是下面这些用例里那个入站对应的链式出站标签。
+// 由 ChainTagFor 算而不是写死一个字面量:写死的话,改了命名规则之后
+// 这些测试会继续"通过"—— 它们断言的是一个已经没人用的 tag。
+var testChainTag = ChainTagFor(LegacyVLESSInboundTag)
+
+func chainedInbound() InboundParams {
+	return InboundParams{
+		Tag:               LegacyVLESSInboundTag,
 		Protocol:          ProtocolVLESSReality,
 		ListenPort:        443,
-		APIPort:           28080,
 		RealityDest:       "www.fastly.com",
 		RealityPort:       443,
 		RealityPrivateKey: "4HEYFI25uEoZa0K1kfU5kRoCa7w02EPY5gT4LisWq3U",
@@ -48,27 +57,37 @@ func chainedParams() NodeParams {
 	}
 }
 
-// 启用链式时必须同时产出出站与 route.final,且两者指向同一个 tag。
+func chainedParams() NodeParams {
+	return NodeParams{APIPort: 28080, Inbounds: []InboundParams{chainedInbound()}}
+}
+
+// 启用链式时必须同时产出出站与一条把这个入站指过去的规则。
 func TestChainImpliesRouteFinal(t *testing.T) {
 	cfg, err := Render(chainedParams())
 	if err != nil {
 		t.Fatalf("渲染链式配置失败: %v", err)
 	}
 
-	var chain *Outbound
-	for i := range cfg.Outbounds {
-		if cfg.Outbounds[i].Tag == ChainOutboundTag {
-			chain = &cfg.Outbounds[i]
-		}
-	}
-	if chain == nil {
-		t.Fatalf("链式启用了,但出站列表里没有 %q", ChainOutboundTag)
+	if !hasOutbound(cfg, testChainTag) {
+		t.Fatalf("链式启用了,但出站列表里没有 %q", testChainTag)
 	}
 	if cfg.Route == nil {
 		t.Fatal("有链式出站却没有 route 段 —— 流量会从节点自己的 IP 出去,而没有任何一层会报错")
 	}
-	if cfg.Route.Final != ChainOutboundTag {
-		t.Fatalf("route.final = %q,期望 %q", cfg.Route.Final, ChainOutboundTag)
+	if len(cfg.Route.Rules) != 1 {
+		t.Fatalf("route.rules 有 %d 条,期望 1 条", len(cfg.Route.Rules))
+	}
+	rule := cfg.Route.Rules[0]
+	if len(rule.Inbound) != 1 || rule.Inbound[0] != LegacyVLESSInboundTag {
+		t.Errorf("规则匹配的入站 = %v,期望 [%s]", rule.Inbound, LegacyVLESSInboundTag)
+	}
+	if rule.Outbound != testChainTag {
+		t.Errorf("规则指向 %q,期望 %q", rule.Outbound, testChainTag)
+	}
+	// final 必须是 direct 且显式写出来:没被规则命中的入站要有明确去向,
+	// 靠 sing-box "默认第一个出站"的行为的话,配置里看不出这件事。
+	if cfg.Route.Final != OutboundTag {
+		t.Errorf("route.final = %q,期望 %q", cfg.Route.Final, OutboundTag)
 	}
 	// direct 必须保留:删掉它之后链路一断,整个节点就没有任何可用出站,
 	// 而"改回直连"也不再是一次纯配置变更。
@@ -77,14 +96,86 @@ func TestChainImpliesRouteFinal(t *testing.T) {
 	}
 }
 
+// 同机两个入站各自指向不同的落地时,两条规则必须各就各位。
+//
+// 这是多入站独有的失效模式:两个入站共用一个 chain-out,或者规则把
+// 甲入站指向乙的出站 —— 两种都不会报错,用户也照样有网,
+// 只是出口不是管理员配的那一个。
+func TestTwoChainedInboundsGetTheirOwnOutbound(t *testing.T) {
+	a := chainedInbound()
+	a.ID = 1
+	b := chainedInbound()
+	b.ID = 2
+	b.Tag = "in-2"
+	b.ListenPort = 8443
+	b.Chain.Server = "198.51.100.7"
+	b.Chain.ServerPort = 9443
+
+	cfg, err := Render(NodeParams{APIPort: 28080, Inbounds: []InboundParams{a, b}})
+	if err != nil {
+		t.Fatalf("渲染双入站链式配置失败: %v", err)
+	}
+
+	want := map[string]string{
+		LegacyVLESSInboundTag: ChainTagFor(LegacyVLESSInboundTag),
+		"in-2":                ChainTagFor("in-2"),
+	}
+	if len(cfg.Route.Rules) != len(want) {
+		t.Fatalf("route.rules 有 %d 条,期望 %d 条", len(cfg.Route.Rules), len(want))
+	}
+	for _, rule := range cfg.Route.Rules {
+		if len(rule.Inbound) != 1 {
+			t.Fatalf("一条规则匹配了多个入站 %v —— 那样两个入站会共用一个出口", rule.Inbound)
+		}
+		if got := want[rule.Inbound[0]]; got != rule.Outbound {
+			t.Errorf("入站 %s 被指向 %q,期望 %q", rule.Inbound[0], rule.Outbound, got)
+		}
+	}
+	// 两个链式出站的落地必须不同 —— 共用一个 tag 时后者会覆盖前者,
+	// 而 sing-box 对重名出站不报错。
+	first := findOutbound(cfg, ChainTagFor(LegacyVLESSInboundTag))
+	second := findOutbound(cfg, ChainTagFor("in-2"))
+	if first == nil || second == nil {
+		t.Fatalf("两个链式出站没有都渲染出来: %+v", cfg.Outbounds)
+	}
+	if first.Server == second.Server && first.ServerPort == second.ServerPort {
+		t.Errorf("两条链路指向了同一个落地 %s:%d", first.Server, first.ServerPort)
+	}
+}
+
+// 一台机器上一个入站走链式、另一个直连时,直连那个绝不能被规则命中。
+func TestMixedChainAndDirectInbounds(t *testing.T) {
+	chained := chainedInbound()
+	chained.ID = 1
+	direct := chainedInbound()
+	direct.ID = 2
+	direct.Tag = "in-2"
+	direct.ListenPort = 8443
+	direct.Chain = nil
+
+	cfg, err := Render(NodeParams{APIPort: 28080, Inbounds: []InboundParams{chained, direct}})
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+	if len(cfg.Route.Rules) != 1 {
+		t.Fatalf("route.rules 有 %d 条,期望只有链式那一个入站的 1 条", len(cfg.Route.Rules))
+	}
+	if cfg.Route.Rules[0].Inbound[0] != LegacyVLESSInboundTag {
+		t.Errorf("规则命中的是 %q,而它本该只命中链式的那个入站", cfg.Route.Rules[0].Inbound[0])
+	}
+	if hasOutbound(cfg, ChainTagFor("in-2")) {
+		t.Error("直连的入站也渲染出了链式出站")
+	}
+}
+
 // 反过来:没有链式出站时绝不能出现 route 段。
 //
-// 存量节点渲染出的配置必须与 V7 之前【逐字节相同】,否则升级后十几台机器
-// 同时被判成「需要部署」,而那次重启换不来任何配置变化,
+// 存量直连节点渲染出的配置必须与 V7 之前【逐字节相同】,否则升级后
+// 十几台机器同时被判成「需要部署」,而那次重启换不来任何配置变化,
 // 只会踢掉全部在线连接。
 func TestDirectNodeRendersNoRouteSection(t *testing.T) {
 	params := chainedParams()
-	params.Chain = nil
+	params.Inbounds[0].Chain = nil
 
 	cfg, err := Render(params)
 	if err != nil {
@@ -109,28 +200,101 @@ func TestDirectNodeRendersNoRouteSection(t *testing.T) {
 	if bytes.Contains(data, []byte(`"route"`)) {
 		t.Errorf("直连节点的配置里出现了 route 段:\n%s", data)
 	}
-	if bytes.Contains(data, []byte(ChainOutboundTag)) {
+	if bytes.Contains(data, []byte(ChainOutboundPrefix)) {
 		t.Errorf("直连节点的配置里出现了链式出站:\n%s", data)
 	}
 }
 
 // AssertChainRouted 必须双向拦截 —— 它是 Render 的最后一道闸门,
-// 而这里直接构造两种畸形配置来确认它真的拦得住。
+// 而这里直接构造几种畸形配置来确认它真的拦得住。
 func TestAssertChainRoutedCatchesBothDirections(t *testing.T) {
-	t.Run("有出站没有 route", func(t *testing.T) {
-		cfg := Config{Outbounds: []Outbound{
-			{Type: "direct", Tag: OutboundTag},
-			{Type: "vless", Tag: ChainOutboundTag},
-		}}
+	inbound := Inbound{Type: "vless", Tag: LegacyVLESSInboundTag}
+	routeTo := func(in, out string) *RouteConfig {
+		return &RouteConfig{
+			Rules: []RouteRule{{Inbound: []string{in}, Outbound: out}},
+			Final: OutboundTag,
+		}
+	}
+
+	t.Run("有出站没有规则", func(t *testing.T) {
+		cfg := Config{
+			Inbounds: []Inbound{inbound},
+			Outbounds: []Outbound{
+				{Type: "direct", Tag: OutboundTag},
+				{Type: "vless", Tag: testChainTag},
+			},
+		}
 		if err := AssertChainRouted(cfg); !errors.Is(err, ErrChainNotRouted) {
 			t.Fatalf("期望 ErrChainNotRouted,实际 %v", err)
 		}
 	})
 
-	t.Run("有 route 没有出站", func(t *testing.T) {
+	t.Run("有规则没有出站", func(t *testing.T) {
 		cfg := Config{
+			Inbounds:  []Inbound{inbound},
 			Outbounds: []Outbound{{Type: "direct", Tag: OutboundTag}},
-			Route:     &RouteConfig{Final: ChainOutboundTag},
+			Route:     routeTo(LegacyVLESSInboundTag, testChainTag),
+		}
+		if err := AssertChainRouted(cfg); !errors.Is(err, ErrChainNotRouted) {
+			t.Fatalf("期望 ErrChainNotRouted,实际 %v", err)
+		}
+	})
+
+	// 多入站独有:出站与规则都在,但规则指向的是【另一个入站】的出站。
+	// 这一条最隐蔽 —— 配置能起、两个入站都能连、都能上网。
+	t.Run("规则指向别的入站的出站", func(t *testing.T) {
+		other := Inbound{Type: "vless", Tag: "in-2"}
+		cfg := Config{
+			Inbounds: []Inbound{inbound, other},
+			Outbounds: []Outbound{
+				{Type: "direct", Tag: OutboundTag},
+				{Type: "vless", Tag: testChainTag},
+				{Type: "vless", Tag: ChainTagFor("in-2")},
+			},
+			Route: &RouteConfig{
+				Rules: []RouteRule{
+					{Inbound: []string{LegacyVLESSInboundTag}, Outbound: ChainTagFor("in-2")},
+					{Inbound: []string{"in-2"}, Outbound: testChainTag},
+				},
+				Final: OutboundTag,
+			},
+		}
+		if err := AssertChainRouted(cfg); !errors.Is(err, ErrChainNotRouted) {
+			t.Fatalf("期望 ErrChainNotRouted,实际 %v", err)
+		}
+	})
+
+	t.Run("规则命中一个不存在的入站", func(t *testing.T) {
+		cfg := Config{
+			Inbounds: []Inbound{inbound},
+			Outbounds: []Outbound{
+				{Type: "direct", Tag: OutboundTag},
+				{Type: "vless", Tag: testChainTag},
+			},
+			Route: &RouteConfig{
+				Rules: []RouteRule{
+					{Inbound: []string{LegacyVLESSInboundTag}, Outbound: testChainTag},
+					{Inbound: []string{"in-404"}, Outbound: testChainTag},
+				},
+				Final: OutboundTag,
+			},
+		}
+		if err := AssertChainRouted(cfg); !errors.Is(err, ErrChainNotRouted) {
+			t.Fatalf("期望 ErrChainNotRouted,实际 %v", err)
+		}
+	})
+
+	t.Run("final 指向不存在的出站", func(t *testing.T) {
+		cfg := Config{
+			Inbounds: []Inbound{inbound},
+			Outbounds: []Outbound{
+				{Type: "direct", Tag: OutboundTag},
+				{Type: "vless", Tag: testChainTag},
+			},
+			Route: &RouteConfig{
+				Rules: []RouteRule{{Inbound: []string{LegacyVLESSInboundTag}, Outbound: testChainTag}},
+				Final: "nope",
+			},
 		}
 		if err := AssertChainRouted(cfg); !errors.Is(err, ErrChainNotRouted) {
 			t.Fatalf("期望 ErrChainNotRouted,实际 %v", err)
@@ -139,11 +303,12 @@ func TestAssertChainRoutedCatchesBothDirections(t *testing.T) {
 
 	t.Run("两者都在", func(t *testing.T) {
 		cfg := Config{
+			Inbounds: []Inbound{inbound},
 			Outbounds: []Outbound{
 				{Type: "direct", Tag: OutboundTag},
-				{Type: "vless", Tag: ChainOutboundTag},
+				{Type: "vless", Tag: testChainTag},
 			},
-			Route: &RouteConfig{Final: ChainOutboundTag},
+			Route: routeTo(LegacyVLESSInboundTag, testChainTag),
 		}
 		if err := AssertChainRouted(cfg); err != nil {
 			t.Fatalf("正常配置被拦下了: %v", err)
@@ -151,7 +316,10 @@ func TestAssertChainRoutedCatchesBothDirections(t *testing.T) {
 	})
 
 	t.Run("两者都不在", func(t *testing.T) {
-		cfg := Config{Outbounds: []Outbound{{Type: "direct", Tag: OutboundTag}}}
+		cfg := Config{
+			Inbounds:  []Inbound{inbound},
+			Outbounds: []Outbound{{Type: "direct", Tag: OutboundTag}},
+		}
 		if err := AssertChainRouted(cfg); err != nil {
 			t.Fatalf("直连配置被拦下了: %v", err)
 		}
@@ -161,7 +329,7 @@ func TestAssertChainRoutedCatchesBothDirections(t *testing.T) {
 // 链式落地是 Shadowsocks 时的渲染形状。
 func TestChainShadowsocksOutbound(t *testing.T) {
 	params := chainedParams()
-	params.Chain = &ChainOutbound{
+	params.Inbounds[0].Chain = &ChainOutbound{
 		Protocol:   ProtocolShadowsocks,
 		Server:     "203.0.113.9",
 		ServerPort: 8443,
@@ -173,7 +341,10 @@ func TestChainShadowsocksOutbound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("渲染失败: %v", err)
 	}
-	chain := cfg.Outbounds[len(cfg.Outbounds)-1]
+	chain := findOutbound(cfg, testChainTag)
+	if chain == nil {
+		t.Fatalf("没有渲染出链式出站: %+v", cfg.Outbounds)
+	}
 	if chain.Type != "shadowsocks" {
 		t.Errorf("出站类型 = %q,期望 shadowsocks", chain.Type)
 	}
@@ -199,7 +370,7 @@ func TestChainRejectsIncompleteParams(t *testing.T) {
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			params := chainedParams()
-			mutate(params.Chain)
+			mutate(params.Inbounds[0].Chain)
 			if _, err := Render(params); err == nil {
 				t.Fatal("残缺的链式参数被渲染出来了")
 			}
@@ -213,8 +384,8 @@ func TestChainRejectsIncompleteParams(t *testing.T) {
 // 经中转过来的全部流量,没有任何报错。
 func TestChainCredentialIsAcceptedAsUser(t *testing.T) {
 	params := chainedParams()
-	params.Chain = nil
-	params.Users = append(params.Users, User{
+	params.Inbounds[0].Chain = nil
+	params.Inbounds[0].Users = append(params.Inbounds[0].Users, User{
 		Code: "chain_000001",
 		UUID: "6fae698e-230b-489e-864e-e798866c7ff3",
 	})
@@ -231,11 +402,13 @@ func TestChainCredentialIsAcceptedAsUser(t *testing.T) {
 	}
 }
 
-func hasOutbound(cfg Config, tag string) bool {
-	for _, out := range cfg.Outbounds {
-		if out.Tag == tag {
-			return true
+func findOutbound(cfg Config, tag string) *Outbound {
+	for i := range cfg.Outbounds {
+		if cfg.Outbounds[i].Tag == tag {
+			return &cfg.Outbounds[i]
 		}
 	}
-	return false
+	return nil
 }
+
+func hasOutbound(cfg Config, tag string) bool { return findOutbound(cfg, tag) != nil }

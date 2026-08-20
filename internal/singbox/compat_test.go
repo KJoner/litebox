@@ -85,19 +85,25 @@ const v3VLESSConfig = `{
 
 func v3Params() NodeParams {
 	return NodeParams{
-		// 刻意留空:存量节点的 protocol 列由迁移填成 VLESS_REALITY,
-		// 但从数据库读出来之前的零值也必须走同一条渲染路径。
-		Protocol:          "",
-		ListenPort:        443,
-		APIPort:           28080,
-		RealityDest:       "www.fastly.com",
-		RealityPort:       443,
-		RealityPrivateKey: "SDgvSbnZoQMzMs1zLNaVpQ0OoI1U-JCsMbUBQvJHR3M",
-		ShortID:           "dc329d8c",
-		Users: []User{
-			{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
-			{Code: "user_000002", UUID: "1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d"},
-		},
+		APIPort: 28080,
+		Inbounds: []InboundParams{{
+			// tag 取存量值。多入站(V8)之后 tag 由数据库分配,而迁移 0019
+			// 给存量入站填的正是这个 —— 填别的会让全部存量节点在升级后
+			// 的第一次配置比对里出现差异,进而排队重启一遍。
+			Tag: LegacyVLESSInboundTag,
+			// 协议刻意留空:存量节点的 protocol 列由迁移填成 VLESS_REALITY,
+			// 但从数据库读出来之前的零值也必须走同一条渲染路径。
+			Protocol:          "",
+			ListenPort:        443,
+			RealityDest:       "www.fastly.com",
+			RealityPort:       443,
+			RealityPrivateKey: "SDgvSbnZoQMzMs1zLNaVpQ0OoI1U-JCsMbUBQvJHR3M",
+			ShortID:           "dc329d8c",
+			Users: []User{
+				{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
+				{Code: "user_000002", UUID: "1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d"},
+			},
+		}},
 	}
 }
 
@@ -121,7 +127,7 @@ func TestExplicitVLESSMatchesEmptyProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := v3Params()
-	p.Protocol = ProtocolVLESSReality
+	p.Inbounds[0].Protocol = ProtocolVLESSReality
 	explicit, err := RenderJSON(p)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +194,7 @@ func TestShadowsocksRenderHasNoTLSBlock(t *testing.T) {
 		t.Fatalf("产出的不是合法 JSON: %v", err)
 	}
 	in := raw["inbounds"].([]any)[0].(map[string]any)
-	if in["type"] != "shadowsocks" || in["tag"] != ShadowsocksInboundTag {
+	if in["type"] != "shadowsocks" || in["tag"] != LegacySSInboundTag {
 		t.Errorf("入站 type/tag = %v/%v", in["type"], in["tag"])
 	}
 	if in["method"] != string(SSMethodAES128GCM) {

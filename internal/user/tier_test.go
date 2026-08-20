@@ -35,7 +35,7 @@ func TestUsersForNodeIncludesInheritedUsers(t *testing.T) {
 	}
 
 	// 普通组节点上应当同时有两个人:VIP 等级包含普通组。
-	got, err := store.UsersForNode(t.Context(), normalNode)
+	got, err := store.UsersForInbound(t.Context(), inboundOf(t, db, normalNode))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestUsersForNodeIncludesInheritedUsers(t *testing.T) {
 	}
 
 	// VIP 节点上只应当有 VIP 用户。
-	got, err = store.UsersForNode(t.Context(), vipNode)
+	got, err = store.UsersForInbound(t.Context(), inboundOf(t, db, vipNode))
 	if err != nil {
 		t.Fatal(err)
 	}

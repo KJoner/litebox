@@ -254,12 +254,19 @@ func (s *Service) RestoreTCPTuning(ctx context.Context, nodeID int64) (TuneRepor
 
 // tuneReservePorts 收集这台机器上必须避开临时端口范围的本机监听端口。
 //
-// listen_port 是 sing-box 真正 bind 的端口(不是订阅里的公网端口),
+// 每个入站的 listen_port 都是 sing-box 真正 bind 的端口(不是订阅里的公网端口),
 // api_port 是仅监听回环的 V2Ray Stats API,再加上 sshd 在节点本机的端口。
 // sshd 端口取自 $SSH_CONNECTION 而不是节点记录:NAT 小鸡上后者是服务商
 // 映射的外部端口,节点本机根本没有东西在听。
+//
+// **必须逐个入站收全。** 漏掉一个的后果只在【重启之后】出现:那个端口
+// 落在放宽后的临时端口范围里,被某条出站连接抢走,sing-box 起不来 ——
+// 而调优当天一切正常,查起来完全没有方向。
 func tuneReservePorts(ctx context.Context, client *sshx.Client, n *Node) []int {
-	ports := []int{n.ListenPort, n.APIPort}
+	ports := []int{n.APIPort}
+	for _, in := range n.Inbounds {
+		ports = append(ports, in.ListenPort)
+	}
 	if p, err := localSSHPort(ctx, client); err == nil {
 		ports = append(ports, p)
 	}

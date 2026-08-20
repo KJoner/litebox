@@ -49,35 +49,25 @@ type Node struct {
 	SSHUser     string `json:"ssh_user"`
 	SSHKey      string `json:"-"` // PEM 私钥,永不出现在 API 响应中
 	HostKey     string `json:"-"`
-	// ProxyPort 是客户端连接的公网端口,只写进订阅;
-	// ListenPort 是 sing-box 在节点上实际监听的端口。
-	// NAT 主机或自建 nginx 转发时两者不同(公网 443 -> 主机 20443)。
-	ProxyPort  int `json:"proxy_port"`
-	ListenPort int `json:"listen_port"`
-	APIPort    int `json:"api_port"`
-	// IPv6ProxyPort 是 IPv6 条目在订阅里用的公网端口,0 表示跟随 ProxyPort。
-	// 双栈机器的两个协议栈未必映射到同一个外部端口(NAT 小鸡上 IPv4 常是
-	// 服务商映射的高位端口,而 IPv6 是直连的 443)。
+	// APIPort 是节点上 V2Ray API 的回环端口。
 	//
-	// **0 要原样留着,不在这里解析成 ProxyPort** —— 解析放在订阅生成时,
-	// 否则以后改 ProxyPort,IPv6 条目会停在旧端口上而管理员毫不知情。
-	IPv6ProxyPort int `json:"ipv6_proxy_port"`
+	// 它留在节点级而不是跟着入站走:一台机器上只有一个 sing-box 进程,
+	// 也就只有一个 API 端点。全部入站的统计都从这一个端口读出来。
+	APIPort int `json:"api_port"`
 
 	// Role 是节点角色:LANDING 落地(默认),RELAY 纯中转机(不跑 sing-box 服务)。
-	// RELAY 上 Protocol / ListenPort / APIPort / Reality* / SS* 一律不参与渲染。
+	// RELAY 上没有任何 node_inbounds 行。
 	Role Role `json:"role"`
 
-	// ChainTargetKind 为空表示直连。链式出站只改 A 自己的配置,**不进订阅**
-	// —— 订阅里 A 还是原来那一条,客户端根本不知道它后面还有一跳。
-	ChainTargetKind       ChainTargetKind `json:"chain_target_kind"`
-	ChainTargetNodeID     int64           `json:"chain_target_node_id"`
-	ChainTargetExternalID int64           `json:"chain_target_external_id"`
-	// ChainCode 是链路凭据在【落地 B】的流量统计里的计数器名(chain_000001)。
-	// 它不是 proxy_users 里的一行 —— 见迁移 0018 的说明。
-	ChainCode string `json:"chain_code"`
-	// 两套链路凭据都存,不按落地当前协议分叉。永不出现在 API 响应里。
-	ChainUUID       string `json:"-"`
-	ChainSSPassword string `json:"-"`
+	// Inbounds 是这台机器上的 sing-box 入站,由 Get/List 一并带出。
+	//
+	// V8 之前这些参数(协议、端口、REALITY、SS、TFO、链式)直接是 nodes 上的列,
+	// 因为那时一台机器只有一个入站。搬进独立表之后,nodes 上的原列已冻结,
+	// 任何代码路径都不再读写它们 —— 详见迁移 0019。
+	//
+	// 绝不返回 nil:Go 的 nil 切片序列化成 JSON null 而不是 [],
+	// 而前端把它当数组用(inbounds.length、inbounds[0])。
+	Inbounds []*Inbound `json:"inbounds"`
 
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
@@ -87,31 +77,10 @@ type Node struct {
 	// 配置哈希会跟着抖,「已同步」与「待部署」两个状态来回跳。
 	MemTotalMB int `json:"mem_total_mb"`
 
-	// Protocol 是期望的落地协议;DeployedProtocol 是节点上当前生效的那个。
-	// 两者不一致就是"改了协议还没部署"——订阅与门户一律看后者,
-	// 前者只用来渲染下一次要下发的配置。
-	Protocol         singbox.Protocol `json:"protocol"`
-	SSMethod         string           `json:"ss_method"`
-	SSPassword       string           `json:"-"` // 节点级 PSK,永不出现在 API 响应中
-	DeployedProtocol singbox.Protocol `json:"deployed_protocol"`
-	DeployedSSMethod string           `json:"deployed_ss_method"`
-
-	// TCPFastOpen 是期望值,DeployedTCPFastOpen 是节点上当前生效的那个。
-	// 与协议同一条道理:订阅只看后者 —— 改了开关还没部署时,
-	// 让客户端去对一个没开 TFO 的服务端发带数据的 SYN 是白多一次回落。
-	TCPFastOpen         bool `json:"tcp_fast_open"`
-	DeployedTCPFastOpen bool `json:"deployed_tcp_fast_open"`
-
-	RealityDest       string `json:"reality_dest"`
-	RealityDestPort   int    `json:"reality_dest_port"`
-	RealityPrivateKey string `json:"-"`
-	RealityPublicKey  string `json:"reality_public_key"`
-	RealityShortID    string `json:"reality_short_id"`
-
-	HandshakeMaxRecordSize int     `json:"handshake_max_record_size"`
-	HandshakeCheckedAt     *string `json:"handshake_checked_at"`
-
 	// AccessTier* 是节点所属访问等级:等级不高于用户等级的节点会被自动继承。
+	//
+	// 入站还有自己的一档,在这一层之上【再收一次】——
+	// 两层是交集关系,不是覆盖:能用这台机器,才谈得上能用它的哪个入口。
 	AccessTierID    int64  `json:"access_tier_id"`
 	AccessTierCode  string `json:"access_tier_code"`
 	AccessTierName  string `json:"access_tier_name"`
@@ -154,17 +123,14 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 	return &Store{db: db, cipher: cipher}
 }
 
+// nodeColumns 刻意【不含】迁移 0019 冻结的那十几列(协议、三个端口、
+// REALITY、SS、TFO、链式)。它们的数据已经搬进 node_inbounds,留在 nodes 上
+// 只是为了不重建这张全库被引用最多的表 —— 谁把它们加回这里,就等于
+// 让同一件事有两个来源,而两个来源迟早分叉。
 const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
-	n.proxy_port, n.listen_port, n.api_port, n.ipv6_proxy_port,
-	n.role, n.chain_target_kind, n.chain_target_node_id, n.chain_target_external_id,
-	n.chain_code, n.chain_uuid_encrypted, n.chain_ss_password_encrypted,
+	n.api_port, n.role,
 	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
-	n.protocol, n.ss_method, n.ss_password_encrypted,
-	n.deployed_protocol, n.deployed_ss_method,
-	n.tcp_fast_open, n.deployed_tcp_fast_open,
-	n.reality_dest, n.reality_dest_port, n.reality_privkey_encrypted, n.reality_pubkey,
-	n.reality_short_id, n.handshake_max_record_size, n.handshake_checked_at,
 	n.access_tier_id, t.code, t.name, t.level,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
@@ -178,22 +144,12 @@ const nodeFrom = ` FROM nodes n JOIN access_tiers t ON t.id = n.access_tier_id `
 
 func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
-	var sshKeyEnc, realityKeyEnc, ssKeyEnc string
-	var chainUUIDEnc, chainSSEnc string
-	// 目标列可空:直连的节点这两列是 NULL,扫进 int64 会报错。
-	var chainNodeID, chainExternalID sql.NullInt64
+	var sshKeyEnc string
 	err := scan(
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
-		&n.ProxyPort, &n.ListenPort, &n.APIPort, &n.IPv6ProxyPort,
-		&n.Role, &n.ChainTargetKind, &chainNodeID, &chainExternalID,
-		&n.ChainCode, &chainUUIDEnc, &chainSSEnc,
+		&n.APIPort, &n.Role,
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
-		&n.Protocol, &n.SSMethod, &ssKeyEnc,
-		&n.DeployedProtocol, &n.DeployedSSMethod,
-		&n.TCPFastOpen, &n.DeployedTCPFastOpen,
-		&n.RealityDest, &n.RealityDestPort, &realityKeyEnc, &n.RealityPublicKey,
-		&n.RealityShortID, &n.HandshakeMaxRecordSize, &n.HandshakeCheckedAt,
 		&n.AccessTierID, &n.AccessTierCode, &n.AccessTierName, &n.AccessTierLevel,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
@@ -209,28 +165,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 			return nil, fmt.Errorf("解密节点 %d 的 SSH 私钥: %w", n.ID, err)
 		}
 	}
-	if realityKeyEnc != "" {
-		if n.RealityPrivateKey, err = s.cipher.Decrypt(realityKeyEnc); err != nil {
-			return nil, fmt.Errorf("解密节点 %d 的 REALITY 私钥: %w", n.ID, err)
-		}
-	}
-	if ssKeyEnc != "" {
-		if n.SSPassword, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
-			return nil, fmt.Errorf("解密节点 %d 的 Shadowsocks 密钥: %w", n.ID, err)
-		}
-	}
-	n.ChainTargetNodeID = chainNodeID.Int64
-	n.ChainTargetExternalID = chainExternalID.Int64
-	if chainUUIDEnc != "" {
-		if n.ChainUUID, err = s.cipher.Decrypt(chainUUIDEnc); err != nil {
-			return nil, fmt.Errorf("解密节点 %d 的链路 UUID: %w", n.ID, err)
-		}
-	}
-	if chainSSEnc != "" {
-		if n.ChainSSPassword, err = s.cipher.Decrypt(chainSSEnc); err != nil {
-			return nil, fmt.Errorf("解密节点 %d 的链路 Shadowsocks 密钥: %w", n.ID, err)
-		}
-	}
+	n.Inbounds = make([]*Inbound, 0)
 	return &n, nil
 }
 
@@ -261,19 +196,25 @@ type CreateParams struct {
 	TrafficResetCycle  string
 	TrafficResetDay    int
 	TrafficBillingMode string
-	// ProxyPort 是客户端连接的公网端口,必填。
-	// ListenPort 是 sing-box 在主机上监听的端口,留空表示不做端口转发,与 ProxyPort 相同。
-	ProxyPort  int
-	ListenPort int
-	APIPort    int
-	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。
+	APIPort            int
+
+	// 以下是【第一个入站】的参数,由 Create 一并建出来。
+	//
+	// 新建节点顺带建一个入站,而不是建完再让管理员去「入口」里加一条:
+	// 一台落地机器没有任何入站等于谁都连不上,那不是任何人想要的中间状态。
+	// 再加的入口走 CreateInbound,两条路收同一个 InboundParams。
+	//
+	// ProxyPort 是客户端连接的公网端口,必填;ListenPort 留空表示不做端口转发,
+	// 与 ProxyPort 相同;IPv6ProxyPort 留 0 表示跟随 ProxyPort。
+	ProxyPort     int
+	ListenPort    int
 	IPv6ProxyPort int
 	// Protocol 留空按 VLESS_REALITY 处理;SSMethod 只在 SHADOWSOCKS 下有意义,
 	// 留空取默认方法。
 	Protocol string
 	SSMethod string
 	// RealityDest 为空时使用默认候选目标的第一个。
-	// SHADOWSOCKS 节点不要求握手目标,这两项会被强制清空 —— 详见 validateCreate。
+	// SHADOWSOCKS 不要求握手目标,这两项会被强制清空。
 	RealityDest     string
 	RealityDestPort int
 	// TCPFastOpen 默认关。新建时就能填,第一次部署即生效 ——
@@ -282,7 +223,28 @@ type CreateParams struct {
 	TCPFastOpen bool
 }
 
-// Create 新增节点,同时生成 REALITY 密钥对与 short_id。
+// firstInbound 把建节点表单里那几项翻译成入站参数。
+//
+// 只此一处:新建与「入口」里再加一条如果各拼一遍,某天加了一项只改到一处,
+// 表现是"这个值在新建时填不进去"这种谁都解释不了的怪事。
+func (p CreateParams) firstInbound() InboundParams {
+	return InboundParams{
+		// 展示名称留空,由 normalizeInboundParams 回落到节点的展示名 ——
+		// 一台机器上只有一个入口时,两个名字长得一样才是对的。
+		Protocol:        p.Protocol,
+		SSMethod:        p.SSMethod,
+		ListenPort:      p.ListenPort,
+		PublicPort:      p.ProxyPort,
+		IPv6PublicPort:  p.IPv6ProxyPort,
+		TCPFastOpen:     p.TCPFastOpen,
+		RealityDest:     p.RealityDest,
+		RealityDestPort: p.RealityDestPort,
+	}
+}
+
+// Create 新增节点。落地角色同时建出它的第一个入站,两者在同一个事务里 ——
+// 分两步的话,中途失败会留下一台没有任何入站的落地机器,
+// 而那台机器渲染出的配置里一个入站都没有,谁都连不上。
 func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	if err := validateCreate(&p); err != nil {
 		return nil, err
@@ -294,57 +256,38 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 		return nil, err
 	}
 
-	// REALITY 密钥对与 Shadowsocks PSK 一律生成,与本次选的协议无关。
-	// 两者都是纯本地计算,零成本,而缺了任何一个都会让"切协议"变成一个
-	// 可能在中途失败的复合操作 —— 失败时节点停在半成品状态,
-	// 而管理员看到的只是一句"生成密钥失败",不知道协议到底切没切。
-	keys, err := GenerateRealityKeyPair()
-	if err != nil {
-		return nil, err
-	}
-	shortID, err := GenerateShortID(8)
-	if err != nil {
-		return nil, err
-	}
-	ssKey, err := GenerateSSKey()
-	if err != nil {
-		return nil, err
-	}
-	ssKeyEnc, err := s.cipher.Encrypt(ssKey)
-	if err != nil {
-		return nil, fmt.Errorf("加密 Shadowsocks 密钥: %w", err)
-	}
-
 	// 空私钥直接存空串而不是加密后的空串:读取侧用"是否为空"判断
 	// 该节点是否用面板密钥,加密后的空串不为空,会被当成一把解不开的私钥。
 	sshKeyEnc := ""
+	var err error
 	if p.SSHKey != "" {
 		if sshKeyEnc, err = s.cipher.Encrypt(p.SSHKey); err != nil {
 			return nil, fmt.Errorf("加密 SSH 私钥: %w", err)
 		}
 	}
-	realityKeyEnc, err := s.cipher.Encrypt(keys.PrivateKey)
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("加密 REALITY 私钥: %w", err)
+		return nil, err
 	}
+	defer tx.Rollback()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
+	// 迁移 0019 冻结的那几列这里一律写零值。它们仍然 NOT NULL,
+	// 但已经没有任何代码路径读它们 —— 写一个"看起来合理"的值反而更糟:
+	// 半年后有人翻库看到 nodes.proxy_port = 443,会以为那是真的。
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO nodes (name, display_name, host, ipv6_address, ssh_port, ssh_user,
-			ssh_key_encrypted, ssh_host_key, proxy_port, listen_port, api_port, ipv6_proxy_port,
-			protocol, ss_method, ss_password_encrypted,
-			reality_dest, reality_dest_port,
-			reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			access_tier_id, sort_order, tcp_fast_open,
+			ssh_key_encrypted, ssh_host_key, api_port,
+			proxy_port, listen_port, ipv6_proxy_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			access_tier_id, sort_order,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
 			role, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,'',?,0,0,0,'','','','',?,?,?,?,?,?,?,?,?,?)`,
 		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
-		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
-		p.Protocol, p.SSMethod, ssKeyEnc,
-		p.RealityDest, p.RealityDestPort,
-		realityKeyEnc, keys.PublicKey, shortID,
-		p.AccessTierID, p.SortOrder, p.TCPFastOpen,
+		p.APIPort,
+		p.AccessTierID, p.SortOrder,
 		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay, p.TrafficBillingMode,
 		p.Role, StatusPending, now, now)
 	if err != nil {
@@ -355,6 +298,16 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
+		return nil, err
+	}
+
+	// 中转机上不跑 sing-box,没有入站。
+	if !Role(p.Role).IsRelay() {
+		if _, err := s.createInboundTx(ctx, tx, id, p.firstInbound()); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, id)
@@ -393,58 +346,25 @@ func validateCreate(p *CreateParams) error {
 	// SSH 私钥可以留空:留空表示这个节点用面板专用密钥,
 	// 由 Service.Bootstrap 在创建后把面板公钥装进节点。
 
-	// 中转机到此为止:它上面不跑 sing-box,三个端口与握手目标都没有意义。
-	// 端口全部归零而不是填一个看起来合理的默认值 —— 详情页显示一个
-	// 从来没有人监听过的端口,会让排查的人以为服务没起来。
+	// 中转机到此为止:它上面不跑 sing-box,一个入站都不建,端口与握手目标
+	// 都没有意义。端口全部归零而不是填一个看起来合理的默认值 ——
+	// 详情页显示一个从来没有人监听过的端口,会让排查的人以为服务没起来。
 	// 客户端连的端口在 node_relays 里,一条规则一个。
-	//
-	// protocol 那一列保持它的默认值(迁移 0014 的 CHECK 不接受空串,
-	// 而为一个没人读的列重建整张表不值得)。RELAY 上没有任何代码路径读它。
 	if Role(p.Role).IsRelay() {
 		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort = 0, 0, 0, 0
 		p.RealityDest, p.RealityDestPort = "", 0
 		p.TCPFastOpen = false
-		// protocol 那一列的 CHECK(迁移 0014)不接受空串,所以只能写它的默认值。
-		// **它在中转机上没有任何意义,也没有任何代码路径读它** —— 渲染、订阅、
-		// 拨测全都不走这里。为一个没人读的列重建整张表不值得,
-		// 但界面上必须把它藏掉:显示一个从没生效过的协议,
-		// 会让排查的人以为这台机器该有一个 sing-box 入站。
-		p.Protocol = string(singbox.ProtocolVLESSReality)
-		p.SSMethod = ""
+		p.Protocol, p.SSMethod = "", ""
 		return nil
 	}
 
 	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
 		return err
 	}
-	if err := normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort); err != nil {
-		return err
-	}
-	if err := normalizeProtocol(&p.Protocol, &p.SSMethod); err != nil {
-		return err
-	}
-
-	// Shadowsocks 不用 REALITY,握手目标一并留空。
-	//
-	// 不给它填一个默认候选:那个域名从来没在这台机器上实测过,
-	// 而节点详情里显示一个未经检测的握手目标,会让人以为这一步已经做过了。
-	// 将来切到 VLESS 时要求先跑一次实测,那时才写入。
-	if singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks {
-		p.RealityDest = ""
-		p.RealityDestPort = 0
-		return nil
-	}
-
-	if p.RealityDest == "" {
-		p.RealityDest = DefaultDestCandidates[0]
-	}
-	if err := singbox.ValidateHandshakeServer(p.RealityDest); err != nil {
-		return err
-	}
-	if p.RealityDestPort == 0 {
-		p.RealityDestPort = 443
-	}
-	return singbox.ValidatePort(p.RealityDestPort, "握手目标")
+	// 协议、握手目标与 IPv6 端口的归一化不在这里做:它们已经是【入站】的属性,
+	// 由 normalizeInboundParams 统一处理。在这里再写一遍的话,
+	// 新建节点与「入口」里加一条会走两套校验,而两套迟早分叉。
+	return normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort)
 }
 
 // normalizeProtocol 归一化落地协议与加密方法。
@@ -577,6 +497,11 @@ func normalizeIPv6Port(ipv6 string, port *int) error {
 	return singbox.ValidatePort(*port, "IPv6 公网代理")
 }
 
+// Get 读取一个节点,连同它的全部入站。
+//
+// 入站一并带出而不是让调用方各自再查一次:分两次查会出现"列表里有、
+// 详情里没有"这种前端只能靠猜的差异,而入站是落地节点的必备内容 ——
+// 没有它,节点详情页上「这台机器提供什么」这个问题答不了。
 func (s *Store) Get(ctx context.Context, id int64) (*Node, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+nodeColumns+nodeFrom+`WHERE n.id = ? AND n.deleted_at IS NULL`, id)
@@ -584,9 +509,19 @@ func (s *Store) Get(ctx context.Context, id int64) (*Node, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return n, err
+	if err != nil {
+		return nil, err
+	}
+	if n.Inbounds, err = s.InboundsForNode(ctx, id); err != nil {
+		return nil, err
+	}
+	return n, nil
 }
 
+// List 列出全部节点,入站一次性取回后按机器分组挂上去。
+//
+// 逐节点再查一遍的话,10 台机器就是 10 次往返 —— 与节点列表的周期流量
+// 走批量接口是同一条道理。
 func (s *Store) List(ctx context.Context) ([]*Node, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+nodeColumns+nodeFrom+`WHERE n.deleted_at IS NULL ORDER BY n.sort_order, n.id`)
@@ -596,14 +531,29 @@ func (s *Store) List(ctx context.Context) ([]*Node, error) {
 	defer rows.Close()
 
 	var nodes []*Node
+	byID := make(map[int64]*Node)
 	for rows.Next() {
 		n, err := s.scanNode(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		nodes = append(nodes, n)
+		byID[n.ID] = n
 	}
-	return nodes, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	inbounds, err := s.AllInbounds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, in := range inbounds {
+		if n, ok := byID[in.NodeID]; ok {
+			n.Inbounds = append(n.Inbounds, in)
+		}
+	}
+	return nodes, nil
 }
 
 // UpdateParams 是修改节点配置的参数。
@@ -624,13 +574,8 @@ type UpdateParams struct {
 	SSHPort     int
 	SSHUser     string
 	SSHKey      string
-	ProxyPort   int
-	ListenPort  int
-	APIPort     int
-	// IPv6ProxyPort 为 0 表示 IPv6 条目跟随 ProxyPort,与 IPv6Address 一样
-	// 是"留空即清空"而不是"保持原值" —— 它只有在 IPv6Address 非空时才有意义,
-	// 两个字段总是一起提交,不存在漏传一个的情况。
-	IPv6ProxyPort int
+	// APIPort 是这台机器上 V2Ray API 的回环端口,全部入站共用一个。
+	APIPort int
 
 	// TrafficQuotaBytes 为 nil 表示保持原额度。用指针是因为 0 本身有含义
 	// (不限量),零值区分不出"没传"和"改成不限量"。
@@ -645,14 +590,6 @@ type UpdateParams struct {
 	// 把用量显示成一半,而管理员看到的是额度绰绰有余。
 	TrafficBillingMode string
 
-	// Protocol 留空表示保持原协议,SSMethod 同理。
-	//
-	// 与 AccessTierID 一样刻意不回落到默认值:漏传这个字段会把一台
-	// Shadowsocks 节点悄悄改回 VLESS,下一次部署就把全部用户踢下线,
-	// 而管理员那次操作可能只是改了个排序。
-	Protocol string
-	SSMethod string
-
 	// AccessTierID 为 0 表示保持原等级。不回落到普通组:
 	// 前端漏传这个字段时把 VIP 节点悄悄降成普通组,等于给全体用户开门,
 	// 而且不报任何错。
@@ -663,11 +600,6 @@ type UpdateParams struct {
 	SubscriptionEnabled *bool
 	PublicRemark        string
 	MaintenanceMessage  string
-
-	// TCPFastOpen 为 nil 表示保持原值。用指针的理由与 SubscriptionEnabled 相同:
-	// 漏传会把一台已经开了 TFO 的机器悄悄关掉,而下一次部署才生效 ——
-	// 那时管理员早忘了自己动过什么。
-	TCPFastOpen *bool
 }
 
 // UpdateEffect 描述一次修改带来的后果,调用方据此决定后续动作。
@@ -738,22 +670,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if err := normalizeSSH(&p.SSHPort, &p.SSHUser); err != nil {
 		return nil, effect, err
 	}
-	if err := normalizePorts(&p.ProxyPort, &p.ListenPort, &p.APIPort); err != nil {
-		return nil, effect, err
-	}
-	if err := normalizeIPv6Port(p.IPv6Address, &p.IPv6ProxyPort); err != nil {
-		return nil, effect, err
-	}
-	if strings.TrimSpace(p.Protocol) == "" {
-		p.Protocol = string(old.Protocol)
-	}
-	if strings.TrimSpace(p.SSMethod) == "" {
-		p.SSMethod = old.SSMethod
-	}
-	if err := normalizeProtocol(&p.Protocol, &p.SSMethod); err != nil {
-		return nil, effect, err
-	}
-	if err := s.checkProtocolSwitch(old, singbox.Protocol(p.Protocol)); err != nil {
+	if err := s.normalizeAPIPort(ctx, id, old, &p.APIPort); err != nil {
 		return nil, effect, err
 	}
 	if p.AccessTierID == 0 {
@@ -765,10 +682,6 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	subEnabled := old.SubscriptionEnabled
 	if p.SubscriptionEnabled != nil {
 		subEnabled = *p.SubscriptionEnabled
-	}
-	fastOpen := old.TCPFastOpen
-	if p.TCPFastOpen != nil {
-		fastOpen = *p.TCPFastOpen
 	}
 	if len([]rune(p.PublicRemark)) > 128 {
 		return nil, effect, errors.New("公开备注不能超过 128 个字符")
@@ -796,15 +709,10 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		orNone(old.IPv6Address), orNone(p.IPv6Address))
 	track("SSH 端口", old.SSHPort != p.SSHPort, old.SSHPort, p.SSHPort)
 	track("SSH 用户", old.SSHUser != p.SSHUser, old.SSHUser, p.SSHUser)
-	track("公网代理端口", old.ProxyPort != p.ProxyPort, old.ProxyPort, p.ProxyPort)
-	track("主机代理端口", old.ListenPort != p.ListenPort, old.ListenPort, p.ListenPort)
 	track("API 端口", old.APIPort != p.APIPort, old.APIPort, p.APIPort)
-	track("IPv6 公网端口", old.IPv6ProxyPort != p.IPv6ProxyPort,
-		ipv6PortLabel(old.IPv6ProxyPort), ipv6PortLabel(p.IPv6ProxyPort))
 	track("访问等级", old.AccessTierID != p.AccessTierID, old.AccessTierID, p.AccessTierID)
 	track("排序", old.SortOrder != p.SortOrder, old.SortOrder, p.SortOrder)
 	track("下发订阅", old.SubscriptionEnabled != subEnabled, old.SubscriptionEnabled, subEnabled)
-	track("TCP Fast Open", old.TCPFastOpen != fastOpen, onOffLabel(old.TCPFastOpen), onOffLabel(fastOpen))
 	track("公开备注", old.PublicRemark != p.PublicRemark, old.PublicRemark, p.PublicRemark)
 	track("维护说明", old.MaintenanceMessage != p.MaintenanceMessage,
 		old.MaintenanceMessage, p.MaintenanceMessage)
@@ -814,12 +722,6 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		old.TrafficResetCycle, p.TrafficResetCycle)
 	track("计费口径", old.TrafficBillingMode != p.TrafficBillingMode,
 		billingLabel(old.TrafficBillingMode), billingLabel(p.TrafficBillingMode))
-	track("落地协议", string(old.Protocol) != p.Protocol,
-		old.Protocol.Label(), singbox.Protocol(p.Protocol).Label())
-	// 加密方法只在 Shadowsocks 下有意义。协议切走时它被清空,
-	// 那不是"管理员改了方法",写进审计只会让人以为动了两处。
-	track("加密方法", singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks &&
-		old.SSMethod != p.SSMethod, orDash(old.SSMethod), orDash(p.SSMethod))
 	// 重置日只在按月重置时有意义,不重置时改它没有任何效果,写进审计只会造成误解。
 	track("每月重置日", p.TrafficResetCycle == string(traffic.CycleMonthly) &&
 		old.TrafficResetDay != p.TrafficResetDay, old.TrafficResetDay, p.TrafficResetDay)
@@ -841,30 +743,16 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// IPv6 与节点流量额度同样不进配置文件:前者只改订阅内容,后者只用于
 	// 统计与预警。为它们重启 sing-box 会把全部在线连接踢掉一次,换不来任何东西。
 	//
-	// 落地协议与加密方法整份改写节点配置,必须重新部署 —— 但【不自动部署】。
-	// 与访问等级不同:那一条是安全问题(被移出的用户凭据还留在节点上,
-	// 拖多久就多能用多久),而协议变更是可用性问题。立刻部署会让全部在线用户
-	// 在管理员没准备好的时候断线,而在部署完成之前订阅仍然下发旧协议的条目
-	// (订阅只看 deployed_protocol),没有人会拿到连不上的东西。
+	// 入站那一侧的变更(协议、端口、TFO、入站等级)不在这里判 ——
+	// 它们由 UpdateInbound 返回 InboundEffect,由上层各自处理。
+	// 在两处都判一遍的话,判据迟早分叉,而分叉的表现是"改了却没标脏"。
 	effect.TierChanged = old.AccessTierID != p.AccessTierID
-	//
-	// TFO 与协议同档:它进节点配置(是入站的监听选项),必须重新部署才生效,
-	// 但同样【不自动部署】—— 那会让全部在线用户在管理员没准备好时断线,
-	// 而在部署完成之前订阅仍按 deployed_tcp_fast_open 下发,没有人会拿到
-	// 一个客户端开了、服务端没开的组合。
-	effect.NeedsDeploy = old.ListenPort != p.ListenPort || old.APIPort != p.APIPort ||
-		string(old.Protocol) != p.Protocol || old.SSMethod != p.SSMethod ||
-		old.TCPFastOpen != fastOpen ||
-		effect.TierChanged
+	effect.NeedsDeploy = old.APIPort != p.APIPort || effect.TierChanged
 
-	// 下游传播的判据与 NeedsDeploy 是两套:公网端口与主机地址不进本机配置
-	// (改了它们重启 sing-box 没有意义),但它们正是中转主机
-	// proxy_pass 的目标 —— 那边必须跟着改。
-	effect.RelayTargetChanged = old.Host != p.Host ||
-		old.ProxyPort != p.ProxyPort ||
-		string(old.Protocol) != p.Protocol || old.SSMethod != p.SSMethod ||
-		old.TCPFastOpen != fastOpen ||
-		old.IPv6Address != p.IPv6Address || old.IPv6ProxyPort != p.IPv6ProxyPort
+	// 下游传播的判据与 NeedsDeploy 是两套:主机地址不进本机配置
+	// (改了它重启 sing-box 没有意义),但它正是中转主机 proxy_pass 的目标
+	// —— 那边必须跟着改。入站的公网端口与协议同理,由 UpdateInbound 负责传播。
+	effect.RelayTargetChanged = old.Host != p.Host || old.IPv6Address != p.IPv6Address
 
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
 	_, err = s.db.ExecContext(ctx, `
@@ -872,10 +760,8 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		   SET name = ?, display_name = ?, host = ?, ipv6_address = ?,
 		       ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
-		       proxy_port = ?, listen_port = ?, api_port = ?, ipv6_proxy_port = ?,
-		       protocol = ?, ss_method = ?,
+		       api_port = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
-		       tcp_fast_open = ?,
 		       public_remark = ?, maintenance_message = ?,
 		       traffic_quota_bytes = ?, traffic_reset_cycle = ?, traffic_reset_day = ?,
 		       traffic_billing_mode = ?,
@@ -884,9 +770,8 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		p.Name, p.DisplayName, p.Host, p.IPv6Address,
 		p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
-		p.ProxyPort, p.ListenPort, p.APIPort, p.IPv6ProxyPort,
-		p.Protocol, p.SSMethod,
-		p.AccessTierID, p.SortOrder, subEnabled, fastOpen,
+		p.APIPort,
+		p.AccessTierID, p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,
 		*p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay,
 		p.TrafficBillingMode,
@@ -896,6 +781,20 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 			return nil, effect, ErrNameConflict
 		}
 		return nil, effect, err
+	}
+
+	// 清空 IPv6 地址时,这台机器上全部入站的 IPv6 公网端口一并归零。
+	//
+	// 留着它们,下次重新填上 IPv6 会静默套用几个月前的端口,而那些端口
+	// 未必还转发着 —— 用户拿到的是连不上的条目,面板一个错都不报。
+	// 这一条 V2.1 就定下了,多入站之后跨了两张表,所以要显式写出来。
+	if p.IPv6Address == "" && old.IPv6Address != "" {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE node_inbounds SET ipv6_public_port = 0, updated_at = ?
+			  WHERE node_id = ? AND deleted_at IS NULL AND ipv6_public_port != 0`,
+			time.Now().UTC().Format(time.RFC3339), id); err != nil {
+			return nil, effect, err
+		}
 	}
 
 	updated, err := s.Get(ctx, id)
@@ -953,15 +852,33 @@ func (s *Store) SaveProbe(
 	return err
 }
 
-// SaveDestCheck 保存握手目标检测结果。
-func (s *Store) SaveDestCheck(ctx context.Context, id int64, dest string, destPort, maxRecord int) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE nodes SET reality_dest = ?, reality_dest_port = ?,
-			handshake_max_record_size = ?, handshake_checked_at = ?, updated_at = ?
-		WHERE id = ?`,
-		dest, destPort, maxRecord, now, now, id)
-	return err
+// normalizeAPIPort 归一化 V2Ray API 端口,并确认它没被这台机器上的入站占用。
+//
+// 冲突的后果是 sing-box 起不来,而它要到部署的健康检查才暴露 ——
+// 那时配置已经换过去了,只能靠回滚救回来。
+func (s *Store) normalizeAPIPort(ctx context.Context, id int64, old *Node, port *int) error {
+	if *port == 0 {
+		*port = old.APIPort
+	}
+	// 中转机上没有 sing-box,API 端口一直是 0,不必也不能按端口校验。
+	if old.Role.IsRelay() {
+		*port = 0
+		return nil
+	}
+	if err := singbox.ValidatePort(*port, "V2Ray API"); err != nil {
+		return err
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM node_inbounds
+		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL`,
+		id, *port).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("V2Ray API 端口 %d 已被这台机器上的一个入站占用", *port)
+	}
+	return nil
 }
 
 // NextRevision 原子地递增并返回节点的配置版本号。
@@ -986,50 +903,83 @@ func (s *Store) NextRevision(ctx context.Context, id int64) (int64, error) {
 	return revision, tx.Commit()
 }
 
-// MarkDeployed 记录部署成功后的配置哈希、生效协议与状态。
-//
-// deployed_protocol / deployed_ss_method 只在这里写入 —— 它们回答的是
-// "节点上现在跑的是什么",而订阅与门户只信这个答案。部署失败回滚后
-// 这两列保持原值,于是订阅继续下发那份仍然能连的旧协议条目。
-func (s *Store) MarkDeployed(
-	ctx context.Context, id int64, sha256 string,
-	protocol singbox.Protocol, ssMethod string, tcpFastOpen bool,
-) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE nodes SET deployed_config_sha256 = ?, deployed_protocol = ?, deployed_ss_method = ?,
-		       deployed_tcp_fast_open = ?,
-		       status = ?, last_heartbeat_at = ?, updated_at = ?
-		WHERE id = ? AND status != 'DISABLED'`,
-		sha256, string(protocol), ssMethod, tcpFastOpen, StatusOnline, now, now, id)
-	return err
+// DeployedInbound 是一个入站在这次部署里真正下发到节点上的样子。
+type DeployedInbound struct {
+	ID          int64
+	Protocol    singbox.Protocol
+	SSMethod    string
+	TCPFastOpen bool
 }
 
-// checkProtocolSwitch 在切换落地协议前检查前置条件。
+// MarkDeployed 记录部署成功后的配置哈希、各入站的生效参数与节点状态。
 //
-// 切到 VLESS 要求握手目标已经实测通过。握手目标必须经 ApplyHandshakeDest
-// 在节点本机实测才能写入(CDN 按地域下发不同证书链,TLS 记录超过 8192 字节
-// 会静默握手失败),这里放行等于绕过那道实测。
+// deployed_* 只在这里写入 —— 它们回答的是"节点上现在跑的是什么",
+// 而订阅与门户只信这个答案。部署失败回滚后这些列保持原值,
+// 于是订阅继续下发那份仍然能连的旧条目。
 //
-// 不在这里顺带跑一次检测:那会把"切协议"变成一个可能在中途失败的复合操作 ——
-// 失败时节点停在半成品状态,而管理员看到的只是一句"检测失败",
-// 不知道协议到底切没切。拆成两个各自可验证的步骤,每一步的失败都是干净的。
-func (s *Store) checkProtocolSwitch(old *Node, next singbox.Protocol) error {
-	if next == old.Protocol {
-		return nil
+// **不在这次配置里的入站要把 deployed_* 清空。** 一个被停用或删掉的入站,
+// 部署成功之后节点上就没有它了;不清的话它会继续留在所有人的订阅里,
+// 而客户端连过去无人应答 —— 订阅、数据库、节点三方各说各话。
+func (s *Store) MarkDeployed(
+	ctx context.Context, id int64, sha256 string, inbounds []DeployedInbound,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	switch next {
-	case singbox.ProtocolVLESSReality:
-		if old.RealityDest == "" || old.HandshakeCheckedAt == nil {
-			return errors.New("切换到 VLESS + REALITY 之前,请先在节点详情里完成握手目标检测")
-		}
-	case singbox.ProtocolShadowsocks:
-		// 正常路径上不会走到:密钥在建节点时生成,存量节点由启动 backfill 补齐。
-		if old.SSPassword == "" {
-			return errors.New("该节点还没有 Shadowsocks 密钥,请重启面板让补齐任务跑一次")
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE nodes SET deployed_config_sha256 = ?,
+		       status = ?, last_heartbeat_at = ?, updated_at = ?
+		WHERE id = ? AND status != 'DISABLED'`,
+		sha256, StatusOnline, now, now, id); err != nil {
+		return err
+	}
+
+	live := make(map[int64]bool, len(inbounds))
+	for _, in := range inbounds {
+		live[in.ID] = true
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE node_inbounds SET deployed_protocol = ?, deployed_ss_method = ?,
+			       deployed_tcp_fast_open = ?, updated_at = ?
+			 WHERE id = ? AND node_id = ?`,
+			string(in.Protocol), in.SSMethod, in.TCPFastOpen, now, in.ID, id); err != nil {
+			return err
 		}
 	}
-	return nil
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id FROM node_inbounds WHERE node_id = ? AND deployed_protocol != ''`, id)
+	if err != nil {
+		return err
+	}
+	var stale []int64
+	for rows.Next() {
+		var inboundID int64
+		if err := rows.Scan(&inboundID); err != nil {
+			rows.Close()
+			return err
+		}
+		if !live[inboundID] {
+			stale = append(stale, inboundID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, inboundID := range stale {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE node_inbounds SET deployed_protocol = '', deployed_ss_method = '',
+			       deployed_tcp_fast_open = 0, updated_at = ?
+			 WHERE id = ?`, now, inboundID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func orDash(s string) string {
@@ -1037,15 +987,6 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
-}
-
-// onOffLabel 用于审计里的开关变更。写「开 → 关」而不是「true → false」——
-// 审计日志是给人读的,而管理员在界面上看到的就是一个开关。
-func onOffLabel(v bool) string {
-	if v {
-		return "开"
-	}
-	return "关"
 }
 
 // MarkDeployFailed 把节点标记为部署失败。

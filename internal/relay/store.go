@@ -23,13 +23,13 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 const relayColumns = `r.id, r.node_id, n.name,
 	r.display_name, r.listen_port, r.public_port,
-	r.target_kind, r.target_node_id, r.target_external_id,
+	r.target_kind, r.target_inbound_id, r.target_external_id,
 	r.access_tier_id, t.code, t.name, t.level,
 	r.sort_order, r.subscription_enabled, r.public_remark, r.enabled,
 	r.created_at, r.updated_at,
-	COALESCE(tn.display_name, tp.display_name, '') AS target_name,
+	COALESCE(tin.display_name || ' / ' || ti.display_name, tp.display_name, '') AS target_name,
 	CASE r.target_kind
-	     WHEN 'NODE'     THEN (tn.id IS NOT NULL AND tn.deployed_config_sha256 != '')
+	     WHEN 'INBOUND'  THEN (ti.id IS NOT NULL AND ti.deployed_protocol != '')
 	     WHEN 'EXTERNAL' THEN (tp.id IS NOT NULL)
 	     ELSE 0 END AS target_ready`
 
@@ -41,7 +41,8 @@ const relayColumns = `r.id, r.node_id, n.name,
 const relayFrom = ` FROM node_relays r
 	JOIN nodes n ON n.id = r.node_id
 	JOIN access_tiers t ON t.id = r.access_tier_id
-	LEFT JOIN nodes tn ON tn.id = r.target_node_id AND tn.deleted_at IS NULL
+	LEFT JOIN node_inbounds ti ON ti.id = r.target_inbound_id AND ti.deleted_at IS NULL
+	LEFT JOIN nodes tin ON tin.id = ti.node_id AND tin.deleted_at IS NULL
 	LEFT JOIN external_proxies tp ON tp.id = r.target_external_id AND tp.deleted_at IS NULL `
 
 func scanRelay(scan func(dest ...any) error) (*Relay, error) {
@@ -59,7 +60,7 @@ func scanRelay(scan func(dest ...any) error) (*Relay, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.TargetNodeID = targetNodeID.Int64
+	r.TargetInboundID = targetNodeID.Int64
 	r.TargetExternalID = targetExternalID.Int64
 	return &r, nil
 }
@@ -124,7 +125,7 @@ type CreateParams struct {
 	// PublicPort 留 0 表示跟随 ListenPort。
 	PublicPort       int
 	TargetKind       string
-	TargetNodeID     int64
+	TargetInboundID  int64
 	TargetExternalID int64
 	// AccessTierID 留 0 表示普通组。
 	AccessTierID        int64
@@ -160,18 +161,18 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Relay, error) {
 	if err := access.NewStore(s.db).Validate(ctx, p.AccessTierID); err != nil {
 		return nil, err
 	}
-	if err := s.checkTarget(ctx, kind, p.TargetNodeID, p.TargetExternalID); err != nil {
+	if err := s.checkTarget(ctx, kind, p.TargetInboundID, p.TargetExternalID); err != nil {
 		return nil, err
 	}
 	if err := s.checkPortFree(ctx, p.NodeID, p.ListenPort, 0); err != nil {
 		return nil, err
 	}
 
-	targetNode, targetExternal := targetArgs(kind, p.TargetNodeID, p.TargetExternalID)
+	targetNode, targetExternal := targetArgs(kind, p.TargetInboundID, p.TargetExternalID)
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO node_relays (node_id, display_name, listen_port, public_port,
-			target_kind, target_node_id, target_external_id,
+			target_kind, target_inbound_id, target_external_id,
 			access_tier_id, sort_order, subscription_enabled, public_remark, enabled,
 			created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -201,8 +202,8 @@ type UpdateParams struct {
 	DisplayName string
 	ListenPort  int
 	PublicPort  int
-	// TargetNodeID / TargetExternalID 按规则原有的 TargetKind 取用其中一个。
-	TargetNodeID     int64
+	// TargetInboundID / TargetExternalID 按规则原有的 TargetKind 取用其中一个。
+	TargetInboundID  int64
 	TargetExternalID int64
 	// AccessTierID 为 0 表示保持原值,不回落到普通组 ——
 	// 漏传把 VIP 线路降成普通组等于给全体用户开门,而且不报错。
@@ -237,7 +238,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Relay, e
 	} else if err := access.NewStore(s.db).Validate(ctx, tierID); err != nil {
 		return nil, err
 	}
-	if err := s.checkTarget(ctx, cur.TargetKind, p.TargetNodeID, p.TargetExternalID); err != nil {
+	if err := s.checkTarget(ctx, cur.TargetKind, p.TargetInboundID, p.TargetExternalID); err != nil {
 		return nil, err
 	}
 	if p.ListenPort != cur.ListenPort {
@@ -246,10 +247,10 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Relay, e
 		}
 	}
 
-	targetNode, targetExternal := targetArgs(cur.TargetKind, p.TargetNodeID, p.TargetExternalID)
+	targetNode, targetExternal := targetArgs(cur.TargetKind, p.TargetInboundID, p.TargetExternalID)
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE node_relays SET display_name = ?, listen_port = ?, public_port = ?,
-		       target_node_id = ?, target_external_id = ?,
+		       target_inbound_id = ?, target_external_id = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, enabled = ?, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
@@ -292,7 +293,16 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 // 就过时了 —— 不传播的话 A 会把流量转到一个没人监听的端口上,
 // 而面板上两台机器都显示正常。
 func (s *Store) HostIDsTargetingNode(ctx context.Context, targetID int64) ([]int64, error) {
-	return s.hostIDs(ctx, `r.target_kind = 'NODE' AND r.target_node_id = ?`, targetID)
+	return s.hostIDs(ctx, `r.target_kind = 'INBOUND' AND r.target_inbound_id IN (
+		SELECT id FROM node_inbounds WHERE node_id = ? AND deleted_at IS NULL)`, targetID)
+}
+
+// HostIDsTargetingInbound 同上,但只针对一个入站。
+//
+// 改一个入站的公网端口或协议时用它:同机别的入站没变,
+// 把指向它们的中转主机也标脏会白 reload 一遍 nginx。
+func (s *Store) HostIDsTargetingInbound(ctx context.Context, inboundID int64) ([]int64, error) {
+	return s.hostIDs(ctx, `r.target_kind = 'INBOUND' AND r.target_inbound_id = ?`, inboundID)
 }
 
 // HostIDsTargetingExternal 同上,落地是外部代理。
@@ -322,23 +332,22 @@ func (s *Store) hostIDs(ctx context.Context, cond string, arg any) ([]int64, err
 // checkTarget 确认落地存在且能被转发到。
 func (s *Store) checkTarget(ctx context.Context, kind TargetKind, nodeID, externalID int64) error {
 	switch kind {
-	case TargetNode:
+	case TargetInbound:
 		if nodeID == 0 {
-			return errors.New("请选择落地节点")
+			return errors.New("请选择落地入口")
 		}
-		var role string
-		err := s.db.QueryRowContext(ctx,
-			`SELECT role FROM nodes WHERE id = ? AND deleted_at IS NULL`, nodeID).Scan(&role)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("落地节点不存在: id=%d", nodeID)
-		}
-		if err != nil {
+		// 落地是一个【入站】。中转机上根本没有入站行,所以"落地不能是
+		// 中转角色"这条限制现在由数据本身保证 —— 面板不为 A→B→C 三跳
+		// 做任何编排,也就不假装支持它。
+		var count int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM node_inbounds i
+			  JOIN nodes n ON n.id = i.node_id AND n.deleted_at IS NULL
+			 WHERE i.id = ? AND i.deleted_at IS NULL`, nodeID).Scan(&count); err != nil {
 			return err
 		}
-		// 中转机上没有 sing-box,转发到它只会得到一条连不上的线路。
-		// 面板不为 A→B→C 三跳做任何编排,也就不假装支持它。
-		if role == "RELAY" {
-			return errors.New("落地不能是中转角色的节点")
+		if count == 0 {
+			return fmt.Errorf("落地入口不存在: id=%d", nodeID)
 		}
 		return nil
 	case TargetExternal:
@@ -366,25 +375,35 @@ func (s *Store) checkTarget(ctx context.Context, kind TargetKind, nodeID, extern
 // 而那要等到部署的健康检查才发现 —— 到那时前一份配置已经被换掉了。
 func (s *Store) checkPortFree(ctx context.Context, nodeID int64, port int, excludeRelayID int64) error {
 	var role string
-	var listenPort, apiPort int
+	var apiPort int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT role, listen_port, api_port FROM nodes WHERE id = ? AND deleted_at IS NULL`,
-		nodeID).Scan(&role, &listenPort, &apiPort)
+		`SELECT role, api_port FROM nodes WHERE id = ? AND deleted_at IS NULL`,
+		nodeID).Scan(&role, &apiPort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("中转主机不存在: id=%d", nodeID)
 	}
 	if err != nil {
 		return err
 	}
+	var count int
 	if role != "RELAY" {
-		if port == listenPort {
-			return fmt.Errorf("%w:%d 是这台机器上 sing-box 的监听端口", ErrPortConflict, port)
-		}
 		if port == apiPort {
 			return fmt.Errorf("%w:%d 是这台机器上 V2Ray API 的端口", ErrPortConflict, port)
 		}
+		// 同机的 sing-box 入站【逐个】查,不是只查一个。
+		// 少查一个的后果是那个入站 bind 失败、整个 sing-box 起不来,
+		// 而问题要到部署的健康检查才暴露。
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM node_inbounds
+			  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL`,
+			nodeID, port).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			return fmt.Errorf("%w:%d 是这台机器上一个 sing-box 入站的监听端口",
+				ErrPortConflict, port)
+		}
 	}
-	var count int
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM node_relays
 		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL AND id != ?`,
@@ -398,7 +417,7 @@ func (s *Store) checkPortFree(ctx context.Context, nodeID int64, port int, exclu
 }
 
 func targetArgs(kind TargetKind, nodeID, externalID int64) (any, any) {
-	if kind == TargetNode {
+	if kind == TargetInbound {
 		return nodeID, nil
 	}
 	return nil, externalID

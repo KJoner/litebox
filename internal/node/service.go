@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,10 +15,13 @@ import (
 	"github.com/litebox/litebox/internal/sshx"
 )
 
-// UserProvider 返回分配给某节点的用户列表。
-// Phase 3 由用户模块实现;Phase 2 传入返回空列表的实现即可。
+// UserProvider 返回分配给某个入站的用户列表。
+//
+// 粒度是入站而不是节点:入站有自己的访问等级,在节点等级之上再收一次
+// (user_effective_inbounds)。按节点取的话,一台机器上的 VIP 入口
+// 会把普通用户的凭据也写进去 —— 那是权限凭空放大,而且不报任何错。
 type UserProvider interface {
-	UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User, error)
+	UsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error)
 }
 
 // PanelKeyProvider 返回面板专用的节点访问密钥。由 settings.KeyManager 实现。
@@ -181,15 +185,22 @@ func (s *Service) ProbeNode(ctx context.Context, nodeID int64) (ProbeResult, err
 }
 
 // CheckHandshakeDest 从节点出口检测握手目标。
-// dest 为空时检测节点当前配置的目标。
+//
+// dest 为空时检测这台机器上第一个 VLESS 入站当前配置的目标 ——
+// 检测本身是"从这台机器出去看那个域名长什么样",与哪个入站无关,
+// 所以它留在节点级;写入才是入站级的(ApplyHandshakeDest)。
 func (s *Service) CheckHandshakeDest(ctx context.Context, nodeID int64, dest string, port int) (DestCheckResult, error) {
-	n, err := s.store.Get(ctx, nodeID)
-	if err != nil {
-		return DestCheckResult{}, err
-	}
 	if dest == "" {
-		dest = n.RealityDest
-		port = n.RealityDestPort
+		n, err := s.store.Get(ctx, nodeID)
+		if err != nil {
+			return DestCheckResult{}, err
+		}
+		for _, in := range n.Inbounds {
+			if in.RealityDest != "" {
+				dest, port = in.RealityDest, in.RealityDestPort
+				break
+			}
+		}
 	}
 	if port == 0 {
 		port = 443
@@ -199,7 +210,7 @@ func (s *Service) CheckHandshakeDest(ctx context.Context, nodeID int64, dest str
 	}
 
 	var result DestCheckResult
-	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		var checkErr error
 		result, checkErr = CheckDest(ctx, client, dest, port)
 		return checkErr
@@ -207,10 +218,22 @@ func (s *Service) CheckHandshakeDest(ctx context.Context, nodeID int64, dest str
 	return result, err
 }
 
-// ApplyHandshakeDest 检测并在通过后把握手目标写入节点记录。
+// ApplyHandshakeDest 检测并在通过后把握手目标写入【那一个入站】。
+//
 // 不通过时拒绝保存,避免把一个用不了的目标固化进配置。
-func (s *Service) ApplyHandshakeDest(ctx context.Context, nodeID int64, dest string, port int) (DestCheckResult, error) {
-	result, err := s.CheckHandshakeDest(ctx, nodeID, dest, port)
+// 握手目标是入站级的:同一台机器上的两个 REALITY 入站完全可以指向不同的
+// 目标,而 8192 字节记录上限是目标域名的属性,不是机器的属性。
+func (s *Service) ApplyHandshakeDest(
+	ctx context.Context, inboundID int64, dest string, port int,
+) (DestCheckResult, error) {
+	in, err := s.store.GetInbound(ctx, inboundID)
+	if err != nil {
+		return DestCheckResult{}, err
+	}
+	if dest == "" {
+		dest, port = in.RealityDest, in.RealityDestPort
+	}
+	result, err := s.CheckHandshakeDest(ctx, in.NodeID, dest, port)
 	if err != nil {
 		return result, err
 	}
@@ -218,7 +241,8 @@ func (s *Service) ApplyHandshakeDest(ctx context.Context, nodeID int64, dest str
 		return result, fmt.Errorf("握手目标 %s 不满足 REALITY 要求:%s",
 			result.Server, strings.Join(result.Problems, ";"))
 	}
-	if err := s.store.SaveDestCheck(ctx, nodeID, result.Server, result.Port, result.MaxRecordSize); err != nil {
+	if err := s.store.SaveInboundDestCheck(
+		ctx, inboundID, result.Server, result.Port, result.MaxRecordSize); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -270,9 +294,20 @@ func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResul
 		Revision:      n.ConfigRevision,
 		DesiredSHA256: desired.SHA256,
 	}
-	for _, u := range desired.Config.Inbounds[0].Users {
-		result.DesiredUsers = append(result.DesiredUsers, u.Name)
+	// 全部入站的用户并集。只取第一个入站的话,一台机器上 VIP 入口
+	// 独有的那些用户会在"期望用户"里凭空消失。
+	seen := make(map[string]bool)
+	result.DesiredUsers = []string{}
+	for _, in := range desired.Config.Inbounds {
+		for _, u := range in.Users {
+			if seen[u.Name] {
+				continue
+			}
+			seen[u.Name] = true
+			result.DesiredUsers = append(result.DesiredUsers, u.Name)
+		}
 	}
+	sort.Strings(result.DesiredUsers)
 
 	var remoteJSON []byte
 	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
@@ -301,21 +336,24 @@ func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResul
 
 // desiredConfig 渲染节点当前应有的配置。
 func (s *Service) desiredConfig(ctx context.Context, nodeID int64) (singbox.Rendered, error) {
-	n, users, chain, err := s.renderInputs(ctx, nodeID)
+	n, inbounds, _, err := s.renderInputs(ctx, nodeID)
 	if err != nil {
 		return singbox.Rendered{}, err
 	}
-	return singbox.RenderJSON(nodeParams(n, users, chain))
+	return singbox.RenderJSON(nodeParams(n, inbounds))
 }
 
-// renderInputs 收齐渲染一份节点配置所需的三样东西。
+// renderInputs 收齐渲染一份节点配置所需的东西。
 //
 // **只此一处。** desiredConfig 与 Deploy 各收一遍的话,漏掉其中一处的表现是
 // "配置差异里看不出变化,部署下去却全变了",或者反过来 —— 两种都让 diff
 // 失去意义,而 diff 正是管理员部署前唯一能看到影响范围的地方。
+//
+// 第三个返回值是逐入站的拨测参数(REALITY 公钥与链式拨测目标),
+// 与渲染参数一一对应。它不进配置文件,但缺了它那个入站就【完全没被验证过】。
 func (s *Service) renderInputs(
 	ctx context.Context, nodeID int64,
-) (*Node, []singbox.User, *singbox.ChainOutbound, error) {
+) (*Node, []singbox.InboundParams, []deployment.ProbeTarget, error) {
 	n, err := s.store.Get(ctx, nodeID)
 	if err != nil {
 		return nil, nil, nil, err
@@ -326,42 +364,92 @@ func (s *Service) renderInputs(
 		return nil, nil, nil, fmt.Errorf("节点 %s 是中转角色,没有 sing-box 配置", n.Name)
 	}
 
-	var users []singbox.User
-	if s.users != nil {
-		if users, err = s.users.UsersForNode(ctx, nodeID); err != nil {
+	params := make([]singbox.InboundParams, 0, len(n.Inbounds))
+	probes := make([]deployment.ProbeTarget, 0, len(n.Inbounds))
+	for _, in := range n.Inbounds {
+		// 停用的入站不进配置。**行还留着**,重新打开不用重配等级与握手目标 ——
+		// 与软删除是两件事。
+		if !in.Enabled {
+			continue
+		}
+		users, err := s.inboundUsers(ctx, in)
+		if err != nil {
 			return nil, nil, nil, err
 		}
-	}
-	// 把"别的机器链到我这里"的链路凭据并进来。
-	//
-	// 合并只在这一处做。漏掉它的表现分两档:链路凭据不在 inbound.users 里,
-	// 中转主机连不上这台机器(它那边部署时拨测失败并回滚,报错落在中转机上);
-	// 漏在 stats 白名单里则更糟 —— 链路正常工作,而这台机器的节点用量
-	// 少算了经中转过来的全部流量,没有任何报错。
-	chainUsers, err := s.store.ChainUsersForNode(ctx, nodeID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	users = append(users, chainUsers...)
+		chain, err := s.chainOutbound(ctx, in)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		params = append(params, singbox.InboundParams{
+			ID:                in.ID,
+			Tag:               in.Tag,
+			Protocol:          in.Protocol,
+			ListenPort:        in.ListenPort,
+			TCPFastOpen:       in.TCPFastOpen,
+			RealityDest:       in.RealityDest,
+			RealityPort:       in.RealityDestPort,
+			RealityPrivateKey: in.RealityPrivateKey,
+			ShortID:           in.RealityShortID,
+			SSMethod:          singbox.SSMethod(in.SSMethod),
+			SSPassword:        in.SSPassword,
+			Users:             users,
+			Chain:             chain,
+		})
 
-	chain, err := s.chainOutbound(ctx, n)
-	if err != nil {
-		return nil, nil, nil, err
+		probe := deployment.ProbeTarget{Tag: in.Tag, RealityPublicKey: in.RealityPublicKey}
+		// 链式入站的拨测目标必须改成【这台机器自己的公网 SSH】。
+		//
+		// 默认目标是 127.0.0.1 + $SSH_CONNECTION 给出的本机端口 —— 链式之后
+		// 那个包会被送到落地,而落地上的 127.0.0.1:22 是【落地自己的】sshd,
+		// 于是拨测碰巧仍然通过,但它验证的东西已经不是原来那个了。
+		// 落地是机场时更直接:私网地址要么被上游拒绝,要么打到机场自己的回环上,
+		// 拨测必然失败而链路其实是好的。
+		//
+		// 改成公网地址之后,数据路径是 入站 → 链式出站 → 落地 → 公网 → 本机 sshd,
+		// 完整验证了整条链与落地的出网能力,终点一定会吐出 SSH 横幅。
+		// 发起方是落地而不是本机,所以不涉及 hairpin NAT。
+		if chain != nil {
+			probe.DialHost, probe.DialPort = n.Host, n.SSHPort
+		}
+		probes = append(probes, probe)
 	}
-	return n, users, chain, nil
+	return n, params, probes, nil
 }
 
-// chainOutbound 把节点自己的链式去向解析成渲染参数。
+// inboundUsers 收齐一个入站上应当存在的全部凭据持有者。
 //
-// 落地是自建节点时取 deployed_*,不取期望值 —— 与订阅同一条道理:
+// 两个来源:能用这个入口的真实用户,以及"别的机器链到这个入口"的链路凭据。
+//
+// 合并只在这一处做。漏掉链路凭据的表现分两档:不在 inbound.users 里时
+// 中转主机连不上这个入口(它那边部署时拨测失败并回滚,报错落在中转机上);
+// 漏在 stats 白名单里则更糟 —— 链路正常工作,而这台机器的节点用量
+// 少算了经中转过来的全部流量,没有任何报错。
+func (s *Service) inboundUsers(ctx context.Context, in *Inbound) ([]singbox.User, error) {
+	var users []singbox.User
+	if s.users != nil {
+		var err error
+		if users, err = s.users.UsersForInbound(ctx, in.ID); err != nil {
+			return nil, err
+		}
+	}
+	chainUsers, err := s.store.ChainUsersForInbound(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	return append(users, chainUsers...), nil
+}
+
+// chainOutbound 把一个入站的链式去向解析成渲染参数。
+//
+// 落地是自建入站时取 deployed_*,不取期望值 —— 与订阅同一条道理:
 // 落地改协议到它部署成功之间的窗口里,按期望值渲染会让中转主机
 // 拿一套还没生效的参数去连它,握手直接失败,而数据库、两台节点、
 // 面板四方都是"对的"。
-func (s *Service) chainOutbound(ctx context.Context, n *Node) (*singbox.ChainOutbound, error) {
-	if !n.ChainTargetKind.Enabled() {
+func (s *Service) chainOutbound(ctx context.Context, in *Inbound) (*singbox.ChainOutbound, error) {
+	if !in.ChainTargetKind.Enabled() {
 		return nil, nil
 	}
-	target, err := s.store.ResolveChainTarget(ctx, n)
+	target, err := s.store.ResolveChainTarget(ctx, in)
 	if err != nil {
 		return nil, err
 	}
@@ -370,8 +458,8 @@ func (s *Service) chainOutbound(ctx context.Context, n *Node) (*singbox.ChainOut
 	}
 
 	switch target.Kind {
-	case ChainTargetNode:
-		t := target.Node
+	case ChainTargetInbound:
+		t := target.Inbound
 		out := &singbox.ChainOutbound{
 			Protocol:    t.Protocol,
 			Server:      t.Host,
@@ -380,7 +468,7 @@ func (s *Service) chainOutbound(ctx context.Context, n *Node) (*singbox.ChainOut
 		}
 		if t.Protocol == singbox.ProtocolShadowsocks {
 			// 拼接只有 SSClientPassword 一处实现,与拨测、订阅共用。
-			password, err := singbox.SSClientPassword(t.SSServerKey, n.ChainSSPassword, t.SSMethod)
+			password, err := singbox.SSClientPassword(t.SSServerKey, in.ChainSSPassword, t.SSMethod)
 			if err != nil {
 				return nil, fmt.Errorf("拼接链路的 Shadowsocks 凭据: %w", err)
 			}
@@ -388,7 +476,7 @@ func (s *Service) chainOutbound(ctx context.Context, n *Node) (*singbox.ChainOut
 			out.SSPassword = password
 			return out, nil
 		}
-		out.UUID = n.ChainUUID
+		out.UUID = in.ChainUUID
 		out.RealityDest = t.RealityDest
 		out.RealityPublicKey = t.RealityPublicKey
 		out.RealityShortID = t.RealityShortID
@@ -409,33 +497,23 @@ func (s *Service) chainOutbound(ctx context.Context, n *Node) (*singbox.ChainOut
 	return nil, fmt.Errorf("未知的链式去向 %q", target.Kind)
 }
 
-// nodeParams 把一条节点记录投影成渲染参数。
+// nodeParams 把一条节点记录连同它的入站投影成渲染参数。
 //
-// 只此一处:desiredConfig 与 Deploy 各拼一遍的话,加一个协议字段时
+// 只此一处:desiredConfig 与 Deploy 各拼一遍的话,加一个字段时
 // 漏掉其中一处的表现是"配置差异里看不出变化,部署下去却全变了",
 // 或者反过来 —— 两种都让 diff 失去意义,而 diff 正是管理员部署前
 // 唯一能看到影响范围的地方。
-func nodeParams(n *Node, users []singbox.User, chain *singbox.ChainOutbound) singbox.NodeParams {
+func nodeParams(n *Node, inbounds []singbox.InboundParams) singbox.NodeParams {
 	return singbox.NodeParams{
-		Protocol:          n.Protocol,
-		ListenPort:        n.ListenPort,
-		APIPort:           n.APIPort,
-		TCPFastOpen:       n.TCPFastOpen,
-		MemTotalMB:        n.MemTotalMB,
-		RealityDest:       n.RealityDest,
-		RealityPort:       n.RealityDestPort,
-		RealityPrivateKey: n.RealityPrivateKey,
-		ShortID:           n.RealityShortID,
-		SSMethod:          singbox.SSMethod(n.SSMethod),
-		SSPassword:        n.SSPassword,
-		Users:             users,
-		Chain:             chain,
+		APIPort:    n.APIPort,
+		MemTotalMB: n.MemTotalMB,
+		Inbounds:   inbounds,
 	}
 }
 
 // Deploy 把节点当前的期望状态部署到节点。
 func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, error) {
-	n, users, chain, err := s.renderInputs(ctx, nodeID)
+	n, inbounds, probes, err := s.renderInputs(ctx, nodeID)
 	if err != nil {
 		return deployment.Result{}, err
 	}
@@ -449,26 +527,11 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	}
 
 	req := deployment.Request{
-		NodeID:           nodeID,
-		Params:           nodeParams(n, users, chain),
-		RealityPublicKey: n.RealityPublicKey,
-		SSHPort:          n.SSHPort,
-		Revision:         revision,
-	}
-	// 链式节点的拨测目标必须改成【这台机器自己的公网 SSH】。
-	//
-	// 默认目标是 127.0.0.1 + $SSH_CONNECTION 给出的本机端口 —— 链式之后
-	// 那个包会被送到落地,而落地上的 127.0.0.1:22 是【落地自己的】sshd,
-	// 于是拨测碰巧仍然通过,但它验证的东西已经不是原来那个了。
-	// 落地是机场时更直接:私网地址要么被上游拒绝,要么打到机场自己的回环上,
-	// 拨测必然失败而链路其实是好的。
-	//
-	// 改成公网地址之后,数据路径是 入站 → 链式出站 → 落地 → 公网 → 本机 sshd,
-	// 完整验证了整条链与落地的出网能力,终点一定会吐出 SSH 横幅。
-	// 发起方是落地而不是本机,所以不涉及 hairpin NAT。
-	if chain != nil {
-		req.DialHost = n.Host
-		req.DialPort = n.SSHPort
+		NodeID:   nodeID,
+		Params:   nodeParams(n, inbounds),
+		Probes:   probes,
+		SSHPort:  n.SSHPort,
+		Revision: revision,
 	}
 
 	result, deployErr := s.deployer.Deploy(ctx, req)
@@ -483,9 +546,21 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 		}
 		return result, deployErr
 	}
-	// 生效协议与 TFO 在这里才落库:部署成功之前订阅一直下发旧的那一套。
-	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256,
-		n.Protocol, n.SSMethod, n.TCPFastOpen); err != nil {
+	// 各入站的生效协议与 TFO 在这里才落库:部署成功之前订阅一直下发旧的那一套。
+	//
+	// 传的是【这次真的渲染进配置的那些入站】,不是数据库里的全部 ——
+	// 停用或删掉的入站部署成功之后节点上就没有它了,MarkDeployed 会
+	// 顺手把它们的 deployed_* 清空,让它们退出订阅。
+	deployed := make([]DeployedInbound, 0, len(inbounds))
+	for _, in := range inbounds {
+		deployed = append(deployed, DeployedInbound{
+			ID:          in.ID,
+			Protocol:    in.Protocol,
+			SSMethod:    string(in.SSMethod),
+			TCPFastOpen: in.TCPFastOpen,
+		})
+	}
+	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256, deployed); err != nil {
 		s.logger.Error("记录部署成功状态出错", "node_id", nodeID, "error", err)
 	}
 	return result, nil

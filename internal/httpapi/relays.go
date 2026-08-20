@@ -70,7 +70,7 @@ type relayRequest struct {
 	ListenPort       int    `json:"listen_port"`
 	PublicPort       int    `json:"public_port"`
 	TargetKind       string `json:"target_kind"`
-	TargetNodeID     int64  `json:"target_node_id"`
+	TargetInboundID  int64  `json:"target_inbound_id"`
 	TargetExternalID int64  `json:"target_external_id"`
 	AccessTierID     int64  `json:"access_tier_id"`
 	SortOrder        int    `json:"sort_order"`
@@ -100,7 +100,7 @@ func (s *Server) handleCreateRelay(w http.ResponseWriter, r *http.Request) {
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		TargetKind:          strings.TrimSpace(req.TargetKind),
-		TargetNodeID:        req.TargetNodeID,
+		TargetInboundID:     req.TargetInboundID,
 		TargetExternalID:    req.TargetExternalID,
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
@@ -139,7 +139,7 @@ func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request) {
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
-		TargetNodeID:        req.TargetNodeID,
+		TargetInboundID:     req.TargetInboundID,
 		TargetExternalID:    req.TargetExternalID,
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
@@ -245,7 +245,7 @@ func (s *Server) handleNodeNginxFacts(w http.ResponseWriter, r *http.Request) {
 
 type chainRequest struct {
 	TargetKind       string `json:"target_kind"`
-	TargetNodeID     int64  `json:"target_node_id"`
+	TargetInboundID  int64  `json:"target_inbound_id"`
 	TargetExternalID int64  `json:"target_external_id"`
 }
 
@@ -255,7 +255,7 @@ type chainRequest struct {
 // 接口把两次部署的结果都返回 —— 失败时管理员必须知道卡在哪一阶段、
 // 哪台机器上现在是什么状态。
 func (s *Server) handleApplyChain(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.nodeIDFromPath(w, r)
+	id, ok := s.inboundIDFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -269,7 +269,7 @@ func (s *Server) handleApplyChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请选择落地去向")
 		return
 	}
-	targetID := req.TargetNodeID
+	targetID := req.TargetInboundID
 	if kind == node.ChainTargetExternal {
 		targetID = req.TargetExternalID
 	}
@@ -286,7 +286,7 @@ func (s *Server) handleApplyChain(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionChainApply,
-		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		TargetType: "inbound", TargetID: strconv.FormatInt(id, 10),
 		Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
 	})
 	if err != nil {
@@ -297,7 +297,7 @@ func (s *Server) handleApplyChain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClearChain(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.nodeIDFromPath(w, r)
+	id, ok := s.inboundIDFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -310,7 +310,7 @@ func (s *Server) handleClearChain(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionChainClear,
-		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		TargetType: "inbound", TargetID: strconv.FormatInt(id, 10),
 		Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
 	})
 	if err != nil {
@@ -329,8 +329,8 @@ func auditRelayDetail(req relayRequest) string {
 		b.WriteString("(公网 " + strconv.Itoa(req.PublicPort) + ")")
 	}
 	b.WriteString(" → " + req.TargetKind)
-	if req.TargetKind == string(relay.TargetNode) {
-		b.WriteString("#" + strconv.FormatInt(req.TargetNodeID, 10))
+	if req.TargetKind == string(relay.TargetInbound) {
+		b.WriteString("#" + strconv.FormatInt(req.TargetInboundID, 10))
 	} else {
 		b.WriteString("#" + strconv.FormatInt(req.TargetExternalID, 10))
 	}

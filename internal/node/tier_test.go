@@ -75,7 +75,7 @@ func TestUpdateKeepsTierAndSubscriptionWhenOmitted(t *testing.T) {
 	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host,
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,11 +148,18 @@ func updateFrom(n *Node, mutate func(*UpdateParams)) UpdateParams {
 	p := UpdateParams{
 		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host,
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort:      n.APIPort,
 		AccessTierID: n.AccessTierID, SortOrder: n.SortOrder,
 		SubscriptionEnabled: &enabled,
 		PublicRemark:        n.PublicRemark, MaintenanceMessage: n.MaintenanceMessage,
 	}
+	mutate(&p)
+	return p
+}
+
+// inboundEdit 与 updateFrom 同理,给入站那一层用。
+func inboundEdit(in *Inbound, mutate func(*InboundParams)) InboundParams {
+	p := inboundParamsOf(in)
 	mutate(&p)
 	return p
 }

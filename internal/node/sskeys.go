@@ -8,10 +8,10 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 )
 
-// BackfillSSKeys 给还没有 Shadowsocks 密钥的存量节点补一把。
+// BackfillSSKeys 给还没有 Shadowsocks 密钥的存量入站补一把。
 //
-// 与用户侧那一份是同一件事的两半:节点持有 server PSK,用户持有 user PSK,
-// 客户端的 password 是两者拼起来的。缺任何一半,把某个节点切成
+// 与用户侧那一份是同一件事的两半:入站持有 server PSK,用户持有 user PSK,
+// 客户端的 password 是两者拼起来的。缺任何一半,把某个入站切成
 // Shadowsocks 的那一刻就渲染不出配置。
 //
 // 与本次选的协议无关地补齐:密钥是纯本地随机数,零成本,
@@ -20,7 +20,7 @@ import (
 // 跑过一次之后 WHERE 匹配不到任何行,永远是 no-op。
 func (s *Store) BackfillSSKeys(ctx context.Context) (int, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM nodes WHERE ss_password_encrypted = '' AND deleted_at IS NULL`)
+		`SELECT id FROM node_inbounds WHERE ss_password_encrypted = '' AND deleted_at IS NULL`)
 	if err != nil {
 		return 0, err
 	}
@@ -41,7 +41,7 @@ func (s *Store) BackfillSSKeys(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	// 每个节点一把独立的密钥。共用的话,一台机器的密钥泄露就等于
+	// 每个入站一把独立的密钥。共用的话,一台机器的密钥泄露就等于
 	// 全部节点的凭据泄露 —— 而节点是最可能被别人拿到 root 的那一层。
 	now := time.Now().UTC().Format(time.RFC3339)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -57,10 +57,10 @@ func (s *Store) BackfillSSKeys(ctx context.Context) (int, error) {
 		}
 		enc, err := s.cipher.Encrypt(key)
 		if err != nil {
-			return 0, fmt.Errorf("加密节点 %d 的 Shadowsocks 密钥: %w", id, err)
+			return 0, fmt.Errorf("加密入站 %d 的 Shadowsocks 密钥: %w", id, err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE nodes SET ss_password_encrypted = ?, updated_at = ? WHERE id = ?`,
+			`UPDATE node_inbounds SET ss_password_encrypted = ?, updated_at = ? WHERE id = ?`,
 			enc, now, id); err != nil {
 			return 0, err
 		}

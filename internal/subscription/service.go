@@ -246,18 +246,23 @@ func uriList(entries []Entry) []string {
 // 订阅只描述节点上真实存在的东西。
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.display_name, n.host, n.ipv6_address, n.proxy_port, n.ipv6_proxy_port,
-		       n.deployed_protocol, n.deployed_ss_method, n.deployed_tcp_fast_open,
-		       n.ss_password_encrypted,
-		       n.reality_dest, n.reality_pubkey, n.reality_short_id
-		  FROM nodes n
-		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
-		 WHERE en.proxy_user_id = ?
+		SELECT i.display_name, n.host, n.ipv6_address,
+		       i.public_port, i.listen_port, i.ipv6_public_port,
+		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
+		       i.ss_password_encrypted,
+		       i.reality_dest, i.reality_pubkey, i.reality_short_id
+		  FROM node_inbounds i
+		  JOIN nodes n ON n.id = i.node_id
+		  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id
+		 WHERE ei.proxy_user_id = ?
+		   AND i.deleted_at IS NULL
 		   AND n.deleted_at IS NULL
 		   AND n.status != 'DISABLED'
 		   AND n.subscription_enabled = 1
-		   AND n.deployed_config_sha256 != ''
-		 ORDER BY n.sort_order, n.id`, userID)
+		   AND i.subscription_enabled = 1
+		   AND i.enabled = 1
+		   AND i.deployed_protocol != ''
+		 ORDER BY n.sort_order, n.id, i.sort_order, i.id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -267,10 +272,18 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	for rows.Next() {
 		var p PhysicalNode
 		var protocol, ssMethod, ssKeyEnc string
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port, &p.IPv6Port,
+		var listenPort int
+		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address,
+			&p.Port, &listenPort, &p.IPv6Port,
 			&protocol, &ssMethod, &p.TCPFastOpen, &ssKeyEnc,
 			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
+		}
+		// public_port 存 0 表示「跟随监听端口」,在这里解析而不是写库时固化 ——
+		// 固化之后管理员再改监听端口,订阅条目会继续停在旧端口上,
+		// 而他当初看到的是一个空输入框。
+		if p.Port == 0 {
+			p.Port = listenPort
 		}
 		// 解析失败回落到 VLESS:这一列的值只由 MarkDeployed 写入,
 		// 出现未知值说明库被人手工改过。回落而不是报错,是因为报错会让

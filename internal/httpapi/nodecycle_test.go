@@ -100,7 +100,6 @@ func TestUpdateIPv6ReportsNoSSHOrDeployEffect(t *testing.T) {
 	resp := env.do(t, http.MethodPut, "/api/nodes/"+itoa(id), map[string]any{
 		"name": "LA-01", "host": "192.0.2.10",
 		"ipv6_address": "2602:fed2::9",
-		"proxy_port":   24443,
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -145,7 +144,7 @@ func TestUpdateNodeKeepsQuotaWhenAbsent(t *testing.T) {
 	id := int64(n["id"].(float64))
 
 	resp := env.do(t, http.MethodPut, "/api/nodes/"+itoa(id), map[string]any{
-		"name": "LA-01", "host": "192.0.2.10", "proxy_port": 24443,
+		"name": "LA-01", "host": "192.0.2.10",
 	})
 	defer resp.Body.Close()
 	var out struct {

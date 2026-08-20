@@ -32,6 +32,7 @@ func (e *userEnv) addNode(t *testing.T, name, protocol string) int64 {
 		t.Fatal(err)
 	}
 	id, _ := res.LastInsertId()
+	seedInbound(t, e.db, id, protocol, 24443)
 	return id
 }
 
@@ -239,7 +240,7 @@ func TestUsersForNodeCarriesBothCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	users, err := env.store.UsersForNode(t.Context(), nodeID)
+	users, err := env.store.UsersForInbound(t.Context(), inboundOf(t, env.db, nodeID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +271,7 @@ func TestUsersForNodeToleratesMissingSSKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	users, err := env.store.UsersForNode(t.Context(), nodeID)
+	users, err := env.store.UsersForInbound(t.Context(), inboundOf(t, env.db, nodeID))
 	if err != nil {
 		t.Fatalf("缺少 Shadowsocks 密钥不该让 VLESS 节点的配置生成失败: %v", err)
 	}
