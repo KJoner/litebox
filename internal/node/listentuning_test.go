@@ -50,18 +50,14 @@ func TestTCPFastOpenNeedsDeployButNotTierChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.TCPFastOpen {
+	if only(t, n).TCPFastOpen {
 		t.Fatal("新建节点的 TFO 默认必须是关的")
 	}
 
-	on := true
-	base := UpdateParams{
-		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
-	}
-	p := base
-	p.TCPFastOpen = &on
-	updated, effect, err := store.Update(t.Context(), n.ID, p)
+	inboundID := only(t, n).ID
+	p := inboundParamsOf(only(t, n))
+	p.TCPFastOpen = true
+	updated, effect, err := store.UpdateInbound(t.Context(), inboundID, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,26 +70,15 @@ func TestTCPFastOpenNeedsDeployButNotTierChange(t *testing.T) {
 	if effect.TierChanged {
 		t.Error("改 TFO 不该触发自动部署 —— 那会让在线用户在管理员没准备好时断线")
 	}
-	var found bool
-	for _, c := range effect.Changes {
-		if c == "TCP Fast Open 关 → 开" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("审计里没有可读的开关变更:%v", effect.Changes)
-	}
 
-	// 漏传时保持原值。回落到 false 会把一台已经开了 TFO 的机器悄悄关掉,
-	// 而管理员那次操作可能只是改了个排序。
-	p2 := base
-	p2.SortOrder = 5
-	kept, _, err := store.Update(t.Context(), n.ID, p2)
+	// 再提交一次同样的参数不该把它关掉:UpdateInbound 是全量提交,
+	// 而 TCPFastOpen 是布尔零值 —— 调用方漏拷这一项就等于顺手关掉它。
+	kept, _, err := store.UpdateInbound(t.Context(), inboundID, inboundParamsOf(updated))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !kept.TCPFastOpen {
-		t.Error("没传 TCPFastOpen 时把它关掉了")
+		t.Error("原样提交一次就把 TFO 关掉了")
 	}
 }
 
@@ -106,13 +91,9 @@ func TestDeployedFastOpenLagsBehindDesired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	on := true
-	p := UpdateParams{
-		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
-		TCPFastOpen: &on,
-	}
-	if _, _, err := store.Update(t.Context(), n.ID, p); err != nil {
+	p := inboundParamsOf(only(t, n))
+	p.TCPFastOpen = true
+	if _, _, err := store.UpdateInbound(t.Context(), only(t, n).ID, p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,20 +101,21 @@ func TestDeployedFastOpenLagsBehindDesired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.TCPFastOpen || got.DeployedTCPFastOpen {
+	if !only(t, got).TCPFastOpen || only(t, got).DeployedTCPFastOpen {
 		t.Fatalf("期望值应当是开、生效值应当还是关,得到 %v / %v",
-			got.TCPFastOpen, got.DeployedTCPFastOpen)
+			only(t, got).TCPFastOpen, only(t, got).DeployedTCPFastOpen)
 	}
 
-	if err := store.MarkDeployed(t.Context(), n.ID, "sha",
-		singbox.ProtocolVLESSReality, "", true); err != nil {
+	if err := store.MarkDeployed(t.Context(), n.ID, "sha", []DeployedInbound{{
+		ID: only(t, got).ID, Protocol: singbox.ProtocolVLESSReality, TCPFastOpen: true,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	got, err = store.Get(t.Context(), n.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.DeployedTCPFastOpen {
+	if !only(t, got).DeployedTCPFastOpen {
 		t.Error("部署成功后生效值没有跟上")
 	}
 }

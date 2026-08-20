@@ -25,6 +25,16 @@ import (
 // (配置生成、订阅)引用这个常量,不要另写等级判断。
 const EffectiveNodesView = "user_effective_nodes"
 
+// EffectiveInboundsView 是有效入站视图名(迁移 0019)。
+//
+// 它建立在 EffectiveNodesView 之上再按入站等级收一次 —— 两层是交集:
+// 能用这台机器,才谈得上能用它的哪个入口。
+//
+// **配置生成与订阅一律查它,不查节点那一层。** 只查节点的话,
+// 一台机器上的 VIP 入口会把普通用户的凭据也写进去,那是权限凭空放大,
+// 而且不报任何错。
+const EffectiveInboundsView = "user_effective_inbounds"
+
 // EffectiveRelaysView 是中转线路的有效性视图名(迁移 0018)。
 //
 // 它的规则比节点多一层:线路可见 ⟹ 用户在【落地】上确实有凭据。
@@ -157,8 +167,27 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Tier, er
 // Validate 确认等级存在,供创建/编辑用户与节点时校验入参。
 // 迁移里没写外键(SQLite 的 ADD COLUMN 限制),这道校验就是唯一的拦截点。
 func (s *Store) Validate(ctx context.Context, id int64) error {
+	return ValidateTier(ctx, s.db, id)
+}
+
+// RowQueryer 让同一份等级校验既能走连接也能走事务。
+//
+// **必须有事务版本**:数据库连接池上限是 1(见 database.Open),
+// 在一个打开的事务里拿 *sql.DB 再查一次会直接死锁 —— 而那是节点连同
+// 第一个入站一起创建时必然走到的路径。
+type RowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// ValidateTier 确认等级存在。
+//
+// 迁移里没给 access_tier_id 写外键(SQLite 的 ADD COLUMN 在 foreign_keys
+// 打开时要求带外键的新列默认值必须是 NULL),这道校验是唯一的拦截点 ——
+// 指向不存在的等级会让那一行从有效视图里整个消失(INNER JOIN),
+// 表现为"存在但谁都用不到"。
+func ValidateTier(ctx context.Context, q RowQueryer, id int64) error {
 	var count int
-	if err := s.db.QueryRowContext(ctx,
+	if err := q.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM access_tiers WHERE id = ?`, id).Scan(&count); err != nil {
 		return err
 	}

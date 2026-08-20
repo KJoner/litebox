@@ -2,20 +2,12 @@ package node
 
 import "testing"
 
-// baseUpdate 复用节点已有的字段构造一次「什么都不改」的更新,
-// 让每个用例只关心自己那一栏。
-func baseUpdate(n *Node) UpdateParams {
-	return UpdateParams{
-		Name: n.Name, Host: n.Host, IPv6Address: n.IPv6Address,
-		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
-		IPv6ProxyPort: n.IPv6ProxyPort,
-	}
-}
+// IPv6 公网端口在多入站(V8)之后是【入站】的字段,而 IPv6 地址仍然在机器上。
+// 下面这些用例断言的还是 V2.1 那批不变量,只是主体拆到了两张表。
 
 // 不填 IPv6 端口时库里存 0。
 //
-// **这个 0 不能在写入时就解析成当时的 proxy_port** —— 那样以后改 IPv4 公网端口,
+// **这个 0 不能在写入时就解析成当时的公网端口** —— 那样以后改公网端口,
 // IPv6 条目会继续停在旧端口上,而管理员当初看到的是一个空输入框。
 func TestIPv6PortZeroStaysZeroInStore(t *testing.T) {
 	store, _ := newTestStore(t)
@@ -26,19 +18,19 @@ func TestIPv6PortZeroStaysZeroInStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.IPv6ProxyPort != 0 {
-		t.Errorf("未填 IPv6 端口却存了 %d,应当保持 0(跟随 IPv4)", n.IPv6ProxyPort)
+	if only(t, n).IPv6PublicPort != 0 {
+		t.Errorf("未填 IPv6 端口却存了 %d,应当保持 0(跟随 IPv4)", only(t, n).IPv6PublicPort)
 	}
 
-	// 改掉 IPv4 公网端口之后,IPv6 仍然是 0 —— 订阅生成时才跟着新端口走。
-	u := baseUpdate(n)
-	u.ProxyPort = 8443
-	updated, _, err := store.Update(t.Context(), n.ID, u)
+	// 改掉公网端口之后,IPv6 仍然是 0 —— 订阅生成时才跟着新端口走。
+	u := inboundParamsOf(only(t, n))
+	u.PublicPort = 8443
+	updated, _, err := store.UpdateInbound(t.Context(), only(t, n).ID, u)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.IPv6ProxyPort != 0 {
-		t.Errorf("改 IPv4 端口后 IPv6 端口被固化成 %d", updated.IPv6ProxyPort)
+	if updated.IPv6PublicPort != 0 {
+		t.Errorf("改公网端口后 IPv6 端口被固化成 %d", updated.IPv6PublicPort)
 	}
 }
 
@@ -52,14 +44,14 @@ func TestIPv6PortStoredWhenGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.IPv6ProxyPort != 8443 {
-		t.Errorf("IPv6 端口 = %d,期望 8443", n.IPv6ProxyPort)
+	if only(t, n).IPv6PublicPort != 8443 {
+		t.Errorf("IPv6 端口 = %d,期望 8443", only(t, n).IPv6PublicPort)
 	}
 }
 
-// 改 IPv6 端口只影响订阅内容:既不该丢弃 SSH 长连接(重连约 1.3 秒),
-// 也不该要求重新部署(它一个字节都不进节点配置)。
-func TestUpdateIPv6PortDoesNotTouchSSHOrDeploy(t *testing.T) {
+// 改 IPv6 端口只影响订阅内容,不该要求重新部署 ——
+// 它一个字节都不进节点配置。
+func TestUpdateIPv6PortDoesNotNeedDeploy(t *testing.T) {
 	store, _ := newTestStore(t)
 	p := defaultCreateParams()
 	p.IPv6Address = "2001:db8::1"
@@ -68,30 +60,28 @@ func TestUpdateIPv6PortDoesNotTouchSSHOrDeploy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u := baseUpdate(n)
-	u.IPv6ProxyPort = 8443
-	updated, effect, err := store.Update(t.Context(), n.ID, u)
+	u := inboundParamsOf(only(t, n))
+	u.IPv6PublicPort = 8443
+	updated, effect, err := store.UpdateInbound(t.Context(), only(t, n).ID, u)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.IPv6ProxyPort != 8443 {
-		t.Fatalf("IPv6 端口 = %d", updated.IPv6ProxyPort)
-	}
-	if effect.SSHChanged {
-		t.Error("改 IPv6 端口不该丢弃 SSH 长连接")
+	if updated.IPv6PublicPort != 8443 {
+		t.Fatalf("IPv6 端口 = %d", updated.IPv6PublicPort)
 	}
 	if effect.NeedsDeploy {
 		t.Error("改 IPv6 端口不该要求重新部署")
 	}
-	if !containsPrefix(effect.Changes, "IPv6 公网端口") {
-		t.Errorf("审计里没记录 IPv6 端口变化:%v", effect.Changes)
+	if !effect.SubscriptionChanged {
+		t.Error("改 IPv6 端口必须被认作订阅内容变化,否则下游中转不会跟着更新")
 	}
 }
 
-// 清空 IPv6 地址时端口一并归零。
+// 清空 IPv6 地址时,这台机器上全部入站的 IPv6 端口一并归零。
 //
-// 留着它的话,下次重新填上 IPv6 会静默套用一个几个月前的端口,
-// 而那个端口未必还转发着 —— 用户会拿到一条连不上的条目,面板不报任何错。
+// 留着它们的话,下次重新填上 IPv6 会静默套用几个月前的端口,
+// 而那些端口未必还转发着 —— 用户会拿到连不上的条目,面板不报任何错。
+// 多入站之后这一条跨了两张表,所以更容易漏。
 func TestClearingIPv6AlsoClearsPort(t *testing.T) {
 	store, _ := newTestStore(t)
 	p := defaultCreateParams()
@@ -101,8 +91,17 @@ func TestClearingIPv6AlsoClearsPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 再加一个入口,确认归零覆盖的是【全部】入站而不是第一个。
+	second := inboundParamsOf(only(t, n))
+	second.DisplayName = "第二个入口"
+	second.ListenPort = 9443
+	second.PublicPort = 9443
+	second.IPv6PublicPort = 9444
+	if _, err := store.CreateInbound(t.Context(), n.ID, second); err != nil {
+		t.Fatal(err)
+	}
 
-	u := baseUpdate(n)
+	u := nodeUpdateParamsOf(n)
 	u.IPv6Address = ""
 	cleared, _, err := store.Update(t.Context(), n.ID, u)
 	if err != nil {
@@ -111,8 +110,10 @@ func TestClearingIPv6AlsoClearsPort(t *testing.T) {
 	if cleared.IPv6Address != "" {
 		t.Fatalf("IPv6 地址没被清空:%q", cleared.IPv6Address)
 	}
-	if cleared.IPv6ProxyPort != 0 {
-		t.Errorf("清空 IPv6 后端口还留着 %d", cleared.IPv6ProxyPort)
+	for _, in := range cleared.Inbounds {
+		if in.IPv6PublicPort != 0 {
+			t.Errorf("清空 IPv6 后入口 %s 的端口还留着 %d", in.DisplayName, in.IPv6PublicPort)
+		}
 	}
 }
 
@@ -125,5 +126,26 @@ func TestIPv6PortRejectsOutOfRange(t *testing.T) {
 		if _, err := store.Create(t.Context(), p); err == nil {
 			t.Errorf("IPv6 端口 %d 应当被拒绝", port)
 		}
+	}
+}
+
+// 机器上没有 IPv6 地址时,入站的 IPv6 端口存不进去。
+//
+// 存得进去的话,详情页会显示一个"IPv6 公网端口 8443",而这台机器
+// 根本没有 IPv6 —— 那一栏在说一件不成立的事。
+func TestIPv6PortRejectedWithoutAddress(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := inboundParamsOf(only(t, n))
+	u.IPv6PublicPort = 8443
+	updated, _, err := store.UpdateInbound(t.Context(), only(t, n).ID, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.IPv6PublicPort != 0 {
+		t.Errorf("机器没有 IPv6 地址,却存下了 IPv6 端口 %d", updated.IPv6PublicPort)
 	}
 }

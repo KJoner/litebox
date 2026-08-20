@@ -283,13 +283,10 @@ type updateNodeRequest struct {
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
 	// SSHKey 留空表示不更换私钥。
-	SSHKey     string `json:"ssh_key"`
-	ProxyPort  int    `json:"proxy_port"`
-	ListenPort int    `json:"listen_port"`
-	APIPort    int    `json:"api_port"`
-	// IPv6ProxyPort 留 0 表示 IPv6 条目跟随 ProxyPort。它与 IPv6Address 一样是
-	// "留空即清空",不是"保持原值" —— 两者总是一起提交,不存在漏传一个的情况。
-	IPv6ProxyPort int `json:"ipv6_proxy_port"`
+	SSHKey string `json:"ssh_key"`
+	// APIPort 是这台机器上 V2Ray API 的回环端口,全部入站共用一个。
+	// 代理端口、协议、REALITY 与 TFO 已经是【入站】的属性,走 /inbounds 接口改。
+	APIPort int `json:"api_port"`
 
 	// TrafficQuotaBytes 为 null 时保持原额度(0 表示改成不限量,不能用零值表达"没传")。
 	// 重置周期留空、重置日为 0 同样保持原值。
@@ -300,12 +297,6 @@ type updateNodeRequest struct {
 	// 一台双向计费的机器会悄悄把用量显示成一半 —— 不报任何错。
 	TrafficBillingMode string `json:"traffic_billing_mode"`
 
-	// Protocol、SSMethod 留空保持原值。与 AccessTierID 一样刻意不回落到默认值:
-	// 漏传会把一台 Shadowsocks 节点悄悄改回 VLESS,下一次部署就把全部用户踢下线,
-	// 而管理员那次操作可能只是改了个排序。
-	Protocol string `json:"protocol"`
-	SSMethod string `json:"ss_method"`
-
 	// AccessTierID 为 0、SubscriptionEnabled 为 null 时保持原值。
 	// 这两个字段漏传的后果是静默的(节点被降级 / 从所有订阅里消失),
 	// 不能用零值当"用户的意思"。
@@ -314,8 +305,6 @@ type updateNodeRequest struct {
 	SubscriptionEnabled *bool  `json:"subscription_enabled"`
 	PublicRemark        string `json:"public_remark"`
 	MaintenanceMessage  string `json:"maintenance_message"`
-	// TCPFastOpen 为 null 时保持原值,理由同 SubscriptionEnabled。
-	TCPFastOpen *bool `json:"tcp_fast_open"`
 }
 
 // handleUpdateNode 修改节点配置。
@@ -347,16 +336,10 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		SSHPort:             req.SSHPort,
 		SSHUser:             strings.TrimSpace(req.SSHUser),
 		SSHKey:              req.SSHKey,
-		ProxyPort:           req.ProxyPort,
-		ListenPort:          req.ListenPort,
 		APIPort:             req.APIPort,
-		IPv6ProxyPort:       req.IPv6ProxyPort,
-		Protocol:            strings.TrimSpace(req.Protocol),
-		SSMethod:            strings.TrimSpace(req.SSMethod),
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,
-		TCPFastOpen:         req.TCPFastOpen,
 		PublicRemark:        strings.TrimSpace(req.PublicRemark),
 		MaintenanceMessage:  strings.TrimSpace(req.MaintenanceMessage),
 	})
@@ -527,13 +510,14 @@ func (s *Server) handleCheckNodeDest(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
-	var result node.DestCheckResult
-	var err error
-	if req.Apply {
-		result, err = s.nodes.ApplyHandshakeDest(r.Context(), id, strings.TrimSpace(req.Dest), req.Port)
-	} else {
-		result, err = s.nodes.CheckHandshakeDest(r.Context(), id, strings.TrimSpace(req.Dest), req.Port)
-	}
+	// 这个接口【只检测,不写入】。
+	//
+	// 写入必须指名道姓地写到某一个入口上(POST /api/inbounds/{id}/dest-check)——
+	// 多入站之后一台机器上可以有两个 REALITY 入口,各自指向不同的握手目标,
+	// 而"写到这个节点上"已经不再指向一个确定的对象。
+	// req.Apply 保留在请求体里只为兼容旧前端,这里显式忽略它:
+	// 悄悄挑一个入站写进去,是这类接口最容易出的那种错。
+	result, err := s.nodes.CheckHandshakeDest(r.Context(), id, strings.TrimSpace(req.Dest), req.Port)
 	if err != nil && !result.Usable && len(result.Problems) > 0 {
 		// 检测本身完成了,只是目标不可用:返回 200 带详情,前端好展示原因。
 		s.audit.Record(r.Context(), audit.Entry{

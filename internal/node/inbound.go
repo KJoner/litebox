@@ -1,0 +1,694 @@
+package node
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/singbox"
+)
+
+// 一台落地机器上的 sing-box 入站(V8)。
+//
+// V8 之前这些字段直接挂在 nodes 上,因为那时一台机器只有一个入站。
+// 迁移 0019 把它们整体搬进 node_inbounds,存量节点各变成一行,
+// nodes 上的原列就此冻结 —— 详见那份迁移的开头。
+//
+// 流量归属没有因此变复杂:V2Ray 的用户计数器名里没有入站维度,
+// 同一个用户在同一台机器上的流量本来就是合并的,而那正是
+// traffic_ledger 需要的口径。代价是入站级的【用户】流量永远拿不到。
+
+var (
+	ErrInboundNotFound = errors.New("入站不存在")
+	// ErrInboundPortConflict 监听端口与这台机器上已有的东西冲突。
+	//
+	// 与 relay.ErrPortConflict 同一条道理:检测到就拒绝保存,不自动挪端口。
+	// 自动避让会让用户手上那份订阅静默失效 —— 客户端还连着旧端口,
+	// 而那里已经没人监听了。
+	ErrInboundPortConflict = errors.New("监听端口冲突")
+	// ErrInboundNotOnLanding 中转机上没有 sing-box,谈不上入站。
+	ErrInboundNotOnLanding = errors.New("中转角色的节点没有 sing-box 入站")
+)
+
+// Inbound 是一台机器上的一个 sing-box 入站。
+//
+// 敏感字段在这里已是明文,加解密由 Store 在读写边界完成。
+type Inbound struct {
+	ID     int64 `json:"id"`
+	NodeID int64 `json:"node_id"`
+	// NodeName 与 NodeDisplayName 只给管理页面用,**不进订阅**。
+	NodeName        string `json:"node_name"`
+	NodeDisplayName string `json:"node_display_name"`
+
+	// Tag 是 sing-box 配置里的 inbound.tag,建库时分配、一经分配不可更改。
+	// 它同时是入站级流量计数器的名字,改了会让历史曲线在那一刻断掉。
+	Tag string `json:"tag"`
+	// DisplayName 是订阅与门户里显示的名字。刻意没有内部名称字段。
+	DisplayName string `json:"display_name"`
+
+	// Protocol 是期望协议;DeployedProtocol 是节点上当前生效的那个。
+	// 两者不一致就是"改了协议还没部署"—— 订阅与门户一律看后者。
+	Protocol         singbox.Protocol `json:"protocol"`
+	SSMethod         string           `json:"ss_method"`
+	SSPassword       string           `json:"-"` // 入站级 PSK,永不出现在 API 响应中
+	DeployedProtocol singbox.Protocol `json:"deployed_protocol"`
+	DeployedSSMethod string           `json:"deployed_ss_method"`
+
+	// ListenPort 是 sing-box 在这台机器上实际监听的端口;
+	// PublicPort 是客户端连接的公网端口,0 表示跟随 ListenPort;
+	// IPv6PublicPort 是 IPv6 条目用的公网端口,0 表示跟随 PublicPort。
+	//
+	// **0 要原样留着**,解析放在订阅生成时 —— 写死成当时的值之后,
+	// 管理员再改监听端口,订阅条目会继续停在旧端口上,
+	// 而他当初看到的是一个空输入框。
+	ListenPort     int `json:"listen_port"`
+	PublicPort     int `json:"public_port"`
+	IPv6PublicPort int `json:"ipv6_public_port"`
+
+	TCPFastOpen         bool `json:"tcp_fast_open"`
+	DeployedTCPFastOpen bool `json:"deployed_tcp_fast_open"`
+
+	RealityDest       string `json:"reality_dest"`
+	RealityDestPort   int    `json:"reality_dest_port"`
+	RealityPrivateKey string `json:"-"`
+	RealityPublicKey  string `json:"reality_public_key"`
+	RealityShortID    string `json:"reality_short_id"`
+
+	HandshakeMaxRecordSize int     `json:"handshake_max_record_size"`
+	HandshakeCheckedAt     *string `json:"handshake_checked_at"`
+
+	// ChainTargetKind 为空表示这个入站的流量走 direct。
+	// 落地指向的是【另一个入站】而不是一台机器:一台机器上有两个入站时,
+	// "转发到 B"是有歧义的,而歧义的表现是流量进了管理员没打算用的那个入口。
+	ChainTargetKind       ChainTargetKind `json:"chain_target_kind"`
+	ChainTargetInboundID  int64           `json:"chain_target_inbound_id"`
+	ChainTargetExternalID int64           `json:"chain_target_external_id"`
+	// ChainCode 是链路凭据在【落地入站】的流量统计里的计数器名(chain_000001)。
+	ChainCode       string `json:"chain_code"`
+	ChainUUID       string `json:"-"`
+	ChainSSPassword string `json:"-"`
+
+	AccessTierID    int64  `json:"access_tier_id"`
+	AccessTierCode  string `json:"access_tier_code"`
+	AccessTierName  string `json:"access_tier_name"`
+	AccessTierLevel int    `json:"access_tier_level"`
+
+	SortOrder int `json:"sort_order"`
+	// SubscriptionEnabled 为假时这个入口不再下发到新生成的订阅,
+	// 但它仍然在节点上运行 —— 已经拿到订阅的人照常能连。
+	SubscriptionEnabled bool   `json:"subscription_enabled"`
+	PublicRemark        string `json:"public_remark"`
+	// Enabled 为假时这个入站不再渲染进 sing-box 配置(下次部署生效)。
+	// 与软删除不同:行还留着,重新打开不用重配等级、排序与握手目标。
+	Enabled bool `json:"enabled"`
+
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// EffectivePublicPort 是客户端实际要连的端口。
+func (i Inbound) EffectivePublicPort() int {
+	if i.PublicPort != 0 {
+		return i.PublicPort
+	}
+	return i.ListenPort
+}
+
+// EffectiveIPv6PublicPort 是 IPv6 条目实际要连的端口。
+func (i Inbound) EffectiveIPv6PublicPort() int {
+	if i.IPv6PublicPort != 0 {
+		return i.IPv6PublicPort
+	}
+	return i.EffectivePublicPort()
+}
+
+// Deployed 表示这个入站确实已经跑在节点上了。
+//
+// 判据是 deployed_protocol 而不是节点级的 deployed_config_sha256:
+// 一台部署过很多次的机器上,刚加的那个入站仍然还不存在。
+func (i Inbound) Deployed() bool { return i.DeployedProtocol != "" }
+
+const inboundColumns = `i.id, i.node_id, n.name, n.display_name,
+	i.tag, i.display_name, i.protocol, i.ss_method, i.ss_password_encrypted,
+	i.deployed_protocol, i.deployed_ss_method,
+	i.listen_port, i.public_port, i.ipv6_public_port,
+	i.tcp_fast_open, i.deployed_tcp_fast_open,
+	i.reality_dest, i.reality_dest_port, i.reality_privkey_encrypted, i.reality_pubkey,
+	i.reality_short_id, i.handshake_max_record_size, i.handshake_checked_at,
+	i.chain_target_kind, i.chain_target_inbound_id, i.chain_target_external_id,
+	i.chain_code, i.chain_uuid_encrypted, i.chain_ss_password_encrypted,
+	i.access_tier_id, t.code, t.name, t.level,
+	i.sort_order, i.subscription_enabled, i.public_remark, i.enabled,
+	i.created_at, i.updated_at`
+
+// inboundFrom 固定带上节点与等级表:两者都是入站的必备上下文,
+// 分两次查会出现"列表里有、详情里没有"这种前端只能靠猜的差异。
+const inboundFrom = ` FROM node_inbounds i
+	JOIN nodes        n ON n.id = i.node_id
+	JOIN access_tiers t ON t.id = i.access_tier_id `
+
+func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
+	var in Inbound
+	var realityKeyEnc, ssKeyEnc, chainUUIDEnc, chainSSEnc string
+	// 目标列可空:直连的入站这两列是 NULL,扫进 int64 会报错。
+	var chainInboundID, chainExternalID sql.NullInt64
+	err := scan(
+		&in.ID, &in.NodeID, &in.NodeName, &in.NodeDisplayName,
+		&in.Tag, &in.DisplayName, &in.Protocol, &in.SSMethod, &ssKeyEnc,
+		&in.DeployedProtocol, &in.DeployedSSMethod,
+		&in.ListenPort, &in.PublicPort, &in.IPv6PublicPort,
+		&in.TCPFastOpen, &in.DeployedTCPFastOpen,
+		&in.RealityDest, &in.RealityDestPort, &realityKeyEnc, &in.RealityPublicKey,
+		&in.RealityShortID, &in.HandshakeMaxRecordSize, &in.HandshakeCheckedAt,
+		&in.ChainTargetKind, &chainInboundID, &chainExternalID,
+		&in.ChainCode, &chainUUIDEnc, &chainSSEnc,
+		&in.AccessTierID, &in.AccessTierCode, &in.AccessTierName, &in.AccessTierLevel,
+		&in.SortOrder, &in.SubscriptionEnabled, &in.PublicRemark, &in.Enabled,
+		&in.CreatedAt, &in.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	in.ChainTargetInboundID = chainInboundID.Int64
+	in.ChainTargetExternalID = chainExternalID.Int64
+	for _, f := range []struct {
+		enc  string
+		dest *string
+		what string
+	}{
+		{realityKeyEnc, &in.RealityPrivateKey, "REALITY 私钥"},
+		{ssKeyEnc, &in.SSPassword, "Shadowsocks 密钥"},
+		{chainUUIDEnc, &in.ChainUUID, "链路 UUID"},
+		{chainSSEnc, &in.ChainSSPassword, "链路 Shadowsocks 密钥"},
+	} {
+		if f.enc == "" {
+			continue
+		}
+		if *f.dest, err = s.cipher.Decrypt(f.enc); err != nil {
+			return nil, fmt.Errorf("解密入站 %d 的%s: %w", in.ID, f.what, err)
+		}
+	}
+	return &in, nil
+}
+
+func (s *Store) queryInbounds(ctx context.Context, where string, args ...any) ([]*Inbound, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+inboundColumns+inboundFrom+where+` ORDER BY i.sort_order, i.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// 绝不返回 nil 切片:Go 的 nil 切片序列化成 JSON null 而不是 [],
+	// 而前端把它当数组用。
+	list := make([]*Inbound, 0)
+	for rows.Next() {
+		in, err := s.scanInbound(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, in)
+	}
+	return list, rows.Err()
+}
+
+// InboundsForNode 返回一台机器上全部未删除的入站(含已停用的)。
+func (s *Store) InboundsForNode(ctx context.Context, nodeID int64) ([]*Inbound, error) {
+	return s.queryInbounds(ctx, `WHERE i.deleted_at IS NULL AND i.node_id = ?`, nodeID)
+}
+
+// AllInbounds 一次取出全部机器的入站,供列表页一次性挂到各自的节点上。
+// 逐节点查的话,10 台机器就是 10 次往返。
+func (s *Store) AllInbounds(ctx context.Context) ([]*Inbound, error) {
+	return s.queryInbounds(ctx, `WHERE i.deleted_at IS NULL AND n.deleted_at IS NULL`)
+}
+
+// GetInbound 按 ID 读取。
+func (s *Store) GetInbound(ctx context.Context, id int64) (*Inbound, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+inboundColumns+inboundFrom+`WHERE i.id = ? AND i.deleted_at IS NULL`, id)
+	in, err := s.scanInbound(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInboundNotFound
+	}
+	return in, err
+}
+
+// InboundParams 是新增或编辑一个入站时可填的字段。
+//
+// 新增与编辑收同一个结构体:两边各写一份校验的话,某天加了一项只改到一处,
+// 表现是"这个值编辑得进去、新建填不进去"这种谁都解释不了的怪事。
+type InboundParams struct {
+	DisplayName string
+	// Protocol 留空按 VLESS_REALITY;SSMethod 只在 SHADOWSOCKS 下有意义。
+	Protocol string
+	SSMethod string
+	// ListenPort 必填;PublicPort 留 0 表示跟随 ListenPort;
+	// IPv6PublicPort 留 0 表示跟随 PublicPort。
+	ListenPort     int
+	PublicPort     int
+	IPv6PublicPort int
+	TCPFastOpen    bool
+	// RealityDest 为空时使用默认候选目标的第一个(仅 VLESS)。
+	RealityDest     string
+	RealityDestPort int
+	// AccessTierID 留 0:新增时落到普通组,编辑时**保持原值** ——
+	// 漏传把 VIP 入口降成普通组等于给全体用户开门,而且不报错。
+	AccessTierID int64
+	SortOrder    int
+	// SubscriptionEnabled / Enabled 为 nil:新增时默认开,编辑时保持原值。
+	SubscriptionEnabled *bool
+	Enabled             *bool
+	PublicRemark        string
+}
+
+// CreateInbound 在一台落地机器上新增一个入站。
+//
+// REALITY 密钥对与 Shadowsocks PSK 一律生成,与本次选的协议无关 ——
+// 两者都是纯本地计算,零成本,而缺了任何一个都会让"切协议"变成一个
+// 可能在中途失败的复合操作。与 Store.Create 的理由一字不差。
+func (s *Store) CreateInbound(ctx context.Context, nodeID int64, p InboundParams) (*Inbound, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	id, err := s.createInboundTx(ctx, tx, nodeID, p)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetInbound(ctx, id)
+}
+
+func (s *Store) createInboundTx(
+	ctx context.Context, tx *sql.Tx, nodeID int64, p InboundParams,
+) (int64, error) {
+	var role, nodeName, displayName, ipv6 string
+	var apiPort int
+	err := tx.QueryRowContext(ctx,
+		`SELECT role, name, display_name, api_port, ipv6_address
+		   FROM nodes WHERE id = ? AND deleted_at IS NULL`,
+		nodeID).Scan(&role, &nodeName, &displayName, &apiPort, &ipv6)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	if Role(role).IsRelay() {
+		return 0, ErrInboundNotOnLanding
+	}
+
+	if err := normalizeInboundParams(&p, displayName); err != nil {
+		return 0, err
+	}
+	clearIPv6PortWithoutAddress(ipv6, &p.IPv6PublicPort)
+	if p.AccessTierID == 0 {
+		p.AccessTierID = access.TierNormalID
+	}
+	// 校验走事务而不是 s.db:连接池上限是 1,在打开的事务里再拿 *sql.DB
+	// 查一次会直接死锁 —— 而新建节点连同第一个入站就走这条路径。
+	if err := access.ValidateTier(ctx, tx, p.AccessTierID); err != nil {
+		return 0, err
+	}
+	if err := checkInboundPortFree(ctx, tx, nodeID, p.ListenPort, apiPort, 0); err != nil {
+		return 0, err
+	}
+
+	keys, err := GenerateRealityKeyPair()
+	if err != nil {
+		return 0, err
+	}
+	shortID, err := GenerateShortID(8)
+	if err != nil {
+		return 0, err
+	}
+	ssKey, err := GenerateSSKey()
+	if err != nil {
+		return 0, err
+	}
+	realityKeyEnc, err := s.cipher.Encrypt(keys.PrivateKey)
+	if err != nil {
+		return 0, fmt.Errorf("加密 REALITY 私钥: %w", err)
+	}
+	ssKeyEnc, err := s.cipher.Encrypt(ssKey)
+	if err != nil {
+		return 0, fmt.Errorf("加密 Shadowsocks 密钥: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	// tag 先留空:它由 id 派生,而 id 要插入之后才知道。空串被
+	// idx_node_inbounds_tag 的部分索引放过,是插入过程中唯一合法的中间态。
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
+			ss_password_encrypted, listen_port, public_port, ipv6_public_port, tcp_fast_open,
+			reality_dest, reality_dest_port, reality_privkey_encrypted, reality_pubkey,
+			reality_short_id, access_tier_id, sort_order, subscription_enabled,
+			public_remark, enabled, created_at, updated_at)
+		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		nodeID, p.DisplayName, p.Protocol, p.SSMethod, ssKeyEnc,
+		p.ListenPort, p.PublicPort, p.IPv6PublicPort, p.TCPFastOpen,
+		p.RealityDest, p.RealityDestPort, realityKeyEnc, keys.PublicKey, shortID,
+		p.AccessTierID, p.SortOrder, boolOr(p.SubscriptionEnabled, true),
+		strings.TrimSpace(p.PublicRemark), boolOr(p.Enabled, true), now, now)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return 0, fmt.Errorf("%w:该机器上已有入站监听 %d", ErrInboundPortConflict, p.ListenPort)
+		}
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE node_inbounds SET tag = ? WHERE id = ?`, InboundTagFor(id), id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// InboundTagFor 是新建入站的 tag。
+//
+// 由 id 派生而不是按协议现算:tag 一经分配不可更改,而 id 天然唯一、
+// 永不复用。带协议的话(vless-in),同机两个 VLESS 入站会撞名,
+// 而 sing-box 对重名 tag 不报错 —— 后定义的直接覆盖前一个。
+func InboundTagFor(id int64) string { return fmt.Sprintf("in-%d", id) }
+
+// InboundEffect 描述一次入站变更对下游的影响。
+type InboundEffect struct {
+	// NeedsDeploy 表示节点配置变了,要重新部署才生效。
+	//
+	// 与访问等级变更不同:那一条是安全问题(被移出的用户凭据还留在节点上),
+	// 入站参数变更是可用性问题 —— 立刻部署会让全部在线用户在管理员没准备好时
+	// 断线,而部署完成前订阅仍下发旧参数,没有人会拿到连不上的东西。
+	NeedsDeploy bool
+	// TierChanged 表示可见性变了,必须自动标脏重新部署:
+	// 等级调高后,被移出的用户凭据还留在节点上,拖多久就多能用多久。
+	TierChanged bool
+	// SubscriptionChanged 表示只影响订阅内容,不用碰节点。
+	SubscriptionChanged bool
+	// Changes 是给审计日志看的可读变更列表。
+	//
+	// 与节点那一层的 UpdateEffect.Changes 同一个用途:审计要回答
+	// "他到底改了什么",而不是"他保存过一次"。写成枚举值
+	// (VLESS_REALITY → SHADOWSOCKS)的话,几个月后翻日志的人
+	// 还要再去查一遍这两个词的含义。
+	Changes []string
+}
+
+// UpdateInbound 修改一个入站。
+func (s *Store) UpdateInbound(
+	ctx context.Context, id int64, p InboundParams,
+) (*Inbound, InboundEffect, error) {
+	cur, err := s.GetInbound(ctx, id)
+	if err != nil {
+		return nil, InboundEffect{}, err
+	}
+	var apiPort int
+	var ipv6 string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT api_port, ipv6_address FROM nodes WHERE id = ?`,
+		cur.NodeID).Scan(&apiPort, &ipv6); err != nil {
+		return nil, InboundEffect{}, err
+	}
+	if err := normalizeInboundParams(&p, cur.DisplayName); err != nil {
+		return nil, InboundEffect{}, err
+	}
+	clearIPv6PortWithoutAddress(ipv6, &p.IPv6PublicPort)
+
+	tierID := p.AccessTierID
+	if tierID == 0 {
+		tierID = cur.AccessTierID
+	} else if err := access.NewStore(s.db).Validate(ctx, tierID); err != nil {
+		return nil, InboundEffect{}, err
+	}
+	if p.ListenPort != cur.ListenPort {
+		if err := checkInboundPortFree(ctx, s.db, cur.NodeID, p.ListenPort, apiPort, id); err != nil {
+			return nil, InboundEffect{}, err
+		}
+	}
+	// 切到 VLESS 之前必须已经实测过握手目标 —— 与 V4 那条一字不差:
+	// 不在切协议时顺带跑检测,那会让"切协议"变成一个可能中途失败的复合操作,
+	// 失败时入站停在半成品状态,而管理员看到的只是一句"检测失败"。
+	if err := checkInboundProtocolSwitch(cur, singbox.Protocol(p.Protocol), p.RealityDest); err != nil {
+		return nil, InboundEffect{}, err
+	}
+
+	subEnabled := boolOr(p.SubscriptionEnabled, cur.SubscriptionEnabled)
+	enabled := boolOr(p.Enabled, cur.Enabled)
+	effect := InboundEffect{
+		// 进入配置文件的字段才要重新部署。公网端口、名称与排序只影响订阅内容,
+		// 为它们重启 sing-box 会把这台机器上全部在线连接踢掉一次,换不来任何东西。
+		NeedsDeploy: p.Protocol != string(cur.Protocol) ||
+			p.SSMethod != cur.SSMethod ||
+			p.ListenPort != cur.ListenPort ||
+			p.TCPFastOpen != cur.TCPFastOpen ||
+			p.RealityDest != cur.RealityDest ||
+			p.RealityDestPort != cur.RealityDestPort ||
+			enabled != cur.Enabled,
+		TierChanged: tierID != cur.AccessTierID,
+		SubscriptionChanged: p.DisplayName != cur.DisplayName ||
+			p.PublicPort != cur.PublicPort ||
+			p.IPv6PublicPort != cur.IPv6PublicPort ||
+			p.SortOrder != cur.SortOrder ||
+			subEnabled != cur.SubscriptionEnabled,
+		Changes: []string{},
+	}
+
+	track := func(label string, changed bool, from, to any) {
+		if changed {
+			effect.Changes = append(effect.Changes,
+				fmt.Sprintf("%s %v → %v", label, from, to))
+		}
+	}
+	track("入口名称", p.DisplayName != cur.DisplayName, cur.DisplayName, p.DisplayName)
+	track("落地协议", p.Protocol != string(cur.Protocol),
+		cur.Protocol.Label(), singbox.Protocol(p.Protocol).Label())
+	// 加密方法只在 Shadowsocks 下有意义。协议切走时它被清空,
+	// 那不是"管理员改了方法",写进审计只会让人以为动了两处。
+	track("加密方法", singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks &&
+		p.SSMethod != cur.SSMethod, orDash(cur.SSMethod), orDash(p.SSMethod))
+	track("主机监听端口", p.ListenPort != cur.ListenPort, cur.ListenPort, p.ListenPort)
+	track("公网端口", p.PublicPort != cur.PublicPort,
+		followLabel(cur.PublicPort, "监听端口"), followLabel(p.PublicPort, "监听端口"))
+	track("IPv6 公网端口", p.IPv6PublicPort != cur.IPv6PublicPort,
+		followLabel(cur.IPv6PublicPort, "IPv4"), followLabel(p.IPv6PublicPort, "IPv4"))
+	track("TCP Fast Open", p.TCPFastOpen != cur.TCPFastOpen,
+		onOffLabel(cur.TCPFastOpen), onOffLabel(p.TCPFastOpen))
+	track("握手目标", p.RealityDest != cur.RealityDest,
+		orDash(cur.RealityDest), orDash(p.RealityDest))
+	track("访问等级", tierID != cur.AccessTierID, cur.AccessTierID, tierID)
+	track("排序", p.SortOrder != cur.SortOrder, cur.SortOrder, p.SortOrder)
+	track("下发订阅", subEnabled != cur.SubscriptionEnabled,
+		onOffLabel(cur.SubscriptionEnabled), onOffLabel(subEnabled))
+	track("启用", enabled != cur.Enabled, onOffLabel(cur.Enabled), onOffLabel(enabled))
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE node_inbounds SET display_name = ?, protocol = ?, ss_method = ?,
+		       listen_port = ?, public_port = ?, ipv6_public_port = ?, tcp_fast_open = ?,
+		       reality_dest = ?, reality_dest_port = ?,
+		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
+		       public_remark = ?, enabled = ?, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		p.DisplayName, p.Protocol, p.SSMethod,
+		p.ListenPort, p.PublicPort, p.IPv6PublicPort, p.TCPFastOpen,
+		p.RealityDest, p.RealityDestPort,
+		tierID, p.SortOrder, boolOr(p.SubscriptionEnabled, cur.SubscriptionEnabled),
+		strings.TrimSpace(p.PublicRemark), boolOr(p.Enabled, cur.Enabled),
+		time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, InboundEffect{}, fmt.Errorf("%w:该机器上已有入站监听 %d",
+				ErrInboundPortConflict, p.ListenPort)
+		}
+		return nil, InboundEffect{}, err
+	}
+	updated, err := s.GetInbound(ctx, id)
+	return updated, effect, err
+}
+
+// DeleteInbound 软删除一个入站。
+//
+// 软删除而不是物理删除,与节点、用户、转发规则一致。更要紧的是 tag:
+// 唯一索引不带 deleted_at 过滤,软删除的行仍然占着它的 tag ——
+// 让新入站抢到同一个 tag,两段互不相干的入站级流量历史会接在一条曲线上。
+func (s *Store) DeleteInbound(ctx context.Context, id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE node_inbounds SET deleted_at = ?, updated_at = ?
+		  WHERE id = ? AND deleted_at IS NULL`, now, now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrInboundNotFound
+	}
+	return nil
+}
+
+// SaveInboundDestCheck 写入实测通过的握手目标。
+//
+// 与节点时代的 ApplyHandshakeDest 一样:不走通用的 UpdateInbound,
+// 否则会绕过 8192 字节记录上限的校验。
+func (s *Store) SaveInboundDestCheck(
+	ctx context.Context, id int64, dest string, destPort, maxRecord int,
+) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE node_inbounds SET reality_dest = ?, reality_dest_port = ?,
+		       handshake_max_record_size = ?, handshake_checked_at = ?, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		dest, destPort, maxRecord,
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// normalizeInboundParams 归一化并校验入站参数。
+func normalizeInboundParams(p *InboundParams, fallbackName string) error {
+	p.DisplayName = strings.TrimSpace(p.DisplayName)
+	if p.DisplayName == "" {
+		p.DisplayName = fallbackName
+	}
+	if len([]rune(p.DisplayName)) > 64 {
+		return errors.New("入口名称不能超过 64 个字符")
+	}
+	// 换行与控制字符会把 URI 列表的行数搞乱,客户端解析出一个残缺条目。
+	if strings.ContainsAny(p.DisplayName, "\r\n\t") {
+		return errors.New("入口名称不能包含换行或制表符")
+	}
+
+	if err := singbox.ValidatePort(p.ListenPort, "主机监听"); err != nil {
+		return err
+	}
+	for _, port := range []struct {
+		v    int
+		what string
+	}{{p.PublicPort, "公网"}, {p.IPv6PublicPort, "IPv6 公网"}} {
+		if port.v == 0 {
+			continue
+		}
+		if err := singbox.ValidatePort(port.v, port.what); err != nil {
+			return err
+		}
+	}
+
+	if err := normalizeProtocol(&p.Protocol, &p.SSMethod); err != nil {
+		return err
+	}
+	// Shadowsocks 不用 REALITY,握手目标一并留空。
+	//
+	// 不给它填一个默认候选:那个域名从来没在这台机器上实测过,
+	// 而详情里显示一个未经检测的握手目标,会让人以为这一步已经做过了。
+	if singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks {
+		p.RealityDest = ""
+		p.RealityDestPort = 0
+		return nil
+	}
+	if p.RealityDest == "" {
+		p.RealityDest = DefaultDestCandidates[0]
+	}
+	if err := singbox.ValidateHandshakeServer(p.RealityDest); err != nil {
+		return err
+	}
+	if p.RealityDestPort == 0 {
+		p.RealityDestPort = 443
+	}
+	return singbox.ValidatePort(p.RealityDestPort, "握手目标")
+}
+
+// clearIPv6PortWithoutAddress 在机器没有 IPv6 地址时把 IPv6 公网端口归零。
+//
+// 留着它,下次给这台机器填上 IPv6 会静默套用一个几个月前的端口,
+// 而那个端口未必还转发着 —— 用户拿到的是一条连不上的条目,面板一个错都不报。
+// 这是 V2.1 就定下的规矩,只是主体从节点变成了入站。
+func clearIPv6PortWithoutAddress(ipv6Address string, port *int) {
+	if strings.TrimSpace(ipv6Address) == "" {
+		*port = 0
+	}
+}
+
+// checkInboundProtocolSwitch 拦住"没实测过握手目标就切到 VLESS"。
+func checkInboundProtocolSwitch(cur *Inbound, next singbox.Protocol, nextDest string) error {
+	if next != singbox.ProtocolVLESSReality || cur.Protocol == singbox.ProtocolVLESSReality {
+		return nil
+	}
+	if nextDest == "" || cur.HandshakeCheckedAt == nil {
+		return errors.New("切换到 VLESS + REALITY 之前必须先实测握手目标 —— " +
+			"REALITY 要求目标返回的每个 TLS 记录不超过 8192 字节,超限时握手会静默失败:" +
+			"客户端连不上,而节点上一切正常")
+	}
+	return nil
+}
+
+// queryer 让端口冲突检查在事务内外都能用 —— 新建节点时它跑在事务里
+// (节点与第一个入站必须一起成功),单独加入站时跑在事务外。
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// checkInboundPortFree 确认这个监听端口在这台机器上没被占用。
+//
+// 三类占用都要查:同机的别的入站、V2Ray API 的回环端口、nginx 转发规则。
+// 少查任何一类的后果都是同一个 —— sing-box 或 nginx 起不来,
+// 而问题要到部署的健康检查才暴露,那时配置已经换过去了。
+func checkInboundPortFree(
+	ctx context.Context, q queryer, nodeID int64, port, apiPort int, excludeID int64,
+) error {
+	if port == apiPort {
+		return fmt.Errorf("%w:%d 是这台机器上 V2Ray API 的端口", ErrInboundPortConflict, port)
+	}
+	var count int
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM node_inbounds
+		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL AND id != ?`,
+		nodeID, port, excludeID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("%w:该机器上已有入站监听 %d", ErrInboundPortConflict, port)
+	}
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM node_relays
+		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL`,
+		nodeID, port).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("%w:该机器上已有 nginx 转发规则监听 %d", ErrInboundPortConflict, port)
+	}
+	return nil
+}
+
+// onOffLabel 用于审计里的开关变更。写「开 → 关」而不是「true → false」——
+// 审计日志是给人读的,而管理员在界面上看到的就是一个开关。
+func onOffLabel(v bool) string {
+	if v {
+		return "开"
+	}
+	return "关"
+}
+
+// followLabel 把 0 写成「跟随某某」而不是「0」——
+// 审计里出现「公网端口 0 → 8443」没人看得懂 0 是什么意思。
+func followLabel(port int, what string) string {
+	if port == 0 {
+		return "跟随" + what
+	}
+	return strconv.Itoa(port)
+}
+
+func boolOr(v *bool, fallback bool) bool {
+	if v == nil {
+		return fallback
+	}
+	return *v
+}

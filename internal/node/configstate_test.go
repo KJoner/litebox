@@ -12,7 +12,7 @@ import (
 // stubUsers 让配置状态的测试能控制"库里该有哪些用户"。
 type stubUsers struct{ users []singbox.User }
 
-func (s *stubUsers) UsersForNode(context.Context, int64) ([]singbox.User, error) {
+func (s *stubUsers) UsersForInbound(context.Context, int64) ([]singbox.User, error) {
 	return s.users, nil
 }
 
@@ -38,8 +38,16 @@ func markDeployedWithCurrent(t *testing.T, svc *Service, id int64) {
 	if err != nil {
 		t.Fatalf("渲染期望配置: %v", err)
 	}
-	if err := svc.store.MarkDeployed(t.Context(), id, desired.SHA256,
-		singbox.ProtocolVLESSReality, "", false); err != nil {
+	n, err := svc.store.Get(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployed := make([]DeployedInbound, 0, len(n.Inbounds))
+	for _, in := range n.Inbounds {
+		deployed = append(deployed, DeployedInbound{
+			ID: in.ID, Protocol: in.Protocol, SSMethod: in.SSMethod, TCPFastOpen: in.TCPFastOpen})
+	}
+	if err := svc.store.MarkDeployed(t.Context(), id, desired.SHA256, deployed); err != nil {
 		t.Fatalf("记录已部署哈希: %v", err)
 	}
 }

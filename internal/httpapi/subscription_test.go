@@ -25,6 +25,17 @@ func (e *testEnv) seedNodeAndUser(t *testing.T, displayName string) (userID int6
 	if err := e.db.QueryRow(`SELECT id FROM nodes ORDER BY id DESC LIMIT 1`).Scan(&nodeID); err != nil {
 		t.Fatal(err)
 	}
+	// 订阅里一条条目 = 一个入站(V8)。没有入站行的机器不会出现在任何人的
+	// 订阅里 —— user_effective_inbounds 是 INNER JOIN。
+	if _, err := e.db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
+			public_port, reality_dest, reality_privkey_encrypted, reality_pubkey,
+			reality_short_id, deployed_protocol, created_at, updated_at)
+		VALUES (?,'in-1','节点A','VLESS_REALITY',24443,24443,'www.cloudflare.com','enc',
+		        'pubkey123','abcd1234','VLESS_REALITY',
+		        '2026-08-02T00:00:00Z','2026-08-02T00:00:00Z')`, nodeID); err != nil {
+		t.Fatal(err)
+	}
 
 	resp := e.do(t, http.MethodPost, "/api/users", map[string]any{
 		"display_name": displayName,

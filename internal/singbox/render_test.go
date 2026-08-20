@@ -9,16 +9,19 @@ import (
 
 func validParams() NodeParams {
 	return NodeParams{
-		ListenPort:        24443,
-		APIPort:           28080,
-		RealityDest:       "www.apple.com",
-		RealityPort:       443,
-		RealityPrivateKey: "UKgxY2Eeu9L6f0-5-LXouLpePQ4JoVWFTTxON3aPYEk",
-		ShortID:           "2347b4aa54240e33",
-		Users: []User{
-			{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
-			{Code: "user_000002", UUID: "094337c0-92c9-4e54-9da1-6333035b298f"},
-		},
+		APIPort: 28080,
+		Inbounds: []InboundParams{{
+			Tag:               LegacyVLESSInboundTag,
+			ListenPort:        24443,
+			RealityDest:       "www.apple.com",
+			RealityPort:       443,
+			RealityPrivateKey: "UKgxY2Eeu9L6f0-5-LXouLpePQ4JoVWFTTxON3aPYEk",
+			ShortID:           "2347b4aa54240e33",
+			Users: []User{
+				{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
+				{Code: "user_000002", UUID: "094337c0-92c9-4e54-9da1-6333035b298f"},
+			},
+		}},
 	}
 }
 
@@ -32,7 +35,7 @@ func TestRenderProducesExpectedShape(t *testing.T) {
 		t.Fatalf("入站数量 = %d,期望 1", len(cfg.Inbounds))
 	}
 	in := cfg.Inbounds[0]
-	if in.Type != "vless" || in.Tag != InboundTag {
+	if in.Type != "vless" || in.Tag != LegacyVLESSInboundTag {
 		t.Errorf("入站类型/标签不符:%s/%s", in.Type, in.Tag)
 	}
 	if in.ListenPort != 24443 {
@@ -109,7 +112,7 @@ func TestRenderIsDeterministic(t *testing.T) {
 	p1 := validParams()
 	p2 := validParams()
 	// 打乱顺序不应影响结果。
-	p2.Users[0], p2.Users[1] = p2.Users[1], p2.Users[0]
+	p2.Inbounds[0].Users[0], p2.Inbounds[0].Users[1] = p2.Inbounds[0].Users[1], p2.Inbounds[0].Users[0]
 
 	r1, err := RenderJSON(p1)
 	if err != nil {
@@ -126,7 +129,7 @@ func TestRenderIsDeterministic(t *testing.T) {
 
 func TestRenderAllowsEmptyUserList(t *testing.T) {
 	p := validParams()
-	p.Users = nil
+	p.Inbounds[0].Users = nil
 	cfg, err := Render(p)
 	if err != nil {
 		t.Fatalf("空用户列表应当可以渲染(用于初始化节点): %v", err)
@@ -147,7 +150,7 @@ func TestRenderRejectsInvalidUUID(t *testing.T) {
 	}
 	for _, badUUID := range cases {
 		p := validParams()
-		p.Users = []User{{Code: "user_000001", UUID: badUUID}}
+		p.Inbounds[0].Users = []User{{Code: "user_000001", UUID: badUUID}}
 		if _, err := Render(p); err == nil {
 			t.Errorf("UUID %q 应当被拒绝", badUUID)
 		}
@@ -156,7 +159,7 @@ func TestRenderRejectsInvalidUUID(t *testing.T) {
 
 func TestRenderRejectsDuplicateUsers(t *testing.T) {
 	p := validParams()
-	p.Users = []User{
+	p.Inbounds[0].Users = []User{
 		{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
 		{Code: "user_000001", UUID: "094337c0-92c9-4e54-9da1-6333035b298f"},
 	}
@@ -165,7 +168,7 @@ func TestRenderRejectsDuplicateUsers(t *testing.T) {
 	}
 
 	// UUID 重复意味着两个用户共用凭据,流量无法区分。
-	p.Users = []User{
+	p.Inbounds[0].Users = []User{
 		{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
 		{Code: "user_000002", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
 	}
@@ -176,15 +179,15 @@ func TestRenderRejectsDuplicateUsers(t *testing.T) {
 
 func TestRenderRejectsBadNodeParams(t *testing.T) {
 	cases := map[string]func(*NodeParams){
-		"代理端口为零":     func(p *NodeParams) { p.ListenPort = 0 },
-		"代理端口超范围":    func(p *NodeParams) { p.ListenPort = 70000 },
-		"代理与API端口相同": func(p *NodeParams) { p.APIPort = p.ListenPort },
-		"握手目标为空":     func(p *NodeParams) { p.RealityDest = "" },
-		"握手目标是IP":    func(p *NodeParams) { p.RealityDest = "1.2.3.4" },
-		"私钥长度错误":     func(p *NodeParams) { p.RealityPrivateKey = "tooshort" },
-		"shortID非法":  func(p *NodeParams) { p.ShortID = "zzzz" },
-		"shortID奇数位": func(p *NodeParams) { p.ShortID = "abc" },
-		"用户代码格式错误":   func(p *NodeParams) { p.Users[0].Code = "alice" },
+		"代理端口为零":     func(p *NodeParams) { p.Inbounds[0].ListenPort = 0 },
+		"代理端口超范围":    func(p *NodeParams) { p.Inbounds[0].ListenPort = 70000 },
+		"代理与API端口相同": func(p *NodeParams) { p.APIPort = p.Inbounds[0].ListenPort },
+		"握手目标为空":     func(p *NodeParams) { p.Inbounds[0].RealityDest = "" },
+		"握手目标是IP":    func(p *NodeParams) { p.Inbounds[0].RealityDest = "1.2.3.4" },
+		"私钥长度错误":     func(p *NodeParams) { p.Inbounds[0].RealityPrivateKey = "tooshort" },
+		"shortID非法":  func(p *NodeParams) { p.Inbounds[0].ShortID = "zzzz" },
+		"shortID奇数位": func(p *NodeParams) { p.Inbounds[0].ShortID = "abc" },
+		"用户代码格式错误":   func(p *NodeParams) { p.Inbounds[0].Users[0].Code = "alice" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -249,5 +252,118 @@ func TestValidateRemotePathBlocksTraversalAndMetacharacters(t *testing.T) {
 		if err := ValidateRemotePath(p); err == nil {
 			t.Errorf("路径 %q 应当被拒绝", p)
 		}
+	}
+}
+
+// 多入站:stats 白名单是【全部入站用户的并集】,入站白名单是全部 tag。
+//
+// 漏掉其中一个入站的用户,表现是那批人能正常上网但零流量记录 ——
+// sing-box 不报错,面板也看不出来,直到某天有人问"我这个月怎么没用量"。
+func TestMultiInboundStatsUnion(t *testing.T) {
+	a := validParams().Inbounds[0]
+	a.ID, a.Tag = 1, LegacyVLESSInboundTag
+
+	b := validParams().Inbounds[0]
+	b.ID, b.Tag, b.ListenPort = 2, "in-2", 8443
+	b.Users = []User{
+		// 与 a 重叠的一个 + 独有的一个。重叠的那个在白名单里只能出现一次。
+		{Code: "user_000001", UUID: "0e53ec27-4f42-48da-a473-6ada91959d35"},
+		{Code: "user_000003", UUID: "5c9d4f2a-1b3e-4c8d-9a7f-2e6b1d4a8c30"},
+	}
+
+	cfg, err := Render(NodeParams{APIPort: 28080, Inbounds: []InboundParams{a, b}})
+	if err != nil {
+		t.Fatalf("渲染双入站失败: %v", err)
+	}
+	if err := AssertStatsConsistent(cfg); err != nil {
+		t.Fatalf("一致性断言失败: %v", err)
+	}
+
+	wantUsers := []string{"user_000001", "user_000002", "user_000003"}
+	got := cfg.Experimental.V2RayAPI.Stats.Users
+	if len(got) != len(wantUsers) {
+		t.Fatalf("stats.users = %v,期望 %v", got, wantUsers)
+	}
+	for i := range wantUsers {
+		if got[i] != wantUsers[i] {
+			t.Fatalf("stats.users = %v,期望 %v", got, wantUsers)
+		}
+	}
+	wantInbounds := []string{LegacyVLESSInboundTag, "in-2"}
+	for i, tag := range wantInbounds {
+		if cfg.Experimental.V2RayAPI.Stats.Inbounds[i] != tag {
+			t.Errorf("stats.inbounds = %v,期望 %v",
+				cfg.Experimental.V2RayAPI.Stats.Inbounds, wantInbounds)
+		}
+	}
+}
+
+// 入站的顺序不能依赖调用方。
+//
+// 依赖的话,某条路径忘了排序会让同一台机器在两个哈希之间来回抖 ——
+// 「已同步」与「待部署」两个状态反复跳,而两次渲染的内容完全一样。
+func TestMultiInboundRenderIsOrderIndependent(t *testing.T) {
+	a := validParams().Inbounds[0]
+	a.ID, a.Tag = 1, LegacyVLESSInboundTag
+	b := validParams().Inbounds[0]
+	b.ID, b.Tag, b.ListenPort = 2, "in-2", 8443
+
+	first, err := RenderJSON(NodeParams{APIPort: 28080, Inbounds: []InboundParams{a, b}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RenderJSON(NodeParams{APIPort: 28080, Inbounds: []InboundParams{b, a}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SHA256 != second.SHA256 {
+		t.Errorf("入站顺序不同渲染出不同的配置:\n%s\n%s", first.JSON, second.JSON)
+	}
+}
+
+// 同机两个入站不能监听同一个端口,也不能与 API 端口撞车。
+//
+// 撞了的话第二个 bind 失败、整个 sing-box 起不来,而 sing-box check 是通过的
+// —— 那意味着要到部署的健康检查才发现,而那时配置已经换过去了。
+func TestMultiInboundRejectsPortAndTagCollision(t *testing.T) {
+	base := func() (InboundParams, InboundParams) {
+		a := validParams().Inbounds[0]
+		a.ID, a.Tag = 1, LegacyVLESSInboundTag
+		b := validParams().Inbounds[0]
+		b.ID, b.Tag, b.ListenPort = 2, "in-2", 8443
+		return a, b
+	}
+
+	a, b := base()
+	b.ListenPort = a.ListenPort
+	if _, err := Render(NodeParams{APIPort: 28080, Inbounds: []InboundParams{a, b}}); err == nil {
+		t.Error("两个入站监听同一端口时应当拒绝渲染")
+	}
+
+	a, b = base()
+	b.Tag = a.Tag
+	if _, err := Render(NodeParams{APIPort: 28080, Inbounds: []InboundParams{a, b}}); err == nil {
+		t.Error("两个入站共用同一 tag 时应当拒绝渲染 —— sing-box 会让后者覆盖前者且不报错")
+	}
+
+	a, b = base()
+	b.ListenPort = 28080
+	if _, err := Render(NodeParams{APIPort: 28080, Inbounds: []InboundParams{a, b}}); err == nil {
+		t.Error("入站与 V2Ray API 端口相同时应当拒绝渲染")
+	}
+}
+
+// 一台落地机器上没有任何启用的入站时,渲染出的是空数组而不是 null。
+//
+// null 会让 sing-box 起不来;而空数组是一份合法配置 —— 服务照常运行,
+// 只是谁都连不上。这是管理员重排入口时的正常中间态,拦下来反而
+// 会让"先删旧的再加新的"这条路走不通。
+func TestRenderWithNoInboundsProducesEmptyArray(t *testing.T) {
+	rendered, err := RenderJSON(NodeParams{APIPort: 28080})
+	if err != nil {
+		t.Fatalf("空入站列表应当可以渲染: %v", err)
+	}
+	if !strings.Contains(string(rendered.JSON), `"inbounds": []`) {
+		t.Errorf("空入站列表没有渲染成 []:\n%s", rendered.JSON)
 	}
 }

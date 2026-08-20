@@ -38,6 +38,51 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	return NewStore(db, cipher), db
 }
 
+// only 返回这台机器上唯一的那个入站。
+//
+// 多入站(V8)之前协议、端口、REALITY 那一堆字段就挂在节点上,下面这些用例
+// 断言的还是同一批不变量,只是取值多了一跳。断言"恰好一个"不是形式主义:
+// 建节点必须连带建出第一个入站,少了它这台机器上谁都连不上,
+// 而渲染出的配置里 inbounds 是空数组 —— sing-box 照常启动。
+func only(t *testing.T, n *Node) *Inbound {
+	t.Helper()
+	if len(n.Inbounds) != 1 {
+		t.Fatalf("节点 %s 上有 %d 个入站,期望 1 个", n.Name, len(n.Inbounds))
+	}
+	return n.Inbounds[0]
+}
+
+// inboundParamsOf 把一个现有入站投影回 InboundParams,便于"只改一项"的用例。
+//
+// UpdateInbound 是全量提交(与 relay.Update 一样),不这么写的话
+// 每个用例都要把十几个字段抄一遍,而抄漏一个就变成"顺手把它改了"。
+func inboundParamsOf(in *Inbound) InboundParams {
+	return InboundParams{
+		DisplayName:     in.DisplayName,
+		Protocol:        string(in.Protocol),
+		SSMethod:        in.SSMethod,
+		ListenPort:      in.ListenPort,
+		PublicPort:      in.PublicPort,
+		IPv6PublicPort:  in.IPv6PublicPort,
+		TCPFastOpen:     in.TCPFastOpen,
+		RealityDest:     in.RealityDest,
+		RealityDestPort: in.RealityDestPort,
+		AccessTierID:    in.AccessTierID,
+		SortOrder:       in.SortOrder,
+		PublicRemark:    in.PublicRemark,
+	}
+}
+
+// nodeUpdateParamsOf 同理,给节点那一层用。
+func nodeUpdateParamsOf(n *Node) UpdateParams {
+	return UpdateParams{
+		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host, IPv6Address: n.IPv6Address,
+		SSHPort: n.SSHPort, SSHUser: n.SSHUser, APIPort: n.APIPort,
+		AccessTierID: n.AccessTierID, SortOrder: n.SortOrder,
+		PublicRemark: n.PublicRemark, MaintenanceMessage: n.MaintenanceMessage,
+	}
+}
+
 func defaultCreateParams() CreateParams {
 	return CreateParams{
 		Name:      "node-la",
@@ -56,22 +101,22 @@ func TestCreateNodeGeneratesRealityMaterial(t *testing.T) {
 		t.Fatalf("创建节点: %v", err)
 	}
 
-	if err := singbox.ValidateRealityPrivateKey(n.RealityPrivateKey); err != nil {
+	if err := singbox.ValidateRealityPrivateKey(only(t, n).RealityPrivateKey); err != nil {
 		t.Errorf("生成的 REALITY 私钥格式非法: %v", err)
 	}
-	if err := singbox.ValidateRealityPublicKey(n.RealityPublicKey); err != nil {
+	if err := singbox.ValidateRealityPublicKey(only(t, n).RealityPublicKey); err != nil {
 		t.Errorf("生成的 REALITY 公钥格式非法: %v", err)
 	}
-	if err := singbox.ValidateShortID(n.RealityShortID); err != nil {
+	if err := singbox.ValidateShortID(only(t, n).RealityShortID); err != nil {
 		t.Errorf("生成的 short_id 非法: %v", err)
 	}
 	// 公钥必须与私钥配套,否则客户端永远握手不上。
-	derived, err := DerivePublicKey(n.RealityPrivateKey)
+	derived, err := DerivePublicKey(only(t, n).RealityPrivateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if derived != n.RealityPublicKey {
-		t.Errorf("公钥与私钥不配套:%s != %s", derived, n.RealityPublicKey)
+	if derived != only(t, n).RealityPublicKey {
+		t.Errorf("公钥与私钥不配套:%s != %s", derived, only(t, n).RealityPublicKey)
 	}
 	if n.Status != StatusPending {
 		t.Errorf("新节点状态 = %s", n.Status)
@@ -79,8 +124,8 @@ func TestCreateNodeGeneratesRealityMaterial(t *testing.T) {
 	if n.APIPort != 28080 {
 		t.Errorf("API 端口默认值 = %d", n.APIPort)
 	}
-	if n.RealityDest != DefaultDestCandidates[0] {
-		t.Errorf("握手目标默认值 = %s", n.RealityDest)
+	if only(t, n).RealityDest != DefaultDestCandidates[0] {
+		t.Errorf("握手目标默认值 = %s", only(t, n).RealityDest)
 	}
 }
 
@@ -101,7 +146,7 @@ func TestSensitiveFieldsAreEncryptedAtRest(t *testing.T) {
 	if strings.Contains(sshEnc, "OPENSSH PRIVATE KEY") {
 		t.Error("SSH 私钥以明文存入了数据库")
 	}
-	if realityEnc == n.RealityPrivateKey {
+	if realityEnc == only(t, n).RealityPrivateKey {
 		t.Error("REALITY 私钥以明文存入了数据库")
 	}
 	// 密文必须能还原回明文,否则节点配置无从生成。
@@ -262,8 +307,9 @@ func TestSetEnabledAndDeployStatus(t *testing.T) {
 	}
 
 	// 已禁用的节点不应被部署流程改回在线。
-	if err := store.MarkDeployed(t.Context(), n.ID, "abc123",
-		singbox.ProtocolVLESSReality, "", false); err != nil {
+	if err := store.MarkDeployed(t.Context(), n.ID, "abc123", []DeployedInbound{{
+		ID: only(t, n).ID, Protocol: singbox.ProtocolVLESSReality,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = store.Get(t.Context(), n.ID)
@@ -398,8 +444,8 @@ func TestListenPortDefaultsToProxyPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.ListenPort != p.ProxyPort {
-		t.Errorf("主机端口 = %d,应回落到公网端口 %d", n.ListenPort, p.ProxyPort)
+	if only(t, n).ListenPort != p.ProxyPort {
+		t.Errorf("主机端口 = %d,应回落到公网端口 %d", only(t, n).ListenPort, p.ProxyPort)
 	}
 }
 
@@ -413,19 +459,22 @@ func TestNATPortsStoredIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.ProxyPort != 443 || n.ListenPort != 20443 {
-		t.Fatalf("端口 = 公网 %d / 主机 %d,应为 443 / 20443", n.ProxyPort, n.ListenPort)
+	if only(t, n).PublicPort != 443 || only(t, n).ListenPort != 20443 {
+		t.Fatalf("端口 = 公网 %d / 主机 %d,应为 443 / 20443", only(t, n).PublicPort, only(t, n).ListenPort)
 	}
 
 	// 节点配置必须监听主机端口。渲染成公网端口会让 sing-box 监听在
 	// 转发链路另一端的号码上,NAT 转进来的流量无人接收。
 	cfg, err := singbox.Render(singbox.NodeParams{
-		ListenPort:        n.ListenPort,
-		APIPort:           n.APIPort,
-		RealityDest:       n.RealityDest,
-		RealityPort:       n.RealityDestPort,
-		RealityPrivateKey: n.RealityPrivateKey,
-		ShortID:           n.RealityShortID,
+		APIPort: n.APIPort,
+		Inbounds: []singbox.InboundParams{{
+			Tag:               only(t, n).Tag,
+			ListenPort:        only(t, n).ListenPort,
+			RealityDest:       only(t, n).RealityDest,
+			RealityPort:       only(t, n).RealityDestPort,
+			RealityPrivateKey: only(t, n).RealityPrivateKey,
+			ShortID:           only(t, n).RealityShortID,
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -442,41 +491,20 @@ func TestUpdateNodeReportsEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 只改公网端口:订阅内容变了,但节点上跑的配置一个字节都没变。
-	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
-		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: 443, ListenPort: n.ListenPort, APIPort: n.APIPort,
-	})
+	// 只改展示名称:什么都不该被触发。
+	_, effect, err := store.Update(t.Context(), n.ID, nodeUpdateParamsOf(n))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ProxyPort != 443 || updated.ListenPort != n.ListenPort {
-		t.Fatalf("端口 = 公网 %d / 主机 %d", updated.ProxyPort, updated.ListenPort)
-	}
-	if effect.NeedsDeploy {
-		t.Error("只改公网端口不该要求重新部署")
-	}
-	if effect.SSHChanged {
-		t.Error("未改连接参数却报告 SSH 变更")
+	if effect.NeedsDeploy || effect.SSHChanged || effect.RelayTargetChanged {
+		t.Errorf("原样提交却报告了变更:%+v", effect)
 	}
 
-	// 改主机端口:进了节点配置,必须重新部署才生效。
-	_, effect, err = store.Update(t.Context(), n.ID, UpdateParams{
-		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: 443, ListenPort: 20443, APIPort: n.APIPort,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !effect.NeedsDeploy {
-		t.Error("改主机端口后应要求重新部署")
-	}
-
-	// 改主机地址:连接池里的长连接指向旧地址,必须失效重连。
-	_, effect, err = store.Update(t.Context(), n.ID, UpdateParams{
-		Name: n.Name, Host: "192.0.2.99", SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: 443, ListenPort: 20443, APIPort: n.APIPort,
-	})
+	// 改主机地址:连接池里的长连接指向旧地址,必须失效重连;
+	// 同时它是中转主机 proxy_pass 的目标,下游必须跟着改。
+	p := nodeUpdateParamsOf(n)
+	p.Host = "192.0.2.99"
+	_, effect, err = store.Update(t.Context(), n.ID, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,6 +513,104 @@ func TestUpdateNodeReportsEffect(t *testing.T) {
 	}
 	if effect.NeedsDeploy {
 		t.Error("改主机地址不影响节点配置,不该要求重新部署")
+	}
+	if !effect.RelayTargetChanged {
+		t.Error("改主机地址后必须往下游传播 —— 中转机的 proxy_pass 指着它")
+	}
+}
+
+// 入站那一层:公网端口只影响订阅,主机监听端口进配置。
+//
+// 两者混为一谈的后果各有一个方向:把公网端口当成要部署,会为一次纯订阅
+// 变更重启 sing-box、踢掉全部在线连接;把监听端口当成不用部署,
+// 则是节点上还在听旧端口而订阅已经发新的了。
+func TestUpdateInboundSeparatesPublicAndListenPort(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := only(t, n).ID
+
+	updated, effect, err := store.UpdateInbound(t.Context(), id,
+		inboundEdit(only(t, n), func(u *InboundParams) { u.PublicPort = 443 }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PublicPort != 443 || updated.ListenPort != only(t, n).ListenPort {
+		t.Fatalf("端口 = 公网 %d / 主机 %d", updated.PublicPort, updated.ListenPort)
+	}
+	if effect.NeedsDeploy {
+		t.Error("只改公网端口不该要求重新部署")
+	}
+	if !effect.SubscriptionChanged {
+		t.Error("改公网端口必须被认作订阅内容变化")
+	}
+
+	_, effect, err = store.UpdateInbound(t.Context(), id,
+		inboundEdit(updated, func(u *InboundParams) { u.ListenPort = 20443 }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !effect.NeedsDeploy {
+		t.Error("改主机监听端口后应要求重新部署")
+	}
+}
+
+// 同一台机器上两个入站不能监听同一个端口 —— 第二个 bind 失败会让
+// 整个 sing-box 起不来,而 sing-box check 是通过的。
+func TestInboundPortConflictIsRejected(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dup := inboundParamsOf(only(t, n))
+	dup.DisplayName = "第二个入口"
+	if _, err := store.CreateInbound(t.Context(), n.ID, dup); !errors.Is(err, ErrInboundPortConflict) {
+		t.Errorf("同端口的第二个入站应当被拒绝,得到 %v", err)
+	}
+
+	// 与 V2Ray API 撞车同样要拦:那一个端口上也有东西在听。
+	api := inboundParamsOf(only(t, n))
+	api.DisplayName = "撞 API 的入口"
+	api.ListenPort = n.APIPort
+	if _, err := store.CreateInbound(t.Context(), n.ID, api); !errors.Is(err, ErrInboundPortConflict) {
+		t.Errorf("与 API 端口相同的入站应当被拒绝,得到 %v", err)
+	}
+
+	// 换一个端口就能加进来,而且 tag 必须与第一个不同 ——
+	// 撞名的话 sing-box 会让后者覆盖前者,且不报任何错。
+	ok := inboundParamsOf(only(t, n))
+	ok.DisplayName = "第二个入口"
+	ok.ListenPort = 25443
+	second, err := store.CreateInbound(t.Context(), n.ID, ok)
+	if err != nil {
+		t.Fatalf("换端口后应当能加入站: %v", err)
+	}
+	if second.Tag == only(t, n).Tag || second.Tag == "" {
+		t.Errorf("两个入站的 tag 撞了:%q", second.Tag)
+	}
+}
+
+// 中转角色的机器上没有 sing-box,加入站必须被拒。
+func TestCreateInboundRejectedOnRelay(t *testing.T) {
+	store, _ := newTestStore(t)
+	p := defaultCreateParams()
+	p.Name = "relay-1"
+	p.Role = string(RoleRelay)
+	n, err := store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(n.Inbounds) != 0 {
+		t.Fatalf("中转机上不该有入站,实际 %d 个", len(n.Inbounds))
+	}
+	if _, err := store.CreateInbound(t.Context(), n.ID, InboundParams{
+		DisplayName: "不该建出来", ListenPort: 8443,
+	}); !errors.Is(err, ErrInboundNotOnLanding) {
+		t.Errorf("中转机上加入站应当被拒绝,得到 %v", err)
 	}
 }
 
@@ -499,7 +625,7 @@ func TestUpdateNodeKeepsSSHKeyWhenBlank(t *testing.T) {
 
 	updated, _, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		SSHKey: "", ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		SSHKey: "", APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +637,7 @@ func TestUpdateNodeKeepsSSHKeyWhenBlank(t *testing.T) {
 	const newKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nrotated\n-----END OPENSSH PRIVATE KEY-----"
 	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		SSHKey: newKey, ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		SSHKey: newKey, APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -541,14 +667,13 @@ func TestUpdateNodeRejectsBadParams(t *testing.T) {
 
 	base := UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort: n.APIPort,
 	}
 	cases := map[string]func(*UpdateParams){
-		"名称为空":       func(p *UpdateParams) { p.Name = "" },
-		"主机为空":       func(p *UpdateParams) { p.Host = "" },
-		"公网端口为零":     func(p *UpdateParams) { p.ProxyPort = 0 },
-		"主机与API端口相同": func(p *UpdateParams) { p.ListenPort = p.APIPort },
-		"名称与其他节点重复":  func(p *UpdateParams) { p.Name = other.Name },
+		"名称为空":      func(p *UpdateParams) { p.Name = "" },
+		"主机为空":      func(p *UpdateParams) { p.Host = "" },
+		"API端口超范围":  func(p *UpdateParams) { p.APIPort = 99999 },
+		"名称与其他节点重复": func(p *UpdateParams) { p.Name = other.Name },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -575,7 +700,7 @@ func TestUpdateNodeReturnsEmptyChangesNotNil(t *testing.T) {
 	}
 	_, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)

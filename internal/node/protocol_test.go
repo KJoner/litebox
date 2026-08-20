@@ -23,10 +23,10 @@ func TestCreateGeneratesBothCredentialSets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("协议 %q 建节点失败: %v", protocol, err)
 		}
-		if err := singbox.ValidateRealityPrivateKey(n.RealityPrivateKey); err != nil {
+		if err := singbox.ValidateRealityPrivateKey(only(t, n).RealityPrivateKey); err != nil {
 			t.Errorf("协议 %q:REALITY 私钥没生成: %v", protocol, err)
 		}
-		if err := singbox.ValidateSSKey(n.SSPassword); err != nil {
+		if err := singbox.ValidateSSKey(only(t, n).SSPassword); err != nil {
 			t.Errorf("协议 %q:Shadowsocks 密钥没生成: %v", protocol, err)
 		}
 	}
@@ -44,14 +44,14 @@ func TestCreateShadowsocksLeavesRealityDestEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.RealityDest != "" || n.RealityDestPort != 0 {
-		t.Errorf("Shadowsocks 节点不该有握手目标,得到 %s:%d", n.RealityDest, n.RealityDestPort)
+	if only(t, n).RealityDest != "" || only(t, n).RealityDestPort != 0 {
+		t.Errorf("Shadowsocks 节点不该有握手目标,得到 %s:%d", only(t, n).RealityDest, only(t, n).RealityDestPort)
 	}
-	if n.SSMethod != string(singbox.DefaultSSMethod) {
-		t.Errorf("加密方法 = %q,期望默认值 %q", n.SSMethod, singbox.DefaultSSMethod)
+	if only(t, n).SSMethod != string(singbox.DefaultSSMethod) {
+		t.Errorf("加密方法 = %q,期望默认值 %q", only(t, n).SSMethod, singbox.DefaultSSMethod)
 	}
-	if n.DeployedProtocol != "" {
-		t.Errorf("从未部署过的节点 deployed_protocol 应当为空,得到 %q", n.DeployedProtocol)
+	if only(t, n).DeployedProtocol != "" {
+		t.Errorf("从未部署过的节点 deployed_protocol 应当为空,得到 %q", only(t, n).DeployedProtocol)
 	}
 }
 
@@ -65,8 +65,8 @@ func TestVLESSNodeHasNoSSMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.SSMethod != "" {
-		t.Errorf("VLESS 节点的 ss_method = %q,应当为空", n.SSMethod)
+	if only(t, n).SSMethod != "" {
+		t.Errorf("VLESS 节点的 ss_method = %q,应当为空", only(t, n).SSMethod)
 	}
 }
 
@@ -93,9 +93,9 @@ func TestUpdateEmptyProtocolKeepsOriginal(t *testing.T) {
 	}
 
 	// updateFrom 刻意不填 Protocol / SSMethod —— 那正是"漏传"的形态。
-	params := updateFrom(n, func(u *UpdateParams) { u.SortOrder = 5 })
+	params := inboundEdit(only(t, n), func(u *InboundParams) { u.SortOrder = 5 })
 
-	updated, effect, err := store.Update(t.Context(), n.ID, params)
+	updated, effect, err := store.UpdateInbound(t.Context(), only(t, n).ID, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +122,8 @@ func TestUpdateProtocolNeedsDeployButNotAutomatic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := updateFrom(n, func(u *UpdateParams) { u.Protocol = "SHADOWSOCKS" })
-	updated, effect, err := store.Update(t.Context(), n.ID, params)
+	params := inboundEdit(only(t, n), func(u *InboundParams) { u.Protocol = "SHADOWSOCKS" })
+	updated, effect, err := store.UpdateInbound(t.Context(), only(t, n).ID, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,10 +136,6 @@ func TestUpdateProtocolNeedsDeployButNotAutomatic(t *testing.T) {
 	}
 	if effect.TierChanged {
 		t.Error("改协议不该被当成等级变更 —— 那一条会触发自动部署")
-	}
-	// SSHChanged 与协议无关。置上它会白白断掉一条已建立的长连接(重连约 1.3 秒)。
-	if effect.SSHChanged {
-		t.Error("改协议不该让 SSH 长连接失效")
 	}
 	if len(effect.Changes) == 0 ||
 		!strings.Contains(strings.Join(effect.Changes, ";"), "落地协议") {
@@ -171,28 +167,29 @@ func TestSwitchToVLESSRequiresTestedHandshakeDest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := updateFrom(n, func(u *UpdateParams) { u.Protocol = "VLESS_REALITY" })
-	if _, _, err := store.Update(t.Context(), n.ID, params); err == nil {
+	params := inboundEdit(only(t, n), func(u *InboundParams) { u.Protocol = "VLESS_REALITY" })
+	if _, _, err := store.UpdateInbound(t.Context(), only(t, n).ID, params); err == nil {
 		t.Fatal("没有实测过的握手目标时,切回 VLESS 应当被拒绝")
 	}
 
 	// 只填了握手目标、但从没实测过,同样不放行 ——
 	// 有值不等于测过,而没测过的目标可能正好超过记录上限。
 	if _, err := db.Exec(
-		`UPDATE nodes SET reality_dest = 'www.fastly.com', reality_dest_port = 443 WHERE id = ?`,
+		`UPDATE node_inbounds SET reality_dest = 'www.fastly.com', reality_dest_port = 443
+		   WHERE node_id = ?`,
 		n.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Update(t.Context(), n.ID, params); err == nil {
+	if _, _, err := store.UpdateInbound(t.Context(), only(t, n).ID, params); err == nil {
 		t.Error("填了握手目标但没实测过时,切回 VLESS 仍应被拒绝")
 	}
 
 	// 实测过之后才放行。
-	if _, err := db.Exec(`UPDATE nodes SET handshake_checked_at = ? WHERE id = ?`,
+	if _, err := db.Exec(`UPDATE node_inbounds SET handshake_checked_at = ? WHERE node_id = ?`,
 		time.Now().UTC().Format(time.RFC3339), n.ID); err != nil {
 		t.Fatal(err)
 	}
-	updated, _, err := store.Update(t.Context(), n.ID, params)
+	updated, _, err := store.UpdateInbound(t.Context(), only(t, n).ID, params)
 	if err != nil {
 		t.Fatalf("实测通过后应当允许切回 VLESS: %v", err)
 	}
@@ -215,10 +212,10 @@ func TestUpdateSSMethodNeedsDeploy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	params := updateFrom(n, func(u *UpdateParams) {
+	params := inboundEdit(only(t, n), func(u *InboundParams) {
 		u.SSMethod = string(singbox.SSMethodChaCha20)
 	})
-	updated, effect, err := store.Update(t.Context(), n.ID, params)
+	updated, effect, err := store.UpdateInbound(t.Context(), only(t, n).ID, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,14 +238,14 @@ func TestProtocolSwitchAuditDoesNotMentionMethodClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(
-		`UPDATE nodes SET reality_dest='www.fastly.com', reality_dest_port=443,
-		 handshake_checked_at=? WHERE id=?`,
+		`UPDATE node_inbounds SET reality_dest='www.fastly.com', reality_dest_port=443,
+		 handshake_checked_at=? WHERE node_id=?`,
 		time.Now().UTC().Format(time.RFC3339), n.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	params := updateFrom(n, func(u *UpdateParams) { u.Protocol = "VLESS_REALITY" })
-	_, effect, err := store.Update(t.Context(), n.ID, params)
+	params := inboundEdit(only(t, n), func(u *InboundParams) { u.Protocol = "VLESS_REALITY" })
+	_, effect, err := store.UpdateInbound(t.Context(), only(t, n).ID, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,27 +267,30 @@ func TestMarkDeployedRecordsRunningProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.MarkDeployed(t.Context(), n.ID, "abc123",
-		singbox.ProtocolShadowsocks, string(singbox.SSMethodAES128GCM), false); err != nil {
+	if err := store.MarkDeployed(t.Context(), n.ID, "abc123", []DeployedInbound{{
+		ID:       only(t, n).ID,
+		Protocol: singbox.ProtocolShadowsocks,
+		SSMethod: string(singbox.SSMethodAES128GCM),
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.Get(t.Context(), n.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.DeployedProtocol != singbox.ProtocolShadowsocks {
-		t.Errorf("deployed_protocol = %q", after.DeployedProtocol)
+	if only(t, after).DeployedProtocol != singbox.ProtocolShadowsocks {
+		t.Errorf("deployed_protocol = %q", only(t, after).DeployedProtocol)
 	}
-	if after.DeployedSSMethod != string(singbox.SSMethodAES128GCM) {
-		t.Errorf("deployed_ss_method = %q", after.DeployedSSMethod)
+	if only(t, after).DeployedSSMethod != string(singbox.SSMethodAES128GCM) {
+		t.Errorf("deployed_ss_method = %q", only(t, after).DeployedSSMethod)
 	}
 
 	// 之后改期望协议,已部署的那一份不能跟着变 —— 那正是订阅赖以判断的东西。
-	params := updateFrom(after, func(u *UpdateParams) {
+	params := inboundEdit(only(t, after), func(u *InboundParams) {
 		u.Protocol = "SHADOWSOCKS"
 		u.SortOrder = 9
 	})
-	updated, _, err := store.Update(t.Context(), n.ID, params)
+	updated, _, err := store.UpdateInbound(t.Context(), after.ID, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +306,9 @@ func TestBackfillSSKeysIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 模拟迁移刚跑完的存量节点:这一列是空的。
-	if _, err := db.Exec(`UPDATE nodes SET ss_password_encrypted = '' WHERE id = ?`, n.ID); err != nil {
+	// 模拟迁移刚跑完的存量入站:这一列是空的。
+	if _, err := db.Exec(
+		`UPDATE node_inbounds SET ss_password_encrypted = '' WHERE node_id = ?`, n.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -316,13 +317,13 @@ func TestBackfillSSKeysIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Errorf("补齐了 %d 个节点,期望 1", count)
+		t.Errorf("补齐了 %d 个入站,期望 1", count)
 	}
 	filled, err := store.Get(t.Context(), n.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := singbox.ValidateSSKey(filled.SSPassword); err != nil {
+	if err := singbox.ValidateSSKey(only(t, filled).SSPassword); err != nil {
 		t.Errorf("补齐的密钥格式非法: %v", err)
 	}
 
@@ -338,7 +339,7 @@ func TestBackfillSSKeysIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.SSPassword != filled.SSPassword {
+	if only(t, again).SSPassword != only(t, filled).SSPassword {
 		t.Error("重复补齐改动了已有密钥 —— 那会让全部用户的凭据失效")
 	}
 }

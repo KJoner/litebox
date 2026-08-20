@@ -33,7 +33,11 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		SELECT r.display_name,
 		       a.host, a.ipv6_address,
 		       CASE WHEN r.public_port = 0 THEN r.listen_port ELSE r.public_port END,
-		       a.ipv6_proxy_port,
+		       -- IPv6 条目跟随这条规则的公网端口,不再读 nodes.ipv6_proxy_port:
+		       -- 那一列已随多入站(迁移 0019)冻结,值搬去了 node_inbounds,
+		       -- 而中转主机上根本没有入站。转发规则本身没有 IPv6 端口字段 ——
+		       -- nginx 的 listen 是同一个,两个协议栈到达的是同一个 server 块。
+		       0,
 		       r.target_kind,
 		       COALESCE(b.deployed_protocol, ''), COALESCE(b.deployed_ss_method, ''),
 		       COALESCE(b.deployed_tcp_fast_open, 0),
@@ -45,7 +49,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		  FROM node_relays r
 		  JOIN `+access.EffectiveRelaysView+` er ON er.relay_id = r.id
 		  JOIN nodes a ON a.id = r.node_id
-		  LEFT JOIN nodes b            ON b.id = r.target_node_id
+		  LEFT JOIN node_inbounds b    ON b.id = r.target_inbound_id
 		  LEFT JOIN external_proxies p ON p.id = r.target_external_id
 		 WHERE er.proxy_user_id = ?
 		   AND r.deleted_at IS NULL
@@ -77,7 +81,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		}
 
 		switch kind {
-		case "NODE":
+		case "INBOUND":
 			landing := &RelayNodeLanding{
 				TCPFastOpen:      tfo,
 				RealityDest:      realityDest,

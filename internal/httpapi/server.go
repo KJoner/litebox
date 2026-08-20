@@ -188,9 +188,18 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("DELETE /api/relays/{id}", s.handleDeleteRelay)
 		authed.HandleFunc("POST /api/nodes/{id}/relays/deploy", longOperation(s.handleDeployRelays))
 		authed.HandleFunc("GET /api/nodes/{id}/nginx", longOperation(s.handleNodeNginxFacts))
+		// sing-box 入站(V8 多入站)。一台落地机器可以有多个入口,
+		// 各自的协议、端口、访问等级与出口去向互不相干。
+		authed.HandleFunc("GET /api/nodes/{id}/inbounds", s.handleListNodeInbounds)
+		authed.HandleFunc("POST /api/nodes/{id}/inbounds", s.handleCreateInbound)
+		authed.HandleFunc("PUT /api/inbounds/{id}", s.handleUpdateInbound)
+		authed.HandleFunc("DELETE /api/inbounds/{id}", s.handleDeleteInbound)
+		authed.HandleFunc("POST /api/inbounds/{id}/dest-check",
+			longOperation(s.handleApplyInboundDest))
 		// 链式出站是两台机器的复合操作,一定慢,走 longOperation。
-		authed.HandleFunc("POST /api/nodes/{id}/chain", longOperation(s.handleApplyChain))
-		authed.HandleFunc("DELETE /api/nodes/{id}/chain", longOperation(s.handleClearChain))
+		// 主体是【入站】而不是节点:同机的两个入口可以走两个不同的出口。
+		authed.HandleFunc("POST /api/inbounds/{id}/chain", longOperation(s.handleApplyChain))
+		authed.HandleFunc("DELETE /api/inbounds/{id}/chain", longOperation(s.handleClearChain))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
 		authed.HandleFunc("GET /api/nodes/{id}/config-diff", longOperation(s.handleNodeConfigDiff))
 		authed.HandleFunc("GET /api/deployments", s.handleRecentDeployments)

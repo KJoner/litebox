@@ -12,38 +12,51 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 )
 
-// 链式出站:A 的出站从 direct 换成指向落地 B 的代理出站。
+// 链式出站:一个入站的流量从 direct 换成指向落地的代理出站。
 //
-// 落地 B 上多出一个用户,凭据是这里生成的 chain_xxxxxx —— 它不是
+// 落地上多出一个用户,凭据是这里生成的 chain_xxxxxx —— 它不是
 // proxy_users 里的一行,理由见迁移 0018:那样每一处查用户的地方都要重新
 // 判断一次角色,而判断写漏最重的一档是额度检查把链路凭据停掉,
 // 整条链当场断掉而面板上一切正常。
+//
+// V8 起链式是【入站级】的:同一台机器上的两个入站可以走两个不同的出口。
+// 落地也精确到入站 —— 一台机器上有两个入站时,"转发到 B"是有歧义的,
+// 而歧义的表现是流量进了管理员没打算用的那个入口(协议、端口、等级都不同),
+// 没有任何一层会报错。
 
 var (
 	// ErrChainSelfTarget 链到自己。
-	ErrChainSelfTarget = errors.New("中转去向不能是节点自己")
-	// ErrChainRelayRole 中转机没有自己的入站,链式出站无从谈起。
-	ErrChainRelayRole = errors.New("中转角色的节点不能配置链式出站")
+	ErrChainSelfTarget = errors.New("中转去向不能是这个入站自己")
+	// ErrChainSameHost 链到同一台机器上的另一个入站。
+	//
+	// 那不是中转,是把流量在本机绕一圈再从本机出去 —— 出口 IP 一个字节
+	// 都没变,而管理员以为自己配了一条链路。
+	ErrChainSameHost = errors.New("中转去向不能是同一台机器上的入站")
 	// ErrChainTargetNotDeployed 落地还没部署过,它上面没有任何凭据。
-	ErrChainTargetNotDeployed = errors.New("落地节点尚未成功部署过,链路凭据无处安放")
+	ErrChainTargetNotDeployed = errors.New("落地入站尚未成功部署过,链路凭据无处安放")
 )
 
 // ChainTarget 是一条链式出站的去向,已解析成渲染需要的样子。
 type ChainTarget struct {
 	Kind ChainTargetKind
-	// 落地是自建节点时填。取的是 deployed_* ——
+	// 落地是自建节点的某个入站时填。取的是 deployed_* ——
 	// 与订阅同一条道理:改协议到部署成功之间的窗口里,按期望值渲染
-	// 会让 A 用一套还没生效的参数去连 B,握手直接失败,
+	// 会让中转拿一套还没生效的参数去连落地,握手直接失败,
 	// 而数据库、两台节点、面板四方都是"对的"。
-	Node *ChainNodeTarget
+	Inbound *ChainInboundTarget
 	// 落地是外部代理时填。
 	External *ChainExternalTarget
 }
 
-// ChainNodeTarget 是落地为自建节点时的连接参数。
-type ChainNodeTarget struct {
+// ChainInboundTarget 是落地为自建节点某个入站时的连接参数。
+type ChainInboundTarget struct {
+	// ID 是入站 id,NodeID 是它所在的机器。
 	ID          int64
+	NodeID      int64
 	DisplayName string
+	// Host 取自机器,Port 取自入站的【公网端口】——
+	// 写成监听端口在 NAT 机器上是连不上,在直连机器上碰巧一样,
+	// 而后者更糟:它会一直是对的,直到某天落地换成 NAT 小鸡。
 	Host        string
 	Port        int
 	Protocol    singbox.Protocol
@@ -98,13 +111,13 @@ func nextChainCode(ctx context.Context, tx *sql.Tx) (string, error) {
 	return fmt.Sprintf("chain_%06d", seq), nil
 }
 
-// SetChain 把节点的出站指向 B。
+// SetChain 把一个入站的出站指向落地。
 //
-// 链路凭据一旦分配就不再变:改落地去向不重新签发。凭据是"A 这台机器的身份",
+// 链路凭据一旦分配就不再变:改落地去向不重新签发。凭据是"这个入站的身份",
 // 与它今天连的是谁无关 —— 每换一次去向就换一次代码,会让 traffic_ledger 里
 // 留下一串再也对不上任何东西的历史计数器名。
 func (s *Store) SetChain(
-	ctx context.Context, nodeID int64, kind ChainTargetKind, targetID int64,
+	ctx context.Context, inboundID int64, kind ChainTargetKind, targetID int64,
 ) error {
 	if !kind.Enabled() {
 		return errors.New("链式去向不能为空,清除请用 ClearChain")
@@ -115,41 +128,38 @@ func (s *Store) SetChain(
 	}
 	defer tx.Rollback()
 
-	var role, existingCode string
+	var existingCode string
+	var nodeID int64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT role, chain_code FROM nodes WHERE id = ? AND deleted_at IS NULL`,
-		nodeID).Scan(&role, &existingCode); err != nil {
+		`SELECT node_id, chain_code FROM node_inbounds WHERE id = ? AND deleted_at IS NULL`,
+		inboundID).Scan(&nodeID, &existingCode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
+			return ErrInboundNotFound
 		}
 		return err
 	}
-	// 中转机没有自己的入站,"把入站的流量送去 B"这句话在它身上没有主语。
-	if Role(role).IsRelay() {
-		return ErrChainRelayRole
-	}
 
-	if kind == ChainTargetNode {
-		if targetID == nodeID {
+	if kind == ChainTargetInbound {
+		if targetID == inboundID {
 			return ErrChainSelfTarget
 		}
+		var targetNodeID int64
 		var deployed string
-		var targetRole string
 		if err := tx.QueryRowContext(ctx,
-			`SELECT deployed_config_sha256, role FROM nodes
-			  WHERE id = ? AND deleted_at IS NULL`, targetID).Scan(&deployed, &targetRole); err != nil {
+			`SELECT node_id, deployed_protocol FROM node_inbounds
+			  WHERE id = ? AND deleted_at IS NULL`, targetID).Scan(&targetNodeID, &deployed); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("%w: 落地节点 id=%d", ErrNotFound, targetID)
+				return fmt.Errorf("%w: 落地入站 id=%d", ErrInboundNotFound, targetID)
 			}
 			return err
 		}
-		// 中转机上没有 sing-box,连不上去。
-		if Role(targetRole).IsRelay() {
-			return errors.New("落地不能是中转角色的节点")
+		// 同机绕一圈不是中转:出口 IP 一个字节都没变。
+		if targetNodeID == nodeID {
+			return ErrChainSameHost
 		}
-		// 没部署过的 B 上根本没有 inbound,凭据加进去也无处生效 ——
-		// 而 A 部署下去会在拨测那一步失败并自动回滚,管理员看到的是
-		// 「中转节点部署失败」,不会想到问题在另一台机器上。
+		// 没部署过的落地上根本没有 inbound,凭据加进去也无处生效 ——
+		// 而中转部署下去会在拨测那一步失败并自动回滚,管理员看到的是
+		// 「部署失败」,不会想到问题在另一台机器上。
 		if deployed == "" {
 			return ErrChainTargetNotDeployed
 		}
@@ -178,26 +188,26 @@ func (s *Store) SetChain(
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	var nodeTarget, externalTarget any
-	if kind == ChainTargetNode {
-		nodeTarget = targetID
+	var inboundTarget, externalTarget any
+	if kind == ChainTargetInbound {
+		inboundTarget = targetID
 	} else {
 		externalTarget = targetID
 	}
 
 	if existingCode == "" {
 		_, err = tx.ExecContext(ctx, `
-			UPDATE nodes SET chain_target_kind = ?, chain_target_node_id = ?,
+			UPDATE node_inbounds SET chain_target_kind = ?, chain_target_inbound_id = ?,
 			       chain_target_external_id = ?, chain_code = ?,
 			       chain_uuid_encrypted = ?, chain_ss_password_encrypted = ?, updated_at = ?
 			 WHERE id = ?`,
-			string(kind), nodeTarget, externalTarget, code, uuidEnc, ssEnc, now, nodeID)
+			string(kind), inboundTarget, externalTarget, code, uuidEnc, ssEnc, now, inboundID)
 	} else {
 		_, err = tx.ExecContext(ctx, `
-			UPDATE nodes SET chain_target_kind = ?, chain_target_node_id = ?,
+			UPDATE node_inbounds SET chain_target_kind = ?, chain_target_inbound_id = ?,
 			       chain_target_external_id = ?, updated_at = ?
 			 WHERE id = ?`,
-			string(kind), nodeTarget, externalTarget, now, nodeID)
+			string(kind), inboundTarget, externalTarget, now, inboundID)
 	}
 	if err != nil {
 		return err
@@ -205,40 +215,40 @@ func (s *Store) SetChain(
 	return tx.Commit()
 }
 
-// ClearChain 把出站改回 direct。
+// ClearChain 把一个入站的出站改回 direct。
 //
 // **凭据不清除**,只清去向。清掉的话再次启用会分配一个新代码,
-// 而 B 的 traffic_ledger 里那个旧代码就成了永远对不上任何东西的历史行。
-func (s *Store) ClearChain(ctx context.Context, nodeID int64) error {
+// 而落地的 traffic_ledger 里那个旧代码就成了永远对不上任何东西的历史行。
+func (s *Store) ClearChain(ctx context.Context, inboundID int64) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE nodes SET chain_target_kind = '', chain_target_node_id = NULL,
+		UPDATE node_inbounds SET chain_target_kind = '', chain_target_inbound_id = NULL,
 		       chain_target_external_id = NULL, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
-		time.Now().UTC().Format(time.RFC3339), nodeID)
+		time.Now().UTC().Format(time.RFC3339), inboundID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+		return ErrInboundNotFound
 	}
 	return nil
 }
 
-// ChainUsersForNode 返回应当出现在这个落地节点入站里的链路凭据。
+// ChainUsersForInbound 返回应当出现在这个落地入站里的链路凭据。
 //
-// 它与 UsersForNode 的结果**合并之后**才是这个节点的完整用户列表,
+// 它与 UsersForInbound 的结果**合并之后**才是这个入站的完整用户列表,
 // 而合并只在一处做 —— 两处各拼一遍的话,漏掉链路凭据的表现是
-// A 连不上 B(部署时拨测失败并回滚),漏在 stats 白名单里的表现是
-// 链路正常工作而 B 的节点用量少算了经 A 转发的全部流量,后者没有任何报错。
-func (s *Store) ChainUsersForNode(ctx context.Context, nodeID int64) ([]singbox.User, error) {
+// 中转连不上落地(部署时拨测失败并回滚),漏在 stats 白名单里的表现是
+// 链路正常工作而落地的节点用量少算了经中转过来的全部流量,后者没有任何报错。
+func (s *Store) ChainUsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT chain_code, chain_uuid_encrypted, chain_ss_password_encrypted
-		  FROM nodes
+		  FROM node_inbounds
 		 WHERE deleted_at IS NULL
-		   AND chain_target_kind = 'NODE'
-		   AND chain_target_node_id = ?
+		   AND chain_target_kind = 'INBOUND'
+		   AND chain_target_inbound_id = ?
 		   AND chain_code != ''
-		 ORDER BY chain_code`, nodeID)
+		 ORDER BY chain_code`, inboundID)
 	if err != nil {
 		return nil, err
 	}
@@ -266,15 +276,71 @@ func (s *Store) ChainUsersForNode(ctx context.Context, nodeID int64) ([]singbox.
 	return users, rows.Err()
 }
 
-// ChainSourceIDs 返回把出站链到这个节点的全部中转主机 ID。
+// ChainSourceNodeIDs 返回把出站链到这个落地入站的全部机器 ID。
 //
-// 用于跨节点脏标记:B 的协议、端口或凭据一变,指向它的 A 全部要重新部署 ——
-// 不传播的话 A 会拿着一套过时的参数去连 B,而面板上两台机器都显示正常。
-func (s *Store) ChainSourceIDs(ctx context.Context, targetID int64) ([]int64, error) {
+// 用于跨节点脏标记:落地的协议、端口或凭据一变,指向它的中转全部要重新部署
+// —— 不传播的话中转会拿着一套过时的参数去连落地,而面板上两台机器都显示正常。
+//
+// 返回的是【机器】而不是入站:脏标记的粒度是机器(一次部署重写整份配置)。
+func (s *Store) ChainSourceNodeIDs(ctx context.Context, targetInboundID int64) ([]int64, error) {
+	return s.chainSourceNodeIDs(ctx,
+		`chain_target_kind = 'INBOUND' AND chain_target_inbound_id = ?`, targetInboundID)
+}
+
+// ChainSourceNodeIDsForExternal 与 ChainSourceNodeIDs 同理,落地是外部代理。
+func (s *Store) ChainSourceNodeIDsForExternal(ctx context.Context, externalID int64) ([]int64, error) {
+	return s.chainSourceNodeIDs(ctx,
+		`chain_target_kind = 'EXTERNAL' AND chain_target_external_id = ?`, externalID)
+}
+
+// ChainLink 是一条链式关系里的"发起方"。
+type ChainLink struct {
+	// InboundID 是发起方的入站,NodeID 是它所在的机器。
+	InboundID int64
+	NodeID    int64
+}
+
+// ChainsTargetingNode 返回全部链到【这台机器上任意一个入站】的发起方。
+//
+// 删除一个落地节点之前必须先取出它们:打上 deleted_at 之后就查不到了,
+// 而那些中转主机的配置会渲染不出来(落地查不到),表现是它们的配置状态
+// 一律变成「未知」—— 而真正在跑的配置还指着一台已经不存在的机器。
+func (s *Store) ChainsTargetingNode(ctx context.Context, nodeID int64) ([]ChainLink, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id FROM nodes
-		 WHERE deleted_at IS NULL AND chain_target_kind = 'NODE' AND chain_target_node_id = ?
-		 ORDER BY id`, targetID)
+		SELECT src.id, src.node_id
+		  FROM node_inbounds src
+		  JOIN node_inbounds dst ON dst.id = src.chain_target_inbound_id
+		 WHERE src.deleted_at IS NULL
+		   AND src.chain_target_kind = 'INBOUND'
+		   AND dst.node_id = ?
+		 ORDER BY src.id`, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	links := make([]ChainLink, 0)
+	for rows.Next() {
+		var l ChainLink
+		if err := rows.Scan(&l.InboundID, &l.NodeID); err != nil {
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
+
+// ChainTargetNodesOf 返回这台机器上全部链式入站所指向的【落地机器】。
+//
+// 删除一台中转主机之前用它:那些落地上留着这台机器的链路凭据,
+// 删完要标脏重新部署把凭据撤掉,否则就是权限没有真正收回。
+func (s *Store) ChainTargetNodesOf(ctx context.Context, nodeID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT dst.node_id
+		  FROM node_inbounds src
+		  JOIN node_inbounds dst ON dst.id = src.chain_target_inbound_id
+		 WHERE src.node_id = ? AND src.deleted_at IS NULL
+		   AND src.chain_target_kind = 'INBOUND'
+		 ORDER BY dst.node_id`, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -290,13 +356,11 @@ func (s *Store) ChainSourceIDs(ctx context.Context, targetID int64) ([]int64, er
 	return ids, rows.Err()
 }
 
-// ChainSourceIDsForExternal 与 ChainSourceIDs 同理,落地是外部代理。
-func (s *Store) ChainSourceIDsForExternal(ctx context.Context, externalID int64) ([]int64, error) {
+func (s *Store) chainSourceNodeIDs(ctx context.Context, cond string, arg int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id FROM nodes
-		 WHERE deleted_at IS NULL AND chain_target_kind = 'EXTERNAL'
-		   AND chain_target_external_id = ?
-		 ORDER BY id`, externalID)
+		SELECT DISTINCT node_id FROM node_inbounds
+		 WHERE deleted_at IS NULL AND `+cond+`
+		 ORDER BY node_id`, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -312,35 +376,35 @@ func (s *Store) ChainSourceIDsForExternal(ctx context.Context, externalID int64)
 	return ids, rows.Err()
 }
 
-// ResolveChainTarget 把节点上记录的链式去向解析成渲染参数。
+// ResolveChainTarget 把入站上记录的链式去向解析成渲染参数。
 //
-// 落地是自建节点时取 deployed_*,不取期望值 —— 与订阅同一条道理。
-func (s *Store) ResolveChainTarget(ctx context.Context, n *Node) (*ChainTarget, error) {
-	switch n.ChainTargetKind {
+// 落地是自建入站时取 deployed_*,不取期望值 —— 与订阅同一条道理。
+func (s *Store) ResolveChainTarget(ctx context.Context, in *Inbound) (*ChainTarget, error) {
+	switch in.ChainTargetKind {
 	case ChainTargetNone:
 		return nil, nil
-	case ChainTargetNode:
-		t, deployed, err := s.chainNodeTarget(ctx, n.ChainTargetNodeID)
+	case ChainTargetInbound:
+		t, deployed, err := s.chainInboundTarget(ctx, in.ChainTargetInboundID)
 		if err != nil {
 			return nil, err
 		}
 		// 链式出站【必须】知道落地上跑的是什么协议 —— 猜错的表现是
-		// 中转主机用错协议去连落地,拨测失败、中转回滚,而报错落在中转身上。
+		// 中转用错协议去连落地,拨测失败、中转回滚,而报错落在中转身上。
 		if !deployed {
 			return nil, fmt.Errorf("%w: %s", ErrChainTargetNotDeployed, t.DisplayName)
 		}
-		return &ChainTarget{Kind: ChainTargetNode, Node: t}, nil
+		return &ChainTarget{Kind: ChainTargetInbound, Inbound: t}, nil
 	case ChainTargetExternal:
-		t, err := s.chainExternalTarget(ctx, n.ChainTargetExternalID)
+		t, err := s.chainExternalTarget(ctx, in.ChainTargetExternalID)
 		if err != nil {
 			return nil, err
 		}
 		return &ChainTarget{Kind: ChainTargetExternal, External: t}, nil
 	}
-	return nil, fmt.Errorf("未知的链式去向 %q", n.ChainTargetKind)
+	return nil, fmt.Errorf("未知的链式去向 %q", in.ChainTargetKind)
 }
 
-// chainNodeTarget 读出一个自建节点作为落地时的参数。
+// chainInboundTarget 读出一个自建入站作为落地时的参数。
 //
 // 第二个返回值表示它是否已经成功部署过 —— 也就是那几个 deployed_* 列
 // 是否可信。两种用途对它的要求不同,所以由调用方决定怎么办:
@@ -349,22 +413,32 @@ func (s *Store) ResolveChainTarget(ctx context.Context, n *Node) (*ChainTarget, 
 //   - **nginx 透传只需要地址与公网端口**,协议参数只用于拨测。
 //     拿"没部署过"去卡它,会让一台配好了转发、只等落地上线的中转机
 //     整份配置都下发不了 —— 而那条线路本来就还没进任何人的订阅。
-func (s *Store) chainNodeTarget(ctx context.Context, id int64) (*ChainNodeTarget, bool, error) {
-	var t ChainNodeTarget
+func (s *Store) chainInboundTarget(ctx context.Context, id int64) (*ChainInboundTarget, bool, error) {
+	var t ChainInboundTarget
 	var protocol, ssMethod, ssKeyEnc string
+	var publicPort, listenPort int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, display_name, host, proxy_port,
-		       deployed_protocol, deployed_ss_method, deployed_tcp_fast_open,
-		       ss_password_encrypted, reality_dest, reality_pubkey, reality_short_id
-		  FROM nodes WHERE id = ? AND deleted_at IS NULL`, id).Scan(
-		&t.ID, &t.DisplayName, &t.Host, &t.Port,
+		SELECT i.id, i.node_id, i.display_name, n.host, i.public_port, i.listen_port,
+		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
+		       i.ss_password_encrypted, i.reality_dest, i.reality_pubkey, i.reality_short_id
+		  FROM node_inbounds i
+		  JOIN nodes n ON n.id = i.node_id AND n.deleted_at IS NULL
+		 WHERE i.id = ? AND i.deleted_at IS NULL`, id).Scan(
+		&t.ID, &t.NodeID, &t.DisplayName, &t.Host, &publicPort, &listenPort,
 		&protocol, &ssMethod, &t.TCPFastOpen,
 		&ssKeyEnc, &t.RealityDest, &t.RealityPublicKey, &t.RealityShortID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, fmt.Errorf("%w: 落地节点 id=%d", ErrNotFound, id)
+		return nil, false, fmt.Errorf("%w: 落地入站 id=%d", ErrInboundNotFound, id)
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	// 公网端口而不是监听端口:写成后者在 NAT 机器上是连不上,
+	// 在直连机器上碰巧一样 —— 后者更糟,它会一直是对的,
+	// 直到某天落地换成 NAT 小鸡。0 表示跟随监听端口,在这里解析。
+	t.Port = publicPort
+	if t.Port == 0 {
+		t.Port = listenPort
 	}
 	// 落地还没部署成功过就没有生效协议。这时**不猜 VLESS** —— 猜错的表现是
 	// 中转用错协议去连落地,拨测失败、中转回滚,而报错落在中转身上。
@@ -375,7 +449,7 @@ func (s *Store) chainNodeTarget(ctx context.Context, id int64) (*ChainNodeTarget
 	t.SSMethod = singbox.SSMethod(ssMethod)
 	if t.Protocol == singbox.ProtocolShadowsocks && ssKeyEnc != "" {
 		if t.SSServerKey, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
-			return nil, false, fmt.Errorf("解密落地节点 %s 的 Shadowsocks 密钥: %w",
+			return nil, false, fmt.Errorf("解密落地入站 %s 的 Shadowsocks 密钥: %w",
 				t.DisplayName, err)
 		}
 	}
@@ -397,8 +471,8 @@ func (s *Store) chainExternalTarget(ctx context.Context, id int64) (*ChainExtern
 	}
 	t.Protocol = externalproxy.Protocol(protocol)
 	// 只有 Shadowsocks 能表达成 sing-box 出站(V4 既有限制)。
-	// 这里拦住而不是渲染出一个空壳:空壳会让 A 起不来,
-	// 而管理员看到的是"中转节点部署失败",不知道是落地选错了。
+	// 这里拦住而不是渲染出一个空壳:空壳会让中转起不来,
+	// 而错误信息落在"部署失败"上,查起来绕得多。
 	if t.Protocol != externalproxy.ProtocolShadowsocks {
 		return nil, fmt.Errorf("外部代理 %s 是 %s,链式出站本版本只支持 Shadowsocks",
 			t.DisplayName, t.Protocol.Label())
@@ -409,7 +483,7 @@ func (s *Store) chainExternalTarget(ctx context.Context, id int64) (*ChainExtern
 			return nil, fmt.Errorf("解密外部代理 %s 的参数: %w", t.DisplayName, err)
 		}
 		if t.Params, err = externalproxy.ParseParams(raw); err != nil {
-			return nil, fmt.Errorf("外部代理 %s: %w", t.DisplayName, err)
+			return nil, fmt.Errorf("解析外部代理 %s 的参数: %w", t.DisplayName, err)
 		}
 	}
 	return &t, nil

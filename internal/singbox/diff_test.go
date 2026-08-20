@@ -8,7 +8,7 @@ import (
 func configWithUsers(t *testing.T, users ...User) Config {
 	t.Helper()
 	p := validParams()
-	p.Users = users
+	p.Inbounds[0].Users = users
 	cfg, err := Render(p)
 	if err != nil {
 		t.Fatal(err)
@@ -75,9 +75,9 @@ func TestCompareDetectsNodeAttributeChanges(t *testing.T) {
 	before := configWithUsers(t, userA)
 
 	p := validParams()
-	p.Users = []User{userA}
-	p.ListenPort = 25443
-	p.RealityDest = "www.cloudflare.com"
+	p.Inbounds[0].Users = []User{userA}
+	p.Inbounds[0].ListenPort = 25443
+	p.Inbounds[0].RealityDest = "www.cloudflare.com"
 	after, err := Render(p)
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +97,8 @@ func TestCompareDetectsNodeAttributeChanges(t *testing.T) {
 func TestCompareDoesNotLeakPrivateKey(t *testing.T) {
 	before := configWithUsers(t, userA)
 	p := validParams()
-	p.Users = []User{userA}
-	p.RealityPrivateKey = "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-abcde"
+	p.Inbounds[0].Users = []User{userA}
+	p.Inbounds[0].RealityPrivateKey = "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-abcde"
 	after, err := Render(p)
 	if err != nil {
 		t.Fatal(err)
@@ -106,10 +106,10 @@ func TestCompareDoesNotLeakPrivateKey(t *testing.T) {
 
 	d := Compare(before, after)
 	full := strings.Join(append(d.NodeAttr, d.Summary), " ")
-	if strings.Contains(full, p.RealityPrivateKey) {
+	if strings.Contains(full, p.Inbounds[0].RealityPrivateKey) {
 		t.Error("diff 中泄露了 REALITY 私钥")
 	}
-	if strings.Contains(full, validParams().RealityPrivateKey) {
+	if strings.Contains(full, validParams().Inbounds[0].RealityPrivateKey) {
 		t.Error("diff 中泄露了原 REALITY 私钥")
 	}
 	if !strings.Contains(full, "已更换") {

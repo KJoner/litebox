@@ -147,8 +147,8 @@ func (s *Service) relayServer(
 	probe := deployment.RelayProbe{Name: r.DisplayName, ListenPort: r.ListenPort}
 
 	switch r.TargetKind {
-	case relay.TargetNode:
-		target, deployed, err := s.store.chainNodeTarget(ctx, r.TargetNodeID)
+	case relay.TargetInbound:
+		target, deployed, err := s.store.chainInboundTarget(ctx, r.TargetInboundID)
 		if err != nil {
 			return server, probe, err
 		}
@@ -199,12 +199,12 @@ func (s *Service) relayServer(
 // 按期望值构造会让探测用一套还没生效的参数去连落地,拨测失败、
 // 中转配置被回滚 —— 而中转这边什么都没做错。
 func (s *Service) probeOutboundForNode(
-	ctx context.Context, target *ChainNodeTarget, listenPort int,
+	ctx context.Context, target *ChainInboundTarget, listenPort int,
 ) (map[string]any, string, error) {
 	if s.users == nil {
 		return nil, "面板未配置用户来源", nil
 	}
-	users, err := s.users.UsersForNode(ctx, target.ID)
+	users, err := s.users.UsersForInbound(ctx, target.ID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -222,7 +222,7 @@ func (s *Service) probeOutboundForNode(
 
 // relayProbeOutbound 按落地协议生成探测出站,server 指向本机的转发端口。
 func relayProbeOutbound(
-	target *ChainNodeTarget, user singbox.User, listenPort int,
+	target *ChainInboundTarget, user singbox.User, listenPort int,
 ) (map[string]any, error) {
 	base := map[string]any{
 		"tag": "probe-out",

@@ -147,17 +147,23 @@ func (e *integrationEnv) request(revision int64, users []singbox.User) Request {
 	return Request{
 		NodeID: 1,
 		Params: singbox.NodeParams{
-			ListenPort:        e.proxyPort,
-			APIPort:           28080,
-			RealityDest:       e.dest,
-			RealityPort:       443,
-			RealityPrivateKey: e.keys.privateKey,
-			ShortID:           e.shortID,
-			Users:             users,
+			APIPort: 28080,
+			Inbounds: []singbox.InboundParams{{
+				Tag:               singbox.LegacyVLESSInboundTag,
+				ListenPort:        e.proxyPort,
+				RealityDest:       e.dest,
+				RealityPort:       443,
+				RealityPrivateKey: e.keys.privateKey,
+				ShortID:           e.shortID,
+				Users:             users,
+			}},
 		},
-		RealityPublicKey: e.keys.publicKey,
-		SSHPort:          e.sshPort,
-		Revision:         revision,
+		Probes: []ProbeTarget{{
+			Tag:              singbox.LegacyVLESSInboundTag,
+			RealityPublicKey: e.keys.publicKey,
+		}},
+		SSHPort:  e.sshPort,
+		Revision: revision,
 	}
 }
 
@@ -168,13 +174,13 @@ func (e *integrationEnv) request(revision int64, users []singbox.User) Request {
 func (e *integrationEnv) ssRequest(t *testing.T, revision int64, users []singbox.User) Request {
 	t.Helper()
 	req := e.request(revision, users)
-	req.Params.Protocol = singbox.ProtocolShadowsocks
-	req.Params.SSMethod = singbox.SSMethodAES128GCM
+	req.Params.Inbounds[0].Protocol = singbox.ProtocolShadowsocks
+	req.Params.Inbounds[0].SSMethod = singbox.SSMethodAES128GCM
 	key, err := singbox.GenerateSSKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Params.SSPassword = key
+	req.Params.Inbounds[0].SSPassword = key
 	return req
 }
 
@@ -265,7 +271,7 @@ func TestIntegrationBadConfigTriggersRollback(t *testing.T) {
 	// 但探测客户端持有的仍是旧公钥,握手必然失败。
 	mismatched := genRealityKeyPair(t)
 	badReq := env.request(202, users)
-	badReq.Params.RealityPrivateKey = mismatched.privateKey
+	badReq.Params.Inbounds[0].RealityPrivateKey = mismatched.privateKey
 	// RealityPublicKey 保持为原来的公钥,模拟"节点配置与已下发凭据不一致"。
 
 	bad, deployErr := env.deployer.Deploy(ctx, badReq)

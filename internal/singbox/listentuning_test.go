@@ -51,7 +51,7 @@ func TestUDPTimeoutByMemory(t *testing.T) {
 func TestListenTuningAppliesToBothProtocols(t *testing.T) {
 	for name, params := range map[string]NodeParams{"VLESS": v3Params(), "Shadowsocks": ssParams()} {
 		p := params
-		p.TCPFastOpen = true
+		p.Inbounds[0].TCPFastOpen = true
 		p.MemTotalMB = 128
 
 		rendered, err := RenderJSON(p)
@@ -107,12 +107,12 @@ func TestEveryRenderedChangeShowsUpInDiff(t *testing.T) {
 	baseJSON, _ := RenderJSON(baseParams)
 
 	mutations := map[string]func(*NodeParams){
-		"开启 TCP Fast Open": func(p *NodeParams) { p.TCPFastOpen = true },
+		"开启 TCP Fast Open": func(p *NodeParams) { p.Inbounds[0].TCPFastOpen = true },
 		"内存落到小机器档":         func(p *NodeParams) { p.MemTotalMB = 128 },
-		"改主机监听端口":          func(p *NodeParams) { p.ListenPort = 20443 },
+		"改主机监听端口":          func(p *NodeParams) { p.Inbounds[0].ListenPort = 20443 },
 		"改 API 端口":         func(p *NodeParams) { p.APIPort = 28081 },
-		"改握手目标":            func(p *NodeParams) { p.RealityDest = "www.cloudflare.com" },
-		"改 short_id":       func(p *NodeParams) { p.ShortID = "0123abcd" },
+		"改握手目标":            func(p *NodeParams) { p.Inbounds[0].RealityDest = "www.cloudflare.com" },
+		"改 short_id":       func(p *NodeParams) { p.Inbounds[0].ShortID = "0123abcd" },
 	}
 
 	for name, mutate := range mutations {
@@ -140,7 +140,7 @@ func TestEveryRenderedChangeShowsUpInDiff(t *testing.T) {
 // 关掉之后字段消失,而节点上那份还开着,两边哈希却又对得上。
 func TestTurningFastOpenOffChangesConfig(t *testing.T) {
 	on := v3Params()
-	on.TCPFastOpen = true
+	on.Inbounds[0].TCPFastOpen = true
 	off := v3Params()
 
 	onR, _ := RenderJSON(on)

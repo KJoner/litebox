@@ -121,18 +121,21 @@ func dialLabel(p singbox.Protocol) string {
 // 【它测不出什么】:客户端与服务端在同一台机器上,共用同一个时钟,
 // 所以 Shadowsocks 2022 的时间戳窗口问题在这里恒定通过。那一类失效
 // 由部署事务开头的 checkClockSkew 负责。
-func (d *Deployer) checkDial(ctx context.Context, client *sshx.Client, req Request) (string, error) {
-	if len(req.Params.Users) == 0 {
+func (d *Deployer) checkDial(
+	ctx context.Context, client *sshx.Client, req Request,
+	inbound singbox.InboundParams, target ProbeTarget,
+) (string, error) {
+	if len(inbound.Users) == 0 {
 		return "", errNoProbeUser
 	}
-	probeUser := req.Params.Users[0]
+	probeUser := inbound.Users[0]
 
 	probePort, err := d.pickProbePort(ctx, client)
 	if err != nil {
 		return "", err
 	}
 
-	probeConfig, err := buildProbeConfig(req, probeUser, probePort)
+	probeConfig, err := buildProbeConfig(inbound, target, probeUser, probePort)
 	if err != nil {
 		return "", err
 	}
@@ -164,8 +167,8 @@ func (d *Deployer) checkDial(ctx context.Context, client *sshx.Client, req Reque
 
 	host, port := "127.0.0.1", probeTargetPort(ctx, client, req.SSHPort)
 	via := "节点本机"
-	if req.DialHost != "" && req.DialPort > 0 {
-		host, port = req.DialHost, req.DialPort
+	if target.DialHost != "" && target.DialPort > 0 {
+		host, port = target.DialHost, target.DialPort
 		via = "经落地绕回本机公网 SSH"
 	}
 	banner, err := dialThroughProxy(ctx, client, probePort, host, port)
@@ -243,8 +246,10 @@ func waitPortReady(ctx context.Context, client *sshx.Client, port int) error {
 }
 
 // buildProbeConfig 生成探测用的 sing-box 客户端配置。
-func buildProbeConfig(req Request, user singbox.User, probePort int) ([]byte, error) {
-	out, err := probeOutbound(req, user)
+func buildProbeConfig(
+	inbound singbox.InboundParams, target ProbeTarget, user singbox.User, probePort int,
+) ([]byte, error) {
+	out, err := probeOutbound(inbound, target, user)
 	if err != nil {
 		return nil, err
 	}
@@ -263,26 +268,28 @@ func buildProbeConfig(req Request, user singbox.User, probePort int) ([]byte, er
 
 // probeOutbound 按协议生成探测出站。
 //
-// 参数一律取自 req.Params,也就是【本次即将部署的那份配置】的输入,
-// 而不是数据库里的当前值 —— 拨测要验证的正是刚刚写上去的那一份。
-func probeOutbound(req Request, user singbox.User) (map[string]any, error) {
+// 参数一律取自【本次即将部署的那份配置】里这个入站的输入,而不是数据库里的
+// 当前值 —— 拨测要验证的正是刚刚写上去的那一份。
+func probeOutbound(
+	inbound singbox.InboundParams, target ProbeTarget, user singbox.User,
+) (map[string]any, error) {
 	base := map[string]any{
 		"tag":         "probe-out",
 		"server":      "127.0.0.1",
-		"server_port": req.Params.ListenPort,
+		"server_port": inbound.ListenPort,
 	}
 
-	if req.Params.Protocol == singbox.ProtocolShadowsocks {
+	if inbound.Protocol == singbox.ProtocolShadowsocks {
 		// password 走 SSClientPassword,与订阅生成同一个实现。
 		// 这里另拼一遍的话,某天改了拼法只改到一处,表现是
 		// "拨测通过但用户连不上",或者反过来 —— 两条路径各自看起来都对。
 		password, err := singbox.SSClientPassword(
-			req.Params.SSPassword, user.SSPassword, req.Params.SSMethod)
+			inbound.SSPassword, user.SSPassword, inbound.SSMethod)
 		if err != nil {
 			return nil, fmt.Errorf("拼接探测用的 Shadowsocks 凭据: %w", err)
 		}
 		base["type"] = "shadowsocks"
-		base["method"] = string(req.Params.SSMethod)
+		base["method"] = string(inbound.SSMethod)
 		base["password"] = password
 		return base, nil
 	}
@@ -292,12 +299,12 @@ func probeOutbound(req Request, user singbox.User) (map[string]any, error) {
 	base["flow"] = singbox.FlowVision
 	base["tls"] = map[string]any{
 		"enabled":     true,
-		"server_name": req.Params.RealityDest,
+		"server_name": inbound.RealityDest,
 		"utls":        map[string]any{"enabled": true, "fingerprint": "chrome"},
 		"reality": map[string]any{
 			"enabled":    true,
-			"public_key": req.RealityPublicKey,
-			"short_id":   req.Params.ShortID,
+			"public_key": target.RealityPublicKey,
+			"short_id":   inbound.ShortID,
 		},
 	}
 	return base, nil

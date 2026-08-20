@@ -2,6 +2,7 @@ package portal
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,25 @@ func (e *env) addNode(t *testing.T, f nodeFixture) int64 {
 		t.Fatal(err)
 	}
 	id, _ := res.LastInsertId()
+
+	// 多入站(V8)之后门户里一行 = 一个入口,可见性走 user_effective_inbounds
+	// (INNER JOIN)—— 一台没有入站的机器上,任何用户都查不出来。
+	// deployed_protocol 也在这一行:节点级的 sha256 答不了"这个入口上过节点没有"。
+	deployedProtocol := ""
+	if f.Deployed {
+		deployedProtocol = "VLESS_REALITY"
+	}
+	if _, err := e.db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
+			public_port, reality_dest, reality_privkey_encrypted, reality_pubkey,
+			reality_short_id, deployed_protocol, subscription_enabled,
+			created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, "in-"+strconv.FormatInt(id, 10), f.DisplayName, "VLESS_REALITY", 20443,
+		443, "www.cloudflare.com", "enc", "pub", "sid", deployedProtocol, 1,
+		fixedTS, fixedTS); err != nil {
+		t.Fatal(err)
+	}
 	return id
 }
 

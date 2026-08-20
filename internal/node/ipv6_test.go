@@ -93,7 +93,7 @@ func TestUpdateIPv6DoesNotTouchSSHOrDeploy(t *testing.T) {
 	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, IPv6Address: "2001:db8::1",
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestUpdateIPv6DoesNotTouchSSHOrDeploy(t *testing.T) {
 	cleared, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, IPv6Address: "",
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestUpdateSwitchesBetweenHostnameAndIP(t *testing.T) {
 		return UpdateParams{
 			Name: n.Name, Host: host,
 			SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-			ProxyPort: 443, ListenPort: n.ListenPort, APIPort: n.APIPort,
+			APIPort: n.APIPort,
 		}
 	}
 
@@ -192,7 +192,7 @@ func TestUpdateTrafficQuotaKeepsWhenAbsent(t *testing.T) {
 	// 不传额度字段:必须保持原值,而不是回落成"不限量"。
 	kept, _, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort: n.APIPort,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestUpdateTrafficQuotaKeepsWhenAbsent(t *testing.T) {
 	zero := int64(0)
 	unlimited, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		ProxyPort: n.ProxyPort, ListenPort: n.ListenPort, APIPort: n.APIPort,
+		APIPort:           n.APIPort,
 		TrafficQuotaBytes: &zero,
 	})
 	if err != nil {

@@ -8,27 +8,28 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 )
 
-// UsersForNode 返回应当出现在该节点配置中的用户。
+// UsersForInbound 返回应当出现在该【入站】配置中的用户。
 //
-// 实现 node.UserProvider。归属关系走 access 的有效节点视图
-// (等级继承 + 额外授权),不再直接查 user_nodes ——
-// 只查后者会让 VIP/ROOT 用户在节点上没有凭据,而订阅里却有这个节点。
+// 实现 node.UserProvider。归属关系走 access 的有效入站视图 ——
+// 它建立在有效节点视图之上(等级继承 + 额外授权)再按入站等级收一次。
+// 少了后半层的表现是:一台机器上的 VIP 入口会把普通用户的凭据也写进去,
+// 那是权限凭空放大,而且不报任何错。
 //
 // 过滤条件是 User.Serviceable:只有 ACTIVE 且未过期未超额的用户才下发。
 // 被停用、过期或超额的用户从配置中消失,重启后其 UUID 立即失效 ——
 // 这就是"停用即断线"的实现方式。
-// 两种协议的凭据一并返回,不看这个节点跑的是哪种。
+// 两种协议的凭据一并返回,不看这个入站跑的是哪种。
 // 按协议取舍发生在渲染时(singbox.Render 只用它需要的那一份)——
 // 在这里按协议分叉的话,查询要多一个参数,而调用方拿到的
-// "用户列表"会变成一个依赖节点协议的东西,配置 diff 就没法比了。
-func (s *Store) UsersForNode(ctx context.Context, nodeID int64) ([]singbox.User, error) {
+// "用户列表"会变成一个依赖入站协议的东西,配置 diff 就没法比了。
+func (s *Store) UsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.user_code, u.uuid_encrypted, u.ss_password_encrypted, u.status, u.quota_bytes,
 		       u.used_uplink, u.used_downlink, u.expires_at
 		  FROM proxy_users u
-		  JOIN `+access.EffectiveNodesView+` en ON en.proxy_user_id = u.id
-		 WHERE en.node_id = ? AND u.deleted_at IS NULL
-		 ORDER BY u.user_code`, nodeID)
+		  JOIN `+access.EffectiveInboundsView+` ei ON ei.proxy_user_id = u.id
+		 WHERE ei.inbound_id = ? AND u.deleted_at IS NULL
+		 ORDER BY u.user_code`, inboundID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,24 +76,28 @@ func (s *Store) NodesForUser(ctx context.Context, userID int64) ([]int64, error)
 	return access.NodesForUser(ctx, s.db, userID)
 }
 
-// NodesForUserWithProtocol 返回该用户可用节点中跑指定协议的那些。
+// NodesForUserWithProtocol 返回该用户可用的机器中,【至少有一个入站】跑指定协议的那些。
 //
-// 用于按协议重置凭据:VLESS 的 UUID 不出现在 Shadowsocks 节点的配置里,
-// 反之亦然。不筛的话,重置一种凭据会把另一种协议的节点也标脏,
+// 用于按协议重置凭据:VLESS 的 UUID 不出现在 Shadowsocks 入站的配置里,
+// 反之亦然。不筛的话,重置一种凭据会把另一种协议的机器也标脏,
 // 而部署协调器【不跳过无差异部署】—— 它会照常重启 sing-box,
 // 把那台机器上全部在线连接踢掉一次,换不来任何配置变化。
 //
-// 筛的是期望协议 nodes.protocol 而不是 deployed_protocol:标脏排的是
+// 粒度是机器而不是入站:标脏排的是一次部署,而一次部署重写整份配置。
+// 一台机器上两个入站一 VLESS 一 SS 时,重置任何一种凭据都要重新部署它 ——
+// 那是对的,那份配置里确实有一半变了。
+//
+// 筛的是期望协议 node_inbounds.protocol 而不是 deployed_protocol:标脏排的是
 // 下一次部署,而那一次渲染出来的是期望协议的配置。
 func (s *Store) NodesForUserWithProtocol(
 	ctx context.Context, userID int64, protocol singbox.Protocol,
 ) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.id
-		  FROM nodes n
-		  JOIN `+access.EffectiveNodesView+` en ON en.node_id = n.id
-		 WHERE en.proxy_user_id = ? AND n.deleted_at IS NULL AND n.protocol = ?
-		 ORDER BY n.id`, userID, string(protocol))
+		SELECT DISTINCT i.node_id
+		  FROM node_inbounds i
+		  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id
+		 WHERE ei.proxy_user_id = ? AND i.deleted_at IS NULL AND i.protocol = ?
+		 ORDER BY i.node_id`, userID, string(protocol))
 	if err != nil {
 		return nil, err
 	}
