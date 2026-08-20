@@ -424,47 +424,88 @@ func (w *Watchdog) startAndVerify(
 	return ok, err
 }
 
-// announce 决定这一轮要不要推送。
+// announceDecision 是「这一轮要不要推、推哪一种」的**全部**判断。
+//
+// 单独拆出来是因为它有三个都不显然的分支,而每一个错了都会让这套通知
+// 变得没人看:该推的不推、不该推的推、或者推错了级别。放在 announce 里
+// 只能靠真机去验,而真机上很难把三种情况都造出来。
+type announceDecision struct {
+	Send  bool
+	Kind  notify.Kind
+	Level notify.Level
+	// ResetDedup 表示这条之后要清掉冷却 —— 恢复之后再挂要能立刻再报,
+	// 而不是"上次告警才过 10 分钟,压掉"。
+	ResetDedup bool
+	// UseDedupKey 为假时不去重:恢复类通知本来就少,压掉反而看不到全貌。
+	UseDedupKey bool
+}
+
+func decideAnnounce(prev HealthReport, hadPrev bool, cur HealthReport, unreachable bool) announceDecision {
+	if cur.Healthy() {
+		// 从坏变好才推,一直好的不推 —— 每两分钟一条"一切正常"
+		// 会让人在半小时内把整个通道静音。
+		//
+		// **但只要这一轮真的动手救过,就一定要推**,哪怕上一轮没记录过它坏。
+		// 面板重启后的第一轮、或者节点重启后恰好被一轮巡检"发现并修好",
+		// 都属于这种情况:少了这一条,面板在你的机器上重启过服务、
+		// 重新下发过配置,而你完全不知道发生过什么。
+		// 这一条是真机验出来的:节点重启后巡检一轮就修好了,而没有任何通知。
+		if cur.Recovered || (hadPrev && !prev.Healthy()) {
+			return announceDecision{
+				Send: true, Kind: notify.KindServiceRecovered,
+				Level: notify.LevelInfo, ResetDedup: true,
+			}
+		}
+		return announceDecision{}
+	}
+
+	// SSH 不通时**连续两轮才报**。一次失败多半是机器在重启,
+	// 而重启是管理员自己干的事 —— 为它推一条告警只会训练他忽略这个通道。
+	if unreachable && !(hadPrev && (prev.SingBox == ServiceUnreachable ||
+		prev.Nginx == ServiceUnreachable)) {
+		return announceDecision{}
+	}
+
+	if cur.RecoverError != "" {
+		// 试过了没救回来 —— 这一条才是真的需要人。
+		return announceDecision{
+			Send: true, Kind: notify.KindRecoverFailed,
+			Level: notify.LevelCritical, UseDedupKey: true,
+		}
+	}
+	return announceDecision{
+		Send: true, Kind: notify.KindServiceDown,
+		Level: notify.LevelWarning, UseDedupKey: true,
+	}
+}
+
+// announce 按 decideAnnounce 的结论发出去。
 func (w *Watchdog) announce(
 	n *Node, prev HealthReport, hadPrev bool, cur HealthReport, unreachable bool,
 ) {
 	if w.notifier == nil {
 		return
 	}
+	d := decideAnnounce(prev, hadPrev, cur, unreachable)
+	if !d.Send {
+		return
+	}
 	key := "node-" + strconv.FormatInt(n.ID, 10)
-
-	if cur.Healthy() {
-		// 从坏变好才推,一直好的不推 —— 每两分钟一条"一切正常"
-		// 会让人在半小时内把整个通道静音。
-		if hadPrev && !prev.Healthy() {
-			w.notifier.ResetDedup(key)
-			body := fmt.Sprintf("节点:%s\n%s", n.Name, recoverSummary(cur))
-			w.notifier.Notify(notify.Event{
-				Kind: notify.KindServiceRecovered, Level: notify.LevelInfo,
-				Title: "服务已恢复", Body: body,
-			})
-		}
-		return
+	if d.ResetDedup {
+		w.notifier.ResetDedup(key)
 	}
-
-	// SSH 不通时**连续两轮才报**。一次失败多半是机器在重启,
-	// 而重启是管理员自己干的事 —— 为它推一条告警只会训练他忽略这个通道。
-	if unreachable && !(hadPrev && prev.SingBox == ServiceUnreachable) &&
-		!(hadPrev && prev.Nginx == ServiceUnreachable) {
-		return
+	ev := notify.Event{Kind: d.Kind, Level: d.Level}
+	if d.UseDedupKey {
+		ev.DedupKey = key
 	}
-
-	kind, level := notify.KindServiceDown, notify.LevelWarning
-	if cur.RecoverError != "" {
-		// 试过了没救回来 —— 这一条才是真的需要人。
-		kind, level = notify.KindRecoverFailed, notify.LevelCritical
+	if d.Kind == notify.KindServiceRecovered {
+		ev.Title = "服务已恢复"
+		ev.Body = fmt.Sprintf("节点:%s\n%s", n.Name, recoverSummary(cur))
+	} else {
+		ev.Title = downTitle(cur)
+		ev.Body = fmt.Sprintf("节点:%s(%s)\n%s", n.Name, n.Host, downSummary(cur))
 	}
-	w.notifier.Notify(notify.Event{
-		Kind: kind, Level: level, DedupKey: key,
-		Title: downTitle(cur),
-		Body: fmt.Sprintf("节点:%s(%s)\n%s",
-			n.Name, n.Host, downSummary(cur)),
-	})
+	w.notifier.Notify(ev)
 }
 
 func downTitle(r HealthReport) string {

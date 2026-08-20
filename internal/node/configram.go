@@ -99,11 +99,25 @@ func (s *Service) SetConfigInRAM(
 		if _, err := s.Deploy(ctx, nodeID); err != nil {
 			s.logger.Error("回退后重新部署失败", "node_id", nodeID, "error", err)
 		}
+		// **失败的那次部署已经把配置写到新位置了,必须清掉。**
+		//
+		// 这一步是真机上发现的:关掉「配置不落盘」时部署失败,面板报
+		// 「已回退到原来的存放位置」,而磁盘上留着一份刚写下的完整配置 ——
+		// 里面是全部用户的凭据,管理员却以为一个字节都没落盘。
+		// 反方向同理(开启失败时 /run 里留一份),只是危害小得多。
+		//
+		// 放在回退部署之后:那时服务已经按旧布局跑起来了,新位置那份
+		// 没有任何人在用。顺序反过来的话,回退部署万一要读它就读不到了。
+		if cleaned, err := s.cleanConfigAt(ctx, nodeID, enabled); err != nil {
+			s.logger.Error("清理失败那一侧的配置失败", "node_id", nodeID, "error", err)
+		} else {
+			out.Cleaned = cleaned
+		}
 		return out, fmt.Errorf("部署失败,已回退到原来的存放位置:%w", deployErr)
 	}
 
 	out.Stage = "清理旧位置"
-	cleaned, err := s.cleanOldConfig(ctx, nodeID, enabled)
+	cleaned, err := s.cleanConfigAt(ctx, nodeID, !enabled)
 	out.Cleaned = cleaned
 	if err != nil {
 		// 清理失败不算整体失败:新位置已经在跑了,旧的那份只是没删掉。
@@ -166,14 +180,19 @@ func (s *Service) installUnitFor(ctx context.Context, nodeID int64, inRAM bool) 
 	})
 }
 
-// cleanOldConfig 删掉旧位置的配置与备份。
+// cleanConfigAt 删掉【某一侧】的配置、临时文件与备份目录。
 //
-// 开启时删磁盘上那份 —— 那正是这个开关的全部意义;
-// 关闭时删内存里那份 —— 留着它只会让下次开机时多一份没人读的垃圾。
-func (s *Service) cleanOldConfig(
-	ctx context.Context, nodeID int64, enabled bool,
+// 参数说的是"清哪一侧",不是"这次开关切到了哪一侧" —— 两个调用点要清的
+// 恰好是相反的两侧:切换成功后清的是搬走的那一侧,切换失败后清的是
+// 那次失败的部署刚写下去的那一侧。用"enabled"当参数名的话,
+// 第二个调用点读起来像是写反了。
+//
+// 备份目录必须一起删:里面是**同一批凭据**。只删主配置的话,
+// 磁盘上还留着几份完整的历史配置,而管理员以为已经清干净了。
+func (s *Service) cleanConfigAt(
+	ctx context.Context, nodeID int64, inRAM bool,
 ) ([]string, error) {
-	old := s.layout.WithConfigInRAM(!enabled)
+	old := s.layout.WithConfigInRAM(inRAM)
 	targets := []string{old.ConfigPath(), old.TempConfigPathForCleanup(), old.ConfigBackupDir()}
 	cleaned := make([]string, 0, len(targets))
 	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
