@@ -78,7 +78,7 @@ func nodeUpdateParamsOf(n *Node) UpdateParams {
 	return UpdateParams{
 		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host, IPv6Address: n.IPv6Address,
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser, APIPort: n.APIPort,
-		AccessTierID: n.AccessTierID, SortOrder: n.SortOrder,
+		SortOrder:    n.SortOrder,
 		PublicRemark: n.PublicRemark, MaintenanceMessage: n.MaintenanceMessage,
 	}
 }

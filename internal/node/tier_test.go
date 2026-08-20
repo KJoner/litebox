@@ -16,8 +16,9 @@ func TestCreateFillsDisplayNameFromName(t *testing.T) {
 	if n.DisplayName != n.Name {
 		t.Errorf("展示名称 = %q,期望回落到内部名称 %q", n.DisplayName, n.Name)
 	}
-	if n.AccessTierID != access.TierNormalID {
-		t.Errorf("默认等级 = %d,期望普通组", n.AccessTierID)
+	// 等级是【入口】的属性(迁移 0020),机器上没有这一栏。
+	if only(t, n).AccessTierID != access.TierNormalID {
+		t.Errorf("第一个入口的默认等级 = %d,期望普通组", only(t, n).AccessTierID)
 	}
 	if !n.SubscriptionEnabled {
 		t.Error("新节点默认应当下发订阅")
@@ -29,7 +30,6 @@ func TestCreateKeepsSeparateDisplayName(t *testing.T) {
 	p := defaultCreateParams()
 	p.Name = "LAX-cn2gia-到期20261201"
 	p.DisplayName = "洛杉矶 01"
-	p.AccessTierID = 2
 	n, err := store.Create(t.Context(), p)
 	if err != nil {
 		t.Fatal(err)
@@ -37,45 +37,59 @@ func TestCreateKeepsSeparateDisplayName(t *testing.T) {
 	if n.DisplayName != "洛杉矶 01" || n.Name != p.Name {
 		t.Errorf("两个名称没有分开保存:%q / %q", n.Name, n.DisplayName)
 	}
-	if n.AccessTierCode != access.CodeVIP {
-		t.Errorf("等级 code = %q,期望 vip", n.AccessTierCode)
-	}
 }
 
-func TestCreateRejectsUnknownTier(t *testing.T) {
+// 入口指向一个不存在的等级会让它从 user_effective_inbounds 里整个消失
+// (视图是 INNER JOIN),表现为「入口在,但谁都用不到」。
+// 迁移里没给 access_tier_id 写外键,这道校验是唯一的拦截点。
+func TestCreateInboundRejectsUnknownTier(t *testing.T) {
 	store, _ := newTestStore(t)
-	p := defaultCreateParams()
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := inboundParamsOf(only(t, n))
+	p.DisplayName = "坏等级"
+	p.ListenPort = 25443
 	p.AccessTierID = 999
-	if _, err := store.Create(t.Context(), p); err == nil {
+	if _, err := store.CreateInbound(t.Context(), n.ID, p); err == nil {
 		t.Error("不存在的访问等级应当被拒绝")
 	}
 }
 
-// 编辑接口漏传等级或订阅开关时必须保持原值。
+// 编辑入口漏传等级或订阅开关时必须保持原值。
 //
-// 回落到零值的后果是静默的:VIP 节点被降成普通组等于给全体用户开门,
-// 订阅开关被关掉等于把节点从所有人的订阅里摘掉,两者都不会报错。
-func TestUpdateKeepsTierAndSubscriptionWhenOmitted(t *testing.T) {
+// 回落到零值的后果是静默的:VIP 入口被降成普通组等于给全体用户开门,
+// 订阅开关被关掉等于把它从所有人的订阅里摘掉,两者都不会报错。
+func TestUpdateInboundKeepsTierAndSubscriptionWhenOmitted(t *testing.T) {
 	store, _ := newTestStore(t)
-	p := defaultCreateParams()
-	p.AccessTierID = 3
-	n, err := store.Create(t.Context(), p)
+	n, err := store.Create(t.Context(), defaultCreateParams())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 先把订阅开关关掉,模拟"节点在维护中"。
+	id := only(t, n).ID
+
+	// 先把它设成 ROOT 组、并关掉订阅开关,模拟一个配好的入口。
 	off := false
-	if _, _, err := store.Update(t.Context(), n.ID, updateFrom(n, func(u *UpdateParams) {
-		u.SubscriptionEnabled = &off
-	})); err != nil {
+	vip, _, err := store.UpdateInbound(t.Context(), id,
+		inboundEdit(only(t, n), func(u *InboundParams) {
+			u.AccessTierID = 3
+			u.SubscriptionEnabled = &off
+		}))
+	if err != nil {
 		t.Fatal(err)
 	}
+	if vip.AccessTierID != 3 || vip.SubscriptionEnabled {
+		t.Fatalf("前置条件没设上:等级 %d / 订阅 %v", vip.AccessTierID, vip.SubscriptionEnabled)
+	}
 
-	// 再提交一次不含这两个字段的编辑。
-	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
-		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host,
-		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		APIPort: n.APIPort,
+	// 再提交一次不含这两个字段的编辑 —— 那正是「漏传」的形态。
+	updated, effect, err := store.UpdateInbound(t.Context(), id, InboundParams{
+		DisplayName: vip.DisplayName,
+		Protocol:    string(vip.Protocol),
+		ListenPort:  vip.ListenPort,
+		PublicPort:  vip.PublicPort,
+		RealityDest: vip.RealityDest,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -84,38 +98,38 @@ func TestUpdateKeepsTierAndSubscriptionWhenOmitted(t *testing.T) {
 		t.Errorf("等级被改成 %d,期望保持 3", updated.AccessTierID)
 	}
 	if updated.SubscriptionEnabled {
-		t.Error("订阅开关被改回开启,维护中的节点会重新进入订阅")
+		t.Error("订阅开关被改回开启,下架的入口会重新进入订阅")
 	}
 	if effect.TierChanged {
 		t.Error("等级没变却报告 tier_changed")
 	}
 }
 
-// 改访问等级必须报告 TierChanged 与 NeedsDeploy:
-// 节点上该有的用户集合变了,不重新部署就等于权限没收回。
-func TestUpdateTierRequiresDeploy(t *testing.T) {
+// 改入口的访问等级必须报告 TierChanged:这个入口上该有的用户集合变了,
+// 不重新部署就等于权限没收回 —— 那一条由上层据此自动标脏。
+func TestUpdateInboundTierRequiresDeploy(t *testing.T) {
 	store, _ := newTestStore(t)
 	n, err := store.Create(t.Context(), defaultCreateParams())
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, effect, err := store.Update(t.Context(), n.ID, updateFrom(n, func(u *UpdateParams) {
-		u.AccessTierID = 2
-	}))
+	id := only(t, n).ID
+
+	updated, effect, err := store.UpdateInbound(t.Context(), id,
+		inboundEdit(only(t, n), func(u *InboundParams) { u.AccessTierID = 2 }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !effect.TierChanged || !effect.NeedsDeploy {
-		t.Errorf("改等级后 effect = %+v,期望 tier_changed 与 needs_deploy 都为真", effect)
+	if !effect.TierChanged {
+		t.Errorf("改等级后 effect = %+v,期望 tier_changed 为真", effect)
 	}
 	if updated.AccessTierCode != access.CodeVIP {
 		t.Errorf("等级未生效:%q", updated.AccessTierCode)
 	}
 
 	// 只改公开备注不需要重新部署:它不进节点配置,也不改用户集合。
-	_, effect, err = store.Update(t.Context(), n.ID, updateFrom(updated, func(u *UpdateParams) {
-		u.PublicRemark = "晚高峰限速"
-	}))
+	_, effect, err = store.UpdateInbound(t.Context(), id,
+		inboundEdit(updated, func(u *InboundParams) { u.PublicRemark = "晚高峰限速" }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,8 +162,8 @@ func updateFrom(n *Node, mutate func(*UpdateParams)) UpdateParams {
 	p := UpdateParams{
 		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host,
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser,
-		APIPort:      n.APIPort,
-		AccessTierID: n.AccessTierID, SortOrder: n.SortOrder,
+		APIPort:             n.APIPort,
+		SortOrder:           n.SortOrder,
 		SubscriptionEnabled: &enabled,
 		PublicRemark:        n.PublicRemark, MaintenanceMessage: n.MaintenanceMessage,
 	}

@@ -38,19 +38,32 @@ func addUser(t *testing.T, db *sql.DB, code string, tierID int64) int64 {
 	return id
 }
 
+// addNode 建一台机器并给它一个入口。
+//
+// **等级挂在入口上**(迁移 0020):机器本身不接受任何连接,入口才接受。
+// 没有入口的机器在 user_effective_nodes 里一行都不会出现 —— 那个视图
+// 现在是入口那一层的投影,而不是一条独立的规则。
 func addNode(t *testing.T, db *sql.DB, name string, tierID int64) int64 {
 	t.Helper()
 	res, err := db.Exec(`
 		INSERT INTO nodes (name, display_name, host, proxy_port, listen_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			access_tier_id, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		name, name, "192.0.2.1", 443, 443, "www.cloudflare.com", "enc", "pub", "sid",
-		tierID, ts, ts)
+		ts, ts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id, _ := res.LastInsertId()
+	if _, err := db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
+			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
+			access_tier_id, created_at, updated_at)
+		VALUES (?,?,?,'VLESS_REALITY',443,'www.cloudflare.com','enc','pub','sid',?,?,?)`,
+		id, "in-"+name, name, tierID, ts, ts); err != nil {
+		t.Fatal(err)
+	}
 	return id
 }
 

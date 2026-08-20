@@ -6,11 +6,14 @@ import (
 	"testing"
 )
 
-// setNodeTier 直接改节点等级。节点侧的编辑接口在 node 包,
-// 这里只需要造出等级不同的节点。
+// setNodeTier 改这台机器上入口的等级。
+//
+// 等级是【入口】的属性(迁移 0020)—— 机器本身不接受任何连接。
+// 节点侧的编辑接口在 node 包,这里只需要造出等级不同的入口。
 func setNodeTier(t *testing.T, db *sql.DB, nodeID, tierID int64) {
 	t.Helper()
-	if _, err := db.Exec(`UPDATE nodes SET access_tier_id = ? WHERE id = ?`, tierID, nodeID); err != nil {
+	if _, err := db.Exec(
+		`UPDATE node_inbounds SET access_tier_id = ? WHERE node_id = ?`, tierID, nodeID); err != nil {
 		t.Fatal(err)
 	}
 }

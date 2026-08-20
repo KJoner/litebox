@@ -341,10 +341,13 @@ export interface Node {
   name: string
   /** 对用户与订阅展示的名称 */
   display_name: string
-  access_tier_id: number
-  access_tier_code: string
-  access_tier_name: string
-  access_tier_level: number
+  /**
+   * **机器没有访问等级**(迁移 0020)。等级是入口的属性 ——
+   * 机器本身不接受任何连接,入口才接受。见 NodeInbound.access_tier_id。
+   *
+   * user_nodes 的额外授权仍然是机器级的:它的意思就是「这台机器给他用」,
+   * 穿透入口等级。
+   */
   sort_order: number
   /** 关掉后不再下发到新生成的订阅,节点与历史数据保留 */
   subscription_enabled: boolean

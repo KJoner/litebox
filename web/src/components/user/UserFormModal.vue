@@ -111,11 +111,19 @@ const passwordError = computed(() =>
 
 const nodeOptions = computed(() =>
   props.nodes.map((n) => ({
-    // 标出节点自己的等级:否则会给普通用户重复授权他早就继承到的节点。
-    label: `${n.name}(${n.access_tier_name}·${n.host})`,
+    // 标出这台机器上入口的等级:否则会给普通用户重复授权他早就继承到的机器。
+    // 等级已经降到入口上,所以一台机器可能同时列出几档 —— 那正是要看到的。
+    label: `${n.name}(${tiersOf(n)}·${n.host})`,
     value: n.id,
   })),
 )
+
+/** 这台机器上入口的等级,去重。没有入口时说清楚 —— 授权它没有任何效果。 */
+function tiersOf(n: Node): string {
+  if (n.role === 'RELAY') return '转发规则各自设定'
+  const names = [...new Set((n.inbounds ?? []).map((i) => i.access_tier_name))]
+  return names.length ? names.join('/') : '无入口'
+}
 
 function close() {
   emit('update:open', false)

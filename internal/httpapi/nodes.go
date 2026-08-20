@@ -117,9 +117,7 @@ type createNodeRequest struct {
 	Name string `json:"name"`
 	// DisplayName 留空表示与内部名称相同。
 	DisplayName string `json:"display_name"`
-	// AccessTierID 留 0 表示普通组。
-	AccessTierID int64 `json:"access_tier_id"`
-	SortOrder    int   `json:"sort_order"`
+	SortOrder   int    `json:"sort_order"`
 	// Host 是 IPv4;IPv6Address 选填,只影响订阅。
 	Host        string `json:"host"`
 	IPv6Address string `json:"ipv6_address"`
@@ -165,7 +163,6 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		Role:               strings.ToUpper(strings.TrimSpace(req.Role)),
 		Name:               strings.TrimSpace(req.Name),
 		DisplayName:        strings.TrimSpace(req.DisplayName),
-		AccessTierID:       req.AccessTierID,
 		SortOrder:          req.SortOrder,
 		Host:               strings.TrimSpace(req.Host),
 		IPv6Address:        strings.TrimSpace(req.IPv6Address),
@@ -297,10 +294,10 @@ type updateNodeRequest struct {
 	// 一台双向计费的机器会悄悄把用量显示成一半 —— 不报任何错。
 	TrafficBillingMode string `json:"traffic_billing_mode"`
 
-	// AccessTierID 为 0、SubscriptionEnabled 为 null 时保持原值。
-	// 这两个字段漏传的后果是静默的(节点被降级 / 从所有订阅里消失),
-	// 不能用零值当"用户的意思"。
-	AccessTierID        int64  `json:"access_tier_id"`
+	// SubscriptionEnabled 为 null 时保持原值 —— 漏传会把节点从所有人的
+	// 订阅里摘掉,而那是静默的,不能用零值当"用户的意思"。
+	//
+	// **访问等级不在这里**:它是入口的属性(迁移 0020),走 /api/inbounds/{id}。
 	SortOrder           int    `json:"sort_order"`
 	SubscriptionEnabled *bool  `json:"subscription_enabled"`
 	PublicRemark        string `json:"public_remark"`
@@ -337,7 +334,6 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		SSHUser:             strings.TrimSpace(req.SSHUser),
 		SSHKey:              req.SSHKey,
 		APIPort:             req.APIPort,
-		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,
 		PublicRemark:        strings.TrimSpace(req.PublicRemark),
@@ -358,12 +354,6 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	// 连接参数变了就必须丢弃长连接,否则后续操作仍走旧地址与旧密钥。
 	if effect.SSHChanged {
 		s.pool.Invalidate(id)
-	}
-	// 访问等级变了意味着节点上该有的用户集合变了,立刻标脏。
-	// 与端口变更不同,这里没有任何需要管理员挑时机的外部依赖,
-	// 而拖着不部署等于权限没真正收回。
-	if effect.TierChanged && s.users != nil {
-		s.users.SyncNode(id)
 	}
 	// 这个节点作为【落地】被别人依赖时,把下游的中转主机一并标脏。
 	//

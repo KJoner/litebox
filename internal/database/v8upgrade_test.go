@@ -148,43 +148,58 @@ func TestV8UpgradeMovesInboundColumnsWithoutChangingBehaviour(t *testing.T) {
 			relayKind, relayTarget, targetInboundOfB)
 	}
 
-	// 7. **入站等级一律是普通组,不继承节点的等级。**
+	// 7. **机器的等级搬到了它的入口上**(迁移 0020)。
 	//
-	//    继承的话,user_nodes 的额外授权会凭空作废:管理员显式把 VIP 的 B
-	//    授权给普通用户,而 B 上唯一的入站等级是 VIP,于是这个用户在节点视图里
-	//    有、在入站视图里没有 —— 授权作废而面板一个字都不说。
+	//    不搬的话,升级后一台原本 VIP 的机器,它的入口全是普通组,
+	//    于是那台机器对全体用户敞开 —— 而管理员什么都没做过,也不会有任何报错。
+	//    权限的静默放大是这类改动里最坏的一种失败。
 	var tier int64
 	mustScan(t, db, `SELECT access_tier_id FROM node_inbounds WHERE node_id = 2`, &tier)
+	if tier != 2 {
+		t.Errorf("入站等级 = %d,期望继承机器的 VIP(2)—— 否则那台机器对全体用户敞开", tier)
+	}
+	mustScan(t, db, `SELECT access_tier_id FROM node_inbounds WHERE node_id = 1`, &tier)
 	if tier != 1 {
-		t.Errorf("入站等级 = %d,存量行必须落在普通组(1),否则额外授权会失效", tier)
+		t.Errorf("普通组机器的入口等级 = %d,期望 1", tier)
 	}
 
-	// 8. 升级前后"这个用户能用哪些机器"完全一致。
+	// 8. 升级前后"这个用户能用哪些【落地】机器"完全一致。
+	//
+	//    中转机不在新的有效节点视图里 —— 那是对的:它上面没有任何入站,
+	//    用户拿不到它的任何凭据。有效节点现在是入口那一层的投影。
 	after := effectiveNodeIDs(t, db, 1)
-	if len(before) != len(after) {
-		t.Fatalf("可用机器变了:升级前 %v,升级后 %v", before, after)
+	want := []int64{1, 2, 3}
+	if len(after) != len(want) {
+		t.Fatalf("可用落地变了:升级前 %v(含中转),升级后 %v,期望 %v", before, after, want)
 	}
-	for i := range before {
-		if before[i] != after[i] {
-			t.Fatalf("可用机器变了:升级前 %v,升级后 %v", before, after)
+	for i := range want {
+		if after[i] != want[i] {
+			t.Fatalf("可用落地变了:升级后 %v,期望 %v", after, want)
 		}
 	}
 
-	// 9. 有效入站视图落在【全部落地机器】上 —— 存量数据上这一层必须完全透明:
-	//    每台落地正好一个入站,等级又一律是普通组,所以它一个人都不该筛掉。
+	// 9. **额外授权穿透入口等级。**
 	//
-	//    中转机不在其中,而它在有效节点视图里 —— 那是对的:
-	//    那台机器上没有任何入站,用户拿不到它的任何凭据。
-	inboundNodes := queryIDs(t, db,
+	//    这个用户是普通组,而 2 号机现在的入口是 VIP —— 他能看到它,
+	//    靠的正是 user_nodes 那一行。不穿透的话授权凭空作废,
+	//    而面板一个字都不说。
+	granted := queryIDs(t, db,
+		`SELECT inbound_id FROM user_effective_inbounds
+		  WHERE proxy_user_id = 1 AND node_id = 2`)
+	if len(granted) != 1 {
+		t.Errorf("被额外授权的 VIP 机器上,普通用户拿到 %d 个入口,期望 1 个", len(granted))
+	}
+
+	// 10. 没有额外授权的普通用户看不到 VIP 入口 —— 等级这一层还要真的挡住人。
+	mustExec(t, db, `
+		INSERT INTO proxy_users (id, user_code, display_name, uuid_encrypted, sub_token_hash,
+			quota_bytes, used_uplink, used_downlink, access_tier_id, created_at, updated_at)
+		VALUES (2,'user_000002','另一个普通用户','enc2','hash2',0,0,0,1,?,?)`, ts, ts)
+	other := queryIDs(t, db,
 		`SELECT DISTINCT node_id FROM user_effective_inbounds
-		  WHERE proxy_user_id = 1 ORDER BY node_id`)
-	landing := queryIDs(t, db,
-		`SELECT n.id FROM nodes n
-		  JOIN user_effective_nodes en ON en.node_id = n.id
-		 WHERE en.proxy_user_id = 1 AND n.role = 'LANDING' ORDER BY n.id`)
-	if len(inboundNodes) != len(landing) {
-		t.Errorf("有效入站落在 %v 台机器上,而有效落地是 %v —— 这一层不该改变任何存量可见性",
-			inboundNodes, landing)
+		  WHERE proxy_user_id = 2 ORDER BY node_id`)
+	if len(other) != 2 || other[0] != 1 || other[1] != 3 {
+		t.Errorf("没被授权的普通用户看到 %v,期望 [1 3] —— 2 号机的入口是 VIP", other)
 	}
 }
 

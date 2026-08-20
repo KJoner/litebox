@@ -38,12 +38,12 @@ func (e *env) addNode(t *testing.T, f nodeFixture) int64 {
 	res, err := e.db.Exec(`
 		INSERT INTO nodes (name, display_name, host, proxy_port, listen_port, api_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
-			status, deployed_config_sha256, access_tier_id, subscription_enabled,
+			status, deployed_config_sha256, subscription_enabled,
 			public_remark, maintenance_message, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		f.Name, f.DisplayName, "192.0.2.1", 443, 20443, 28080,
 		"www.cloudflare.com", "enc", "pub", "sid",
-		f.Status, sha, f.TierID, f.SubEnabled, f.PublicRemark, f.Maintenance,
+		f.Status, sha, f.SubEnabled, f.PublicRemark, f.Maintenance,
 		fixedTS, fixedTS)
 	if err != nil {
 		t.Fatal(err)
@@ -60,11 +60,11 @@ func (e *env) addNode(t *testing.T, f nodeFixture) int64 {
 	if _, err := e.db.Exec(`
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
 			public_port, reality_dest, reality_privkey_encrypted, reality_pubkey,
-			reality_short_id, deployed_protocol, subscription_enabled,
+			reality_short_id, deployed_protocol, access_tier_id, subscription_enabled,
 			created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, "in-"+strconv.FormatInt(id, 10), f.DisplayName, "VLESS_REALITY", 20443,
-		443, "www.cloudflare.com", "enc", "pub", "sid", deployedProtocol, 1,
+		443, "www.cloudflare.com", "enc", "pub", "sid", deployedProtocol, f.TierID, 1,
 		fixedTS, fixedTS); err != nil {
 		t.Fatal(err)
 	}

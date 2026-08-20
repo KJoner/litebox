@@ -103,7 +103,15 @@ const visible = computed(() =>
       }
       if (filters.run !== undefined && n.status !== filters.run) return false
       if (filters.config !== undefined && configState(n) !== filters.config) return false
-      if (filters.tierID !== undefined && n.access_tier_id !== filters.tierID) return false
+      // 按等级筛的是【入口】:一台机器上可以既有普通组入口又有 VIP 入口,
+      // 只要有一个命中就把这台机器留下 —— 否则筛出来的是一份空列表,
+      // 而管理员会以为那一档一个节点都没有。
+      if (
+        filters.tierID !== undefined &&
+        !(n.inbounds ?? []).some((i) => i.access_tier_id === filters.tierID)
+      ) {
+        return false
+      }
       if (filters.subOff && n.subscription_enabled) return false
       return true
     })
@@ -459,6 +467,18 @@ function portSummary(n: Node): string {
     .join(' ')
 }
 
+/**
+ * 这台机器上入口的访问等级,去重。
+ *
+ * 等级已经降到入口(迁移 0020),一台机器上完全可以既有对所有人开放的入口、
+ * 又有只给 VIP 的入口 —— 只显示其中一个会让人以为整台机器都是那一档。
+ */
+function tierSummary(n: Node): string {
+  if (n.role === 'RELAY') return '转发规则各自设定'
+  const names = [...new Set((n.inbounds ?? []).map((i) => i.access_tier_name))]
+  return names.length ? names.join(' / ') : '无入口'
+}
+
 /** 这台机器上有没有入口的出口指向别处(链式中转)。 */
 function hasChain(n: Node): boolean {
   return (n.inbounds ?? []).some((i) => i.chain_target_kind !== '')
@@ -635,12 +655,12 @@ const keyOpen = ref(false)
           <div class="nv__host lb-mono">
             <template v-if="n.role !== 'RELAY'">
               <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
-              {{ n.host }} · 端口 {{ portSummary(n) }} · {{ n.access_tier_name }}
+              {{ n.host }} · 端口 {{ portSummary(n) }} · {{ tierSummary(n) }}
               <template v-if="n.ipv6_address"> · IPv6</template>
             </template>
             <!-- 中转机没有自己的协议与代理端口,渲染出来只会让人以为配漏了。 -->
             <template v-else>
-              {{ n.host }} · {{ n.access_tier_name }} · 端口见转发规则
+              {{ n.host }} · 端口见转发规则
             </template>
           </div>
           <div v-if="hasChain(n)" class="nv__host">出口经中转</div>
@@ -785,7 +805,7 @@ const keyOpen = ref(false)
               :meta="configStatusMeta[configState(record)]"
               :suffix="`rev ${record.config_revision}`"
             />
-            <div class="nv__tier">{{ record.access_tier_name }}</div>
+            <div class="nv__tier">{{ tierSummary(record) }}</div>
           </template>
 
           <template v-else-if="column.key === 'sync'">
