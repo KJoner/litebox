@@ -112,8 +112,14 @@ func dialLabel(p singbox.Protocol) string {
 // 一个完全不可用的节点判定为健康。
 //
 // 做法:在节点上临时起一个 sing-box 客户端进程,主控经 SSH 通道连它的 SOCKS 端口,
-// 通过代理 CONNECT 到节点自己的 SSH 端口并读取 SSH 版本横幅。选择 SSH 端口作为
-// 探测目标是因为它必然可达且会立即返回可识别的字节,不引入外部网络依赖。
+// 通过代理 CONNECT 到节点自己的 SSH 端口,**并用面板自己的密钥完成一次真正的
+// SSH 认证**。选 SSH 作为目标是因为它必然可达、不引入外部网络依赖;
+// 而"完成认证"而不是"读一行横幅"有两个原因,都不是可选的:
+//
+//   - 只读横幅就断开会命中 OpenSSH ≥ 9.8 的 noauth 惩罚,**拨测自己会把
+//     后续的拨测挡下来**(见 sshx.AuthOverConn);
+//   - 认证顺带验证了对端的主机密钥与库里固定的那把一致 —— 这一条回答了
+//     「这条隧道到底有没有到那台机器」,而读横幅永远回答不了。
 //
 // 协议只影响探测配置里的那一个出站 —— 客户端是节点上已有的 sing-box 二进制,
 // 主控侧不需要实现任何协议。
@@ -171,7 +177,7 @@ func (d *Deployer) checkDial(
 		host, port = target.DialHost, target.DialPort
 		via = "经落地绕回本机公网 SSH"
 	}
-	banner, retries, err := dialWithRetry(ctx, client, probePort, host, port)
+	banner, retries, err := dialWithRetry(ctx, d.pool, req.NodeID, client, probePort, host, port)
 	if err != nil {
 		// **拨测失败时把服务端日志带上。**
 		//
@@ -194,7 +200,7 @@ func (d *Deployer) checkDial(
 		}
 		return "", err
 	}
-	detail := fmt.Sprintf("用户 %s 拨测成功(%s,读到 %q)", probeUser.Code, via, banner)
+	detail := fmt.Sprintf("用户 %s 拨测成功(%s,%s)", probeUser.Code, via, banner)
 	if retries > 0 {
 		// 重试过就要说出来。第一次就成功与"等了 18 秒才成功"是两种健康度,
 		// 而后者说明这台机器上有东西在拦拨测 —— 不写出来没人会去查。
@@ -453,10 +459,20 @@ func socksReplyMeaning(code byte) string {
 	return "未知原因"
 }
 
-// dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,
-// CONNECT 到目标后读取开头的若干字节。
+// dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,CONNECT 到目标后
+// **完成一次真正的 SSH 认证**。
+//
+// 原来是读 8 字节版本横幅就算通过,而那会被目标 sshd 罚:
+// OpenSSH ≥ 9.8 默认的 PerSourcePenalties 里,noauth 惩罚的正是
+// "连上但没尝试认证就断开",一次就足以封住来源 IP 至少 15 秒。
+// 于是拨测自己把后续的拨测挡了下来 —— 详见 sshx.AuthOverConn 的注释。
+//
+// 认证之后验证强度反而更高:隧道要能承载一个完整的双向协议,而且对端的
+// 主机密钥必须与库里固定的那把一致 —— 后者直接回答了「这条隧道到底
+// 有没有到那台机器」,而读横幅永远回答不了。
 func dialThroughProxy(
-	ctx context.Context, client *sshx.Client, socksPort int, targetHost string, targetPort int,
+	ctx context.Context, pool *sshx.Pool, nodeID int64,
+	client *sshx.Client, socksPort int, targetHost string, targetPort int,
 ) (string, error) {
 	conn, err := client.DialThrough("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort)))
 	if err != nil {
@@ -474,16 +490,17 @@ func dialThroughProxy(
 		return "", err
 	}
 
-	buf := make([]byte, 32)
-	n, err := io.ReadFull(conn, buf[:8])
-	if err != nil && n == 0 {
-		return "", fmt.Errorf("经代理未读到任何数据: %w", err)
+	res, err := pool.AuthOver(ctx, nodeID, conn)
+	if err != nil {
+		return "", err
 	}
-	banner := strings.TrimSpace(string(buf[:n]))
-	if !strings.HasPrefix(banner, "SSH-") {
-		return "", fmt.Errorf("经代理读到的数据不是预期的 SSH 横幅:%q", banner)
+	detail := res.ServerVersion
+	if res.HostKeyMatched {
+		// 说出来:这一句是"确实是那台机器"的唯一证据,
+		// 而它正是读横幅那一版做不到的事。
+		detail += "、主机密钥与库中一致"
 	}
-	return banner, nil
+	return detail, nil
 }
 
 // socks5Connect 执行 SOCKS5 的无认证握手与 CONNECT 请求。

@@ -59,8 +59,9 @@ type RelayRequest struct {
 	// DialHost / DialPort 是拨测的 CONNECT 目标:**中转主机自己的公网 SSH**。
 	//
 	// 数据路径是 探测客户端 → nginx → 落地 → 公网 → 回到本机的 sshd,
-	// 因此这一次拨测同时验证了转发、落地的凭据与落地的出网能力,
-	// 而终点一定会吐出 SSH 横幅 —— 那是面板自己刚刚连过的端口。
+	// 因此这一次拨测同时验证了转发、落地的凭据与落地的出网能力。
+	// 终点用面板自己的密钥完成一次真正的 SSH 认证(不是读一行横幅就断开)——
+	// 后者会命中 OpenSSH 的 noauth 惩罚,让拨测把后续的拨测挡下来。
 	//
 	// **必须来自数据库**(nodes.host / nodes.ssh_port),不能问节点自己:
 	// NAT 机上 $SSH_CONNECTION 给出的是私网地址与本机端口,
@@ -335,7 +336,7 @@ func (d *Deployer) relayHealthChecks(
 			})
 			return fmt.Errorf("线路「%s」拨测失败:%w", probe.Name, err)
 		}
-		verified = append(verified, fmt.Sprintf("「%s」读到 %q", probe.Name, banner))
+		verified = append(verified, fmt.Sprintf("「%s」%s", probe.Name, banner))
 	}
 
 	if len(verified) == 0 {
@@ -409,7 +410,7 @@ func (d *Deployer) dialThroughRelay(
 	// 中转拨测同样要重试:它的目标也是 sshd(中转主机自己的公网 SSH),
 	// 同样会被 PerSourcePenalties 封 —— 而这一条线路上一次误判就会
 	// 把一份好配置回滚掉。
-	banner, _, err := dialWithRetry(ctx, client, probePort, req.DialHost, req.DialPort)
+	banner, _, err := dialWithRetry(ctx, d.pool, req.NodeID, client, probePort, req.DialHost, req.DialPort)
 	return banner, err
 }
 

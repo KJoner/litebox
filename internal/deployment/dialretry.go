@@ -36,7 +36,8 @@ const maxRetryDelay = 25 * time.Second
 // 返回值第二项是**重试了几次**,成功时也要带回去写进部署记录:
 // "第 2 次尝试才通过"与"一次就过"是两种健康度。
 func dialWithRetry(
-	ctx context.Context, client *sshx.Client, probePort int, host string, port int,
+	ctx context.Context, pool *sshx.Pool, nodeID int64,
+	client *sshx.Client, probePort int, host string, port int,
 ) (string, int, error) {
 	var lastErr error
 	for attempt := 0; attempt < dialAttempts; attempt++ {
@@ -48,7 +49,7 @@ func dialWithRetry(
 			case <-time.After(delay):
 			}
 		}
-		banner, err := dialThroughProxy(ctx, client, probePort, host, port)
+		banner, err := dialThroughProxy(ctx, pool, nodeID, client, probePort, host, port)
 		if err == nil {
 			return banner, attempt, nil
 		}
