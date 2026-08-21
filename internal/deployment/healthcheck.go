@@ -171,7 +171,7 @@ func (d *Deployer) checkDial(
 		host, port = target.DialHost, target.DialPort
 		via = "经落地绕回本机公网 SSH"
 	}
-	banner, err := dialThroughProxy(ctx, client, probePort, host, port)
+	banner, retries, err := dialWithRetry(ctx, client, probePort, host, port)
 	if err != nil {
 		// **拨测失败时把服务端日志带上。**
 		//
@@ -194,7 +194,13 @@ func (d *Deployer) checkDial(
 		}
 		return "", err
 	}
-	return fmt.Sprintf("用户 %s 拨测成功(%s,读到 %q)", probeUser.Code, via, banner), nil
+	detail := fmt.Sprintf("用户 %s 拨测成功(%s,读到 %q)", probeUser.Code, via, banner)
+	if retries > 0 {
+		// 重试过就要说出来。第一次就成功与"等了 18 秒才成功"是两种健康度,
+		// 而后者说明这台机器上有东西在拦拨测 —— 不写出来没人会去查。
+		detail += fmt.Sprintf(",第 %d 次尝试才通过", retries+1)
+	}
+	return detail, nil
 }
 
 // prefixIfSet 只在内容非空时加前缀 —— 否则会产出一个只有标题没有内容的段落。
@@ -229,9 +235,20 @@ func pickInboundLogLines(raw, tag string) string {
 	}
 	var picked []string
 	for _, line := range strings.Split(raw, "\n") {
-		if strings.Contains(line, tag) && strings.Contains(line, "ERROR") {
-			picked = append(picked, strings.TrimSpace(line))
+		if !strings.Contains(line, tag) || !strings.Contains(line, "ERROR") {
+			continue
 		}
+		// **只要探测客户端自己那几条。**
+		//
+		// 探测客户端跑在节点本机、连的是 127.0.0.1:<入站端口>,所以它的连接
+		// 一定记成 "from 127.0.0.1:xxxxx"。不加这一条的话,同一个入站上
+		// 真实用户的报错会被当成这次拨测的原因带回去 —— 已经发生过一次:
+		// 带回了三行【用户】的连接(时长 10m10s、7m57s),而那与拨测毫无关系,
+		// 只会把排查引向完全错误的方向。宁可什么都不带,也不能带错的。
+		if !strings.Contains(line, "from 127.0.0.1:") {
+			continue
+		}
+		picked = append(picked, strings.TrimSpace(line))
 	}
 	if len(picked) == 0 {
 		return ""

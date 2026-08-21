@@ -40,7 +40,9 @@ func TestRecentInboundLogsPicksTheLineThatExplainsIt(t *testing.T) {
 func TestRecentInboundLogsKeepsOnlyTheLastFew(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < 10; i++ {
-		b.WriteString("ERROR inbound/vless[in-24]: 第")
+		b.WriteString("ERROR inbound/vless[in-24]: process connection from 127.0.0.1:500")
+		b.WriteString(string(rune('0' + i)))
+		b.WriteString(": 第")
 		b.WriteString(string(rune('0' + i)))
 		b.WriteString("次失败\n")
 	}
@@ -51,6 +53,33 @@ func TestRecentInboundLogsKeepsOnlyTheLastFew(t *testing.T) {
 	// 留最后几条:最近的那次才是这次拨测触发的。
 	if !strings.Contains(got, "第9次失败") {
 		t.Errorf("没有留下最近的那一条:%s", got)
+	}
+}
+
+// **真实用户的报错绝不能被当成这次拨测的原因。**
+//
+// 线上出过一次:拨测失败时面板带回了三行【用户】的连接(来自 111.55.79.17,
+// 时长 10m10s、7m57s),而那与拨测毫无关系 —— 读的人会照着那三行去查用户侧,
+// 方向完全错了。探测客户端跑在节点本机、连的是 127.0.0.1,按这一点就能分开。
+func TestRecentInboundLogsIgnoresRealUserConnections(t *testing.T) {
+	logs := "+0000 2026-08-21 07:36:04 ERROR [278700161 10m10s] inbound/vless[in-27]: " +
+		"process connection from 111.55.79.17:19502: TLS handshake: REALITY: processed invalid connection\n" +
+		"+0000 2026-08-21 07:38:51 ERROR [2838769303 7m57s] inbound/vless[in-27]: " +
+		"process connection from 111.55.79.17:19505: TLS handshake: REALITY: processed invalid connection\n"
+
+	if got := pickInboundLogLines(logs, "in-27"); got != "" {
+		t.Errorf("把用户的连接当成拨测的原因带回去了:\n%s", got)
+	}
+
+	// 探测客户端自己那条要留下 —— 它才是这次拨测的证据。
+	withProbe := logs + "+0000 2026-08-21 07:39:10 ERROR [1 2s] inbound/vless[in-27]: " +
+		"process connection from 127.0.0.1:44444: TLS handshake: REALITY: processed invalid connection\n"
+	got := pickInboundLogLines(withProbe, "in-27")
+	if !strings.Contains(got, "127.0.0.1:44444") {
+		t.Errorf("探测客户端自己那条没留下:%s", got)
+	}
+	if strings.Contains(got, "111.55.79.17") {
+		t.Errorf("仍然混进了用户的连接:%s", got)
 	}
 }
 
