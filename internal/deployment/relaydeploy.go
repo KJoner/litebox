@@ -406,7 +406,11 @@ func (d *Deployer) dialThroughRelay(
 	if err := waitPortReady(ctx, client, probePort); err != nil {
 		return "", err
 	}
-	return dialThroughProxy(ctx, client, probePort, req.DialHost, req.DialPort)
+	// 中转拨测同样要重试:它的目标也是 sshd(中转主机自己的公网 SSH),
+	// 同样会被 PerSourcePenalties 封 —— 而这一条线路上一次误判就会
+	// 把一份好配置回滚掉。
+	banner, _, err := dialWithRetry(ctx, client, probePort, req.DialHost, req.DialPort)
+	return banner, err
 }
 
 // rollbackRelay 把 nginx 配置退回备份并复验。

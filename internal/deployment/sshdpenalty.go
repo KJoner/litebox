@@ -2,7 +2,9 @@ package deployment
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/litebox/litebox/internal/sshx"
 )
@@ -65,6 +67,38 @@ func penaltyNoteFrom(out string) string {
 			"惩罚会连坐,所以放行范围要自己权衡。"
 	}
 	return note
+}
+
+// penaltyBackoff 返回"要等多久这次惩罚才会过期"。
+//
+// 直接读 sshd 自己的 min 值,不写死一个数:各家发行版可以改它,
+// 而猜小了等于白等一轮、猜大了每次失败都多拖十几秒。
+// 读不到就回落到 0 —— 那时按普通的短重试处理。
+func penaltyBackoff(out string) time.Duration {
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if !strings.HasPrefix(strings.ToLower(l), "persourcepenalties ") {
+			continue
+		}
+		value := strings.TrimSpace(l[len("persourcepenalties "):])
+		if value == "" || strings.EqualFold(value, "no") {
+			return 0
+		}
+		for _, f := range strings.Fields(value) {
+			if !strings.HasPrefix(f, "min:") {
+				continue
+			}
+			n, err := strconv.Atoi(strings.TrimPrefix(f, "min:"))
+			if err != nil || n <= 0 {
+				return 0
+			}
+			// 多给 3 秒:min 是"最少封多久",踩着点重试容易差之毫厘。
+			return time.Duration(n+3) * time.Second
+		}
+		// 开着但没写 min,用 OpenSSH 的默认值。
+		return 18 * time.Second
+	}
+	return 0
 }
 
 // dialFailureHint 把拨测失败的补充材料拼成一段。
