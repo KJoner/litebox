@@ -319,10 +319,14 @@ func (d *Deployer) relayHealthChecks(
 			// upstream 收到 517 字节后 Connection reset by peer,
 			// 一眼就能看出该去找机场而不是查中转机。
 			detail := fmt.Sprintf("线路「%s」:%v", probe.Name, err)
-			if logs := recentNginxErrors(ctx, client, d.layout, probe.ListenPort); logs != "" {
-				detail += "\n中转机上 nginx 的记录" +
-					"(它只搬字节,所以这几行说的是落地那一端的表现):\n" + logs
-			}
+			detail += dialFailureHint(
+				prefixIfSet("中转机上 nginx 的记录"+
+					"(它只搬字节,所以这几行说的是落地那一端的表现):\n",
+					recentNginxErrors(ctx, client, d.layout, probe.ListenPort)),
+				// 拨测的 CONNECT 目标就是这台中转机自己的 sshd,
+				// 所以要查的惩罚设置也在这台机器上。
+				sshdPenaltyNote(ctx, client),
+			)
 			rec.steps = append(rec.steps, Step{
 				Name:       "健康检查三:经中转真实拨测",
 				Status:     StepFailed,
