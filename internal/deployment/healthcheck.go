@@ -184,12 +184,25 @@ func (d *Deployer) checkDial(
 		// 已经踩过一次:一台节点的 DNS 挂了,sing-box 日志里明明白白写着
 		// "REALITY: failed to dial dest: lookup www.fastly.com ... connection refused",
 		// 而面板只报了"VLESS 链路不通",于是排查从节点日志开始绕了一大圈。
-		if logs := recentInboundLogs(ctx, client, init, d.layout, inbound.Tag); logs != "" {
-			return "", fmt.Errorf("%w;节点上的 sing-box 日志:\n%s", err, logs)
+		hint := dialFailureHint(
+			prefixIfSet("节点上的 sing-box 日志:\n",
+				recentInboundLogs(ctx, client, init, d.layout, inbound.Tag)),
+			sshdPenaltyNote(ctx, client),
+		)
+		if hint != "" {
+			return "", fmt.Errorf("%w;%s", err, hint)
 		}
 		return "", err
 	}
 	return fmt.Sprintf("用户 %s 拨测成功(%s,读到 %q)", probeUser.Code, via, banner), nil
+}
+
+// prefixIfSet 只在内容非空时加前缀 —— 否则会产出一个只有标题没有内容的段落。
+func prefixIfSet(prefix, body string) string {
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	return prefix + body
 }
 
 // recentInboundLogs 取最近日志里与这个入站有关的几行。
