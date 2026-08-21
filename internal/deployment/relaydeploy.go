@@ -307,11 +307,27 @@ func (d *Deployer) relayHealthChecks(
 		}
 		banner, err := d.dialThroughRelay(ctx, client, req, probe)
 		if err != nil {
+			// **把 nginx 的错误日志带上。**
+			//
+			// 这条链路上 nginx 只负责搬字节,它自己几乎不会出错;拨测读不到
+			// 数据,原因几乎总在落地那一端。而 nginx 恰好把那一端的表现
+			// 一行行记了下来(哪个上游、来回各多少字节、对面是 RST 还是超时),
+			// 那正是判断"是中转坏了还是落地坏了"唯一需要的材料。
+			//
+			// 已经踩过一次:机场换了地址,新旧两个都不接受连接,而面板只报
+			// 「经代理未读到任何数据: EOF」—— 与此同时 nginx 日志里写着
+			// upstream 收到 517 字节后 Connection reset by peer,
+			// 一眼就能看出该去找机场而不是查中转机。
+			detail := fmt.Sprintf("线路「%s」:%v", probe.Name, err)
+			if logs := recentNginxErrors(ctx, client, d.layout, probe.ListenPort); logs != "" {
+				detail += "\n中转机上 nginx 的记录" +
+					"(它只搬字节,所以这几行说的是落地那一端的表现):\n" + logs
+			}
 			rec.steps = append(rec.steps, Step{
 				Name:       "健康检查三:经中转真实拨测",
 				Status:     StepFailed,
 				DurationMS: time.Since(start).Milliseconds(),
-				Detail:     fmt.Sprintf("线路「%s」:%v", probe.Name, err),
+				Detail:     detail,
 			})
 			return fmt.Errorf("线路「%s」拨测失败:%w", probe.Name, err)
 		}
