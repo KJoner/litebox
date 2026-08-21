@@ -396,6 +396,33 @@ func probeOutbound(
 	return base, nil
 }
 
+// socksReplyMeaning 把 RFC 1928 的应答码翻译成人话。
+//
+// 光给一个数字等于让人去查 RFC。而这几个码指向的排查方向完全不同:
+// "连接被拒绝"说明那一跳真的到了目标而目标不听,"不允许"说明是被
+// 某一跳的策略挡下来的 —— 后者在机场线路上很常见。
+func socksReplyMeaning(code byte) string {
+	switch code {
+	case 0x01:
+		return "代理端内部错误"
+	case 0x02:
+		return "被规则拒绝(这一跳不允许连到那个目标)"
+	case 0x03:
+		return "网络不可达"
+	case 0x04:
+		return "主机不可达"
+	case 0x05:
+		return "目标拒绝连接"
+	case 0x06:
+		return "TTL 过期"
+	case 0x07:
+		return "不支持的命令"
+	case 0x08:
+		return "不支持的地址类型"
+	}
+	return "未知原因"
+}
+
 // dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,
 // CONNECT 到目标后读取开头的若干字节。
 func dialThroughProxy(
@@ -480,7 +507,13 @@ func socks5Connect(conn net.Conn, host string, port int) error {
 		return fmt.Errorf("SOCKS5 CONNECT 响应读取失败: %w", err)
 	}
 	if head[1] != 0x00 {
-		return fmt.Errorf("SOCKS5 CONNECT 被拒绝(应答码 %d),说明 VLESS 链路不通", head[1])
+		// **不要在这里断言原因。** 这个函数同时服务于三条完全不同的链路
+		// (自建入站的 VLESS、自建入站的 Shadowsocks、经 nginx 到落地),
+		// 原来那句写死的"说明 VLESS 链路不通"在后两种情况下是错的 ——
+		// 而一句错误的归因比没有归因更糟:它会把排查引向另一个方向。
+		// 这里只如实翻译应答码,原因由调用方按自己那条链路补充。
+		return fmt.Errorf("SOCKS5 CONNECT 被拒绝:%s(应答码 %d)",
+			socksReplyMeaning(head[1]), head[1])
 	}
 	// 跳过绑定地址与端口。
 	var skip int
