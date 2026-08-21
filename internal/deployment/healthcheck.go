@@ -24,7 +24,7 @@ func (d *Deployer) checkServiceActive(ctx context.Context, client *sshx.Client, 
 	}
 	if !active {
 		// 附上最近日志,否则排查时还要再连一次机器。
-		logs := init.RecentLogs(ctx, client, d.layout, 20)
+		logs := stripANSI(init.RecentLogs(ctx, client, d.layout, 20))
 		if logs == "" {
 			logs = "(取不到日志)"
 		}
@@ -123,7 +123,7 @@ func dialLabel(p singbox.Protocol) string {
 // 由部署事务开头的 checkClockSkew 负责。
 func (d *Deployer) checkDial(
 	ctx context.Context, client *sshx.Client, req Request,
-	inbound singbox.InboundParams, target ProbeTarget,
+	inbound singbox.InboundParams, target ProbeTarget, init InitSystem,
 ) (string, error) {
 	if len(inbound.Users) == 0 {
 		return "", errNoProbeUser
@@ -173,9 +173,95 @@ func (d *Deployer) checkDial(
 	}
 	banner, err := dialThroughProxy(ctx, client, probePort, host, port)
 	if err != nil {
+		// **拨测失败时把服务端日志带上。**
+		//
+		// 拨测只能看到"连不通"这个结果,而原因全在节点那一侧的 sing-box
+		// 日志里,一行就写清楚了。不带上的话,管理员拿到的是
+		// 「SOCKS5 CONNECT 被拒绝(应答码 1)」—— 那句话准确但没有方向,
+		// 而真正的原因可能是 REALITY 握手目标解析不了、凭据不匹配、
+		// 或者 flow 写错,三件事要做的处置完全不同。
+		//
+		// 已经踩过一次:一台节点的 DNS 挂了,sing-box 日志里明明白白写着
+		// "REALITY: failed to dial dest: lookup www.fastly.com ... connection refused",
+		// 而面板只报了"VLESS 链路不通",于是排查从节点日志开始绕了一大圈。
+		if logs := recentInboundLogs(ctx, client, init, d.layout, inbound.Tag); logs != "" {
+			return "", fmt.Errorf("%w;节点上的 sing-box 日志:\n%s", err, logs)
+		}
 		return "", err
 	}
 	return fmt.Sprintf("用户 %s 拨测成功(%s,读到 %q)", probeUser.Code, via, banner), nil
+}
+
+// recentInboundLogs 取最近日志里与这个入站有关的几行。
+//
+// 只挑相关行:一次部署会重启服务,日志里前面全是启动信息,而真正有用的
+// 是拨测那一刻那个入站报的错。取不到就返回空串 —— 它是补充材料,
+// 不该让"取日志失败"盖住真正的故障。
+func recentInboundLogs(
+	ctx context.Context, client *sshx.Client, init InitSystem, layout Layout, tag string,
+) string {
+	if init == nil {
+		return ""
+	}
+	return pickInboundLogLines(stripANSI(init.RecentLogs(ctx, client, layout, 40)), tag)
+}
+
+// pickInboundLogLines 从日志里挑出与某个入站有关的错误行。
+//
+// 拆成纯函数是为了能对着**真机上抓到的那几行**写测试 —— 挑错行的代价
+// 不是"少一点信息",而是把排查引向另一个入口,或者一堆无关的启动信息。
+func pickInboundLogLines(raw, tag string) string {
+	if raw == "" || tag == "" {
+		return ""
+	}
+	var picked []string
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.Contains(line, tag) && strings.Contains(line, "ERROR") {
+			picked = append(picked, strings.TrimSpace(line))
+		}
+	}
+	if len(picked) == 0 {
+		return ""
+	}
+	// 最多三行:同一个错误通常会连着出现好几次,而重复的行没有信息量。
+	// 留最后几条 —— 最近的那次才是这次拨测触发的。
+	if len(picked) > 3 {
+		picked = picked[len(picked)-3:]
+	}
+	return strings.Join(picked, "\n")
+}
+
+// stripANSI 去掉日志里的终端颜色转义。
+//
+// sing-box 的日志带颜色码,而这些日志会进部署记录、进推送、进浏览器 ——
+// 那几个地方都不认它们,渲染出来是一串 [31m 之类的垃圾,把真正的错误
+// 挤在中间更难看清。节点上的原始日志一个字节不动,只在往回带的时候擦掉。
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0x1b {
+			b.WriteByte(s[i])
+			continue
+		}
+		// CSI 序列:ESC [ 参数… 终止字母。
+		j := i + 1
+		if j < len(s) && s[j] == '[' {
+			j++
+			for j < len(s) && (s[j] == ';' || (s[j] >= '0' && s[j] <= '9')) {
+				j++
+			}
+			if j < len(s) {
+				i = j // 跳到终止字母,由循环的 i++ 越过它
+				continue
+			}
+			// 没有终止字母:日志被截断了,后面没有正文可留。
+			break
+		}
+		// 孤立的 ESC:**只丢它自己**。这里不能跳过下一个字节 ——
+		// 那会把紧跟其后的正文一起吃掉,而日志被截断时正好会出现这种形状。
+	}
+	return b.String()
 }
 
 // probeTargetPort 返回节点本机可连的 sshd 端口。

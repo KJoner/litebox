@@ -379,7 +379,7 @@ func (d *Deployer) runTransaction(
 			continue
 		}
 		if err := rec.run(dialStep, func() (string, error) {
-			return d.checkDial(ctx, client, req, inbound, probe)
+			return d.checkDial(ctx, client, req, inbound, probe, init)
 		}); err != nil {
 			return d.rollback(ctx, client, req, rec, result, init, hasBackup, backupPath, err)
 		}
