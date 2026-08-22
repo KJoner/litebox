@@ -37,6 +37,7 @@ import {
   type LbPoint,
 } from '@/components/lb'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
+import { confirmDeployNode, confirmRestartNode } from '@/components/node/nodeOps'
 import { useNarrow } from '@/composables/useNarrow'
 import { color, threshold, usageColor } from '@/theme/tokens'
 
@@ -469,23 +470,10 @@ const deployResult = ref<DeployResult | null>(null)
 function confirmDeploy() {
   const n = node.value
   if (!n) return
-  lbDangerConfirm({
-    title: `部署 rev ${n.config_revision + 1} 到 ${n.display_name || n.name}?`,
-    okText: '部署',
-    okType: 'primary',
-    impacts: [
-      '会重启 sing-box,断开这台机器上全部在线连接',
-      '部署前会强制同步一次流量,未落库的计数不会丢',
-      `健康检查不通过时自动回滚到 rev ${n.config_revision}`,
-    ],
-    footer: '部署是可逆的(有自动回滚),所以不要求输入节点名称。',
-    // 故意不 return doDeploy() 的 Promise。Modal.confirm 只要拿到 Promise
-    // 就会把自己留在屏幕上转圈等它 resolve —— 而部署要 15~25 秒,
-    // 这期间进度弹窗已经打开,两个 Modal 同层叠在一起,后开的反而被压住。
-    // 这里让确认框先落幕,进度弹窗独占屏幕:同一时刻只有一个部署相关的窗口。
-    onOk: () => {
-      void doDeploy()
-    },
+  // 影响清单在 nodeOps.ts 里 —— 入口管理页也要开同一个确认框,
+  // 两处各写一份的话,某天在一处补了一条,另一处仍是旧的。
+  confirmDeployNode(n, () => {
+    void doDeploy()
   })
 }
 
@@ -557,16 +545,7 @@ const doInstall = () =>
 
 function confirmRestart() {
   const n = node.value!
-  lbDangerConfirm({
-    title: `重启 ${n.display_name || n.name} 的服务?`,
-    okText: '重启',
-    impacts: [
-      '断开这台机器上全部在线连接',
-      `配置不变,重启后仍是 rev ${n.config_revision}`,
-      '这是运维用的直接重启,不会先同步流量 —— 常规的用户变更请用「部署」',
-    ],
-    onOk: () => run('重启', () => api.restartNode(nodeId.value!), '已重启'),
-  })
+  confirmRestartNode(n, () => run('重启', () => api.restartNode(nodeId.value!), '已重启'))
 }
 
 // 三个不可逆的动作各自一个输入名称确认。要求输入的是**内部名称** ——

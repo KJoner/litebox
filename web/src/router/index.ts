@@ -47,6 +47,15 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '节点详情' },
       },
       {
+        // 入口管理与自建节点并列而不是塞进节点详情:机器多起来之后,
+        // 「这套系统一共对外开了哪些口子」只能一台台点进去拼,
+        // 而那是个横着看的问题,节点详情是竖着切的。
+        path: '/inbounds',
+        name: 'inbounds',
+        component: () => import('@/views/InboundsView.vue'),
+        meta: { title: '入口管理' },
+      },
+      {
         path: '/external-proxies',
         name: 'external-proxies',
         component: () => import('@/views/ExternalProxiesView.vue'),

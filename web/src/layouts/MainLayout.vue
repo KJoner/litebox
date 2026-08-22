@@ -67,6 +67,8 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
       // 一个是我们有 root 的机器,一个是别人的。都叫「节点」的话,
       // 管理员读预警、读审计时每一次都要先判断说的是哪一类。
       { key: 'nodes', label: '自建节点', badge: counts.value.nodes },
+      // 紧跟自建节点:入口是机器的一部分,而这一页只是换个方向去看它们。
+      { key: 'inbounds', label: '入口管理' },
       { key: 'external-proxies', label: '外部代理', badge: counts.value.external },
       // 排在两类线路之后:管理员的工作流是配节点 → 配外部代理 →
       // 配这些东西怎么发出去。

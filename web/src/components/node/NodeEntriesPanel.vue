@@ -4,22 +4,20 @@ import { message } from 'ant-design-vue'
 import {
   api,
   ApiError,
-  PROTOCOL_LABEL,
-  PROTOCOL_SHORT,
-  SS_METHOD_LABEL,
   type ChainApplyResult,
   type DeployResult,
-  type DestCheckResult,
   type AccessTier,
   type ExternalProxy,
   type NginxFacts,
   type Node,
   type NodeInbound,
-  type NodeProtocol,
   type NodeRelay,
-  type NodeSSMethod,
 } from '@/api/client'
 import { LbRowCard, LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/components/lb'
+import InboundChainModal from './InboundChainModal.vue'
+import InboundDestModal from './InboundDestModal.vue'
+import InboundFormModal from './InboundFormModal.vue'
+import { confirmRemoveInbound, inboundProtocolMeta as protocolMeta, portText } from './inboundOps'
 import { useNarrow } from '@/composables/useNarrow'
 import { color } from '@/theme/tokens'
 
@@ -142,34 +140,6 @@ async function load() {
 
 // ---------------------------------------------------------------- 状态标记
 
-/**
- * 协议标记读 deployed_protocol —— 节点上【已经生效】的那个。
- *
- * 读期望值的话,改协议到部署成功之间的窗口里这里会显示新协议,
- * 而订阅下发的、用户实际连的还是旧的 —— 界面与事实分叉,
- * 而分叉的那一头恰好是管理员会相信的那一头。
- */
-function protocolMeta(i: NodeInbound): LbStatusMeta {
-  const p = i.deployed_protocol
-  if (!p) {
-    return {
-      text: '未部署',
-      shape: 'ring',
-      fg: color.neutral,
-      bg: color.neutralBg,
-      bd: color.neutralBorder,
-    }
-  }
-  const pending = p !== i.protocol
-  return {
-    text: pending ? `${PROTOCOL_SHORT[p]} → ${PROTOCOL_SHORT[i.protocol]} 待部署` : PROTOCOL_SHORT[p],
-    shape: pending ? 'triangle' : 'check',
-    fg: pending ? color.warning : color.success,
-    bg: pending ? color.warningBg : color.successBg,
-    bd: pending ? color.warningBorder : color.successBorder,
-  }
-}
-
 const readyMeta: Record<'yes' | 'no', LbStatusMeta> = {
   yes: { text: '落地就绪', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
   // 三重编码:形状 + 文案 + 颜色。打印与色觉障碍下颜色全部失效,
@@ -211,12 +181,6 @@ const kindLabel: Record<EntryRow['kind'], string> = {
 
 function kindText(row: EntryRow): string {
   return kindLabel[row.kind]
-}
-
-/** 一行的端口写法。两个端口相同时只写一个号码 —— 写两遍会让人以为配了转发。 */
-function portText(listen: number, pub: number): string {
-  const p = pub || listen
-  return p === listen ? `端口 ${listen}` : `公网 ${p} → 主机 ${listen}`
 }
 
 /**
@@ -289,142 +253,37 @@ function chainTargetName(i: NodeInbound) {
 }
 
 // ---------------------------------------------------------------- sing-box 入口
+//
+// 表单、握手目标、出口去向三个弹窗都抽到了独立组件里 —— 节点详情的这个
+// 面板与跨节点的「入口管理」页都要开它们,而它们的确认文案里写的是
+// **两台机器**上会发生什么。各写一份的话,少列一条的后果是管理员按一个
+// 不完整的清单去判断这一下要不要挑时机。见 InboundFormModal / InboundChainModal /
+// InboundDestModal 与共用的 inboundOps.ts。
 
 const inboundOpen = ref(false)
 const editingInbound = ref<NodeInbound | null>(null)
-const inboundForm = ref({
-  display_name: '',
-  protocol: 'VLESS_REALITY' as NodeProtocol,
-  ss_method: '' as NodeSSMethod | '',
-  listen_port: 0,
-  public_port: 0,
-  ipv6_public_port: 0,
-  tcp_fast_open: false,
-  access_tier_id: 0,
-  sort_order: 0,
-  subscription_enabled: true,
-  enabled: true,
-  public_remark: '',
-})
 
 function openCreateInbound() {
   editingInbound.value = null
-  inboundForm.value = {
-    display_name: '',
-    protocol: 'VLESS_REALITY',
-    ss_method: '',
-    listen_port: 0,
-    public_port: 0,
-    ipv6_public_port: 0,
-    tcp_fast_open: false,
-    // 默认普通组。不从别处继承 —— 机器已经没有等级了(迁移 0020),
-    // 而"跟着上一个入口走"会让新入口悄悄带上一个限制。
-    access_tier_id: props.tiers[0]?.id ?? 1,
-    sort_order: inbounds.value.length,
-    subscription_enabled: true,
-    enabled: true,
-    public_remark: '',
-  }
   inboundOpen.value = true
 }
 
 function openEditInbound(i: NodeInbound) {
   editingInbound.value = i
-  inboundForm.value = {
-    display_name: i.display_name,
-    protocol: i.protocol,
-    ss_method: i.ss_method,
-    listen_port: i.listen_port,
-    public_port: i.public_port,
-    ipv6_public_port: i.ipv6_public_port,
-    tcp_fast_open: i.tcp_fast_open,
-    access_tier_id: i.access_tier_id,
-    sort_order: i.sort_order,
-    subscription_enabled: i.subscription_enabled,
-    enabled: i.enabled,
-    public_remark: i.public_remark,
-  }
   inboundOpen.value = true
 }
 
-/**
- * 切到 VLESS 之前必须先实测过握手目标。
- *
- * 在这里就说出来,而不是等后端拒绝 —— 后端那句话出现在保存失败的红字里,
- * 而管理员此刻正盯着的是协议那个下拉框。
- */
-const protocolSwitchBlocked = computed(() => {
-  const cur = editingInbound.value
-  if (!cur || inboundForm.value.protocol !== 'VLESS_REALITY') return ''
-  if (cur.protocol === 'VLESS_REALITY') return ''
-  if (!cur.handshake_checked_at) {
-    return '这个入口还没有实测过握手目标。REALITY 要求目标返回的每个 TLS 记录不超过 8192 字节,超限时握手会静默失败:客户端连不上,而节点上一切正常。请先用下面的「实测握手目标」跑一次。'
-  }
-  return ''
-})
-
-async function submitInbound() {
-  if (!inboundForm.value.display_name.trim()) {
-    message.warning('请填写入口名称')
-    return
-  }
-  if (!inboundForm.value.listen_port) {
-    message.warning('请填写主机监听端口')
-    return
-  }
-  running.value = editingInbound.value ? '正在保存入口' : '正在新增入口'
-  emit('busy', running.value)
-  try {
-    if (editingInbound.value) {
-      await api.updateInbound(editingInbound.value.id, { ...inboundForm.value })
-    } else {
-      await api.createInbound(props.node.id, { ...inboundForm.value })
-    }
-    inboundOpen.value = false
-    emit('changed')
-    // 说「下次部署后生效」而不是「已保存」:自动部署会重启 sing-box,
-    // 把这台机器上全部入口的在线连接一起踢掉,而他动的只是其中一个。
-    message.success('已保存。入口的变更要重新部署这台机器才会生效')
-  } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '保存失败')
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
+function removeInbound(i: NodeInbound) {
+  confirmRemoveInbound(i, nodeLabel.value, runWithBusy, () => emit('changed'))
 }
 
-/**
- * 删除一个 sing-box 入口。
- *
- * 不可逆的只有四个操作(删用户、删节点、卸载服务、重置主机密钥),
- * 这一个可以重建,所以用 lbDangerConfirm 而不是打字确认 ——
- * 但它的影响面比删一条 nginx 转发大得多,必须逐条列出来。
- */
-function removeInbound(i: NodeInbound) {
-  lbDangerConfirm({
-    title: `删除入口「${i.display_name}」?`,
-    impacts: [
-      `${nodeLabel.value} 上监听 ${i.listen_port} 的 sing-box 入站会被撤掉`,
-      '这一条会从所有用户的订阅里消失;只用这个入口的人会连不上',
-      '下次部署这台机器时才真正生效 —— 在那之前它照常在跑',
-      '部署会重启 sing-box,这台机器上【全部入口】的在线连接都会断开',
-      '入口级的流量计数器不会复用,重建之后历史曲线接不上',
-    ],
-    okText: '删除',
-    onOk: async () => {
-      running.value = '正在删除入口'
-      emit('busy', running.value)
-      try {
-        await api.deleteInbound(i.id)
-        emit('changed')
-        message.success('已删除。下次部署这台机器时才真正从节点上撤掉')
-      } catch (e) {
-        message.error(e instanceof ApiError ? e.message : '删除失败')
-      } finally {
-        running.value = ''
-        emit('busy', '')
-      }
-    },
+/** 把一次异步操作包上 busy 标记 —— 面板里每个动作都要抬起它。 */
+function runWithBusy(fn: () => Promise<void>) {
+  running.value = '正在处理'
+  emit('busy', running.value)
+  void fn().finally(() => {
+    running.value = ''
+    emit('busy', '')
   })
 }
 
@@ -432,201 +291,36 @@ function removeInbound(i: NodeInbound) {
 
 const destOpen = ref(false)
 const destTarget = ref<NodeInbound | null>(null)
-const destInput = ref('')
-const destResult = ref<DestCheckResult | null>(null)
-const destError = ref('')
 
 function openDest(i: NodeInbound) {
   destTarget.value = i
-  destInput.value = i.reality_dest
-  destResult.value = null
-  destError.value = ''
   destOpen.value = true
-}
-
-async function runDest() {
-  const target = destTarget.value
-  if (!target) return
-  running.value = '正在实测握手目标'
-  emit('busy', running.value)
-  destResult.value = null
-  destError.value = ''
-  try {
-    const r = await api.applyInboundDest(target.id, destInput.value.trim())
-    destResult.value = r.result
-    if (r.error) {
-      destError.value = r.error
-    } else {
-      message.success('握手目标已实测通过并写入这个入口')
-      emit('changed')
-    }
-  } catch (e) {
-    destError.value = e instanceof ApiError ? e.message : '实测失败'
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
 }
 
 // ---------------------------------------------------------------- 出口(链式)
 
 const chainOpen = ref(false)
 const chainTarget = ref<NodeInbound | null>(null)
-const chainForm = ref({
-  target_kind: 'INBOUND' as 'INBOUND' | 'EXTERNAL',
-  target_inbound_id: 0,
-  target_external_id: 0,
-})
+
+function openChain(i: NodeInbound) {
+  chainTarget.value = i
+  chainOpen.value = true
+}
+
+// ---------------------------------------------------------------- nginx 转发
 
 /**
- * 当前选择的落地种类下有没有候选。
+ * nginx 透传的落地候选与链式的不是同一组。
  *
- * 没有候选时下拉里一个选项都没有,而 v-model 还绑着 0 —— antd 会把它
- * 原样渲染成一个 "0"。那既不是地址也不是名字,看起来像个 bug,
- * 而真实情况是「这个面板上还没有第二台机器可以当落地」。
- */
-/**
- * 能当链式出口的外部代理。
- *
- * `dialable_by_node` 由后端算:Hysteria2 与 TUIC 走 QUIC,而节点上的
- * sing-box 是精简构建,拨不动它们。**在这里就滤掉,而不是选完再报错** ——
- * 那时错误会出现在十几秒后的部署记录里,读起来像是那台机器出了问题。
- * 滤掉的那些照常在订阅里发给用户直连,只是不能当出口。
- */
-const chainableProxies = computed(() => externalProxies.value.filter((p) => p.dialable_by_node))
-
-/**
- * 能被 nginx 透传到的外部代理。
- *
- * QUIC 系(Hysteria2 / TUIC)是纯 UDP,而 stream 这边只渲染 TCP 的 server 块。
- * 配下去的话 nginx 起得来、规则也下发得下去,只是用户永远连不上,
- * 而面板从头到尾全绿 —— 这是最难查的一种。
+ * nginx stream 只渲染 TCP 的 server 块,而 Hysteria2 / TUIC 是纯 UDP ——
+ * 它们照常进订阅给用户直连,只是不能当透传落地。两个谓词在后端由
+ * DialableByNode / RelayableByNginx 分别回答,前端也必须分开用:
+ * 混成一个的话,不能拨的会出现在转发的下拉里,而部署要到十几秒后才失败。
  */
 const relayableProxies = computed(() => externalProxies.value.filter((p) => p.relayable))
 const hiddenRelayTargets = computed(
   () => externalProxies.value.length - relayableProxies.value.length,
 )
-
-const chainCandidates = computed(() =>
-  chainForm.value.target_kind === 'INBOUND' ? landingInbounds.value : chainableProxies.value,
-)
-const chainReason = computed(() => {
-  const hidden = externalProxies.value.length - chainableProxies.value.length
-  if (chainCandidates.value.length > 0) {
-    if (chainForm.value.target_kind === 'EXTERNAL' && hidden > 0) {
-      return `另有 ${hidden} 条外部代理走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们,没有列出来 —— 它们照常发给用户直连。`
-    }
-    return ''
-  }
-  if (chainForm.value.target_kind === 'INBOUND') {
-    return '还没有别的落地入口可选 —— 中转角色的机器与这台机器自己都不能当落地。'
-  }
-  return hidden > 0
-    ? `${hidden} 条外部代理都走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们。它们照常发给用户直连,只是不能当出口。`
-    : '还没有可用的外部代理。'
-})
-
-function openChain(i: NodeInbound) {
-  chainTarget.value = i
-  chainForm.value = {
-    target_kind: i.chain_target_kind === 'EXTERNAL' ? 'EXTERNAL' : 'INBOUND',
-    target_inbound_id: i.chain_target_inbound_id || landingInbounds.value[0]?.value || 0,
-    target_external_id: i.chain_target_external_id || chainableProxies.value[0]?.id || 0,
-  }
-  chainOpen.value = true
-}
-
-function confirmChain() {
-  const inbound = chainTarget.value
-  if (!inbound) return
-  const name =
-    chainForm.value.target_kind === 'INBOUND'
-      ? landingInbounds.value.find((x) => x.value === chainForm.value.target_inbound_id)?.label
-      : chainableProxies.value.find((x) => x.id === chainForm.value.target_external_id)
-          ?.display_name
-  if (!name) {
-    message.warning('请选择落地')
-    return
-  }
-  chainOpen.value = false
-  lbDangerConfirm({
-    title: `把入口「${inbound.display_name}」的出口改到「${name}」?`,
-    impacts: [
-      `${nodeLabel.value} 上的 sing-box 会重启,这台机器上【全部入口】的在线连接都会断开`,
-      ...(chainForm.value.target_kind === 'INBOUND'
-        ? [`落地那台机器也会重新部署一次,它上面的在线连接同样会断开`]
-        : []),
-      '两次部署有先后:先落地后本机,顺序反了本机会连不上落地',
-      '订阅内容不变 —— 用户不会察觉这个入口后面多了一跳',
-      '拨测只验证链路可用,不验证出口真的落在那台机器上',
-    ],
-    okText: '改出口',
-    onOk: () => {
-      // 不返回这个 Promise:AntD 只要拿到 Promise 就把确认框留在屏幕上
-      // 转圈等它 resolve,而两台机器的部署要几十秒。
-      void runApplyChain(inbound)
-    },
-  })
-}
-
-async function runApplyChain(inbound: NodeInbound) {
-  running.value = '正在切换出口(两台机器)'
-  emit('busy', running.value)
-  lastChain.value = null
-  try {
-    const r = await api.applyChain(inbound.id, { ...chainForm.value })
-    lastChain.value = r.result
-    if (r.error) {
-      message.error(r.error)
-    } else {
-      message.success('出口已切换')
-    }
-    emit('changed')
-  } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '切换失败')
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
-}
-
-function clearChain(i: NodeInbound) {
-  lbDangerConfirm({
-    title: `把入口「${i.display_name}」的出口改回本机直连?`,
-    impacts: [
-      '这台机器上的 sing-box 会重启,全部入口的在线连接都会断开',
-      '落地那台也会重新部署一次,以撤掉这条链路的凭据',
-      '之后这个入口的流量从这台机器自己的 IP 出去',
-    ],
-    okText: '改回直连',
-    onOk: () => {
-      void runClearChain(i)
-    },
-  })
-}
-
-async function runClearChain(i: NodeInbound) {
-  running.value = '正在改回直连(两台机器)'
-  emit('busy', running.value)
-  lastChain.value = null
-  try {
-    const r = await api.clearChain(i.id)
-    lastChain.value = r.result
-    if (r.error) {
-      message.error(r.error)
-    } else {
-      message.success('已改回本机直连')
-    }
-    emit('changed')
-  } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '操作失败')
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
-}
-
-// ---------------------------------------------------------------- nginx 转发
 
 const editing = ref<NodeRelay | null>(null)
 const formOpen = ref(false)
@@ -1031,168 +725,35 @@ onMounted(async () => {
     </div>
 
     <!-- ---------------- sing-box 入口表单 ---------------- -->
-    <a-modal
+    <InboundFormModal
       v-model:open="inboundOpen"
-      :title="editingInbound ? '编辑 sing-box 入口' : '新增 sing-box 入口'"
-      :confirm-loading="!!running"
-      :ok-button-props="{ disabled: !!protocolSwitchBlocked }"
-      @ok="submitInbound"
-    >
-      <a-form layout="vertical" size="small">
-        <a-form-item label="入口名称(会发给用户)">
-          <a-input v-model:value="inboundForm.display_name" placeholder="例如:洛杉矶 01-SS" />
-        </a-form-item>
-        <a-form-item label="落地协议">
-          <a-radio-group v-model:value="inboundForm.protocol" size="small" button-style="solid">
-            <a-radio-button value="VLESS_REALITY">{{ PROTOCOL_LABEL.VLESS_REALITY }}</a-radio-button>
-            <a-radio-button value="SHADOWSOCKS">{{ PROTOCOL_LABEL.SHADOWSOCKS }}</a-radio-button>
-          </a-radio-group>
-          <div v-if="protocolSwitchBlocked" class="nr__warn">{{ protocolSwitchBlocked }}</div>
-        </a-form-item>
-        <a-form-item v-if="inboundForm.protocol === 'SHADOWSOCKS'" label="加密方法">
-          <a-select
-            v-model:value="inboundForm.ss_method"
-            :options="
-              Object.entries(SS_METHOD_LABEL).map(([v, l]) => ({ value: v, label: l }))
-            "
-          />
-        </a-form-item>
-        <a-form-item label="主机监听端口(sing-box 真正 bind 的号码)">
-          <a-input-number v-model:value="inboundForm.listen_port" :min="1" :max="65535" />
-        </a-form-item>
-        <a-form-item label="公网端口(留 0 表示与监听端口相同)">
-          <a-input-number v-model:value="inboundForm.public_port" :min="0" :max="65535" />
-          <div class="nr__hint">
-            NAT 主机上两者不同:公网 443 映射到主机的 20443 时,监听端口填 20443、公网端口填
-            443。填反了 sing-box 会监听在转发链路另一端的号码上,而各项检查都会通过。
-          </div>
-        </a-form-item>
-        <a-form-item v-if="node.ipv6_address" label="IPv6 公网端口(留 0 表示跟随 IPv4 公网端口)">
-          <a-input-number v-model:value="inboundForm.ipv6_public_port" :min="0" :max="65535" />
-        </a-form-item>
-        <a-form-item>
-          <a-checkbox v-model:checked="inboundForm.tcp_fast_open">
-            TCP Fast Open(同时管两端:入站与订阅里下发的出站)
-          </a-checkbox>
-          <div class="nr__hint">
-            默认关。成败取决于用户到这台机器这一段路径上的中间设备,而那条路面板看不到。
-          </div>
-        </a-form-item>
-        <a-form-item label="访问等级">
-          <a-select
-            v-model:value="inboundForm.access_tier_id"
-            :options="tiers.map((t) => ({ value: t.id, label: t.name }))"
-          />
-          <div class="nr__hint">
-            等级不高于它的用户会自动拿到这个入口。<b>等级挂在入口上,不在机器上</b> ——
-            同一台机器可以有一个对所有人开放的入口和一个只给 VIP 的入口。
-            <br />
-            管理员在用户详情里对整台机器的「额外授权」<b>穿透这一档</b>:
-            那句话的意思就是「这台机器给他用」。
-          </div>
-        </a-form-item>
-        <a-form-item label="排序">
-          <a-input-number v-model:value="inboundForm.sort_order" />
-        </a-form-item>
-        <a-form-item label="对用户公开的备注">
-          <a-input v-model:value="inboundForm.public_remark" />
-        </a-form-item>
-        <a-form-item>
-          <a-checkbox v-model:checked="inboundForm.enabled">
-            启用(关掉后下次部署时从节点上撤掉)
-          </a-checkbox>
-          <a-checkbox v-model:checked="inboundForm.subscription_enabled">下发到订阅</a-checkbox>
-        </a-form-item>
-      </a-form>
-    </a-modal>
+      :inbound="editingInbound"
+      :node="node"
+      :tiers="tiers"
+      :existing-count="inbounds.length"
+      @saved="emit('changed')"
+      @busy="(l: string) => emit('busy', l)"
+    />
 
-    <!-- ---------------- 握手目标实测 ---------------- -->
-    <a-modal
+    <InboundDestModal
       v-model:open="destOpen"
-      title="实测握手目标"
-      :confirm-loading="!!running"
-      ok-text="实测并写入"
-      @ok="runDest"
-    >
-      <p class="nr__hint">
-        检测从<b>这台机器的出口</b>发起 —— CDN 按地域下发不同证书链,在别处测出来的结果
-        对这台机器不成立。通过之后才写入这个入口;不通过时拒绝保存。
-      </p>
-      <a-form layout="vertical" size="small">
-        <a-form-item label="握手目标域名">
-          <a-input v-model:value="destInput" placeholder="例如:www.fastly.com" />
-        </a-form-item>
-      </a-form>
-      <div v-if="destError" class="nr__warn">{{ destError }}</div>
-      <div v-if="destResult" class="nr__result">
-        <div>
-          {{ destResult.server }}:{{ destResult.port }} ·
-          最大 TLS 记录 {{ destResult.max_record_size }} 字节
-        </div>
-        <div v-for="(p, idx) in destResult.problems" :key="idx" class="nr__warn">{{ p }}</div>
-      </div>
-    </a-modal>
+      :inbound="destTarget"
+      @applied="emit('changed')"
+      @busy="(l: string) => emit('busy', l)"
+    />
 
-    <!-- ---------------- 出口(链式) ---------------- -->
-    <a-modal
+    <InboundChainModal
       v-model:open="chainOpen"
-      :title="`入口「${chainTarget?.display_name ?? ''}」的出口`"
-      ok-text="下一步"
-      @ok="confirmChain"
-    >
-      <p class="nr__hint">
-        链式出口只改这一个入口的去向,这台机器上别的入口不受影响。
-        订阅内容不变 —— 用户拿到的还是这台机器的地址与协议,不知道后面还有一跳。
-      </p>
-      <a-form layout="vertical" size="small">
-        <a-form-item label="落地种类">
-          <a-radio-group v-model:value="chainForm.target_kind" size="small" button-style="solid">
-            <a-radio-button value="INBOUND">自建节点的入口</a-radio-button>
-            <a-radio-button value="EXTERNAL">外部代理</a-radio-button>
-          </a-radio-group>
-        </a-form-item>
-        <a-form-item label="落地">
-          <a-select
-            v-if="chainForm.target_kind === 'INBOUND'"
-            v-model:value="chainForm.target_inbound_id"
-            placeholder="选择落地入口"
-            :disabled="!landingInbounds.length"
-            :options="landingInbounds"
-          />
-          <a-select
-            v-else
-            v-model:value="chainForm.target_external_id"
-            placeholder="选择外部代理"
-            :disabled="!chainableProxies.length"
-            :options="chainableProxies.map((p) => ({ value: p.id, label: p.display_name }))"
-          />
-        </a-form-item>
-      </a-form>
-      <!-- 按钮变灰时必须说出为什么。只变灰的话,管理员会以为是权限问题
-           或者页面坏了,而真实原因是「面板上还没有第二台机器」。 -->
-      <p v-if="chainReason" class="nr__warn">{{ chainReason }}</p>
-      <!-- 已经链出去的入口在这里改回直连。它属于「改这个入口的出口」这件事,
-           放回列表里会让那一行挤到第五个按钮,而它并不是常用操作。 -->
-      <div v-if="chainTarget?.chain_target_kind" class="nr__chain-now">
-        当前经 <b>{{ chainTargetName(chainTarget) }}</b> 出网,链路凭据
-        <span class="lb-mono">{{ chainTarget.chain_code || '—' }}</span>
-        <a-button
-          size="small"
-          type="link"
-          danger
-          :disabled="!!running"
-          @click="
-            () => {
-              const t = chainTarget
-              chainOpen = false
-              if (t) clearChain(t)
-            }
-          "
-        >
-          改回本机直连
-        </a-button>
-      </div>
-    </a-modal>
+      :inbound="chainTarget"
+      :node="node"
+      @applied="
+        (r: ChainApplyResult | null) => {
+          lastChain = r
+          emit('changed')
+        }
+      "
+      @busy="(l: string) => emit('busy', l)"
+    />
 
     <!-- ---------------- nginx 转发表单 ---------------- -->
     <a-modal
