@@ -655,7 +655,22 @@ async function doBootstrap() {
   running.value = '重新引导'
   try {
     const r = await api.bootstrapNode(id, password)
-    message.success(r.already_present ? '节点上已有面板公钥,连接正常' : '面板公钥已装入并验证通过')
+    if (r.pubkey_auth_fixed) {
+      // 用 Modal 而不是 message:面板改了这台机器的 sshd_config,
+      // 那不是一句一闪而过的成功提示能承载的 —— 管理员需要知道机器上
+      // 多了一份配置,以后自己去看那个文件时才不会以为被人动过手脚。
+      Modal.info({
+        title: '面板公钥已装入,并打开了节点的公钥认证',
+        width: 560,
+        content:
+          '这台机器原先关闭了 SSH 公钥认证(PubkeyAuthentication no),' +
+          '而面板此后只用公钥登录,不保存口令。已在节点上写入一份配置把它打开并 reload 了 sshd。' +
+          '原有的配置行一行没删,主配置若被改过会留一份带时间戳的备份。',
+        okText: '知道了',
+      })
+    } else {
+      message.success(r.already_present ? '节点上已有面板公钥,连接正常' : '面板公钥已装入并验证通过')
+    }
     reload()
   } catch (err) {
     Modal.error({

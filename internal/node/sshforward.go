@@ -298,26 +298,69 @@ func truncate(s string, n int) string {
 // 返回值刻意不叫 path:那会在函数内遮蔽 path 包,而本文件用它做通配符匹配 ——
 // 以后有人在这里加一行 path.Join 会撞上一个看不懂的编译错误。
 func planForwardingConfig(original string) (target, content string) {
-	if dropInIsIncluded(original) {
-		return dropInPath, forwardBlock
+	return planSSHDConfig(original, forwardingFix)
+}
+
+// sshdFix 描述一处「必须排在最前面才生效」的 sshd 配置修改。
+//
+// 抽出来是因为面板要改的不止一项:除了 TCP 转发,还有公钥认证
+// (见 sshpubkey.go)。两处的写入策略、Include 判定、幂等标记规则完全一样,
+// 各写一遍的话,以后修好其中一处的 Include 判定而漏掉另一处 ——
+// 表现是文件写对了、sshd -t 通过、reload 成功,而那一项照样没生效。
+type sshdFix struct {
+	// keyword 是这一项的关键字(小写)。撞上它就说明前面已经有人设过,
+	// 那时 drop-in 不再管用 —— OpenSSH 取首次出现的值。
+	keyword string
+	// dropIn 是 drop-in 那条路要写的文件。
+	dropIn string
+	// marker 是幂等标记,用于认出"这段是面板写的"。
+	marker string
+	// block 是要写入的内容,含 marker。
+	block string
+}
+
+var forwardingFix = sshdFix{
+	keyword: "allowtcpforwarding",
+	dropIn:  dropInPath,
+	marker:  forwardMarker,
+	block:   forwardBlock,
+}
+
+// planSSHDConfig 决定把配置写到哪里、写什么。
+//
+// 两种写法的取舍:
+//
+//	drop-in   sshd_config 里确实有 Include 且它出现在任何同名指令
+//	          之前时用。它不动发行版的 conffile,apt 升级时不会弹冲突提示。
+//	主配置置顶 其余情况用。OpenSSH 对绝大多数关键字取**首次出现**的值,
+//	          所以追加到文件末尾是无效的 —— 前面已有的那行 no 仍然生效,
+//	          而配置文件里明明白白写着 yes,这种自相矛盾最难查。
+//
+// 无论哪种都只做加法,不删除也不注释掉已有的行:那些行可能在 Match 块里,
+// 是管理员对特定用户的刻意限制,不该被面板顺手抹掉。
+// 返回值刻意不叫 path:那会在函数内遮蔽 path 包,而本文件用它做通配符匹配 ——
+// 以后有人在这里加一行 path.Join 会撞上一个看不懂的编译错误。
+func planSSHDConfig(original string, fix sshdFix) (target, content string) {
+	if dropInIsIncluded(original, fix) {
+		return fix.dropIn, fix.block
 	}
-	if strings.Contains(original, forwardMarker) {
+	if strings.Contains(original, fix.marker) {
 		// 已经写过一次却仍然不通,多半是上次 reload 没成功。原样写回去 ——
 		// 后面的 reload + 复测会把它补上,而重复堆叠同一段配置只会让
 		// 管理员下次打开这个文件时看到三份一模一样的注释。
 		return sshdConfigPath, original
 	}
-	return sshdConfigPath, forwardBlock + "\n" + original
+	return sshdConfigPath, fix.block + "\n" + original
 }
 
 // dropInIsIncluded 判断 drop-in 那条路走不走得通:sshd_config 里要有一条
-// Include,它出现在任何 AllowTcpForwarding / Match 之前,**而且它的通配符
+// Include,它出现在任何同名指令 / Match 之前,**而且它的通配符
 // 确实会读到我们要写的那个文件**。
 //
 // 最后半句不能省。只确认"有 Include"的话,遇到 `Include /etc/ssh/conf.d/*.conf`
 // 这种指向别处的配置,我们会往一个没有人读的目录里写文件 —— 而写入、
-// sshd -t、reload 全部成功,只有通道照样开不起来。
-func dropInIsIncluded(original string) bool {
+// sshd -t、reload 全部成功,只有那一项照样没生效。
+func dropInIsIncluded(original string, fix sshdFix) bool {
 	for _, line := range strings.Split(original, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
@@ -326,11 +369,11 @@ func dropInIsIncluded(original string) bool {
 		switch strings.ToLower(fields[0]) {
 		case "include":
 			for _, pattern := range fields[1:] {
-				if includeCovers(pattern, dropInPath) {
+				if includeCovers(pattern, fix.dropIn) {
 					return true
 				}
 			}
-		case "allowtcpforwarding", "match":
+		case fix.keyword, "match":
 			// 撞上 Match 也算输:Match 之后的 Include 只对该分支生效。
 			return false
 		}
