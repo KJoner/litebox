@@ -277,6 +277,17 @@ async function doSubmit() {
           content: `${result.bootstrap_error}\n\n节点记录已保留。处理好之后在节点详情里点「重新引导」重试,不要重新创建节点。`,
           okText: '知道了',
         })
+      } else if (result.bootstrap?.pubkey_auth_fixed) {
+        // 面板改了这台机器的 sshd_config,不能只发一句一闪而过的成功提示。
+        Modal.info({
+          title: '节点已创建,并打开了它的 SSH 公钥认证',
+          width: 560,
+          content:
+            '这台机器原先关闭了公钥认证(PubkeyAuthentication no),而面板此后只用公钥登录、' +
+            '不保存口令。已在节点上写入一份配置把它打开并 reload 了 sshd,原有配置行一行没删。\n\n' +
+            '接下来依次执行「探测」和「安装 sing-box」。',
+          okText: '知道了',
+        })
       } else {
         message.success('节点已创建,公钥已装好。接下来依次执行「探测」和「安装 sing-box」')
       }

@@ -87,7 +87,7 @@ func TestDropInIsIncludedIgnoresComments(t *testing.T) {
 	// 被注释掉的 Include 不算数。照它走 drop-in 的话,文件写出去了、
 	// sshd 根本不读,而复测只会说"仍然不通"。
 	original := "# Include /etc/ssh/sshd_config.d/*.conf\nAllowTcpForwarding no\n"
-	if dropInIsIncluded(original) {
+	if dropInIsIncluded(original, forwardingFix) {
 		t.Error("注释掉的 Include 被当成了生效的指令")
 	}
 }
@@ -110,7 +110,7 @@ func TestDropInRequiresIncludeToActuallyCoverIt(t *testing.T) {
 		"Include /etc/ssh/sshd_config.d/*.local\n": false,
 	}
 	for original, want := range cases {
-		if got := dropInIsIncluded(original); got != want {
+		if got := dropInIsIncluded(original, forwardingFix); got != want {
 			t.Errorf("%q:得到 %v,期望 %v", strings.TrimSpace(original), got, want)
 		}
 	}

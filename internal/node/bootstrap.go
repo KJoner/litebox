@@ -24,7 +24,11 @@ type BootstrapResult struct {
 	// AlreadyPresent 为真表示节点上本来就有面板公钥,本次没有改动 authorized_keys。
 	AlreadyPresent bool   `json:"already_present"`
 	AuthorizedKeys string `json:"authorized_keys_path"`
-	Detail         string `json:"detail"`
+	// PubkeyAuthFixed 为真表示这台机器原先关着公钥认证,引导过程中面板把它打开了。
+	// 单独一个字段而不是只写进 Detail:这是面板在别人的机器上改了 sshd 配置,
+	// 审计里必须能按字段查到,而不是去正则匹配一句中文。
+	PubkeyAuthFixed bool   `json:"pubkey_auth_fixed"`
+	Detail          string `json:"detail"`
 }
 
 // 家目录必须是干净的绝对路径。这个值来自远端 $HOME,虽然只有 root 能改,
@@ -156,9 +160,19 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 
 	verifyClient, err := sshx.Dial(ctx, verifyTarget, s.dialTimeout())
 	if err != nil {
-		return result, fmt.Errorf("公钥已写入 %s,但用面板密钥验证登录失败: %w"+
-			"(常见原因:sshd 的 AuthorizedKeysFile 指向别处、家目录或 .ssh 权限过宽被 sshd 忽略)",
-			authPath, err)
+		// 公钥装进去了却登不上,最常见、也是唯一一个面板自己能修的原因是
+		// 这台机器根本没开公钥认证。原来这里列的三条"常见原因"都不是它,
+		// 而管理员照着那三条去查,查的全是好的。
+		fix, fixErr := s.repairPubkeyAuth(ctx, client, verifyTarget)
+		if !fix.Fixed {
+			return result, fmt.Errorf("公钥已写入 %s,但用面板密钥验证登录失败: %w%s",
+				authPath, err, pubkeyFailureHint(fix, fixErr))
+		}
+		result.PubkeyAuthFixed = true
+		result.Detail = strings.TrimSpace(result.Detail + " " + fix.Detail + "。")
+		if verifyClient, err = sshx.Dial(ctx, verifyTarget, s.dialTimeout()); err != nil {
+			return result, fmt.Errorf("已打开节点的公钥认证,但随后用面板密钥登录仍然失败: %w", err)
+		}
 	}
 	defer verifyClient.Close()
 

@@ -226,7 +226,14 @@ func bootstrapDetail(result node.BootstrapResult, err error) string {
 	if err != nil {
 		return "引导失败:" + err.Error()
 	}
-	return "认证方式 " + result.Method + ";" + result.Detail
+	detail := "认证方式 " + result.Method + ";" + result.Detail
+	// 面板改了别人机器上的 sshd_config,这一条要在审计里一眼看得见,
+	// 而不是埋在 Detail 那段话中间 —— 那是这次引导里唯一一个
+	// 出了这台机器边界、且事后需要有人知道的动作。
+	if result.PubkeyAuthFixed {
+		detail = "【已为该节点打开 sshd 公钥认证】" + detail
+	}
+	return detail
 }
 
 type bootstrapNodeRequest struct {

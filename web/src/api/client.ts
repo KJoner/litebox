@@ -531,6 +531,12 @@ export interface BootstrapResult {
   method: string
   already_present: boolean
   authorized_keys_path: string
+  /**
+   * 该节点原先关闭了公钥认证(PubkeyAuthentication no),引导过程中面板把它打开了。
+   * 面板改了节点上的 sshd 配置,界面上要说出来 —— 那是这次引导里唯一一个
+   * 越出"往 authorized_keys 追加一行"范围的动作。
+   */
+  pubkey_auth_fixed: boolean
   detail: string
 }
 
