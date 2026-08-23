@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/nodeport"
@@ -237,4 +239,193 @@ func (s *Server) handleDeleteMieruInbound(w http.ResponseWriter, r *http.Request
 		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"needs_deploy": true})
+}
+
+const (
+	actionMieruInstall = "mieru_inbound.install"
+	actionMieruDeploy  = "mieru_inbound.deploy"
+	actionMieruChain   = "mieru_inbound.chain"
+)
+
+// handleInstallMieru 把 mita 与 mieru 客户端装到一台机器上。
+//
+// 与「安装 sing-box」并列的一个动作,而不是塞进那一个:两者装的是不同的
+// 二进制、不同的服务,而失败的原因也完全不同(比如这台机器缺 unshare)。
+// 合成一个按钮之后,管理员分不出"装 sing-box 失败"与"装 Mieru 失败"。
+func (s *Server) handleInstallMieru(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	admin := adminFromContext(r.Context())
+	result, err := s.nodes.InstallMieruBinaries(r.Context(), id)
+	if err != nil {
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionMieruInstall,
+			TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+			Detail:   "安装 Mieru 失败:" + err.Error(),
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: false,
+		})
+		s.writeMieruError(w, err, "安装 Mieru 失败")
+		return
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionMieruInstall,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail:   "已安装 Mieru(" + result.MitaVersion + ")",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+type mieruDeployRequest struct {
+	// UsersOnly 为真时只 reload —— 一条连接都不断。
+	//
+	// **默认 false(会重启这个入口)**。默认真的话,一次端口变更会被当成
+	// 用户变更处理,而 reload 不释放旧端口:新旧两段同时监听,
+	// 旧端口上那个入口还在服务,而管理员以为它已经搬走了。
+	UsersOnly bool `json:"users_only"`
+}
+
+func (s *Server) handleDeployMieru(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.mieruIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req mieruDeployRequest
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
+	admin := adminFromContext(r.Context())
+
+	result, err := s.nodes.DeployMieru(r.Context(), id, req.UsersOnly)
+	detail := "下发 Mieru 入口"
+	if req.UsersOnly {
+		detail = "下发 Mieru 入口(仅用户变更,不断连接)"
+	}
+	if err != nil {
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionMieruDeploy,
+			TargetType: "mieru_inbound", TargetID: strconv.FormatInt(id, 10),
+			Detail:   detail + " 失败:" + err.Error() + rollbackNote(result),
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: false,
+		})
+		// 部署失败**照样返回 200 与完整结果**:管理员要看的是那几步里
+		// 哪一步失败了、回滚成没成功,而不是一个状态码。
+		// 与 sing-box 那一侧的部署接口一致。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"result": result, "error": err.Error(),
+		})
+		return
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionMieruDeploy,
+		TargetType: "mieru_inbound", TargetID: strconv.FormatInt(id, 10),
+		Detail:   detail + " 成功",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+// rollbackNote 把回滚结果附在审计里。
+//
+// 它回答的是「这个入口现在还能不能用」,与「这次下发失败了」是两个问题 ——
+// 不写的话,管理员看到失败之后不知道该不该立刻去救。
+func rollbackNote(result deployment.Result) string {
+	if result.RollbackResult == "" {
+		return ""
+	}
+	return ";回滚:" + result.RollbackResult
+}
+
+type mieruChainRequest struct {
+	// Kind 是 INBOUND(自建入站)或 EXTERNAL(外部代理)。
+	Kind string `json:"kind"`
+	// TargetID 是落地入站或外部代理的 id。
+	TargetID int64 `json:"target_id"`
+	// SocksPort 是 mita 与本机 sing-box 之间那一跳的回环端口,必填。
+	//
+	// 由管理员给而不是面板自动挑:自动挑会在某天与一个还没进数据库的
+	// 服务撞车(比如管理员自己在这台机器上跑的东西),而撞车的表现是
+	// sing-box 起不来 —— 那会把这台机器上全部 sing-box 入口一起带下水。
+	SocksPort int `json:"socks_port"`
+}
+
+// handleSetMieruChain 给一个 Mieru 入口配出口落地。
+//
+// **只写库,不下发。** 出口那一跳的 socks 入站在 sing-box 的配置里,
+// 所以生效要两次下发:先 sing-box(把 socks 入站加上去)、再这个 Mieru 入口
+// (让 mita 的 egress 指过去)。两次都会断连接,而它们各自断的是不同的人 ——
+// 由管理员挑时机,界面上要把顺序与影响逐条列出来。
+func (s *Server) handleSetMieruChain(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.mieruIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req mieruChainRequest
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	kind, err := node.ParseChainTargetKind(strings.ToUpper(strings.TrimSpace(req.Kind)))
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	admin := adminFromContext(r.Context())
+
+	if err := s.nodes.Store().SetMieruChain(
+		r.Context(), id, kind, req.TargetID, req.SocksPort); err != nil {
+		s.writeMieruError(w, err, "设置出口失败")
+		return
+	}
+	m, err := s.nodes.Store().GetMieruInbound(r.Context(), id)
+	if err != nil {
+		s.writeMieruError(w, err, "设置出口失败")
+		return
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionMieruChain,
+		TargetType: "mieru_inbound", TargetID: strconv.FormatInt(id, 10),
+		Detail: fmt.Sprintf("Mieru 入口 %s 的出口改为 %s#%d(回环端口 %d,链路 %s)",
+			m.DisplayName, kind, req.TargetID, req.SocksPort, m.ChainCode),
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"inbound": m,
+		// 两次下发缺一不可 —— 只下发其中一个的表现:
+		// 只发 sing-box → mita 还在直连,出口没变而界面说变了;
+		// 只发 Mieru → mita 指向一个还不存在的 socks 端口,这个入口整个不通。
+		"needs_deploy":         true,
+		"needs_singbox_deploy": true,
+	})
+}
+
+func (s *Server) handleClearMieruChain(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.mieruIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	admin := adminFromContext(r.Context())
+	m, err := s.nodes.Store().GetMieruInbound(r.Context(), id)
+	if err != nil {
+		s.writeMieruError(w, err, "解除出口失败")
+		return
+	}
+	if err := s.nodes.Store().ClearMieruChain(r.Context(), id); err != nil {
+		s.writeMieruError(w, err, "解除出口失败")
+		return
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionMieruChain,
+		TargetType: "mieru_inbound", TargetID: strconv.FormatInt(id, 10),
+		Detail:   "Mieru 入口 " + m.DisplayName + " 的出口改回直连",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"needs_deploy": true, "needs_singbox_deploy": true,
+	})
 }

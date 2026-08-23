@@ -227,10 +227,22 @@ type ClientConfig struct {
 }
 
 type ClientProfile struct {
-	ProfileName  string         `json:"profileName"`
-	User         User           `json:"user"`
-	Servers      []ClientServer `json:"servers"`
-	Multiplexing string         `json:"multiplexing,omitempty"`
+	ProfileName string         `json:"profileName"`
+	User        User           `json:"user"`
+	Servers     []ClientServer `json:"servers"`
+	// Multiplexing 在客户端配置里是一个**嵌套对象**(`{"level": "..."}`),
+	// 与服务端那一侧的扁平字符串不一样 —— 真机上用
+	// `mieru explain config` 解我们生成的 mierus:// 链接时看出来的。
+	//
+	// 写成字符串的话 mieru 会报一句 JSON 解码错误,而那条错误里
+	// 不会提到是哪一个字段的形状不对。指针 + omitempty:不设就整项不写,
+	// 让客户端用它自己的默认档位。
+	Multiplexing *ClientMultiplexing `json:"multiplexing,omitempty"`
+}
+
+// ClientMultiplexing 是客户端配置里那一层。
+type ClientMultiplexing struct {
+	Level string `json:"level"`
 }
 
 type ClientServer struct {

@@ -51,7 +51,17 @@ type MieruSampler interface {
 // 没有配 Mieru 入口的机器上 sampler 返回空列表,这里直接返回 ——
 // 不是错误,也不写任何东西。
 func (s *Syncer) SyncMieru(ctx context.Context, nodeID int64) (SyncResult, error) {
-	result := SyncResult{NodeID: nodeID, BatchID: newBatchID()}
+	// **每个实例一个 batch,不是整轮一个。**
+	//
+	// traffic_ledger 的唯一索引是 (batch_id, node_id, user_code, direction),
+	// 而 batch 的语义是「一次幂等的读取」—— 每个 mita 实例都是各自独立的
+	// 一次读取,同一个用户在两个实例上都有流量时,共用一个 batch 会让
+	// 第二条撞上唯一索引,整轮同步失败。
+	//
+	// 真机上撞到过:三个实例、同一个用户,日志里是一句
+	// `UNIQUE constraint failed: traffic_ledger.batch_id, ...`,
+	// 而那之后每一轮都失败 —— 单实例的测试永远发现不了这件事。
+	result := SyncResult{NodeID: nodeID}
 	if s.mieru == nil {
 		return result, nil
 	}
@@ -76,6 +86,10 @@ func (s *Syncer) SyncMieru(ctx context.Context, nodeID int64) (SyncResult, error
 
 	for _, sample := range samples {
 		source := MieruSource(sample.InboundID)
+		batchID := newBatchID()
+		// 结果里只留最后一个,它只用于日志与手工同步的回显 ——
+		// 幂等性由每条 ledger 行自己的 batch 保证,不靠这个字段。
+		result.BatchID = batchID
 		for _, c := range sample.Counters {
 			for _, pair := range []struct {
 				dir   v2rayapi.Direction
@@ -90,7 +104,7 @@ func (s *Syncer) SyncMieru(ctx context.Context, nodeID int64) (SyncResult, error
 				result.CountersRead++
 				key := v2rayapi.CounterKey{UserCode: c.UserCode, Direction: pair.dir}
 				delta, err := s.recordCounter(
-					ctx, tx, nodeID, key, pair.value, result.BatchID, now, source)
+					ctx, tx, nodeID, key, pair.value, batchID, now, source)
 				if err != nil {
 					return result, err
 				}

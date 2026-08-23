@@ -169,6 +169,12 @@ func (s *Service) DeployMieru(
 		return deployment.Result{}, err
 	}
 
+	// 落地的配置必须先同步 —— 真机上踩过一次,见 checkMieruChainTargetReady。
+	// 放在这里:那时 mita 一个字节都还没动过,拒绝的代价只是一句话。
+	if err := s.checkMieruChainTargetReady(ctx, m); err != nil {
+		return deployment.Result{}, err
+	}
+
 	// **重启之前必须先同步一次流量。** 必须在取得节点连接锁【之前】做:
 	// 同步本身也要经 pool.Do 读节点,而节点级互斥锁不可重入 ——
 	// 放进事务内部会自我死锁(这一条 CLAUDE.md 里写着,已经踩过一次)。
