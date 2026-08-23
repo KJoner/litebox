@@ -86,10 +86,28 @@ func securityHeaders(next http.Handler) http.Handler {
 // 这些操作要跨洲传输二进制、重启服务、等待健康检查,远超普通请求。
 const LongOperationTimeout = 10 * time.Minute
 
-// longOperation 为耗时的节点操作放宽响应写入期限。
+// longOperation 为耗时的节点操作放宽响应写入期限,并让操作本身不再
+// 因为「没有人在等这个响应了」而中途停下。
 //
 // http.Server 的 WriteTimeout 是全局的,按最慢的操作设置会让普通请求
 // 也失去超时保护。这里用 ResponseController 只给需要的处理器单独延长。
+//
+// **ctx 必须与请求解绑(WithoutCancel)。** 挂在这里的处理器都已经在改
+// 节点上的东西:部署、安装、重启、切换配置存放位置、启用链式出站。
+// 客户端一断开就把 ctx 取消掉的话,部署会停在半路 —— 配置已经换过、
+// 服务已经重启,而部署记录、节点状态与审计**一条都写不进去**。
+//
+// **已经在生产上发生过一次**:一次 node.chain_apply(两台机器的复合操作,
+// 因此一定慢)被中途掐断,面板日志里只剩三行 context canceled ——
+// 保存部署记录失败、标记节点部署失败状态出错、写入审计日志失败。
+// 管理员那边看到的是请求失败,而面板上连一条部署记录都没有,
+// 只能去翻 journalctl。断开的原因通常不在面板里:反向代理的
+// proxy_read_timeout 默认 60 秒,而这类操作本来就要更久。
+//
+// 代价是关掉页面也停不下一次已经开始的部署 —— 那正是我们要的:
+// 部署是事务,中途放手比跑完危险得多。10 分钟的上限仍在,
+// 所以不会有处理器永远挂着。deployer.rollback 早就是这么做的,
+// 这里只是把同一条道理补到了数据库那一侧。
 func longOperation(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rc := http.NewResponseController(w)
@@ -97,7 +115,10 @@ func longOperation(next http.HandlerFunc) http.HandlerFunc {
 		_ = rc.SetWriteDeadline(deadline)
 		_ = rc.SetReadDeadline(deadline)
 
-		ctx, cancel := context.WithTimeout(r.Context(), LongOperationTimeout)
+		// WithoutCancel 只丢弃取消与期限,ctx 里的管理员身份照常带下去 ——
+		// 审计要记的正是他。
+		ctx, cancel := context.WithTimeout(
+			context.WithoutCancel(r.Context()), LongOperationTimeout)
 		defer cancel()
 		next(w, r.WithContext(ctx))
 	}

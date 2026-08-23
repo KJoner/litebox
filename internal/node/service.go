@@ -545,12 +545,29 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 
 	result, deployErr := s.deployer.Deploy(ctx, req)
 
-	if _, err := s.deployStore.Save(ctx, result); err != nil {
+	// **收尾与调用方的 ctx 解绑。**
+	//
+	// deployer.Deploy 一返回,节点上的状态就已经定了 —— 要么新配置在跑,
+	// 要么已经回滚(rollback 自己也用 WithoutCancel,理由一模一样)。
+	// 那个事实必须落库,而它与"谁还在等这个响应"没有任何关系。
+	//
+	// 不解绑的后果分两侧,成功那一侧更坏:MarkDeployed 没跑,入站的
+	// deployed_protocol 停在旧值,那个入口会从所有人的订阅里消失、或者
+	// 下发一份与节点上不符的参数,而节点上跑的是新配置 —— 数据库、节点、
+	// 面板三方各说各话,没有任何一层报错。失败那一侧则是既没有部署记录、
+	// 节点状态也没标失败,管理员在面板上看不到任何痕迹,只能去翻系统日志。
+	//
+	// 生产上真的发生过:一次 chain_apply 被中途掐断,日志里只剩三行
+	// context canceled。上游的 longOperation 现在也解绑了,这里是第二道 ——
+	// Deploy 还有协调器与巡检两条调用路径,不能靠调用方替它守住。
+	done := context.WithoutCancel(ctx)
+
+	if _, err := s.deployStore.Save(done, result); err != nil {
 		s.logger.Error("保存部署记录失败", "node_id", nodeID, "error", err)
 	}
 
 	if deployErr != nil {
-		if err := s.store.MarkDeployFailed(ctx, nodeID); err != nil {
+		if err := s.store.MarkDeployFailed(done, nodeID); err != nil {
 			s.logger.Error("标记节点部署失败状态出错", "node_id", nodeID, "error", err)
 		}
 		return result, deployErr
@@ -569,7 +586,7 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 			TCPFastOpen: in.TCPFastOpen,
 		})
 	}
-	if err := s.store.MarkDeployed(ctx, nodeID, result.ConfigSHA256, deployed); err != nil {
+	if err := s.store.MarkDeployed(done, nodeID, result.ConfigSHA256, deployed); err != nil {
 		s.logger.Error("记录部署成功状态出错", "node_id", nodeID, "error", err)
 	}
 	return result, nil
