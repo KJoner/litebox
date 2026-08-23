@@ -476,6 +476,9 @@ function protocolShort(n: Node): string {
   for (const i of n.inbounds ?? []) {
     seen.add(i.deployed_protocol ? PROTOCOL_SHORT[i.deployed_protocol] : PROTOCOL_SHORT[i.protocol] + '?')
   }
+  // Mieru 入口也要数进来:漏掉的话,一台只有 Mieru 入口的机器在列表里
+  // 显示「无入口」,而它其实好好地在服务用户。
+  if ((n.mieru_inbounds ?? []).length) seen.add('Mieru')
   return [...seen].join(' / ') || '无入口'
 }
 
@@ -507,14 +510,19 @@ function protocolTitle(n: Node): string {
  * 一并写出来:NAT 机器上两者的差别正是排查「连不上」时第一个要看的东西。
  */
 function portSummary(n: Node): string {
-  const list = n.inbounds ?? []
-  if (!list.length) return '无入口'
-  return list
-    .map((i) => {
-      const pub = i.public_port || i.listen_port
-      return pub === i.listen_port ? `${pub}` : `${pub}→${i.listen_port}`
-    })
-    .join(' ')
+  const parts = (n.inbounds ?? []).map((i) => {
+    const pub = i.public_port || i.listen_port
+    return pub === i.listen_port ? `${pub}` : `${pub}→${i.listen_port}`
+  })
+  // Mieru 的端口是一段而不是一个数 —— 写成起止,单端口时只写一个号码。
+  for (const m of n.mieru_inbounds ?? []) {
+    parts.push(
+      m.listen_port_start === m.listen_port_end
+        ? `${m.listen_port_start}`
+        : `${m.listen_port_start}-${m.listen_port_end}`,
+    )
+  }
+  return parts.length ? parts.join(' ') : '无入口'
 }
 
 /**
@@ -525,7 +533,12 @@ function portSummary(n: Node): string {
  */
 function tierSummary(n: Node): string {
   if (n.role === 'RELAY') return '转发规则各自设定'
-  const names = [...new Set((n.inbounds ?? []).map((i) => i.access_tier_name))]
+  const names = [
+    ...new Set([
+      ...(n.inbounds ?? []).map((i) => i.access_tier_name),
+      ...(n.mieru_inbounds ?? []).map((m) => m.access_tier_name),
+    ]),
+  ]
   return names.length ? names.join(' / ') : '无入口'
 }
 

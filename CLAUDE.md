@@ -1449,6 +1449,97 @@ IPv6 从「机器填了地址就无条件给每个入口加一条」变成「入
   而不是只写在面板上 —— 用户几个月后打开这份 YAML 时,面板上那句话
   早就不在他眼前了,而他会在这里加自己的规则然后在某次更新后全部丢失。
 
+## Mieru 落地协议约束(V13,进行中)
+
+Mieru 是第三类入口(`node_mieru_inbounds`,迁移 0024)。
+**服务端是另一个进程(mita),不是 sing-box 的一个入站** —— 凭据靠
+`mita apply config` 下发,流量走 Unix socket 上的管理 gRPC,指标持久化在
+`/var/lib/mita/metrics.pb` 且跨重启保留。
+
+**部署与流量采集还没做,而且不许猜着做。** 它们要等
+`phase0/mieruprobe` 在真机上量出计数器语义 —— 验证清单见
+`docs/开发计划/v13/V13-技术验证清单.md`(该目录在 .gitignore 里,只在本地)。
+面板的入账模型建立在三个假设上(计数器单调、以字节为单位、重启归零),
+而这三条在 mita 那边可能一条都不成立:CLI 给的是 1 天/30 天的**滚动窗口**
+且四舍五入到 MiB,gRPC 给的是原始 int64 但 `Metric.type` 有
+COUNTER / COUNTER_TIME_SERIES / **GAUGE** 三种。猜错的表现是用户流量被算成
+天文数字或者归零,而同步任务每一轮都"成功"。
+
+* **绝不做成 `node_inbounds` 的一种 protocol。** 那张表的每一行都渲染成
+  sing-box 的一个 inbound;混进去之后配置渲染、部署、拨测、流量采集四条路径
+  每一处都要先判断「这一行是不是真的 sing-box 入站」,而判断写漏的表现是
+  渲染器把它当成 sing-box 入站写进 `config.json`,服务起不来,
+  **而报错指向的是别的入口**。数据层三张表,界面上一张列表;
+
+* **端口是一段而不是一个数**,多端口跳跃是这个协议的主要抗封锁特性。
+  三层的含义与 `node_inbounds` 那三列一一对应,只是每层都成了一对起止:
+  `listen_port_*` / `public_port_*` / `ipv6_public_port_*`,后两层
+  两端都为 0 表示跟随上一层。`Start = End` 表示只有一个端口 ——
+  订阅那一侧据此二选一:相等时渲染成 mihomo 的 `port`,不等时渲染成
+  `port-range`,**两者在 mihomo 里互斥,同时出现整份配置被拒**;
+
+* **`PortRange` 是类型而不是两个裸 int。** 两个 int 传着传着就会被调换顺序,
+  而 `End < Start` 是一个**空集合** —— mita 照常启动、一个端口都不听,
+  而面板显示"已下发"。格式化只有 `PortRange.String` 一处实现,
+  mita 的 `portRange`、mihomo 的 `port-range` 与 `mierus://` 的 `port` 三处共用;
+
+* **订阅段与监听段刻意不要求相等,也不要求包含。** NAT 机上服务商映射的
+  外部段与本机监听段完全可以是两个不相干的号码段,而那正是 public 这一层
+  存在的理由。加一条"必须相等"的校验会让那种机器一个入口都配不出来。
+  数量不等时**只在表单里提醒**,因为那时客户端会在一部分端口上连不通,
+  表现像是「这条线路时好时坏」;
+
+* **端口冲突检测统一在 `internal/nodeport` 一处。** 在此之前它已经有两份
+  实现(node 与 relay 各一份),而区间的出现让两处都失效:原来那种逐张表
+  `listen_port = ?` 的写法查不出「这个端口落在某个 Mieru 段里」。
+  三份实现里漏改任何一处,表现都是同一个 —— 其中一个服务 bind 失败、
+  整个起不来,而要到部署的健康检查才发现。做法是把单值当成 `Start = End`
+  的一段,于是"区间对区间"是唯一需要写对的逻辑。
+  **相交判据是 `a.start <= b.end && b.start <= a.end`,不是"端点落在里面"**
+  —— 后者漏判【包含】的情形,而那正是"把一个已有段改窄"最容易造出来的形状。
+  `node.ErrInboundPortConflict` 与 `relay.ErrPortConflict` 都指向
+  `nodeport.ErrConflict`:各留一个哨兵会让 `errors.Is` 在跨包传递时静默失配,
+  而失配的表现是 400 变成 500。`Skip` 的**种类与 id 必须一起给** ——
+  只按 id 排除的话,编辑 3 号入站会顺带放过 3 号转发规则与 3 号 Mieru 入口;
+
+* **Mieru 是第一个 `Entry.Outbound` 恒为 nil 的自建协议。** sing-box 完全
+  不支持它(入站出站都没有),所以 `?format=sing-box` 与
+  `$(singbox_outbounds)` 里出不来 mieru 条目。**不给它一个"差不多"的出站**
+  (比如 socks):那会让用户拿到一条连得上、但完全没有 mieru 那层伪装的线路,
+  比拿不到更坏。V12 的 Clash 原生输出正是为这一类协议准备的;
+
+* **不能当中转(nginx 透传)的落地,也不能被链式指向。** 前者两个理由:
+  nginx stream 只渲染 TCP 的 server 块,而更根本的是**一条 `proxy_pass`
+  只指一个上游端口,而客户端会在整段里跳**;后者是 sing-box 没有 mieru 出站。
+  所以 `node_relays.target_kind` 不新增取值,选落地时压根不列 Mieru 入口;
+
+* **用户凭据是第三份**(`proxy_users.mieru_password_encrypted`),与 UUID、
+  SS 密钥平级、各管一种协议 —— 复用一把的话,重置其中一种会连带作废另外两种。
+  用 base64url 不补等号(与 SS 的标准 base64 相反):mieru 的口令是不透明的
+  字节串,谁都不解码它,所以可以选一个不含 `+ / =` 的字母表,
+  让它直接进 `mierus://` 的 userinfo 与 mihomo 的 password 而不需要转义;
+
+* **用户名取 `user_code`**,与 sing-box 侧的 stats 计数器同名 ——
+  那正是「同一个用户在同一台机器上的流量合并到一条 `traffic_ledger` 记录」
+  的来源。换一个值就会让这个人的流量记不到他自己头上;
+
+* **`mierus://` 的端口不在 authority 里**,它是查询参数。mieru 的端口是一组
+  而不是一个,塞进 `host:port` 那个位置表达不了 —— 照着别的协议的习惯写成
+  `mierus://user:pass@host:port` 的话,客户端会把整个 "host:port"
+  当成主机名去解析。`profile` 必填且取条目名:固定成 "default" 的话,
+  用户导入第二条会覆盖第一条;
+
+* **传输层与多路复用的取值直接用上游的大写写法**,不翻译:同一个字符串
+  既是 mita 配置里 `portBindings.protocol` 的值,又是 mihomo 里 `transport`
+  的值 —— 换一种拼写就要在两处各翻一次,而漏翻一处的表现是其中一端
+  认不出这个值。多路复用默认 LOW(与 mieru 自己一致),**不主动挑一个
+  "更好"的档位**:档位越高越省握手,但也越容易在流量特征上聚成一团,
+  而那与这个协议存在的理由正好相反;
+
+* **界面上凡是"这台机器有没有入口"的判断都要把 Mieru 算进去。**
+  漏掉的表现是一台只有 Mieru 入口的机器显示「无入口」「谁都连不上」,
+  而它好好地在服务用户 —— 一句错误的告警会让管理员去修一台本来就没坏的机器。
+
 ## 前端约束(V3)
 
 设计规范见 `docs/开发计划/v3/litebox-web-ui/`(该目录在 .gitignore 里,只在本地)。
@@ -1969,5 +2060,15 @@ V12 订阅 IPv4 地址(约束见上面「订阅 IPv4 地址约束(V12)」):
 **端口一列都没加** —— 三层端口在迁移 0019 就建好了。
 存量节点这一栏为空,订阅输出与升级前逐字节相同。
 Clash 输出是**新增**的第四种格式,原有三种一个字节都没变。
+
+V13 Mieru 落地协议(约束见上面「Mieru 落地协议约束(V13,进行中)」):
+
+* Phase 28 数据模型、端口段与订阅 —— 已完成(迁移 0024 第三类入口表 +
+  `proxy_users.mieru_password_encrypted` + `user_effective_mieru_inbounds`、
+  `internal/mieru` 的取值与 `PortRange`、`internal/nodeport` 把三处端口
+  冲突检测统一成一份、`mierus://` 与 mihomo proxy、管理接口与入口页的第三种类型)
+* Phase 29 部署与流量采集 —— **未开始,被真机验证挡着**。
+  探针在 `phase0/mieruprobe`,清单在 `docs/开发计划/v13/`(本地目录)。
+  在量出 mita 的计数器语义之前不得动入账代码
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

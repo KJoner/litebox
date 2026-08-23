@@ -260,6 +260,76 @@ export type ChainTargetKind = '' | 'INBOUND' | 'EXTERNAL'
  * 同一台机器上的流量是所有入口的合计。按节点看的数字仍然完全正确,
  * 但「这个人在 8443 那个入口用了多少」这个问题答不了。
  */
+/** Mieru 的传输层。取值与 mita 配置、mihomo 配置里的写法一致,不翻译。 */
+export type MieruTransport = 'TCP' | 'UDP'
+
+/** Mieru 的多路复用档位。档位越高越省握手,也越容易在流量特征上聚成一团。 */
+export type MieruMultiplexing =
+  | 'MULTIPLEXING_OFF'
+  | 'MULTIPLEXING_LOW'
+  | 'MULTIPLEXING_MIDDLE'
+  | 'MULTIPLEXING_HIGH'
+
+/**
+ * 一台机器上的一个 Mieru 入口。
+ *
+ * 它与 NodeInbound 是**两类东西**:服务端是另一个进程(mita),
+ * 凭据与流量走另一条通道。界面上两者并成一张列表,但操作摩擦各走各的。
+ *
+ * **端口在这里是一段而不是一个数** —— 多端口跳跃是 mieru 的主要抗封锁特性。
+ * 起止相等表示只有一个端口。
+ */
+export interface MieruInbound {
+  id: number
+  node_id: number
+  node_name: string
+  node_display_name: string
+  display_name: string
+
+  /** mita 实际监听的那一段。 */
+  listen_port_start: number
+  listen_port_end: number
+  /** IPv4 条目在订阅里用的那一段,两端都是 0 表示跟随监听段。 */
+  public_port_start: number
+  public_port_end: number
+  /** IPv6 条目用的那一段,两端都是 0 表示跟随 IPv4 公网段。 */
+  ipv6_public_port_start: number
+  ipv6_public_port_end: number
+
+  ipv6_enabled: boolean
+  ipv6_display_name: string
+  /** 派生:IPv6 条目在订阅里实际显示的名字。前端渲染它,不自己拼后缀。 */
+  ipv6_entry_name: string
+
+  transport: MieruTransport
+  multiplexing: MieruMultiplexing
+  /** 0 表示用 mieru 自己的默认值。 */
+  mtu: number
+
+  /**
+   * 节点上【当前正在生效】的那几项。订阅只看它们 ——
+   * deployed_transport 为空表示这个入口还没真正上过节点。
+   */
+  deployed_transport: MieruTransport | ''
+  deployed_multiplexing: MieruMultiplexing | ''
+  deployed_mtu: number
+  deployed_listen_port_start: number
+  deployed_listen_port_end: number
+
+  access_tier_id: number
+  access_tier_code: string
+  access_tier_name: string
+  access_tier_level: number
+
+  sort_order: number
+  subscription_enabled: boolean
+  public_remark: string
+  enabled: boolean
+
+  created_at: string
+  updated_at: string
+}
+
 export interface NodeInbound {
   id: number
   node_id: number
@@ -414,6 +484,14 @@ export interface Node {
    * V8 之前它们是节点的属性,那时一台机器只有一个入站。
    */
   inbounds: NodeInbound[]
+  /**
+   * 这台机器上的 Mieru 入口。中转角色恒为空数组。
+   *
+   * 与 inbounds 分成两个数组而不是合成一个:两类入口的服务端是两个进程,
+   * 参数与部署方式都不一样,合成一个会让每一处消费者都要先判断
+   * "这一项是哪一类"。界面上的合并由入口面板做。
+   */
+  mieru_inbounds: MieruInbound[]
   /** 配置与备份放在内存文件系统里,磁盘上不留。机器重启后靠巡检重新下发 */
   config_in_ram: boolean
   arch: string
@@ -1580,6 +1658,27 @@ export const api = {
     request<{ deleted: boolean; needs_deploy: boolean }>(`/api/inbounds/${id}`, {
       method: 'DELETE',
     }),
+  // Mieru 入口走独立路由:它与 sing-box 入站的 id 空间会撞
+  // (两张表各自从 1 开始),共用一条路由的话,请求会被打到另一类对象上。
+  // 增删改同样【不自动下发】—— 下发会重启 mita,踢掉这台机器上全部 Mieru 连接。
+  nodeMieruInbounds: (nodeID: number) =>
+    request<{
+      items: MieruInbound[]
+      transports: MieruTransport[]
+      multiplexings: MieruMultiplexing[]
+    }>(`/api/nodes/${nodeID}/mieru-inbounds`),
+  createMieruInbound: (nodeID: number, body: Record<string, unknown>) =>
+    request<{ inbound: MieruInbound; needs_deploy: boolean }>(
+      `/api/nodes/${nodeID}/mieru-inbounds`,
+      { method: 'POST', body },
+    ),
+  updateMieruInbound: (id: number, body: Record<string, unknown>) =>
+    request<{ inbound: MieruInbound; needs_deploy: boolean }>(`/api/mieru-inbounds/${id}`, {
+      method: 'PUT',
+      body,
+    }),
+  deleteMieruInbound: (id: number) =>
+    request<{ needs_deploy: boolean }>(`/api/mieru-inbounds/${id}`, { method: 'DELETE' }),
   /** 实测握手目标并在通过后写入这个入口;不通过时拒绝保存。 */
   applyInboundDest: (id: number, dest: string) =>
     request<{ result: DestCheckResult; error?: string }>(`/api/inbounds/${id}/dest-check`, {
