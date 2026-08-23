@@ -81,6 +81,17 @@ type Node struct {
 	// 而前端把它当数组用(inbounds.length、inbounds[0])。
 	Inbounds []*Inbound `json:"inbounds"`
 
+	// MieruInbounds 是这台机器上的 Mieru 入口,同样由 Get/List 一并带出。
+	//
+	// 与 Inbounds 分成两个字段而不是合成一个:两类入口的服务端是两个进程,
+	// 参数、部署方式与流量采集路径都不一样,合成一个数组会让每一处消费者
+	// 都要先判断"这一项是哪一类" —— 而判断写漏的表现是渲染器把一个
+	// Mieru 入口当成 sing-box 入站写进 config.json。
+	// 界面上它们仍然并成一张列表,那一层的合并由前端做。
+	//
+	// 绝不返回 nil,理由同上。
+	MieruInbounds []*MieruInbound `json:"mieru_inbounds"`
+
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`
@@ -175,6 +186,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		}
 	}
 	n.Inbounds = make([]*Inbound, 0)
+	n.MieruInbounds = make([]*MieruInbound, 0)
 	return &n, nil
 }
 
@@ -516,6 +528,9 @@ func (s *Store) Get(ctx context.Context, id int64) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	if n.MieruInbounds, err = s.MieruInboundsForNode(ctx, id); err != nil {
+		return nil, err
+	}
 	if n.Inbounds, err = s.InboundsForNode(ctx, id); err != nil {
 		return nil, err
 	}
@@ -555,6 +570,17 @@ func (s *Store) List(ctx context.Context) ([]*Node, error) {
 	for _, in := range inbounds {
 		if n, ok := byID[in.NodeID]; ok {
 			n.Inbounds = append(n.Inbounds, in)
+		}
+	}
+	// 与 sing-box 入站一样一次取全,不逐节点查 ——
+	// 10 台机器逐个查就是 10 次往返。
+	mierus, err := s.AllMieruInbounds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range mierus {
+		if n, ok := byID[m.NodeID]; ok {
+			n.MieruInbounds = append(n.MieruInbounds, m)
 		}
 	}
 	return nodes, nil

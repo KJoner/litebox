@@ -10,6 +10,7 @@ import {
   type ExternalProxy,
   type NginxFacts,
   type Node,
+  type MieruInbound,
   type NodeInbound,
   type NodeRelay,
 } from '@/api/client'
@@ -17,6 +18,7 @@ import { LbRowCard, LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/co
 import InboundChainModal from './InboundChainModal.vue'
 import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
+import MieruInboundFormModal from './MieruInboundFormModal.vue'
 import {
   addressFamilyMeta,
   confirmRemoveInbound,
@@ -112,6 +114,9 @@ const lastChain = ref<ChainApplyResult | null>(null)
  */
 const isRelayHost = computed(() => props.node.role === 'RELAY')
 const inbounds = computed(() => props.node.inbounds ?? [])
+// Mieru 入口与 sing-box 入站是两个数组:服务端是两个进程,参数与下发方式
+// 都不一样。合并只发生在下面的 rows 里,也就是【展示】这一层。
+const mierus = computed(() => props.node.mieru_inbounds ?? [])
 const nodeLabel = computed(() => props.node.display_name || props.node.name)
 
 async function loadTargets() {
@@ -158,6 +163,27 @@ const enabledMeta: Record<'on' | 'off', LbStatusMeta> = {
 }
 
 /**
+ * Mieru 入口的传输层标记,与 inboundProtocolMeta 同构。
+ *
+ * **显示的是【已经生效】的那一个,不是数据库里的期望值** —— 改了传输层
+ * 到下发成功之间的窗口里,订阅下发的、用户实际连的还是旧的那一种。
+ * 两者不一致时把箭头写出来,那正是「还没下发」这件事唯一看得见的地方。
+ */
+function mieruMeta(m: MieruInbound): LbStatusMeta {
+  if (!m.deployed_transport) {
+    return { text: '未下发', shape: 'ring', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder }
+  }
+  const pending = m.deployed_transport !== m.transport
+  return {
+    text: pending ? `${m.deployed_transport} → ${m.transport} 待下发` : `Mieru ${m.deployed_transport}`,
+    shape: pending ? 'triangle' : 'check',
+    fg: pending ? color.warning : color.success,
+    bg: pending ? color.warningBg : color.successBg,
+    bd: pending ? color.warningBorder : color.successBorder,
+  }
+}
+
+/**
  * 两类入口合成一份列表。
  *
  * 它们回答的是同一个问题 ——「用户连这台机器的哪个端口、连上之后去哪」,
@@ -173,15 +199,20 @@ const enabledMeta: Record<'on' | 'off', LbStatusMeta> = {
  */
 type EntryRow =
   | { key: string; kind: 'singbox'; inbound: NodeInbound }
+  | { key: string; kind: 'mieru'; mieru: MieruInbound }
   | { key: string; kind: 'nginx'; relay: NodeRelay }
 
+// key 的前缀不能省:三张表各自从 1 开始,不加前缀的话 i1 / m1 / r1
+// 会撞成同一个 key,而 Vue 会把三行当成同一行来复用 DOM。
 const rows = computed<EntryRow[]>(() => [
   ...inbounds.value.map((i) => ({ key: `i${i.id}`, kind: 'singbox' as const, inbound: i })),
+  ...mierus.value.map((m) => ({ key: `m${m.id}`, kind: 'mieru' as const, mieru: m })),
   ...relays.value.map((r) => ({ key: `r${r.id}`, kind: 'nginx' as const, relay: r })),
 ])
 
 const kindLabel: Record<EntryRow['kind'], string> = {
   singbox: 'sing-box',
+  mieru: 'Mieru',
   nginx: 'nginx 转发',
 }
 
@@ -196,26 +227,49 @@ function kindText(row: EntryRow): string {
  * 而漏掉其中一处的表现是「桌面上对、手机上空着」—— 那种差异不会有人主动去找。
  */
 function rowName(row: EntryRow): string {
-  return row.kind === 'singbox' ? row.inbound.display_name : row.relay.display_name
+  if (row.kind === 'singbox') return row.inbound.display_name
+  if (row.kind === 'mieru') return row.mieru.display_name
+  return row.relay.display_name
+}
+
+/** 端口段渲染成 30000-30010,单端口只渲染一个号码 —— 与后端同一套写法。 */
+function rangeText(start: number, end: number): string {
+  if (!start) return ''
+  return start === end ? String(start) : `${start}-${end}`
 }
 
 function rowPort(row: EntryRow): string {
-  return row.kind === 'singbox'
-    ? portText(row.inbound.listen_port, row.inbound.public_port)
-    : portText(row.relay.listen_port, row.relay.public_port)
+  if (row.kind === 'singbox') {
+    return portText(row.inbound.listen_port, row.inbound.public_port)
+  }
+  if (row.kind === 'mieru') {
+    const listen = rangeText(row.mieru.listen_port_start, row.mieru.listen_port_end)
+    const pub = rangeText(row.mieru.public_port_start, row.mieru.public_port_end)
+    // 与 portText 同一条规矩:两者相同时只写一个,不然那一列全是重复的号码。
+    return pub && pub !== listen ? `${listen} → 公网 ${pub}` : listen
+  }
+  return portText(row.relay.listen_port, row.relay.public_port)
 }
 
 function rowTier(row: EntryRow): string {
-  return row.kind === 'singbox' ? row.inbound.access_tier_name : row.relay.access_tier_name
+  if (row.kind === 'singbox') return row.inbound.access_tier_name
+  if (row.kind === 'mieru') return row.mieru.access_tier_name
+  return row.relay.access_tier_name
 }
 
 function rowEnabled(row: EntryRow): boolean {
-  return row.kind === 'singbox' ? row.inbound.enabled : row.relay.enabled
+  if (row.kind === 'singbox') return row.inbound.enabled
+  if (row.kind === 'mieru') return row.mieru.enabled
+  return row.relay.enabled
 }
 
 function rowSubText(row: EntryRow): string {
   const on =
-    row.kind === 'singbox' ? row.inbound.subscription_enabled : row.relay.subscription_enabled
+    row.kind === 'singbox'
+      ? row.inbound.subscription_enabled
+      : row.kind === 'mieru'
+        ? row.mieru.subscription_enabled
+        : row.relay.subscription_enabled
   return on ? '在订阅里' : '已从订阅下架'
 }
 
@@ -228,6 +282,12 @@ function rowSubText(row: EntryRow): string {
 function destinationText(row: EntryRow): string {
   if (row.kind === 'nginx') {
     return `透传到 ${row.relay.target_name || '(落地已删除)'}`
+  }
+  // Mieru 恒为本机直连:它不能被链式指向(sing-box 没有 mieru 出站),
+  // 也不能当中转的落地(nginx stream 只搬 TCP,而端口跳跃与单端口
+  // proxy_pass 对不上)。写死一句而不是留空 —— 留空会被读成"还没配"。
+  if (row.kind === 'mieru') {
+    return '本机直连'
   }
   const chain = chainTargetName(row.inbound)
   return chain ? `经 ${chain}` : '本机直连'
@@ -244,7 +304,9 @@ function familyOf(row: EntryRow): LbStatusMeta {
   const dual =
     row.kind === 'singbox'
       ? inboundHasIPv6Entry(row.inbound, props.node)
-      : !!props.node.ipv6_address
+      : row.kind === 'mieru'
+        ? !!props.node.ipv6_address && row.mieru.ipv6_enabled
+        : !!props.node.ipv6_address
   return addressFamilyMeta(dual)
 }
 
@@ -307,6 +369,52 @@ function openEditInbound(i: NodeInbound) {
 
 function removeInbound(i: NodeInbound) {
   confirmRemoveInbound(i, nodeLabel.value, runWithBusy, () => emit('changed'))
+}
+
+// ---------------------------------------------------------------- Mieru 入口
+//
+// 与 sing-box 那一组分开:它们改动之后的后果不一样(重启的是两个不同的进程),
+// 所以按钮分行、确认档次各走各的。合成一种之后,管理员会对
+// 「点这一下要不要挑时机」失去判断。
+
+const mieruOpen = ref(false)
+const editingMieru = ref<MieruInbound | null>(null)
+
+function openCreateMieru() {
+  editingMieru.value = null
+  mieruOpen.value = true
+}
+
+function openEditMieru(m: MieruInbound) {
+  editingMieru.value = m
+  mieruOpen.value = true
+}
+
+/**
+ * 删除一个 Mieru 入口。
+ *
+ * **不自动下发**,所以确认文案里必须写明"它还在跑" —— 不写的话,
+ * 管理员会以为点完删除权限就收回了,而实际上要等下一次下发。
+ * 用 lbDangerConfirm 而不是打字确认:它可以撤回(重新建一个同样的入口),
+ * 而且这一下不打断任何人。
+ */
+function removeMieru(m: MieruInbound) {
+  lbDangerConfirm({
+    title: `确认删除 Mieru 入口「${m.display_name}」?`,
+    okText: '确认删除',
+    impacts: [
+      `它会从 ${nodeLabel.value} 的订阅里立刻消失,新拉订阅的人看不到它。`,
+      '但它在节点上仍然跑着,已经拿到订阅的人照常能连 —— 直到下一次下发这台机器。',
+      '下发时会重启 mita,把这台机器上全部 Mieru 连接一起踢掉(不影响 sing-box 入口)。',
+    ],
+    footer: '这台机器上别的入口不受影响。',
+    onOk: () =>
+      runWithBusy(async () => {
+        await api.deleteMieruInbound(m.id)
+        message.success('已删除。下次下发这台机器时才会从节点上真正移除')
+        emit('changed')
+      }),
+  })
 }
 
 /** 把一次异步操作包上 busy 标记 —— 面板里每个动作都要抬起它。 */
@@ -530,6 +638,9 @@ onMounted(async () => {
       <a-button size="small" type="primary" :disabled="!!running" @click="openCreateInbound">
         新增入口
       </a-button>
+      <a-button size="small" :disabled="!!running" @click="openCreateMieru">
+        新增 Mieru 入口
+      </a-button>
       <a-button size="small" :disabled="!!running" @click="emit('install')">安装 sing-box</a-button>
       <a-button size="small" :disabled="!!running" @click="emit('deploy')">部署配置</a-button>
       <span class="nr__note">改了要重启,这台机器上<b>全部入口</b>的在线连接都会断开。</span>
@@ -577,8 +688,15 @@ onMounted(async () => {
     </div>
 
     <div v-if="loadError" class="nr__warn">{{ loadError }}</div>
-    <div v-else-if="!isRelayHost && !inbounds.length" class="nr__warn">
-      这台机器上一个 sing-box 入口都没有 —— 服务会正常运行,但谁都连不上。
+    <!-- 判据要把 Mieru 一起算上:只有 Mieru 入口的机器上,用户是连得上的,
+         而原来那句「谁都连不上」在那种机器上是错的 —— 一句错误的告警
+         会让管理员去修一台本来就好好的机器。 -->
+    <div v-else-if="!isRelayHost && !inbounds.length && !mierus.length" class="nr__warn">
+      这台机器上一个入口都没有 —— 服务会正常运行,但谁都连不上。
+    </div>
+    <div v-else-if="!isRelayHost && !inbounds.length" class="nr__hint">
+      这台机器上只有 Mieru 入口,没有 sing-box 入口 —— sing-box 会正常运行但不接受连接,
+      用户走的是 mita。
     </div>
 
     <!-- <768 整表换卡片:横向滚动会把「操作」列推到屏幕外,手机上找不到它。 -->
@@ -589,6 +707,7 @@ onMounted(async () => {
           <span class="nr__sb-name">{{ rowName(row) }}</span>
           <LbStatusTag :meta="familyOf(row)" />
           <LbStatusTag v-if="row.kind === 'singbox'" :meta="protocolMeta(row.inbound)" />
+          <LbStatusTag v-else-if="row.kind === 'mieru'" :meta="mieruMeta(row.mieru)" />
           <LbStatusTag v-else :meta="readyMeta[row.relay.target_ready ? 'yes' : 'no']" />
         </template>
         <div class="nr__sb-body lb-mono">{{ rowPort(row) }}</div>
@@ -611,6 +730,10 @@ onMounted(async () => {
             <a-button size="small" type="link" danger @click="removeInbound(row.inbound)">
               删除
             </a-button>
+          </template>
+          <template v-else-if="row.kind === 'mieru'">
+            <a-button size="small" type="link" @click="openEditMieru(row.mieru)">编辑</a-button>
+            <a-button size="small" type="link" danger @click="removeMieru(row.mieru)">删除</a-button>
           </template>
           <template v-else>
             <a-button size="small" type="link" @click="openEdit(row.relay)">编辑</a-button>
@@ -654,6 +777,9 @@ onMounted(async () => {
           <!-- sing-box 那几行显示的是【已经生效】的协议,不是数据库里的期望值:
                改协议到部署成功之间的窗口里,订阅下发的、用户实际连的还是旧的。 -->
           <LbStatusTag v-if="record.kind === 'singbox'" :meta="protocolMeta(record.inbound)" />
+          <!-- Mieru 那几行同理显示【已经生效】的传输层:改了它到下发成功之间,
+               用户实际连的还是旧的那一种。 -->
+          <LbStatusTag v-else-if="record.kind === 'mieru'" :meta="mieruMeta(record.mieru)" />
           <LbStatusTag v-else :meta="readyMeta[record.relay.target_ready ? 'yes' : 'no']" />
           <div class="nr__sub">{{ destinationText(record) }}</div>
         </template>
@@ -667,6 +793,15 @@ onMounted(async () => {
           <div class="nr__sub">{{ rowSubText(record) }}</div>
           <div
             v-if="record.kind === 'singbox' && !record.inbound.deployed_protocol"
+            class="nr__warn"
+          >
+            还没上过节点
+          </div>
+          <!-- Mieru 的判据是 deployed_transport,与 sing-box 看
+               deployed_protocol 同一条道理:一台下发过很多次的机器上,
+               刚加的这个入口仍然还不存在,而它不该出现在任何人的订阅里。 -->
+          <div
+            v-else-if="record.kind === 'mieru' && !record.mieru.deployed_transport"
             class="nr__warn"
           >
             还没上过节点
@@ -689,6 +824,16 @@ onMounted(async () => {
             </a-button>
             <a-button size="small" type="link" @click="openChain(record.inbound)">出口</a-button>
             <a-button size="small" type="link" danger @click="removeInbound(record.inbound)">
+              删除
+            </a-button>
+          </template>
+          <template v-else-if="record.kind === 'mieru'">
+            <a-button size="small" type="link" @click="openEditMieru(record.mieru)">
+              编辑
+            </a-button>
+            <!-- 没有「握手目标」与「出口」两个按钮:Mieru 不用 REALITY,
+                 也不能链出去(sing-box 没有 mieru 出站)。 -->
+            <a-button size="small" type="link" danger @click="removeMieru(record.mieru)">
               删除
             </a-button>
           </template>
@@ -768,6 +913,17 @@ onMounted(async () => {
       :node="node"
       :tiers="tiers"
       :existing-count="inbounds.length"
+      @saved="emit('changed')"
+      @busy="(l: string) => emit('busy', l)"
+    />
+
+    <!-- ---------------- Mieru 入口表单 ---------------- -->
+    <MieruInboundFormModal
+      v-model:open="mieruOpen"
+      :inbound="editingMieru"
+      :node="node"
+      :tiers="tiers"
+      :existing-count="mierus.length"
       @saved="emit('changed')"
       @busy="(l: string) => emit('busy', l)"
     />
