@@ -205,3 +205,98 @@ func (c ServerConfig) UserCodes() []string {
 	}
 	return out
 }
+
+// ---------- 探测用的客户端配置 ----------
+//
+// 部署的健康检查必须做**真实拨测** —— 那是本项目第一条铁律,
+// Mieru 不给它开口子。而 sing-box 拨不动 mieru(它没有 mieru 出站),
+// 所以节点上要留一份 mieru 客户端二进制,在部署的那几秒里跑一个
+// 临时的 socks5,拨完就删。
+
+// ClientConfig 是 mieru 客户端的配置。
+//
+// 字段名同样是 protobuf 的 JSON 名。这里只渲染探测需要的最小子集 ——
+// 面板不下发客户端配置给用户(用户拿到的是 mierus:// 或 Clash 配置),
+// 这份东西只在节点本机活几秒。
+type ClientConfig struct {
+	Profiles      []ClientProfile `json:"profiles"`
+	ActiveProfile string          `json:"activeProfile"`
+	RPCPort       int             `json:"rpcPort"`
+	Socks5Port    int             `json:"socks5Port"`
+	LoggingLevel  string          `json:"loggingLevel,omitempty"`
+}
+
+type ClientProfile struct {
+	ProfileName  string         `json:"profileName"`
+	User         User           `json:"user"`
+	Servers      []ClientServer `json:"servers"`
+	Multiplexing string         `json:"multiplexing,omitempty"`
+}
+
+type ClientServer struct {
+	IPAddress    string        `json:"ipAddress,omitempty"`
+	DomainName   string        `json:"domainName,omitempty"`
+	PortBindings []PortBinding `json:"portBindings"`
+}
+
+// ProbeParams 是渲染一份探测客户端配置需要的输入。
+type ProbeParams struct {
+	ProfileName string
+	UserCode    string
+	Password    string
+	// Server 固定是 127.0.0.1 —— 探测客户端跑在节点本机,与真实用户走
+	// 同一条转发路径,只是省掉了公网那一跳。走公网地址的话,NAT 机上
+	// 会撞到 hairpin,而那与这次要验的东西无关。
+	Server string
+	Ports  PortRange
+	// Transport 必须与服务端那一侧一致 —— 不一致时客户端连不上,
+	// 而那种失败看起来与"配置有问题"一模一样。
+	Transport Transport
+	// Socks5Port / RPCPort 由调用方在节点上挑一个没人用的。
+	// 两者不能相同:客户端会同时绑它们。
+	Socks5Port int
+	RPCPort    int
+}
+
+// BuildProbeClientConfig 渲染探测用的客户端配置。
+func BuildProbeClientConfig(p ProbeParams) ([]byte, error) {
+	if p.UserCode == "" || p.Password == "" {
+		return nil, fmt.Errorf("%w:探测缺少用户凭据", errRenderConfig)
+	}
+	if p.Ports.Empty() {
+		return nil, fmt.Errorf("%w:探测缺少端口段", errRenderConfig)
+	}
+	if p.Socks5Port == p.RPCPort {
+		return nil, fmt.Errorf("%w:探测的 socks5 与 RPC 端口不能相同", errRenderConfig)
+	}
+	transport := p.Transport
+	if transport == "" {
+		transport = TransportTCP
+	}
+	binding := PortBinding{Protocol: string(transport)}
+	if p.Ports.Single() {
+		binding.Port = p.Ports.Start
+	} else {
+		binding.PortRange = p.Ports.String()
+	}
+
+	cfg := ClientConfig{
+		Profiles: []ClientProfile{{
+			ProfileName: p.ProfileName,
+			User:        UserFor(p.UserCode, p.Password),
+			Servers: []ClientServer{{
+				IPAddress:    p.Server,
+				PortBindings: []PortBinding{binding},
+			}},
+		}},
+		ActiveProfile: p.ProfileName,
+		RPCPort:       p.RPCPort,
+		Socks5Port:    p.Socks5Port,
+		LoggingLevel:  "INFO",
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}

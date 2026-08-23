@@ -11,6 +11,7 @@ import (
 
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/externalproxy"
+	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
@@ -23,6 +24,13 @@ import (
 // 会把普通用户的凭据也写进去 —— 那是权限凭空放大,而且不报任何错。
 type UserProvider interface {
 	UsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error)
+	// MieruUsersForInbound 返回一个 Mieru 入口上应有的用户。
+	//
+	// 与 UsersForInbound 分开而不是共用:两者查的是**两张不同的视图**
+	// (user_effective_inbounds 与 user_effective_mieru_inbounds),
+	// 而 id 空间会撞 —— 共用一个方法就必须再传一个"这是哪一类"的参数,
+	// 而那个参数写漏的表现是把 sing-box 入站的用户下发给了 Mieru 实例。
+	MieruUsersForInbound(ctx context.Context, mieruInboundID int64) ([]mieru.User, error)
 }
 
 // PanelKeyProvider 返回面板专用的节点访问密钥。由 settings.KeyManager 实现。
@@ -37,6 +45,9 @@ type Service struct {
 	deployer    *deployment.Deployer
 	deployStore *deployment.Store
 	users       UserProvider
+	// mieruBinaries / mieruClients 为 nil 表示面板本地没有 Mieru 二进制。
+	mieruBinaries BinaryProvider
+	mieruClients  BinaryProvider
 	// relays 是中转主机上的 nginx 转发规则来源。为 nil 时 DeployRelays 直接报错,
 	// 而不是当成"没有规则"去停服务 —— 后者会在装配漏了的时候
 	// 悄悄把一台机器上全部转发停掉。
@@ -60,12 +71,17 @@ type ServiceOptions struct {
 	Deployer    *deployment.Deployer
 	DeployStore *deployment.Store
 	Users       UserProvider
-	Relays      RelayProvider
-	RelayHosts  RelayHostProvider
-	Trigger     DeployTrigger
-	Keys        PanelKeyProvider
-	Layout      deployment.Layout
-	Logger      *slog.Logger
+	// MieruBinaries / MieruClients 分别提供 mita 与 mieru 客户端二进制。
+	// 两者都为 nil 时 Mieru 相关操作会以「面板本地没有 Mieru 二进制」
+	// 拒绝 —— 而不是在下发到一半时才失败。
+	MieruBinaries BinaryProvider
+	MieruClients  BinaryProvider
+	Relays        RelayProvider
+	RelayHosts    RelayHostProvider
+	Trigger       DeployTrigger
+	Keys          PanelKeyProvider
+	Layout        deployment.Layout
+	Logger        *slog.Logger
 	// BootstrapKeyDirs 是引导新节点时搜索主控本机私钥的目录。
 	// 为空时用默认清单($HOME/.ssh 与 /etc/litebox/keys)。
 	BootstrapKeyDirs []string
@@ -79,6 +95,8 @@ func NewService(opts ServiceOptions) *Service {
 		deployer:       opts.Deployer,
 		deployStore:    opts.DeployStore,
 		users:          opts.Users,
+		mieruBinaries:  opts.MieruBinaries,
+		mieruClients:   opts.MieruClients,
 		relays:         opts.Relays,
 		relayHosts:     opts.RelayHosts,
 		trigger:        opts.Trigger,
@@ -369,6 +387,14 @@ func (s *Service) renderInputs(
 		// 而那会往一台只有 nginx 的机器上装服务并重启它。
 		return nil, nil, nil, fmt.Errorf("节点 %s 是中转角色,没有 sing-box 配置", n.Name)
 	}
+	// Mieru 出口那一跳的 socks 入站在 sing-box 的配置里 —— 收在这里而不是
+	// 让调用方自己拼:desiredConfig 与 Deploy 各收一遍的话,漏掉其中一处的
+	// 表现是「配置差异里看不出变化,部署下去却多了几个入站」。
+	egress, err := s.MieruEgressParamsFor(ctx, nodeID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	n.mieruEgress = egress
 
 	params := make([]singbox.InboundParams, 0, len(n.Inbounds))
 	probes := make([]deployment.ProbeTarget, 0, len(n.Inbounds))
@@ -463,6 +489,20 @@ func (s *Service) chainOutbound(ctx context.Context, in *Inbound) (*singbox.Chai
 		return nil, nil
 	}
 
+	return chainOutboundFor(target, in.ChainCode, in.ChainUUID, in.ChainSSPassword)
+}
+
+// chainOutboundFor 把一个已解析的落地连同链路凭据翻成出站参数。
+//
+// 从 chainOutbound 抽出来是为了让 Mieru 出口复用它 —— 两者的落地形态
+// 完全一样(自建入站或外部代理),只是凭据挂在不同的行上。
+// 各写一份的话,加一种落地来源要改两处,而漏掉其中一处的表现是
+// 「sing-box 入口的出口能用、Mieru 入口的连不上」。
+//
+// chainCode 只用于报错定位,不进配置。
+func chainOutboundFor(
+	target *ChainTarget, chainCode, chainUUID, chainSSPassword string,
+) (*singbox.ChainOutbound, error) {
 	switch target.Kind {
 	case ChainTargetInbound:
 		t := target.Inbound
@@ -474,15 +514,15 @@ func (s *Service) chainOutbound(ctx context.Context, in *Inbound) (*singbox.Chai
 		}
 		if t.Protocol == singbox.ProtocolShadowsocks {
 			// 拼接只有 SSClientPassword 一处实现,与拨测、订阅共用。
-			password, err := singbox.SSClientPassword(t.SSServerKey, in.ChainSSPassword, t.SSMethod)
+			password, err := singbox.SSClientPassword(t.SSServerKey, chainSSPassword, t.SSMethod)
 			if err != nil {
-				return nil, fmt.Errorf("拼接链路的 Shadowsocks 凭据: %w", err)
+				return nil, fmt.Errorf("拼接链路 %s 的 Shadowsocks 凭据: %w", chainCode, err)
 			}
 			out.SSMethod = t.SSMethod
 			out.SSPassword = password
 			return out, nil
 		}
-		out.UUID = in.ChainUUID
+		out.UUID = chainUUID
 		out.RealityDest = t.RealityDest
 		out.RealityPublicKey = t.RealityPublicKey
 		out.RealityShortID = t.RealityShortID
@@ -513,9 +553,10 @@ func (s *Service) chainOutbound(ctx context.Context, in *Inbound) (*singbox.Chai
 // 唯一能看到影响范围的地方。
 func nodeParams(n *Node, inbounds []singbox.InboundParams) singbox.NodeParams {
 	return singbox.NodeParams{
-		APIPort:    n.APIPort,
-		MemTotalMB: n.MemTotalMB,
-		Inbounds:   inbounds,
+		APIPort:     n.APIPort,
+		MemTotalMB:  n.MemTotalMB,
+		Inbounds:    inbounds,
+		MieruEgress: n.mieruEgress,
 	}
 }
 

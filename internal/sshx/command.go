@@ -33,6 +33,13 @@ func (c Command) String() string {
 	return strings.Join(parts, " ")
 }
 
+// ShellQuote 是 shellQuote 的导出版本,供需要自己拼 sh -c 脚本的调用方用。
+//
+// 拼脚本本身要尽量避免(所有远程参数严格校验是硬约束),但有几处
+// 确实绕不开 —— 比如「文件在就 cp、不在就退 42」这种带条件的动作,
+// 拆成两条命令会在两次往返之间出现一个别人可以插进来的窗口。
+func ShellQuote(s string) string { return shellQuote(s) }
+
 // shellQuote 用单引号包裹字符串。单引号内 POSIX shell 不做任何解释,
 // 唯一需要处理的是单引号本身:闭合、插入转义后的单引号、再重新开启。
 func shellQuote(s string) string {
