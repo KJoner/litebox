@@ -13,15 +13,32 @@ const realPenaltyLine = "persourcepenalties crash:90 authfail:5 noauth:1 " +
 	"grace-exceeded:10 refuseconnection:10 max:600 min:15 " +
 	"max-sources4:65536 max-sources6:65536 overflow:permissive overflow6:permissive"
 
-func TestPenaltyNoteExplainsTheNoauthTrap(t *testing.T) {
+// 提示要把惩罚归因到【对的地方】。这个函数原来叫 ...ExplainsTheNoauthTrap,
+// 那时拨测确实每跑一次就攒一次 noauth;认证式拨测之后那句话成了错的归因,
+// 而错的归因比没有归因更糟 —— 它会让管理员去"少部署几次",
+// 而真正的来源一动不动。
+func TestPenaltyNoteAttributesThePenaltyCorrectly(t *testing.T) {
 	note := penaltyNoteFrom(realPenaltyLine)
 	if note == "" {
 		t.Fatal("开着惩罚却什么都不说 —— 那就等于让人再查一遍")
 	}
-	// 必须点破"拨测自己就是那个 noauth 连接",否则读的人只会觉得
-	// 面板在甩锅给 sshd。
-	if !strings.Contains(note, "noauth") {
-		t.Errorf("没提到 noauth:%s", note)
+	// **不能再声称是面板自己攒的。** 读横幅那一版确实每拨测一次就攒一次
+	// noauth,而拨测早就改成在隧道上完成一次完整的公钥认证了 ——
+	// 成功的认证不在任何一档惩罚里。照着旧说法去"少部署几次"是白费功夫,
+	// 而真正的来源(共用出口 IP 上的邻居、扫描者、升级前攒下的)还在那儿。
+	// 一句错误的归因比没有归因更糟,它会把排查引向另一个方向。
+	if !strings.Contains(note, "不是面板自己攒出来的") {
+		t.Errorf("没有澄清惩罚的来源:%s", note)
+	}
+	for _, stale := range []string{"读一行横幅", "不认证就断开", "反复部署会让"} {
+		if strings.Contains(note, stale) {
+			t.Errorf("还留着旧版拨测的描述 %q:%s", stale, note)
+		}
+	}
+	// 最容易搞错的一条:链式入口的拨测经落地绕回来,来源是【落地】的出口 IP。
+	// 按直觉放行节点自己的地址是白做,而那正是管理员会做的第一件事。
+	if !strings.Contains(note, "落地那台机器的出口 IP") {
+		t.Errorf("没说清要放行哪个 IP:%s", note)
 	}
 	// 原始取值要带上:min/max 决定了要等多久,是能不能立刻重试的依据。
 	if !strings.Contains(note, "min:15") || !strings.Contains(note, "max:600") {
