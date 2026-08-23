@@ -562,6 +562,10 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	// Deploy 还有协调器与巡检两条调用路径,不能靠调用方替它守住。
 	done := context.WithoutCancel(ctx)
 
+	// 结局先落日志再落库。Save 还有别的失败方式(数据库锁、磁盘满),
+	// 而部署恰恰是最不能没有痕迹的那种操作 —— 它重启服务、踢掉全部在线连接。
+	logDeployResult(s.logger, nodeID, result, deployErr)
+
 	if _, err := s.deployStore.Save(done, result); err != nil {
 		s.logger.Error("保存部署记录失败", "node_id", nodeID, "error", err)
 	}
