@@ -78,7 +78,9 @@ func inboundParamsOf(in *Inbound) InboundParams {
 // nodeUpdateParamsOf 同理,给节点那一层用。
 func nodeUpdateParamsOf(n *Node) UpdateParams {
 	return UpdateParams{
-		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host, IPv6Address: n.IPv6Address,
+		Name: n.Name, DisplayName: n.DisplayName, Host: n.Host,
+		// 这两栏必须回填:留空在 UpdateParams 里表示"清空"而不是"保持原值"。
+		SubIPv4Address: n.SubIPv4Address, IPv6Address: n.IPv6Address,
 		SSHPort: n.SSHPort, SSHUser: n.SSHUser, APIPort: n.APIPort,
 		SortOrder:    n.SortOrder,
 		PublicRemark: n.PublicRemark, MaintenanceMessage: n.MaintenanceMessage,

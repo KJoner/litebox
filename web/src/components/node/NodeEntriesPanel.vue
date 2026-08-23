@@ -257,7 +257,12 @@ function familyOf(row: EntryRow): LbStatusMeta {
  */
 function subEntriesOf(i: NodeInbound) {
   const port = i.public_port || i.listen_port
-  const out = [{ name: i.display_name, addr: `${props.node.host}:${port}` }]
+  // IPv4 那条取【订阅地址】而不是管理地址:这一块显示的是"用户会拿到什么",
+  // 拿管理地址来拼的话,一台两者不同的机器上,面板显示的地址与用户客户端里
+  // 那一条对不上 —— 而两边都不报错,而排查"用户连不上"的人正是照着这里的
+  // 地址去测的。用后端算好的 subscription_host,不在这里自己写回落 ——
+  // 与上面 ipv6_entry_name 不在这里拼后缀是同一条道理。
+  const out = [{ name: i.display_name, addr: `${props.node.subscription_host}:${port}` }]
   if (inboundHasIPv6Entry(i, props.node)) {
     out.push({
       name: i.ipv6_entry_name,

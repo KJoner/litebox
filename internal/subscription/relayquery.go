@@ -31,7 +31,7 @@ import (
 func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.display_name,
-		       a.host, a.ipv6_address,
+		       a.host, a.sub_ipv4_address, a.ipv6_address,
 		       CASE WHEN r.public_port = 0 THEN r.listen_port ELSE r.public_port END,
 		       -- IPv6 条目跟随这条规则的公网端口,不再读 nodes.ipv6_proxy_port:
 		       -- 那一列已随多入站(迁移 0019)冻结,值搬去了 node_inbounds,
@@ -74,7 +74,8 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			extProtocol, extParamsEnc, extURI  string
 			extServer                          string
 		)
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address, &p.Port, &p.IPv6Port,
+		if err := rows.Scan(&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
+			&p.Port, &p.IPv6Port,
 			&kind, &protocol, &ssMethod, &tfo, &ssKeyEnc,
 			&realityDest, &realityPub, &realitySI,
 			&extProtocol, &extParamsEnc, &extURI, &extServer); err != nil {

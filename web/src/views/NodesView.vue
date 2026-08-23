@@ -99,7 +99,10 @@ const visible = computed(() =>
     .filter((n) => {
       const kw = filters.keyword.trim().toLowerCase()
       if (kw) {
-        const hay = [n.name, n.display_name, n.host, n.ipv6_address].join(' ').toLowerCase()
+        // 订阅地址也要能搜到:用户报障时给的是它,而管理员手上只有这个搜索框。
+        const hay = [n.name, n.display_name, n.host, n.sub_ipv4_address, n.ipv6_address]
+          .join(' ')
+          .toLowerCase()
         if (!hay.includes(kw)) return false
       }
       if (filters.run !== undefined && n.status !== filters.run) return false
@@ -725,11 +728,16 @@ const keyOpen = ref(false)
             <template v-if="n.role !== 'RELAY'">
               <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
               {{ n.host }} · 端口 {{ portSummary(n) }} · {{ tierSummary(n) }}
+              <!-- 只在两者不同时才写出来:相同的话再列一遍只是噪音。
+                   而不同时必须写 —— 上面那个地址是面板连的,不是用户连的,
+                   两者长得一样合理,排查时照着它去测会得到与故障无关的结论。 -->
+              <template v-if="n.sub_ipv4_address"> · 订阅 {{ n.sub_ipv4_address }}</template>
               <template v-if="n.ipv6_address"> · IPv6</template>
             </template>
             <!-- 中转机没有自己的协议与代理端口,渲染出来只会让人以为配漏了。 -->
             <template v-else>
               {{ n.host }} · 端口见转发规则
+              <template v-if="n.sub_ipv4_address"> · 订阅 {{ n.sub_ipv4_address }}</template>
             </template>
           </div>
           <div v-if="hasChain(n)" class="nv__host">出口经中转</div>
@@ -849,6 +857,8 @@ const keyOpen = ref(false)
                    保持默认值,渲染出来只会让人以为配漏了。
                    客户端连的端口在「转发」面板里,一条规则一个。 -->
               <template v-else>{{ record.host }} · 端口见转发规则</template>
+              <!-- 订阅地址与管理地址不同时才写出来,理由同上。 -->
+              <template v-if="record.sub_ipv4_address"> · 订阅 {{ record.sub_ipv4_address }}</template>
               <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
               <template v-if="record.ipv6_address"> · IPv6</template>
             </div>
