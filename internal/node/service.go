@@ -528,6 +528,12 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	if n.Status == StatusDisabled {
 		return deployment.Result{}, fmt.Errorf("节点 %s 已禁用,不能部署", n.Name)
 	}
+	// 链式入站的落地必须先同步。放在这里 —— 节点一个字节都还没动过,
+	// 拒绝的代价只是一句话;放到 deployer.Deploy 之后就是一次重启加一次回滚,
+	// 而报错还会指向错误的方向(见 ErrChainTargetOutOfSync)。
+	if err := s.checkChainTargetsReady(ctx, n.Inbounds); err != nil {
+		return deployment.Result{}, err
+	}
 
 	revision, err := s.store.NextRevision(ctx, nodeID)
 	if err != nil {
