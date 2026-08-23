@@ -431,7 +431,7 @@ func (d *Deployer) rollbackRelay(
 			return "首次下发,没有可退回的配置,已停止中转服务", nil
 		})
 		result.RollbackResult = "首次下发失败,已停止中转服务"
-		return cause
+		return sshx.RemoteFailure(cause)
 	}
 
 	rec.run("回滚到上一版配置", func() (string, error) {
@@ -459,7 +459,7 @@ func (d *Deployer) rollbackRelay(
 	} else {
 		result.RollbackResult = "回滚失败:" + last.Detail
 	}
-	return cause
+	return sshx.RemoteFailure(cause)
 }
 
 // asRelayInit 把探测到的 init 系统转成中转服务的管理能力。
