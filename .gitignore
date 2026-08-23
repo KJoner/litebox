@@ -14,6 +14,7 @@ web/dist/
 # Phase 0 验证产物(体积大,不入库)
 /phase0/bin/
 /phase0/statsprobe/statsprobe.exe
+/phase0/mieruprobe/mieruprobe*
 /phase0/logs/
 
 # 要分发到节点的 sing-box 二进制(约 28MB,由 scripts/build-singbox.sh 生成)
