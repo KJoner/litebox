@@ -12,6 +12,7 @@ import {
   type NodeProtocol,
   type NodeSSMethod,
 } from '@/api/client'
+import { lbDangerConfirm } from '@/components/lb/lbDangerConfirm'
 
 /**
  * 新增 / 编辑一个 sing-box 入口。
@@ -52,6 +53,8 @@ const form = ref({
   listen_port: 0,
   public_port: 0,
   ipv6_public_port: 0,
+  ipv6_enabled: true,
+  ipv6_display_name: '',
   tcp_fast_open: false,
   access_tier_id: 0,
   sort_order: 0,
@@ -75,6 +78,11 @@ watch(
           listen_port: i.listen_port,
           public_port: i.public_port,
           ipv6_public_port: i.ipv6_public_port,
+          ipv6_enabled: i.ipv6_enabled,
+          // 回填【原始值】而不是 ipv6_entry_name:后者是回落之后的结果,
+          // 把它填回输入框等于把「跟随」固化成一个具体名字,而管理员
+          // 只是打开看了一眼、连改都没改。
+          ipv6_display_name: i.ipv6_display_name,
           tcp_fast_open: i.tcp_fast_open,
           access_tier_id: i.access_tier_id,
           sort_order: i.sort_order,
@@ -89,6 +97,9 @@ watch(
           listen_port: 0,
           public_port: 0,
           ipv6_public_port: 0,
+          // 机器有 IPv6 就默认给它一条 —— 与后端默认一致(迁移 0022)。
+          ipv6_enabled: true,
+          ipv6_display_name: '',
           tcp_fast_open: false,
           // 默认普通组。不从别处继承 —— 机器已经没有等级了(迁移 0020),
           // 而"跟着上一个入口走"会让新入口悄悄带上一个限制。
@@ -118,6 +129,24 @@ const protocolSwitchBlocked = computed(() => {
   return ''
 })
 
+/**
+ * 这次保存会不会改掉 IPv6 条目在用户客户端里的名字。
+ *
+ * 两种情况都算:直接改了那一栏,或者那一栏留着空(跟随)而 IPv4 名字变了。
+ * 判断只比较原始值,**不在这里拼一次 -IPV6 后缀** —— 回落规则只有
+ * subscription.IPv6EntryName 一处实现,前端拼一遍就是第二处。
+ */
+const ipv6NameWillChange = computed(() => {
+  const cur = props.inbound
+  if (!cur || !props.node.ipv6_address) return false
+  // 本来就没在下发、或者这次要关掉的,谈不上改名。
+  if (!cur.ipv6_enabled || !form.value.ipv6_enabled) return false
+  const before = cur.ipv6_display_name.trim()
+  const after = form.value.ipv6_display_name.trim()
+  if (before !== after) return true
+  return after === '' && form.value.display_name.trim() !== cur.display_name
+})
+
 async function submit() {
   if (!form.value.display_name.trim()) {
     message.warning('请填写入口名称')
@@ -127,6 +156,27 @@ async function submit() {
     message.warning('请填写主机监听端口')
     return
   }
+  // 改名是【改不回来】的那一类:把名字改回去也删不掉用户客户端里那份旧节点。
+  // 所以它比普通保存多一档摩擦 —— 但没到打字确认那一档,因为没有人会因此断线。
+  if (ipv6NameWillChange.value) {
+    lbDangerConfirm({
+      title: '确认修改 IPv6 条目的名称?',
+      okType: 'primary',
+      okText: '确认保存',
+      impacts: [
+        '已经导入过订阅的用户,客户端里会多出一份新的 IPv6 节点。',
+        '旧的那一份不会自己消失,要用户手工删掉 —— 把名字改回去也删不掉它。',
+        '两份都连得上同一台机器,所以不会有人因此断线。',
+      ],
+      footer: '还没导入订阅、或者之后会重新拉一次订阅的人不受影响。',
+      onOk: () => doSave(),
+    })
+    return
+  }
+  await doSave()
+}
+
+async function doSave() {
   running.value = props.inbound ? '正在保存入口' : '正在新增入口'
   emit('busy', running.value)
   try {
@@ -191,9 +241,34 @@ async function submit() {
           443。填反了 sing-box 会监听在转发链路另一端的号码上,而各项检查都会通过。
         </div>
       </a-form-item>
-      <a-form-item v-if="node.ipv6_address" label="IPv6 公网端口(留 0 表示跟随 IPv4 公网端口)">
-        <a-input-number v-model:value="form.ipv6_public_port" :min="0" :max="65535" />
-      </a-form-item>
+      <!-- IPv6 三项收在一起。它们回答的是同一个问题:这个入口在订阅里
+           要不要多出一条 IPv6 的地址、叫什么、连哪个端口。 -->
+      <template v-if="node.ipv6_address">
+        <a-form-item>
+          <a-checkbox v-model:checked="form.ipv6_enabled">
+            同时下发 IPv6 条目(这台机器填了 IPv6 地址)
+          </a-checkbox>
+          <div class="ifm__hint">
+            IPv6 条目<b>不是第二个入口</b> ——
+            它和上面那条是同一个 sing-box 入站的两个地址:协议、监听端口、用户凭据与流量统计全部共用,
+            只有名字和公网端口能单独设。
+          </div>
+        </a-form-item>
+        <a-form-item v-if="form.ipv6_enabled" label="IPv6 条目名称(留空表示自动加 -IPV6 后缀)">
+          <a-input
+            v-model:value="form.ipv6_display_name"
+            :placeholder="inbound?.ipv6_entry_name || '留空则跟随上面的入口名称'"
+          />
+          <div class="ifm__hint">
+            用户客户端里靠这个名字区分两条线路,所以它不能与入口名称相同。
+            <b>改名之后,已经导入过订阅的人客户端里会多出一份新节点,而旧的那份要他们自己删</b> ——
+            改回去也删不掉它。
+          </div>
+        </a-form-item>
+        <a-form-item v-if="form.ipv6_enabled" label="IPv6 公网端口(留 0 表示跟随 IPv4 公网端口)">
+          <a-input-number v-model:value="form.ipv6_public_port" :min="0" :max="65535" />
+        </a-form-item>
+      </template>
       <a-form-item>
         <a-checkbox v-model:checked="form.tcp_fast_open">
           TCP Fast Open(同时管两端:入站与订阅里下发的出站)

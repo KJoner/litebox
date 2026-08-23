@@ -289,6 +289,18 @@ export interface NodeInbound {
   public_port: number
   /** IPv6 条目用的公网端口。0 表示跟随 public_port。 */
   ipv6_public_port: number
+  /** 这个入口在订阅里要不要多出一条 IPv6 条目。机器没填 IPv6 地址时它没有意义。 */
+  ipv6_enabled: boolean
+  /** IPv6 条目的独立名称。空串表示跟随 IPv4 名字。**渲染时不要用它**。 */
+  ipv6_display_name: string
+  /**
+   * IPv6 条目在订阅里【实际】显示的名字,后端已经算好回落。
+   *
+   * 渲染一律用它,不要自己拼 `display_name + '-IPV6'` —— 回落只有
+   * subscription.IPv6EntryName 一处实现,前端再拼一遍的话,某天改了规则
+   * 只会改到一边,表现是面板上显示的名字与用户客户端里那条对不上。
+   */
+  ipv6_entry_name: string
   tcp_fast_open: boolean
   /** 节点上【已经生效】的 TFO。订阅只看它,理由同 deployed_protocol。 */
   deployed_tcp_fast_open: boolean
@@ -325,6 +337,10 @@ export interface NodeInboundInput {
   listen_port: number
   public_port: number
   ipv6_public_port?: number
+  /** null 表示保持原值(新增时默认开)。 */
+  ipv6_enabled?: boolean
+  /** 空串表示「跟随 IPv4 名字」,**不是**「保持原值」—— 编辑时必须回填。 */
+  ipv6_display_name?: string
   tcp_fast_open: boolean
   reality_dest?: string
   reality_dest_port?: number
@@ -355,7 +371,10 @@ export interface Node {
   maintenance_message: string
   /** IPv4 地址,同时是 SSH 管理地址与 IPv4 订阅地址 */
   host: string
-  /** 可选的公网 IPv6,只影响订阅:填了就多下发一条「展示名称-IPV6」 */
+  /**
+   * 可选的公网 IPv6,只影响订阅:填了之后这台机器上每个开着 IPv6 条目的入口
+   * 都会多下发一条。条目名由入口的 ipv6_entry_name 给出。
+   */
   ipv6_address: string
   /**
    * 0 表示不限量。只用于统计与预警,超额不会自动停服。
@@ -902,7 +921,7 @@ export interface PortalNode {
   public_remark: string
   maintenance_message: string
   in_subscription: boolean
-  /** 订阅里会多出一条「展示名称-IPV6」;地址本身不下发给用户 */
+  /** 这个入口在订阅里会多出一条 IPv6 条目;地址本身不下发给用户 */
   supports_ipv6: boolean
   today_bytes: number
   month_bytes: number

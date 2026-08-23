@@ -75,6 +75,10 @@ type Node struct {
 	InSubscription     bool   `json:"in_subscription"`
 	// SupportsIPv6 只说明订阅里会多出一条 IPv6 条目,不给出地址本身 ——
 	// 这个 DTO 是白名单,节点地址从来不在里面。
+	//
+	// 判据是「机器填了 IPv6 地址」**且**「这个入口开着 IPv6 条目」,两个条件
+	// 缺一不可。只看前者的话,管理员关掉某个入口的 IPv6 之后,门户仍然写着
+	// 「支持 IPv6」,而用户拉到的订阅里根本没有那一条 —— 他会去查自己的网络。
 	SupportsIPv6 bool `json:"supports_ipv6"`
 
 	TodayBytes int64   `json:"today_bytes"`
@@ -269,7 +273,7 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		       n.maintenance_message,
 		       n.subscription_enabled AND i.subscription_enabled AND i.enabled,
 		       n.deployed_config_sha256,
-		       n.ipv6_address != '', i.deployed_protocol
+		       n.ipv6_address != '' AND i.ipv6_enabled, i.deployed_protocol
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id
 		  JOIN access_tiers t ON t.id = i.access_tier_id

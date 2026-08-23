@@ -16,6 +16,7 @@ func testPhysical() PhysicalNode {
 		DisplayName:      "LA-01",
 		Host:             "192.0.2.10",
 		Port:             24443,
+		IPv6Enabled:      true,
 		RealityDest:      "www.cloudflare.com",
 		RealityPublicKey: "TVMc7lw7Clen6leuRJAC0SdEOF7jyYycPq08PqU8kRI",
 		RealityShortID:   "dc329d8c57c1d2f4",

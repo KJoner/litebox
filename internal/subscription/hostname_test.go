@@ -45,6 +45,7 @@ func TestIPv6HostnameExpandsAsIs(t *testing.T) {
 		DisplayName: "洛杉矶 01",
 		Host:        "la.ddns.example.com",
 		IPv6Address: "v6.ddns.example.com",
+		IPv6Enabled: true,
 		Port:        24443,
 		Protocol:    singbox.ProtocolVLESSReality,
 	}

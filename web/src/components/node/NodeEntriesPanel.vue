@@ -17,7 +17,13 @@ import { LbRowCard, LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/co
 import InboundChainModal from './InboundChainModal.vue'
 import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
-import { confirmRemoveInbound, inboundProtocolMeta as protocolMeta, portText } from './inboundOps'
+import {
+  addressFamilyMeta,
+  confirmRemoveInbound,
+  inboundHasIPv6Entry,
+  inboundProtocolMeta as protocolMeta,
+  portText,
+} from './inboundOps'
 import { useNarrow } from '@/composables/useNarrow'
 import { color } from '@/theme/tokens'
 
@@ -227,13 +233,34 @@ function destinationText(row: EntryRow): string {
   return chain ? `经 ${chain}` : '本机直连'
 }
 
-/** 一个入口在订阅里展开成的条目(IPv4 + 可选 IPv6)。 */
+/**
+ * 一行在订阅里占几个地址族。
+ *
+ * 中转那一类没有逐条开关 —— 只要机器填了 IPv6,它的转发条目就一起展开
+ * (subscription.PhysicalRelay.Expand)。两类的规则不同,但答案是同一个
+ * 问题,所以合在一列里给。
+ */
+function familyOf(row: EntryRow): LbStatusMeta {
+  const dual =
+    row.kind === 'singbox'
+      ? inboundHasIPv6Entry(row.inbound, props.node)
+      : !!props.node.ipv6_address
+  return addressFamilyMeta(dual)
+}
+
+/**
+ * 一个入口在订阅里展开成的条目(IPv4 + 可选 IPv6)。
+ *
+ * IPv6 那条的名字取后端算好的 ipv6_entry_name,**不在这里拼 -IPV6 后缀** ——
+ * 回落只有 subscription.IPv6EntryName 一处实现,这里再拼一遍就是第二处,
+ * 而分叉的表现是面板上写的名字与用户客户端里那条对不上,两边都不报错。
+ */
 function subEntriesOf(i: NodeInbound) {
   const port = i.public_port || i.listen_port
   const out = [{ name: i.display_name, addr: `${props.node.host}:${port}` }]
-  if (props.node.ipv6_address) {
+  if (inboundHasIPv6Entry(i, props.node)) {
     out.push({
-      name: `${i.display_name}-IPV6`,
+      name: i.ipv6_entry_name,
       addr: `[${props.node.ipv6_address}]:${i.ipv6_public_port || port}`,
     })
   }
@@ -555,6 +582,7 @@ onMounted(async () => {
         <template #head>
           <span class="nr__kind">{{ kindText(row) }}</span>
           <span class="nr__sb-name">{{ rowName(row) }}</span>
+          <LbStatusTag :meta="familyOf(row)" />
           <LbStatusTag v-if="row.kind === 'singbox'" :meta="protocolMeta(row.inbound)" />
           <LbStatusTag v-else :meta="readyMeta[row.relay.target_ready ? 'yes' : 'no']" />
         </template>
@@ -602,7 +630,10 @@ onMounted(async () => {
       </a-table-column>
       <a-table-column key="name" title="入口">
         <template #default="{ record }">
-          <div class="nr__sb-name">{{ rowName(record) }}</div>
+          <div class="nr__sb-name">
+            {{ rowName(record) }}
+            <LbStatusTag :meta="familyOf(record)" />
+          </div>
           <span v-if="record.kind === 'singbox'" class="nr__tag lb-mono">
             {{ record.inbound.tag }}
           </span>
@@ -684,6 +715,7 @@ onMounted(async () => {
            两条指向同一个入站,改 IPv6 保存即生效,不需要重新部署。 -->
       <div v-if="node.ipv6_address">
         IPv6 与 IPv4 两条指向<b>同一个入站</b>,UUID、REALITY 公钥、short ID 完全相同。
+        名字与公网端口可以逐入口单独设,其余一律共用 —— 流量也记在一起。
       </div>
     </div>
 

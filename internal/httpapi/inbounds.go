@@ -59,6 +59,13 @@ type inboundRequest struct {
 	ListenPort     int `json:"listen_port"`
 	PublicPort     int `json:"public_port"`
 	IPv6PublicPort int `json:"ipv6_public_port"`
+
+	// IPv6Enabled 为 null:新增默认开,编辑时保持原值。它决定这个入口在订阅里
+	// 要不要多出一条 IPv6 条目 —— 机器没填 IPv6 地址时它没有意义。
+	IPv6Enabled *bool `json:"ipv6_enabled"`
+	// IPv6DisplayName **空串表示「跟随 IPv4 名字 + -IPV6」,不是「保持原值」**。
+	// 清空覆盖值是管理员表达「改回跟随」的唯一方式。
+	IPv6DisplayName string `json:"ipv6_display_name"`
 	// TCPFastOpen 默认关。它必须两端一致才有意义,所以这一个开关同时控制
 	// 入站与订阅里下发给客户端的出站。
 	TCPFastOpen bool `json:"tcp_fast_open"`
@@ -83,6 +90,8 @@ func (req inboundRequest) params() node.InboundParams {
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		IPv6PublicPort:      req.IPv6PublicPort,
+		IPv6Enabled:         req.IPv6Enabled,
+		IPv6DisplayName:     strings.TrimSpace(req.IPv6DisplayName),
 		TCPFastOpen:         req.TCPFastOpen,
 		RealityDest:         strings.TrimSpace(req.RealityDest),
 		RealityDestPort:     req.RealityDestPort,

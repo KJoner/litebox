@@ -248,6 +248,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT i.display_name, n.host, n.ipv6_address,
 		       i.public_port, i.listen_port, i.ipv6_public_port,
+		       i.ipv6_enabled, i.ipv6_display_name,
 		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
 		       i.ss_password_encrypted,
 		       i.reality_dest, i.reality_pubkey, i.reality_short_id
@@ -275,6 +276,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		var listenPort int
 		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address,
 			&p.Port, &listenPort, &p.IPv6Port,
+			&p.IPv6Enabled, &p.IPv6Name,
 			&protocol, &ssMethod, &p.TCPFastOpen, &ssKeyEnc,
 			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
