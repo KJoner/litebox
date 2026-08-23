@@ -36,6 +36,12 @@ const (
 	FormatURI Format = "uri"
 	// FormatSingBox 输出完整的 sing-box 客户端配置。
 	FormatSingBox Format = "sing-box"
+	// FormatClash 输出完整的 mihomo(Clash.Meta)客户端配置。
+	//
+	// 它不是"另一种写法的同一份东西":有些协议根本没有通用的分享链接,
+	// 而 Clash 用户原来只能靠模板里的 proxy-providers 去拉 URI 列表 ——
+	// 那些协议对他们等于不存在。
+	FormatClash Format = "clash"
 )
 
 // ParseFormat 解析格式参数,未知值回落到 base64。
@@ -45,6 +51,10 @@ func ParseFormat(raw string) Format {
 		return FormatURI
 	case "sing-box", "singbox", "json":
 		return FormatSingBox
+	// mihomo 是 Clash.Meta 现在的名字,两个都收 —— 用哪个词取决于用户手上
+	// 那个客户端是哪一年装的,而他不该为此拿到一份 base64。
+	case "clash", "mihomo", "yaml", "clash-meta":
+		return FormatClash
 	default:
 		return FormatBase64
 	}
@@ -140,6 +150,17 @@ func (s *Service) Build(ctx context.Context, token string, format Format) (Resul
 		result.Body = body
 		result.ContentType = "application/json; charset=utf-8"
 		result.Filename = u.UserCode + ".json"
+	case FormatClash:
+		body, err := ClashClientConfig(entries, s.mixedPort)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Body = body
+		// text/yaml 而不是 application/octet-stream:不少 Clash 客户端按
+		// Content-Type 决定这是"导入订阅"还是"下载一个文件",而后者的表现是
+		// 用户点了订阅链接却什么都没发生。
+		result.ContentType = "text/yaml; charset=utf-8"
+		result.Filename = u.UserCode + ".yaml"
 	case FormatURI:
 		result.Body = []byte(strings.Join(uriList(entries), "\n"))
 		result.ContentType = "text/plain; charset=utf-8"

@@ -970,6 +970,13 @@ export interface PortalSubscription {
   url_base64: string
   url_uri: string
   url_singbox: string
+  /**
+   * mihomo(Clash.Meta)原生 YAML。
+   *
+   * 与 url_base64 不是同一份东西的两种包装:通用订阅是分享链接的列表,
+   * 而有些协议根本没有通用的分享链接,只有这一条路能把它们送到 Clash 用户手上。
+   */
+  url_clash: string
   /** 物理节点数,与「我的节点」的条数一致 */
   node_count: number
   ipv6_count: number

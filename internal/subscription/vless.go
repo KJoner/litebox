@@ -276,3 +276,33 @@ func sanitizeTag(name string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// vlessProxy 生成 mihomo 配置里的 vless proxy。
+//
+// 与 vlessOutbound 是同一份事实的两种写法,必须并排改 —— 放在同一个文件里
+// 正是为此。漏改一处的表现是「用 sing-box 的用户能连、用 Clash 的连不上」。
+//
+// network 显式写 tcp,与 VLESSURI 里的 type=tcp 一致:mihomo 不写也默认 tcp,
+// 但三处渲染写法一致,人工比对三种格式时才不必先去想默认值是什么。
+func vlessProxy(name, uuid string, node Node) *clashVLESSProxy {
+	return &clashVLESSProxy{
+		Name:       name,
+		Type:       "vless",
+		Server:     node.Host,
+		Port:       node.Port,
+		UUID:       uuid,
+		Flow:       "xtls-rprx-vision",
+		UDP:        true,
+		TLS:        true,
+		ServerName: node.RealityDest,
+		// REALITY 必须带 client-fingerprint,不带的 ClientHello 会被服务端
+		// 直接拒掉 —— 与 vlessOutbound 里的 utls chrome 是同一件事。
+		ClientFP: "chrome",
+		Reality: clashRealityOpts{
+			PublicKey: node.RealityPublicKey,
+			ShortID:   node.RealityShortID,
+		},
+		Network: "tcp",
+		TFO:     node.TCPFastOpen,
+	}
+}

@@ -83,6 +83,20 @@ func EntryForExternal(p ExternalProxy) (Entry, error) {
 			return out
 		}
 	}
+
+	// Clash 那一侧同理,且**必须各判各的**:两边支持的协议与选项各有各的缺口
+	// (比如 SS 的混淆插件在 mihomo 里是结构化的 plugin-opts,翻不了的就退出
+	// 这一种格式),拿其中一个的成败当另一个的近似,会让一条线路从它本来
+	// 能用的那种格式里静默消失。
+	//
+	// 这里不能像 URI 那样透传 raw_uri:Clash 只能按字段重建,
+	// 上游没被解析到的私有参数会在这一种格式里丢掉。
+	if _, err := externalproxy.ClashProxy("", p.Protocol, p.Server, p.Port, p.Params); err == nil {
+		entry.Proxy = func(name string) any {
+			proxy, _ := externalproxy.ClashProxy(name, p.Protocol, p.Server, p.Port, p.Params)
+			return proxy
+		}
+	}
 	return entry, nil
 }
 

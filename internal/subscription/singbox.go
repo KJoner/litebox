@@ -49,22 +49,41 @@ type TaggedEntry struct {
 	Tag string
 }
 
-// AssignTags 给条目分配在同一份配置内唯一的出站 tag。
+// AssignTags 给条目分配在同一份 sing-box 配置内唯一的出站 tag。
 //
-// **全站只有这一处分配 tag。** 内置的 sing-box 配置与配置文件模板里的
-// $(singbox_outbounds)/$(singbox_*_tags) 都从它出来 —— 各算一遍的话,
-// 重名节点的去重后缀(香港-2)可能落到不同的对象上,表现是 sing-box 报
-// outbound not found,而管理员看模板、看节点列表都看不出问题。
+// **sing-box 那一侧只有这一处分配 tag。** 内置的 sing-box 配置与配置文件
+// 模板里的 $(singbox_outbounds)/$(singbox_*_tags) 都从它出来 ——
+// 各算一遍的话,重名节点的去重后缀(香港-2)可能落到不同的对象上,
+// 表现是 sing-box 报 outbound not found,而管理员看模板、看节点列表
+// 都看不出问题。
 //
 // Outbound 为 nil 的条目整个跳过:它表达不成 sing-box 出站,
 // 那么它也不该出现在任何一个分组的 tag 列表里。
+//
+// Clash 那一侧走 AssignClashNames,共用下面的 assignTags 但**名字空间独立**
+// —— 理由见那个函数的注释。
 func AssignTags(entries []Entry) []TaggedEntry {
-	used := map[string]bool{
-		tagSelect: true, tagAuto: true, tagDirect: true, tagBlock: true, tagDNSOut: true,
+	return assignTags(entries,
+		[]string{tagSelect, tagAuto, tagDirect, tagBlock, tagDNSOut},
+		func(e Entry) bool { return e.Outbound != nil })
+}
+
+// assignTags 是去重算法本身,由两种格式各自带着自己的保留名与可用判据来调。
+//
+// usable 而不是硬编码 Outbound != nil:两种格式支持的协议各有各的缺口,
+// 拿其中一个当另一个的近似,会让只有一边支持的协议从另一边静默消失。
+//
+// **序号 i 取的是原列表里的位置**,跳过的条目照样占一个序号。这样一来,
+// 无名节点的兜底 tag(node-3)与它在管理员看到的列表里的位置对得上;
+// 按输出位置重新编号的话,同一个节点在两种格式里会拿到两个不同的兜底名。
+func assignTags(entries []Entry, reserved []string, usable func(Entry) bool) []TaggedEntry {
+	used := make(map[string]bool, len(reserved))
+	for _, r := range reserved {
+		used[r] = true
 	}
 	out := make([]TaggedEntry, 0, len(entries))
 	for i, entry := range entries {
-		if entry.Outbound == nil {
+		if !usable(entry) {
 			continue
 		}
 		out = append(out, TaggedEntry{Entry: entry, Tag: uniqueTag(entry.DisplayName, i, used)})

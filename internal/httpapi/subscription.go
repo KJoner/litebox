@@ -64,6 +64,7 @@ func (l *subRateLimiter) allow(key string, now time.Time) bool {
 //	GET /sub/{token}
 //	GET /sub/{token}?format=uri
 //	GET /sub/{token}?format=sing-box
+//	GET /sub/{token}?format=clash
 func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 	ip := clientIP(r, s.trustProxy)
@@ -119,7 +120,9 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	// profile-title 让客户端显示一个有意义的名字而不是一串 Token。
 	w.Header().Set("Profile-Update-Interval", "12")
 	w.Header().Set("Content-Type", result.ContentType)
-	if format == subscription.FormatSingBox {
+	// 两种"整份配置"的格式才带下载名。base64/uri 那两种是给客户端直接
+	// 订阅的,带上 attachment 会让一部分客户端改去下载文件而不是导入。
+	if format == subscription.FormatSingBox || format == subscription.FormatClash {
 		w.Header().Set("Content-Disposition",
 			fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	}
