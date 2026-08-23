@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/litebox/litebox/internal/v2rayapi"
@@ -52,11 +53,25 @@ type Sampler interface {
 type Syncer struct {
 	db      *sql.DB
 	sampler Sampler
-	logger  *slog.Logger
+	// mieru 为 nil 时 SyncMieru 直接返回 —— 面板没配 Mieru 二进制、
+	// 或者这一版还没接上采集时,别的功能一个字都不受影响。
+	mieru  MieruSampler
+	logger *slog.Logger
 }
 
 func NewSyncer(db *sql.DB, sampler Sampler, logger *slog.Logger) *Syncer {
 	return &Syncer{db: db, sampler: sampler, logger: logger}
+}
+
+// WithMieru 接上 Mieru 的采集器。
+//
+// 分开设而不是塞进构造函数:Syncer 的调用方有好几处(调度器、部署事务、
+// 手工同步),给构造函数加一个参数意味着每一处都要改,
+// 而其中一处传了 nil 的表现是"这台机器的 Mieru 流量永远是 0" ——
+// 与"真的没人用"长得一模一样。
+func (s *Syncer) WithMieru(sampler MieruSampler) *Syncer {
+	s.mieru = sampler
+	return s
 }
 
 // SyncNode 采集并落库一个节点的流量。
@@ -106,8 +121,13 @@ func (s *Syncer) apply(ctx context.Context, nodeID int64, snap v2rayapi.Snapshot
 	if restarted {
 		// 进程换代,旧基线全部作废。不归零的话,重启后新累计的计数
 		// 会被减去一个来自上一代进程的基线,凭空少算。
+		// **只清 sing-box 那一路的基线。** mita 实例是独立的进程,
+		// sing-box 重启与它们无关 —— 把它们的基线一起清零,
+		// 会让它们已经入过账的累计值在下一次同步里被再计一遍,
+		// 用户凭空多出一大截用量,而没有任何一层报错。
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE node_counters SET last_value = 0, updated_at = ? WHERE node_id = ?`,
+			`UPDATE node_counters SET last_value = 0, updated_at = ?
+			  WHERE node_id = ? AND source = ''`,
 			now, nodeID); err != nil {
 			return result, err
 		}
@@ -129,7 +149,7 @@ func (s *Syncer) apply(ctx context.Context, nodeID int64, snap v2rayapi.Snapshot
 
 	for _, key := range keys {
 		value := snap.Counters[key]
-		delta, err := s.recordCounter(ctx, tx, nodeID, key, value, result.BatchID, now)
+		delta, err := s.recordCounter(ctx, tx, nodeID, key, value, result.BatchID, now, sourceSingBox)
 		if err != nil {
 			return result, err
 		}
@@ -217,26 +237,58 @@ func (s *Syncer) detectRestart(
 }
 
 // recordCounter 计算单个计数器的增量并入账,返回本次增量。
+// sourceSingBox 是 sing-box 的 V2Ray Stats 那一路的来源标记(空串)。
+//
+// 存量行搬过来时就是空的 —— 给它一个非空的名字只会让迁移多一次 UPDATE。
+const sourceSingBox = ""
+
+// MieruSource 是一个 Mieru 入口对应的来源标记。
+//
+// 带入口 id 而不是笼统的 "MIERU":一台机器上可以有好几个 mita 实例,
+// 它们**各自独立地重启归零** —— 合成一个来源之后,其中一个重启会让
+// 另外几个已经入过账的累计值被再计一遍。
+func MieruSource(inboundID int64) string {
+	return "mieru:" + strconv.FormatInt(inboundID, 10)
+}
+
+// counterFellBack 说明这一次计数器比基线小了,而且该怎么处置。
+//
+// 两种来源的处置**必须不同**,这一点是载重的:
+//
+//   - sing-box:重启判定走 GetSysStats.Uptime,走到这里说明那个判定漏了。
+//     宁可少算这一次也不能猜 —— CLAUDE.md 那条「漏判会漏算整个重启前的
+//     计数值」说的是反面(把重启当成没重启),而这里是正面,
+//     真实原因未知,delta 取 0 是唯一安全的选择;
+//   - Mieru:面板**保证**每次启动前删掉私有目录里的 metrics.pb,
+//     所以计数器一定从 0 开始 —— 变小就等于重启,而重启后的累计值
+//     就是这一段的全部增量。取 0 会白白丢掉那一段。
+func counterFellBack(source string, value int64) int64 {
+	if source == sourceSingBox {
+		return 0
+	}
+	return value
+}
+
 func (s *Syncer) recordCounter(
 	ctx context.Context, tx *sql.Tx, nodeID int64,
-	key v2rayapi.CounterKey, value int64, batchID, now string,
+	key v2rayapi.CounterKey, value int64, batchID, now, source string,
 ) (int64, error) {
 	var baseline int64
 	err := tx.QueryRowContext(ctx,
-		`SELECT last_value FROM node_counters WHERE node_id=? AND user_code=? AND direction=?`,
-		nodeID, key.UserCode, key.Direction).Scan(&baseline)
+		`SELECT last_value FROM node_counters
+		  WHERE node_id=? AND user_code=? AND direction=? AND source=?`,
+		nodeID, key.UserCode, key.Direction, source).Scan(&baseline)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}
 
 	delta := value - baseline
 	if delta < 0 {
-		// 走到这里说明重启判定漏了。宁可少算这一次也不能写负数 ——
-		// 负增量会让用户累计流量倒退,额度判断随之失效。
-		s.logger.Warn("计数器回退且未被重启判定捕获,本次不入账",
-			"node_id", nodeID, "user_code", key.UserCode,
-			"direction", key.Direction, "value", value, "baseline", baseline)
-		delta = 0
+		delta = counterFellBack(source, value)
+		s.logger.Warn("计数器回退",
+			"node_id", nodeID, "user_code", key.UserCode, "source", orSingBox(source),
+			"direction", key.Direction, "value", value, "baseline", baseline,
+			"入账", delta)
 	}
 
 	if delta > 0 {
@@ -258,14 +310,22 @@ func (s *Syncer) recordCounter(
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO node_counters (node_id, user_code, direction, last_value, updated_at)
-		VALUES (?,?,?,?,?)
-		ON CONFLICT(node_id, user_code, direction) DO UPDATE SET
+		INSERT INTO node_counters (node_id, user_code, direction, source, last_value, updated_at)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT(node_id, user_code, direction, source) DO UPDATE SET
 			last_value = excluded.last_value, updated_at = excluded.updated_at`,
-		nodeID, key.UserCode, key.Direction, value, now); err != nil {
+		nodeID, key.UserCode, key.Direction, source, value, now); err != nil {
 		return 0, err
 	}
 	return delta, nil
+}
+
+// orSingBox 让日志里的来源读起来是一句话而不是一个空串。
+func orSingBox(source string) string {
+	if source == sourceSingBox {
+		return "sing-box"
+	}
+	return source
 }
 
 // addUserTraffic 把增量累加到用户聚合值。

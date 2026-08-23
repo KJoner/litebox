@@ -12,6 +12,7 @@ import (
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
+	"github.com/litebox/litebox/internal/traffic"
 )
 
 // Mieru 入口的安装与下发。
@@ -168,6 +169,26 @@ func (s *Service) DeployMieru(
 		return deployment.Result{}, err
 	}
 
+	// **重启之前必须先同步一次流量。** 必须在取得节点连接锁【之前】做:
+	// 同步本身也要经 pool.Do 读节点,而节点级互斥锁不可重入 ——
+	// 放进事务内部会自我死锁(这一条 CLAUDE.md 里写着,已经踩过一次)。
+	//
+	// 只有会重启进程的那一档才需要:usersOnly 走的是 reload,
+	// 进程不动、计数器不丢,多同步一次只是白连一遍 socket。
+	if !usersOnly {
+		if s.mieruSync == nil {
+			return deployment.Result{}, errors.New(
+				"面板没有接上 Mieru 流量同步 —— 重启 mita 会让未同步的流量永久丢失," +
+					"所以这一档下发被拒绝")
+		}
+		if err := s.mieruSync.SyncMieruNode(ctx, m.NodeID); err != nil {
+			// 与 sing-box 那条规矩同理:同步失败必须中止下发。
+			// 计数器里有尚未落库的流量,重启会让它永久丢失。
+			return deployment.Result{}, fmt.Errorf(
+				"下发前同步 Mieru 流量失败,已中止(节点未做任何改动): %w", err)
+		}
+	}
+
 	cfg, err := s.DesiredMieruConfig(ctx, m)
 	if err != nil {
 		return deployment.Result{}, err
@@ -293,6 +314,34 @@ func (s *Service) MieruEgressParamsFor(
 			Tag:        singbox.MieruEgressTagFor(m.ID),
 			ListenPort: target.SocksPort,
 			Chain:      chain,
+		})
+	}
+	return out, nil
+}
+
+// MieruEndpoints 返回一台机器上全部**已下发过**的 Mieru 入口的管理 socket。
+//
+// 只返回下发过的(deployed_transport 非空):没下发过的入口在节点上根本
+// 没有对应的服务,去连它的 socket 会得到一句 "no such file or directory" ——
+// 而那会让整轮采集失败,连带这台机器上真正在跑的实例也读不到。
+//
+// 停用的入口也跳过:它的服务在下一次下发时才会真的停,但从"应该有流量"
+// 的角度它已经不在了 —— 读不到是正常的。
+func (s *Service) MieruEndpoints(
+	ctx context.Context, nodeID int64,
+) ([]traffic.MieruEndpoint, error) {
+	list, err := s.store.MieruInboundsForNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]traffic.MieruEndpoint, 0, len(list))
+	for _, m := range list {
+		if !m.Deployed() || !m.Enabled {
+			continue
+		}
+		out = append(out, traffic.MieruEndpoint{
+			InboundID:  m.ID,
+			SocketPath: s.layout.MieruSocketPath(m.ID),
 		})
 	}
 	return out, nil

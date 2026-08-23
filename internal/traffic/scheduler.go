@@ -95,6 +95,20 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 			s.logger.Warn("节点流量同步失败,已跳过", "node_id", nodeID, "error", err)
 			continue
 		}
+		// Mieru 那一路单独跑一次,而且**不因为它失败就把整个节点判成失败**。
+		//
+		// 两者是两个进程、两条通道:sing-box 的 API 读得到而某个 mita 实例
+		// 读不到,是完全可能的(比如那个实例刚被停掉)。把它算进节点级的
+		// 同步错误,会让一台代理完全正常的机器在预警列表里常驻 ——
+		// 与「监控数据过期只算 warning,不得把节点判成离线」是同一条道理。
+		mieruResult, mieruErr := s.syncer.SyncMieru(ctx, nodeID)
+		if mieruErr != nil {
+			s.logger.Warn("Mieru 流量同步失败,已跳过",
+				"node_id", nodeID, "error", mieruErr)
+		} else {
+			totalBytes += mieruResult.BytesAdded
+			totalEntries += mieruResult.EntriesAdded
+		}
 		s.recordError(nodeID, "")
 		totalBytes += result.BytesAdded
 		totalEntries += result.EntriesAdded
@@ -121,8 +135,23 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 }
 
 // SyncNodeNow 立即同步单个节点,供手动触发与部署前强制同步使用。
+//
+// **它只同步 sing-box 那一路。** 部署事务的第一步靠它,而那次部署重启的是
+// sing-box —— 把 Mieru 也一起同步会在每次 sing-box 部署时多连 N 个 socket,
+// 而那些实例根本不会被这次部署碰到。Mieru 入口自己的下发走
+// SyncMieruNodeNow,见 node.Service.DeployMieru。
 func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, error) {
 	return s.syncer.Sync(ctx, nodeID)
+}
+
+// SyncMieruNodeNow 立即同步一台机器上全部 Mieru 入口的流量。
+//
+// **重启一个 mita 实例之前必须先调它。** 与 sing-box 那条规矩一字不差:
+// 计数器随进程消失,未同步窗口内的流量永久丢失 —— Mieru 这边还多一层,
+// 面板在每次启动前删掉 metrics.pb,连"重启后还留着上一代的值"
+// 这条退路都没有。
+func (s *Scheduler) SyncMieruNodeNow(ctx context.Context, nodeID int64) (SyncResult, error) {
+	return s.syncer.SyncMieru(ctx, nodeID)
 }
 
 // activeNodes 返回需要同步的节点。

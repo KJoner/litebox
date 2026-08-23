@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/litebox/litebox/internal/mieruapi"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/v2rayapi"
 )
@@ -57,4 +58,89 @@ func (s *TunnelSampler) Sample(ctx context.Context, nodeID int64) (v2rayapi.Snap
 		return nil
 	})
 	return snapshot, err
+}
+
+// MieruSocketResolver 返回一台机器上全部 Mieru 入口的管理 socket 路径。
+//
+// 返回的是 (入口 id, socket 绝对路径) 的列表 —— 一台机器上有 N 个实例,
+// 每个一个 socket。由 node 那一侧实现:socket 路径来自 deployment.Layout,
+// 而那份布局不该被 traffic 包知道。
+type MieruSocketResolver func(ctx context.Context, nodeID int64) ([]MieruEndpoint, error)
+
+// MieruEndpoint 是一个 mita 实例的管理接口。
+type MieruEndpoint struct {
+	InboundID  int64
+	SocketPath string
+}
+
+// MieruTunnelSampler 经 SSH 通道读取节点上每个 mita 实例的管理 gRPC。
+//
+//	主控 --SSH--> 节点 --unix:/run/litebox/mieru/<id>/mita.sock--> mita
+//
+// 与 TunnelSampler 的唯一结构差别是**通道类型**:那边是 direct-tcpip,
+// 这边是 direct-streamlocal(Unix domain socket)。mita 的管理接口固定在
+// UDS 上,没有 TCP 可选 —— 所以这一层没得选。
+type MieruTunnelSampler struct {
+	pool    *sshx.Pool
+	resolve MieruSocketResolver
+}
+
+func NewMieruTunnelSampler(pool *sshx.Pool, resolve MieruSocketResolver) *MieruTunnelSampler {
+	return &MieruTunnelSampler{pool: pool, resolve: resolve}
+}
+
+// SampleMieru 采集一台机器上全部 mita 实例的用户计数器。
+//
+// **任何一个实例读不到就整体失败。** 与「同步失败一条都不改」同理:
+// 少读一个实例意味着那个入口这一轮的流量没有入账,而下一轮会把两轮的量
+// 一起算进去 —— 那本身没错。但如果那个实例在两轮之间重启了,
+// 中间那一段就永久丢了,而面板会以为一切正常。宁可整轮失败让它被看见。
+func (s *MieruTunnelSampler) SampleMieru(
+	ctx context.Context, nodeID int64,
+) ([]MieruSample, error) {
+	endpoints, err := s.resolve(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
+
+	var samples []MieruSample
+	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		for _, ep := range endpoints {
+			// 每个实例一条新通道。**不能复用**:mieruapi.Dial 拿到的是
+			// 一条现成的连接,gRPC 用完就关 —— 复用同一条会让第二个实例
+			// 拿到一条已经关掉的连接,而错误是一句语焉不详的 io.EOF。
+			conn, err := client.DialThrough("unix", ep.SocketPath)
+			if err != nil {
+				return fmt.Errorf("连接 Mieru 入口 %d 的管理接口(%s): %w",
+					ep.InboundID, ep.SocketPath, err)
+			}
+			api, err := mieruapi.Dial(ctx, conn)
+			if err != nil {
+				conn.Close()
+				return err
+			}
+			users, err := api.Users(ctx)
+			api.Close()
+			if err != nil {
+				return fmt.Errorf("Mieru 入口 %d: %w", ep.InboundID, err)
+			}
+			counters := make([]MieruCounter, 0, len(users))
+			for _, u := range users {
+				counters = append(counters, MieruCounter{
+					UserCode: u.Code, Uplink: u.Uplink, Downlink: u.Downlink,
+				})
+			}
+			samples = append(samples, MieruSample{
+				InboundID: ep.InboundID, Counters: counters,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return samples, nil
 }
