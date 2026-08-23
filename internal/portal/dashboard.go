@@ -62,8 +62,18 @@ type Alert struct {
 type Node struct {
 	ID          int64  `json:"id"`
 	DisplayName string `json:"display_name"`
-	TierName    string `json:"tier_name"`
-	TierCode    string `json:"tier_code"`
+	// nodeID 是这一行所属【机器】的 id,不序列化 —— 门户里不出现内部标识。
+	//
+	// 它只用来查流量:traffic_daily / traffic_ledger 是按机器汇总的
+	// (V2Ray 的用户计数器里没有入站维度,所以入站级的用户流量拿不到),
+	// 而 ID 那一列装的是入口 id。拿 ID 去查那两张表,在
+	// 「入口 id ≠ 机器 id」的那一刻起就会取到**别的机器**的数字,
+	// 或者干脆取不到 —— 而两种结果都不报错。
+	// 一台机器有多个入口时,它的每一行显示同一个数字:那是这个用户在
+	// 这台机器上的总量,也是唯一算得出来的口径。
+	nodeID   int64
+	TierName string `json:"tier_name"`
+	TierCode string `json:"tier_code"`
 	// Status 只有三种对用户有意义的取值:normal / maintenance / disabled。
 	// 不下发 DEPLOY_FAILED 这类运维状态 —— 用户对它无能为力,
 	// 只会平添一次"是不是我的问题"的追问。
@@ -267,7 +277,7 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 	// PublicRemark 取入口自己的,留空回落到机器的 —— 机器级的那句话
 	// (比如"晚高峰限速")对它上面每个入口都成立。
 	rows, err := q.db.QueryContext(ctx, `
-		SELECT i.id, i.display_name, t.name, t.code, n.status,
+		SELECT i.id, i.node_id, i.display_name, t.name, t.code, n.status,
 		       CASE WHEN i.public_port = 0 THEN i.listen_port ELSE i.public_port END,
 		       CASE WHEN i.public_remark != '' THEN i.public_remark ELSE n.public_remark END,
 		       n.maintenance_message,
@@ -290,7 +300,7 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		var n Node
 		var status, deployedSHA, deployedProtocol string
 		var subEnabled bool
-		if err := rows.Scan(&n.ID, &n.DisplayName, &n.TierName, &n.TierCode, &status,
+		if err := rows.Scan(&n.ID, &n.nodeID, &n.DisplayName, &n.TierName, &n.TierCode, &status,
 			&n.PublicPort, &n.PublicRemark, &n.MaintenanceMessage,
 			&subEnabled, &deployedSHA, &n.SupportsIPv6, &deployedProtocol); err != nil {
 			return nil, err
@@ -321,10 +331,79 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	// Mieru 入口接在后面。**不能漏** —— 漏掉的表现是用户订阅里有六条、
+	// 门户里只有五条,而他会来问多出来的那一条是什么。
+	//
+	// 它们与 sing-box 入口在门户里长得一样(同一个 DTO、同一组字段):
+	// 用户不需要知道这两类在服务端是两个进程,他只关心"这条线路能不能用"。
+	mierus, err := q.mieruNodes(ctx, proxyUserID)
+	if err != nil {
+		return nil, err
+	}
+	nodes = append(nodes, mierus...)
+
 	if len(nodes) == 0 {
 		return nodes, nil
 	}
 	return q.attachTraffic(ctx, u.UserCode, nodes)
+}
+
+// mieruNodes 是「我的节点」里的 Mieru 入口。
+//
+// 过滤条件与上面那条查询逐条对应,而且必须逐条对应 —— 两处分叉的表现是
+// 一台机器进了维护、它的 sing-box 入口从门户里消失了,而 Mieru 入口还留着。
+//
+// PublicPort 取段的起始端口:门户 DTO 里那一列是个数字,而 Mieru 的端口
+// 是一批。给起始端口而不是留 0 —— 用户照着它去测连通性至少能测出结果来,
+// 而 0 会被读成"这条线路没有端口"。
+func (q *Querier) mieruNodes(ctx context.Context, proxyUserID int64) ([]Node, error) {
+	rows, err := q.db.QueryContext(ctx, `
+		SELECT m.id, m.node_id, m.display_name, t.name, t.code, n.status,
+		       CASE WHEN m.public_port_start = 0
+		            THEN m.deployed_listen_port_start ELSE m.public_port_start END,
+		       CASE WHEN m.public_remark != '' THEN m.public_remark ELSE n.public_remark END,
+		       n.maintenance_message,
+		       n.subscription_enabled AND m.subscription_enabled AND m.enabled,
+		       n.ipv6_address != '' AND m.ipv6_enabled, m.deployed_transport
+		  FROM node_mieru_inbounds m
+		  JOIN nodes n ON n.id = m.node_id
+		  JOIN access_tiers t ON t.id = m.access_tier_id
+		  JOIN `+access.EffectiveMieruInboundsView+` em ON em.mieru_inbound_id = m.id
+		 WHERE em.proxy_user_id = ? AND m.deleted_at IS NULL AND n.deleted_at IS NULL
+		 ORDER BY n.sort_order, n.id, m.sort_order, m.id`, proxyUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	nodes := make([]Node, 0)
+	for rows.Next() {
+		var n Node
+		var status, deployedTransport string
+		var subEnabled bool
+		if err := rows.Scan(&n.ID, &n.nodeID, &n.DisplayName, &n.TierName, &n.TierCode,
+			&status, &n.PublicPort, &n.PublicRemark, &n.MaintenanceMessage,
+			&subEnabled, &n.SupportsIPv6, &deployedTransport); err != nil {
+			return nil, err
+		}
+		// 判据是这个入口自己有没有上过节点(deployed_transport),
+		// 与 sing-box 那边看 deployed_protocol 一字不差:一台下发过很多次的
+		// 机器上,刚加的这个入口还不存在,而它照样会在门户里显示成"可用"。
+		deployed := deployedTransport != ""
+		n.Protocol = "Mieru"
+		n.InSubscription = subEnabled && status != "DISABLED" && deployed
+		switch {
+		case status == "DISABLED":
+			n.Status = "disabled"
+		case !subEnabled || !deployed:
+			n.Status = "maintenance"
+		default:
+			n.Status = "normal"
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
 }
 
 // attachTraffic 给每个节点补上该用户的今日、本月与累计流量。
@@ -367,13 +446,16 @@ func (q *Querier) attachTraffic(ctx context.Context, userCode string, nodes []No
 		return nil, err
 	}
 
+	// 按 nodeID 而不是 ID 查:两张表都是按机器汇总的,而 ID 装的是入口 id。
+	// 早期一台机器只有一个入口时两者恰好相等,多入站之后就错位了 ——
+	// 那种错位不报错,只是数字对不上。
 	for i := range nodes {
-		if t, ok := byNode[nodes[i].ID]; ok {
+		if t, ok := byNode[nodes[i].nodeID]; ok {
 			nodes[i].TodayBytes = t.today
 			nodes[i].MonthBytes = t.month
 			nodes[i].TotalBytes = t.total
 		}
-		if at, ok := lastSeen[nodes[i].ID]; ok {
+		if at, ok := lastSeen[nodes[i].nodeID]; ok {
 			seen := at
 			nodes[i].LastSeenAt = &seen
 		}
@@ -556,15 +638,35 @@ func (q *Querier) Subscription(ctx context.Context, proxyUserID int64, baseURL s
 	//
 	// 数的是【入口】而不是机器:订阅里一个入口就是一条,
 	// 按机器数会比用户在客户端里看到的少一截。
+	// IPv6 那一半必须**同时**要求入口开着 ipv6_enabled(V11):
+	// 只看机器填没填地址的话,管理员关掉某个入口的 IPv6 之后,
+	// 这里仍然把它数进去 —— 门户说有 8 条,用户客户端里只有 7 条。
+	//
+	// Mieru 入口也要数进来,它们与 sing-box 入口一样会进订阅。
 	if err := q.db.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(CASE WHEN n.ipv6_address != '' THEN 1 ELSE 0 END), 0)
-		  FROM node_inbounds i
-		  JOIN nodes n ON n.id = i.node_id
-		  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id
-		 WHERE ei.proxy_user_id = ? AND i.deleted_at IS NULL AND n.deleted_at IS NULL
-		   AND n.status != 'DISABLED' AND n.subscription_enabled = 1
-		   AND i.subscription_enabled = 1 AND i.enabled = 1
-		   AND i.deployed_protocol != ''`, proxyUserID).
+		SELECT SUM(cnt), SUM(v6) FROM (
+			SELECT COUNT(*) AS cnt,
+			       COALESCE(SUM(CASE WHEN n.ipv6_address != '' AND i.ipv6_enabled = 1
+			                         THEN 1 ELSE 0 END), 0) AS v6
+			  FROM node_inbounds i
+			  JOIN nodes n ON n.id = i.node_id
+			  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id
+			 WHERE ei.proxy_user_id = ? AND i.deleted_at IS NULL AND n.deleted_at IS NULL
+			   AND n.status != 'DISABLED' AND n.subscription_enabled = 1
+			   AND i.subscription_enabled = 1 AND i.enabled = 1
+			   AND i.deployed_protocol != ''
+			UNION ALL
+			SELECT COUNT(*),
+			       COALESCE(SUM(CASE WHEN n.ipv6_address != '' AND m.ipv6_enabled = 1
+			                         THEN 1 ELSE 0 END), 0)
+			  FROM node_mieru_inbounds m
+			  JOIN nodes n ON n.id = m.node_id
+			  JOIN `+access.EffectiveMieruInboundsView+` em ON em.mieru_inbound_id = m.id
+			 WHERE em.proxy_user_id = ? AND m.deleted_at IS NULL AND n.deleted_at IS NULL
+			   AND n.status != 'DISABLED' AND n.subscription_enabled = 1
+			   AND m.subscription_enabled = 1 AND m.enabled = 1
+			   AND m.deployed_transport != ''
+		)`, proxyUserID, proxyUserID).
 		Scan(&sub.NodeCount, &sub.IPv6Count); err != nil {
 		return nil, err
 	}

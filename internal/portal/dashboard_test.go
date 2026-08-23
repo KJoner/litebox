@@ -372,3 +372,45 @@ func TestSubscriptionHiddenWhenUnavailable(t *testing.T) {
 		t.Errorf("没有说明原因:%q", sub.Reason)
 	}
 }
+
+// 门户「我的节点」按【机器】查流量,而那一列装的是入口 id。
+//
+// 早期一台机器只有一个入口时两者恰好相等,多入站之后就错位了 ——
+// 错位不报错,只是数字对不上或者干脆取到别的机器的。这个用例把两者钉开:
+// 一台机器、两个入口,第二个入口的 id 与机器 id 必然不同。
+func TestPortalNodeTrafficKeyedByMachineNotInbound(t *testing.T) {
+	e := newEnv(t)
+	u, _ := e.newUser(t, "张三", "zhangsan", "correct-horse")
+	nodeID := e.addNode(t, nodeFixture{Name: "节点", DisplayName: "节点",
+		Deployed: true, SubEnabled: true})
+
+	if _, err := e.db.Exec(`
+		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
+			deployed_protocol, created_at, updated_at)
+		VALUES (?, 'in-99', '第二个入口', 'VLESS_REALITY', 25443, 'VLESS_REALITY', ?, ?)`,
+		nodeID, fixedTS, fixedTS); err != nil {
+		t.Fatal(err)
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	if _, err := e.db.Exec(`
+		INSERT INTO traffic_daily (day, user_code, node_id, uplink, downlink, updated_at)
+		VALUES (?,?,?,?,?,?)`, today, u.UserCode, nodeID, 1000, 2000, fixedTS); err != nil {
+		t.Fatal(err)
+	}
+
+	nodes, err := e.querier.Nodes(t.Context(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("应当有两个入口,得到 %d 个", len(nodes))
+	}
+	// 两行是同一台机器,所以两行的数字必须相同 —— 入站级的用户流量拿不到
+	// (V2Ray 的计数器里没有入站维度),这是唯一算得出来的口径。
+	// 拿入口 id 去查的话,其中一行会是 0。
+	for _, n := range nodes {
+		if n.TodayBytes != 3000 {
+			t.Errorf("入口 %q 的今日流量 = %d,期望 3000", n.DisplayName, n.TodayBytes)
+		}
+	}
+}
