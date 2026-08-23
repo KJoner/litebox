@@ -7,13 +7,17 @@ import (
 	"strings"
 )
 
-// IPv6 与节点地址的校验。
+// 节点地址的校验。一台机器有三个地址栏,职责必须泾渭分明:
 //
-// 两个地址栏的职责必须泾渭分明:host 是 SSH 管理地址,也是 IPv4 订阅地址;
-// ipv6_address 只进订阅。把 IPv6 填进 host 会让 SSH 连接池、探测、部署、
-// 流量同步全部指向一个连不上的地址,而这些操作各自报各自的错,
-// 管理员要绕一大圈才会想到是地址填错了栏。所以这里把"填错栏"
-// 当成一类专门的错误直接说出来。
+//	host             SSH / 探测 / 部署 / 流量同步 / 资源采集【唯一】的管理通道。
+//	                 sub_ipv4_address 留空时它同时兼任 IPv4 订阅地址。
+//	sub_ipv4_address 只进订阅。填了它之后 IPv4 条目连的是它而不是 host。
+//	ipv6_address     只进订阅。
+//
+// 后两栏面板一次都不解析,所以填错了面板发现不了,只有用户连不上。
+// 把 IPv6 填进 host 则会让 SSH 连接池、探测、部署、流量同步全部指向一个
+// 连不上的地址,而这些操作各自报各自的错,管理员要绕一大圈才会想到是
+// 地址填错了栏 —— 所以这里把"填错栏"当成一类专门的错误直接说出来。
 
 // normalizeIPv4 校验并归一化 host 列。接受 IPv4 字面量或域名。
 //
@@ -43,6 +47,31 @@ func normalizeIPv4(raw string) (string, error) {
 		return "", fmt.Errorf("%q 既不是合法的 IPv4 地址,也不是合法的域名:%w", host, err)
 	}
 	return name, nil
+}
+
+// normalizeSubIPv4 校验并归一化 sub_ipv4_address 列。
+//
+// 空串表示「跟随 host」,回落在订阅生成时做(subscription.SubscriptionIPv4),
+// 不在写库时固化 —— 固化之后管理员再改 host,订阅条目会继续停在旧地址上,
+// 而他当初看到的是一个空输入框,不会想到那里存了一个值。
+// 与 node_inbounds.public_port 存 0 表示跟随监听端口是同一条道理。
+//
+// 校验规则与 host 那一栏完全相同(复用 normalizeIPv4):同样收 IPv4 字面量
+// 与域名(动态 DNS),同样拒掉末段全是数字的写错的 IP。两栏收不一样的东西
+// 会出现"这个地址填得进管理栏、填不进订阅栏"的怪事。
+//
+// 唯一的不同是这一栏**面板一次都不解析它** —— 与 ipv6_address 同类。
+// 所以在这里填一个没有 A 记录的域名,面板发现不了,只有用户连不上;
+// 界面上要写明这一点。
+func normalizeSubIPv4(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	addr, err := normalizeIPv4(raw)
+	if err != nil {
+		return "", fmt.Errorf("订阅 IPv4 地址:%w", err)
+	}
+	return addr, nil
 }
 
 // normalizeIPv6 校验并归一化 ipv6_address 列。空串表示该节点未配置 IPv6。

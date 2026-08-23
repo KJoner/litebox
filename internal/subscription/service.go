@@ -246,7 +246,7 @@ func uriList(entries []Entry) []string {
 // 订阅只描述节点上真实存在的东西。
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT i.display_name, n.host, n.ipv6_address,
+		SELECT i.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
 		       i.public_port, i.listen_port, i.ipv6_public_port,
 		       i.ipv6_enabled, i.ipv6_display_name,
 		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
@@ -274,7 +274,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		var p PhysicalNode
 		var protocol, ssMethod, ssKeyEnc string
 		var listenPort int
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.IPv6Address,
+		if err := rows.Scan(&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Port, &listenPort, &p.IPv6Port,
 			&p.IPv6Enabled, &p.IPv6Name,
 			&protocol, &ssMethod, &p.TCPFastOpen, &ssKeyEnc,

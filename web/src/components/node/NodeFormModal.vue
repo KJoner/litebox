@@ -71,6 +71,7 @@ const blank = {
   display_name: '',
   sort_order: 0,
   host: '',
+  sub_ipv4_address: '',
   ipv6_address: '',
   /** 0 / null 表示跟随 IPv4 的公网端口。 */
   ipv6_proxy_port: null as number | null,
@@ -113,6 +114,10 @@ watch(
         display_name: n.display_name,
         sort_order: n.sort_order,
         host: n.host,
+        // 这两栏【必须】回填:后端把留空解释成"清空"而不是"保持原值"。
+        // 漏一个就是静默清空 —— 订阅 IPv4 被清掉的表现是全部用户的 IPv4
+        // 条目改指管理地址,而管理口上没开代理端口的机器上,所有人当场断线。
+        sub_ipv4_address: n.sub_ipv4_address,
         ipv6_address: n.ipv6_address,
         quota_value: q.value,
         quota_unit: q.unit,
@@ -138,7 +143,8 @@ const fieldLabels: Record<string, string> = {
   name: '内部名称',
   display_name: '展示名称',
   sort_order: '排序',
-  host: 'IPv4 地址 / 域名',
+  host: '管理 IPv4 地址 / 域名',
+  sub_ipv4_address: '订阅 IPv4 地址 / 域名',
   ipv6_address: 'IPv6 地址 / 域名',
   ipv6_proxy_port: 'IPv6 公网端口',
   quota_value: '流量限额',
@@ -244,6 +250,8 @@ async function doSubmit() {
         display_name: form.display_name,
         sort_order: form.sort_order,
         host: form.host,
+        // 留空表示 IPv4 条目跟随管理地址,回落在订阅生成时做。
+        sub_ipv4_address: form.sub_ipv4_address,
         ipv6_address: form.ipv6_address,
         // 留空发 0 —— 后端据此在订阅生成时回落到 IPv4 端口。
         ipv6_proxy_port: form.ipv6_proxy_port ?? 0,
@@ -302,6 +310,10 @@ async function doSubmit() {
       name: form.name,
       display_name: form.display_name,
       host: form.host,
+      // 留空即改回"跟随管理地址"。与下面清空 IPv6 不同的是,
+      // 这一步【不会】动各入口的 IPv4 公网端口 —— 那个端口在 NAT 机器上
+      // 本来就独立于订阅 IP 存在,跟着归零会把订阅端口悄悄换成监听端口。
+      sub_ipv4_address: form.sub_ipv4_address,
       // 留空即清空 IPv6,订阅里的 IPv6 条目随即消失 ——
       // 同时这台机器上全部入口的 IPv6 公网端口会一并归零(后端做),
       // 免得下次重填 IPv6 时静默套用一个几个月前的端口。
@@ -446,16 +458,38 @@ async function doSubmit() {
         </a-form-item>
       </template>
 
-      <a-form-item label="IPv4 地址 / 域名" required>
+      <a-form-item label="管理 IPv4 地址 / 域名" required>
         <a-input v-model:value="form.host" placeholder="例如:45.77.12.90 或 la.ddns.example.com" />
         <div class="nf__help">
-          用于 SSH 管理、节点部署和 IPv4 订阅,必须填写。
+          面板<strong>唯一</strong>的管理通道:SSH、探测、部署、流量同步与资源采集全走它,必须填写。
+          下面那一栏留空时,它同时兼任 IPv4 订阅地址。
           <br />
           公网 IP 会变的机器(动态 DNS)填域名:面板在<strong>每次操作之前</strong>
           重新解析,IP 换了会自动丢掉旧连接;订阅里下发的是域名本身,不是解析结果 ——
           所以 IP 变了用户不用重新拉订阅。
           <br />
           域名只查 A 记录:面板的管理通道一律走 IPv4,只有 AAAA 的域名连不上。
+        </div>
+      </a-form-item>
+
+      <a-form-item label="订阅 IPv4 地址 / 域名">
+        <a-input
+          v-model:value="form.sub_ipv4_address"
+          placeholder="留空表示跟随上面的管理地址"
+        />
+        <div class="nf__help">
+          选填,<b>只影响订阅内容</b>。留空表示用户的 IPv4 条目就连管理地址 ——
+          绝大多数机器不用填这一栏。
+          <br />
+          需要它的情形是<b>管理地址与用户要连的地址不是同一个</b>:前面挂了一层 IP 转发、
+          管理口与业务口是两个 IP、或者管理 IP 上根本没有开放代理端口。
+          <br />
+          <strong>面板一次都不会解析这一栏</strong>(与 IPv6 那一栏同类):它不参与 SSH
+          与部署,填错了面板发现不了,只有用户连不上。
+          <br />
+          端口不在这里配:IPv4 公网端口在「入口」里<b>按条设置</b>,留空表示跟随该入口的监听端口。
+          <br />
+          改了它,指向这台机器的<b>中转转发与链式出口会一起改指新地址</b>,并在下次下发时生效。
         </div>
       </a-form-item>
 

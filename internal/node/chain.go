@@ -10,6 +10,7 @@ import (
 
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/singbox"
+	"github.com/litebox/litebox/internal/subscription"
 )
 
 // 链式出站:一个入站的流量从 direct 换成指向落地的代理出站。
@@ -439,16 +440,17 @@ func (s *Store) ResolveChainTarget(ctx context.Context, in *Inbound) (*ChainTarg
 //     整份配置都下发不了 —— 而那条线路本来就还没进任何人的订阅。
 func (s *Store) chainInboundTarget(ctx context.Context, id int64) (*ChainInboundTarget, bool, error) {
 	var t ChainInboundTarget
-	var protocol, ssMethod, ssKeyEnc string
+	var protocol, ssMethod, ssKeyEnc, subIPv4 string
 	var publicPort, listenPort int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT i.id, i.node_id, i.display_name, n.host, i.public_port, i.listen_port,
+		SELECT i.id, i.node_id, i.display_name, n.host, n.sub_ipv4_address,
+		       i.public_port, i.listen_port,
 		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
 		       i.ss_password_encrypted, i.reality_dest, i.reality_pubkey, i.reality_short_id
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id AND n.deleted_at IS NULL
 		 WHERE i.id = ? AND i.deleted_at IS NULL`, id).Scan(
-		&t.ID, &t.NodeID, &t.DisplayName, &t.Host, &publicPort, &listenPort,
+		&t.ID, &t.NodeID, &t.DisplayName, &t.Host, &subIPv4, &publicPort, &listenPort,
 		&protocol, &ssMethod, &t.TCPFastOpen,
 		&ssKeyEnc, &t.RealityDest, &t.RealityPublicKey, &t.RealityShortID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -457,6 +459,15 @@ func (s *Store) chainInboundTarget(ctx context.Context, id int64) (*ChainInbound
 	if err != nil {
 		return nil, false, err
 	}
+	// 地址取【订阅 IPv4 优先、回落管理地址】,与用户直连这个入站时拿到的
+	// 是同一个地址。回落只有 subscription.SubscriptionIPv4 一处实现 ——
+	// 在这里自己写一遍 if 的话,某天改了回落规则只改到订阅那一侧,
+	// 表现是用户直连能用、走中转连不上,而两条路都不报错。
+	//
+	// 为什么不固定用管理地址:public_port 本来就是"这个入站对外的落脚点",
+	// 而填订阅 IPv4 的典型场景恰恰是管理地址上根本没开代理端口。
+	// 存量节点这一栏为空,回落到 host,行为逐字节不变。
+	t.Host = subscription.SubscriptionIPv4(t.Host, subIPv4)
 	// 公网端口而不是监听端口:写成后者在 NAT 机器上是连不上,
 	// 在直连机器上碰巧一样 —— 后者更糟,它会一直是对的,
 	// 直到某天落地换成 NAT 小鸡。0 表示跟随监听端口,在这里解析。

@@ -30,10 +30,13 @@ import (
 // 展开的是【中转主机】的 IPv6 —— 落地的地址根本不出现在订阅里。
 type PhysicalRelay struct {
 	DisplayName string
-	// Host / IPv6Address / Port 全部来自中转主机。
-	Host        string
-	IPv6Address string
-	Port        int
+	// Host / SubIPv4Address / IPv6Address / Port 全部来自【中转主机】。
+	// 落地的地址一个字节都不出现在订阅里 —— 用户连的是中转主机。
+	Host string
+	// SubIPv4Address 为空表示跟随 Host,回落由 SubscriptionIPv4 做。
+	SubIPv4Address string
+	IPv6Address    string
+	Port           int
 	// IPv6Port 为 0 表示跟随 Port。
 	IPv6Port int
 
@@ -77,8 +80,15 @@ type RelayExternalLanding struct {
 // 两个条目共用同一条 nginx 转发、同一份落地凭据,拆成两行会带来
 // 第二套配置与第二串部署记录,而机器只有一台。
 func (p PhysicalRelay) Expand() []PhysicalRelay {
+	// 订阅 IPv4 的回落在这里做完,展开之后 Host 就是客户端要连的地址 ——
+	// EntryForRelay 因此一个字都不用改。留到后面去回落的话,那一步要
+	// 同时知道"这是 IPv4 条目还是 IPv6 条目",而 IPv6 条目上这一栏没有意义。
+	v4Host := SubscriptionIPv4(p.Host, p.SubIPv4Address)
 	if p.IPv6Address == "" {
-		return []PhysicalRelay{p}
+		only := p
+		only.Host = v4Host
+		only.SubIPv4Address = ""
+		return []PhysicalRelay{only}
 	}
 	v6 := p
 	v6.DisplayName = p.DisplayName + IPv6NameSuffix
@@ -87,8 +97,11 @@ func (p PhysicalRelay) Expand() []PhysicalRelay {
 		v6.Port = p.IPv6Port
 	}
 	v6.IPv6Address = ""
+	v6.SubIPv4Address = ""
 	v4 := p
+	v4.Host = v4Host
 	v4.IPv6Address = ""
+	v4.SubIPv4Address = ""
 	// IPv6 紧跟它自己的 IPv4 条目,不集中排在末尾 ——
 	// 客户端按顺序展示,同一条线路的两个地址挨在一起才看得出是同一个东西。
 	return []PhysicalRelay{v4, v6}

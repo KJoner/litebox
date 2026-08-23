@@ -853,6 +853,10 @@ const needsPortForward = computed(() =>
             · 端口 {{ portSummary || '无(一个入口都没有)' }}
           </template>
           · SSH {{ node.ssh_port }}
+          <!-- 订阅地址与管理地址不同时必须显式说出来:上面那个地址是面板连的,
+               不是用户连的,而两者长得一样合理 —— 排查"用户连不上"时
+               照着管理地址去 telnet 会得到一个与故障无关的结论。 -->
+          <template v-if="node.sub_ipv4_address"> · 订阅 {{ node.sub_ipv4_address }}</template>
           <!-- 带端口显示 IPv6 必须加方括号:2a02:…::1:9443 分不清哪一段是端口。 -->
           <template v-if="node.ipv6_address"> · IPv6 [{{ node.ipv6_address }}]</template>
         </div>
@@ -1267,6 +1271,17 @@ const needsPortForward = computed(() =>
                   <div v-else>
                     <span>入口</span>
                     <b><a @click="tab = 'entries'">见「入口」</a></b>
+                  </div>
+                  <!-- 订阅 IPv4 与 IPv6 挨在一起:它们回答的是同一个问题
+                       (用户连的是哪个地址),而管理地址在上面那一行。
+                       分开放的话,一台"管理地址与订阅地址不同"的机器
+                       要在两处之间来回看才拼得出全貌。 -->
+                  <div>
+                    <span>订阅 IPv4</span>
+                    <b class="lb-mono">
+                      {{ node.subscription_host }}(端口按入口设置)
+                      <template v-if="!node.sub_ipv4_address">— 跟随管理地址</template>
+                    </b>
                   </div>
                   <div>
                     <span>IPv6</span>

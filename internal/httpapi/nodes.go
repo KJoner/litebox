@@ -9,6 +9,7 @@ import (
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/singbox"
+	"github.com/litebox/litebox/internal/subscription"
 )
 
 // 节点相关的审计动作。
@@ -53,7 +54,7 @@ func (s *Server) writeNodeError(w http.ResponseWriter, err error, what string) {
 	}
 }
 
-// nodeView 是节点的对外形态:节点本身 + 两个算出来的字段。
+// nodeView 是节点的对外形态:节点本身 + 几个算出来的字段。
 //
 // 用嵌套而不是往 node.Node 上加字段:那个结构体逐列对应 nodes 表,
 // 加两个不落库的字段进去,下一个人写 scanNode 时就得记住"这两个跳过"。
@@ -67,6 +68,16 @@ type nodeView struct {
 	// 节点上分叉,而两边都不报错。与「列表里的周期重置日只渲染后端给的
 	// next_reset_at」是同一条规矩。
 	UDPTimeout string `json:"udp_timeout"`
+
+	// SubscriptionHost 是这台机器【在订阅里】用的 IPv4 地址:填了
+	// sub_ipv4_address 就是它,留空就是管理地址。
+	//
+	// 回落只有 subscription.SubscriptionIPv4 一处实现,前端渲染这个字段、
+	// **不自己写那个 ||** —— 与 udp_timeout、next_reset_at 是同一条规矩。
+	// 前端各拼一遍的话,某天回落规则变了只改到后端,表现是面板上显示的
+	// 地址与用户客户端里那一条对不上,而两边都不报错;而排查"用户连不上"
+	// 的人正是照着面板上这个地址去测的。
+	SubscriptionHost string `json:"subscription_host"`
 }
 
 // newNodeView 是 nodeView 的唯一构造入口 —— 列表与详情各拼一遍的话,
@@ -76,6 +87,7 @@ func newNodeView(n *node.Node, status node.NodeConfigStatus) nodeView {
 		Node:             n,
 		NodeConfigStatus: status,
 		UDPTimeout:       singbox.UDPTimeoutFor(n.MemTotalMB),
+		SubscriptionHost: subscription.SubscriptionIPv4(n.Host, n.SubIPv4Address),
 	}
 }
 
@@ -118,12 +130,14 @@ type createNodeRequest struct {
 	// DisplayName 留空表示与内部名称相同。
 	DisplayName string `json:"display_name"`
 	SortOrder   int    `json:"sort_order"`
-	// Host 是 IPv4;IPv6Address 选填,只影响订阅。
-	Host        string `json:"host"`
-	IPv6Address string `json:"ipv6_address"`
-	SSHPort     int    `json:"ssh_port"`
-	SSHUser     string `json:"ssh_user"`
-	SSHKey      string `json:"ssh_key"`
+	// Host 是管理地址(SSH 走它)。SubIPv4Address 与 IPv6Address 选填,
+	// 只影响订阅 —— 前者留空表示 IPv4 条目跟随 Host。
+	Host           string `json:"host"`
+	SubIPv4Address string `json:"sub_ipv4_address"`
+	IPv6Address    string `json:"ipv6_address"`
+	SSHPort        int    `json:"ssh_port"`
+	SSHUser        string `json:"ssh_user"`
+	SSHKey         string `json:"ssh_key"`
 	// TrafficQuotaBytes 为 0 表示不限量,按**主机计费口径**填(VPS 商账单上的数字)。
 	// TrafficBillingMode 留空按 EGRESS。
 	TrafficQuotaBytes  int64  `json:"traffic_quota_bytes"`
@@ -165,6 +179,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		DisplayName:        strings.TrimSpace(req.DisplayName),
 		SortOrder:          req.SortOrder,
 		Host:               strings.TrimSpace(req.Host),
+		SubIPv4Address:     strings.TrimSpace(req.SubIPv4Address),
 		IPv6Address:        strings.TrimSpace(req.IPv6Address),
 		SSHPort:            req.SSHPort,
 		SSHUser:            strings.TrimSpace(req.SSHUser),
@@ -282,10 +297,14 @@ type updateNodeRequest struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
 	Host        string `json:"host"`
-	// IPv6Address 留空表示清空 IPv6 —— 那正是"把 IPv6 条目从订阅撤下来"的操作。
-	IPv6Address string `json:"ipv6_address"`
-	SSHPort     int    `json:"ssh_port"`
-	SSHUser     string `json:"ssh_user"`
+	// 这两栏留空都表示【清空】,不是"保持原值"。
+	// 清空 SubIPv4Address 是"IPv4 条目改回跟随管理地址",清空 IPv6Address 是
+	// "把 IPv6 条目从订阅撤下来",两者都是管理员的显式动作,必须表达得出来。
+	// 代价是前端每次提交都必须回填它们 —— 漏了就是静默清空。
+	SubIPv4Address string `json:"sub_ipv4_address"`
+	IPv6Address    string `json:"ipv6_address"`
+	SSHPort        int    `json:"ssh_port"`
+	SSHUser        string `json:"ssh_user"`
 	// SSHKey 留空表示不更换私钥。
 	SSHKey string `json:"ssh_key"`
 	// APIPort 是这台机器上 V2Ray API 的回环端口,全部入站共用一个。
@@ -332,6 +351,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		Name:                strings.TrimSpace(req.Name),
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		Host:                strings.TrimSpace(req.Host),
+		SubIPv4Address:      strings.TrimSpace(req.SubIPv4Address),
 		IPv6Address:         strings.TrimSpace(req.IPv6Address),
 		TrafficQuotaBytes:   req.TrafficQuotaBytes,
 		TrafficResetCycle:   req.TrafficResetCycle,

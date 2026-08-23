@@ -369,8 +369,24 @@ export interface Node {
   subscription_enabled: boolean
   public_remark: string
   maintenance_message: string
-  /** IPv4 地址,同时是 SSH 管理地址与 IPv4 订阅地址 */
+  /**
+   * 管理地址:SSH、探测、部署、流量同步与资源采集一律走它。
+   * sub_ipv4_address 留空时它同时兼任 IPv4 订阅地址。
+   */
   host: string
+  /**
+   * 可选的订阅 IPv4,只影响订阅:留空表示 IPv4 条目跟随 host。
+   * 填了它之后「面板连的地址」与「用户连的地址」就此分开 ——
+   * 前面挂了一层 IP 转发、或者管理口上根本没开代理端口时才需要。
+   * 面板一次都不解析它。
+   */
+  sub_ipv4_address: string
+  /**
+   * 这台机器**在订阅里**用的 IPv4 地址:填了 sub_ipv4_address 就是它,
+   * 留空就是 host。由后端算好下发 —— 回落只有一处实现,
+   * 前端渲染它、不自己写那个 ||(与 udp_timeout、next_reset_at 同一条规矩)。
+   */
+  subscription_host: string
   /**
    * 可选的公网 IPv6,只影响订阅:填了之后这台机器上每个开着 IPv6 条目的入口
    * 都会多下发一条。条目名由入口的 ipv6_entry_name 给出。

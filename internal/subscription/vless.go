@@ -32,6 +32,23 @@ func IPv6EntryName(displayName, override string) string {
 	return displayName + IPv6NameSuffix
 }
 
+// SubscriptionIPv4 是一个入口在订阅里用的 IPv4 连接地址。
+//
+// override 为空表示「跟随管理地址」。**这是唯一一处回落实现** ——
+// 节点条目、中转条目与节点详情都调它。各写一遍的话,分叉的表现是
+// 面板上显示的地址与用户客户端里那一条不一样,而两边都不报错。
+//
+// 这一栏与 nodes.host 的分工是硬的:host 是 SSH / 探测 / 部署 / 流量同步 /
+// 资源采集唯一的管理通道,这一栏一个字节都不进那些路径 —— 面板自己
+// 从不解析它,与 ipv6_address 完全对称。所以在这里填一个解析不出来的
+// 地址,面板发现不了,只有用户连不上。
+func SubscriptionIPv4(host, override string) string {
+	if s := strings.TrimSpace(override); s != "" {
+		return s
+	}
+	return host
+}
+
 // PhysicalNode 是数据库里的一条节点记录。
 //
 // IPv6 不是第二条 nodes 记录,而是订阅生成时对同一条记录的逻辑展开 ——
@@ -40,8 +57,13 @@ func IPv6EntryName(displayName, override string) string {
 type PhysicalNode struct {
 	DisplayName string
 	Host        string
-	IPv6Address string
-	Port        int
+	// SubIPv4Address 为空表示 IPv4 条目跟随 Host,回落由 SubscriptionIPv4 做。
+	//
+	// 与 IPv6Address 一样只进订阅。填它的典型场景是管理地址与用户要连的
+	// 地址不是同一个 —— 前面挂了一层 IP 转发,或者管理口上根本没开代理端口。
+	SubIPv4Address string
+	IPv6Address    string
+	Port           int
 	// IPv6Port 为 0 表示 IPv6 条目跟随 Port。
 	// 双栈机器的两个协议栈未必映射到同一个外部端口 —— NAT 小鸡上
 	// IPv4 常是服务商映射的高位端口,IPv6 则是直连的 443。
@@ -80,7 +102,7 @@ type PhysicalNode struct {
 func (p PhysicalNode) Expand() []Node {
 	v4 := Node{
 		DisplayName:      p.DisplayName,
-		Host:             p.Host,
+		Host:             SubscriptionIPv4(p.Host, p.SubIPv4Address),
 		Port:             p.Port,
 		Protocol:         p.Protocol,
 		TCPFastOpen:      p.TCPFastOpen,

@@ -1,0 +1,32 @@
+-- 订阅 IPv4 地址:把「用户连的 IPv4」与「面板管的 IPv4」拆开。
+--
+-- 在此之前 nodes.host 一个人干两件事:它既是 SSH / 探测 / 部署 / 流量同步 /
+-- 资源采集走的管理地址,又直接被订阅当成 IPv4 条目的连接地址。一台机器上
+-- 两者恰好相同时这没有问题,而它们不同的场景其实很常见 ——
+-- 前面挂了一层 IP 转发、管理口和业务口是两个 IP、或者管理 IP 上根本没有
+-- 开放代理端口。那时唯一的办法是把 host 改成用户要连的那个地址,
+-- 而那会让面板自己连不上这台机器。
+--
+-- 这一列的定位与 ipv6_address 完全对称:**它只进订阅,面板一次都不解析它**。
+-- 空串表示「跟随 host」,回落只有 subscription.SubscriptionIPv4 一处实现。
+--
+-- 为什么是节点级而不是入站级:它描述的是这台机器在网络里的位置,
+-- 与 ipv6_address 是同一类事实。同一台机器上两个入口不会各自有一个
+-- 不同的对外 IPv4 —— 真要那样,那是两台机器。
+--
+-- **端口这一侧一个字都不用加。** 迁移 0019 已经把三层端口建好了:
+-- node_inbounds.listen_port 是 sing-box 实际监听的,public_port 是 IPv4 条目
+-- 在订阅里用的公网端口(存 0 表示跟随 listen_port),ipv6_public_port 是
+-- IPv6 条目的(存 0 表示跟随 public_port)。这一列只换地址,不碰端口。
+--
+-- 与 IPv6 有一处刻意不同,**清空这一列时不归零 public_port**:
+-- ipv6_public_port 只为 IPv6 条目而存在,地址没了它就没有任何意义;
+-- 而 public_port 在 NAT 机器上本来就独立于订阅 IP 存在(服务商映射的
+-- 外部端口 ≠ 监听端口),跟着归零会把一台正常 NAT 机的订阅端口悄悄改成
+-- 监听端口,用户拿到一条连不上的条目,而面板一个错都不报。
+--
+-- 它既不置 SSHChanged 也不置 NeedsDeploy —— 一个字节都不进节点配置,
+-- 而管理通道仍然走 host。但它【要】置 RelayTargetChanged:中转主机的
+-- nginx proxy_pass 与链式出站指向的正是落地的对外落脚点,那一侧必须跟着改。
+
+ALTER TABLE nodes ADD COLUMN sub_ipv4_address TEXT NOT NULL DEFAULT '';

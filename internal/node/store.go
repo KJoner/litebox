@@ -39,15 +39,22 @@ type Node struct {
 	// 内部名称上通常写着机房、供应商、到期日甚至 IP 段,属于运维信息。
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
-	// Host 是 IPv4 地址,同时是 SSH 管理地址与 IPv4 订阅地址。
-	// IPv6Address 只进订阅:SSH、探测、安装、部署、重启、流量同步与资源采集
-	// 一律走 Host,双栈里只留一条管理通道才不会出现"两条路两种结论"。
-	Host        string `json:"host"`
-	IPv6Address string `json:"ipv6_address"`
-	SSHPort     int    `json:"ssh_port"`
-	SSHUser     string `json:"ssh_user"`
-	SSHKey      string `json:"-"` // PEM 私钥,永不出现在 API 响应中
-	HostKey     string `json:"-"`
+	// Host 是这台机器【唯一】的管理地址:SSH、探测、安装、部署、重启、
+	// 流量同步与资源采集一律走它 —— 只留一条管理通道才不会出现
+	// "两条路两种结论"。
+	//
+	// SubIPv4Address 与 IPv6Address 只进订阅,面板一次都不解析它们。
+	// SubIPv4Address 为空表示 IPv4 条目跟随 Host(回落只有
+	// subscription.SubscriptionIPv4 一处实现),填了它之后管理地址与
+	// 用户连的地址就此分开 —— 前面挂了一层 IP 转发、或者管理口上根本
+	// 没开代理端口时,那是唯一填得下去的写法。
+	Host           string `json:"host"`
+	SubIPv4Address string `json:"sub_ipv4_address"`
+	IPv6Address    string `json:"ipv6_address"`
+	SSHPort        int    `json:"ssh_port"`
+	SSHUser        string `json:"ssh_user"`
+	SSHKey         string `json:"-"` // PEM 私钥,永不出现在 API 响应中
+	HostKey        string `json:"-"`
 	// APIPort 是节点上 V2Ray API 的回环端口。
 	//
 	// 它留在节点级而不是跟着入站走:一台机器上只有一个 sing-box 进程,
@@ -130,7 +137,8 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 // REALITY、SS、TFO、链式)。它们的数据已经搬进 node_inbounds,留在 nodes 上
 // 只是为了不重建这张全库被引用最多的表 —— 谁把它们加回这里,就等于
 // 让同一件事有两个来源,而两个来源迟早分叉。
-const nodeColumns = `n.id, n.name, n.display_name, n.host, n.ipv6_address, n.ssh_port, n.ssh_user,
+const nodeColumns = `n.id, n.name, n.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
+	n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.api_port, n.role, n.config_in_ram,
 	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
@@ -148,7 +156,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 	var n Node
 	var sshKeyEnc string
 	err := scan(
-		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.IPv6Address,
+		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.SubIPv4Address, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.APIPort, &n.Role, &n.ConfigInRAM,
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
@@ -182,13 +190,15 @@ type CreateParams struct {
 	// DisplayName 留空时复制 Name。订阅里的节点名不能为空:
 	// 客户端拿它识别条目,空名字会让用户面对一列无法区分的节点。
 	DisplayName string
-	// Host 必须是 IPv4;IPv6Address 选填,留空表示该节点只有 IPv4。
-	Host        string
-	IPv6Address string
-	SSHPort     int
-	SSHUser     string
-	SSHKey      string
-	SortOrder   int
+	// Host 是管理地址,必须填。SubIPv4Address 与 IPv6Address 选填,
+	// 只进订阅:前者留空表示 IPv4 条目跟随 Host,后者留空表示该节点没有 IPv6。
+	Host           string
+	SubIPv4Address string
+	IPv6Address    string
+	SSHPort        int
+	SSHUser        string
+	SSHKey         string
+	SortOrder      int
 	// TrafficQuotaBytes 留 0 表示不限量;TrafficResetCycle 留空按 NONE;
 	// TrafficBillingMode 留空按 EGRESS(与升级前的行为一致)。
 	TrafficQuotaBytes  int64
@@ -270,15 +280,17 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	// 但已经没有任何代码路径读它们 —— 写一个"看起来合理"的值反而更糟:
 	// 半年后有人翻库看到 nodes.proxy_port = 443,会以为那是真的。
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO nodes (name, display_name, host, ipv6_address, ssh_port, ssh_user,
+		INSERT INTO nodes (name, display_name, host, sub_ipv4_address, ipv6_address,
+			ssh_port, ssh_user,
 			ssh_key_encrypted, ssh_host_key, api_port,
 			proxy_port, listen_port, ipv6_proxy_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			sort_order,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day, traffic_billing_mode,
 			role, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'',?,0,0,0,'','','','',?,?,?,?,?,?,?,?,?)`,
-		p.Name, p.DisplayName, p.Host, p.IPv6Address, p.SSHPort, p.SSHUser, sshKeyEnc,
+		VALUES (?,?,?,?,?,?,?,?,'',?,0,0,0,'','','','',?,?,?,?,?,?,?,?,?)`,
+		p.Name, p.DisplayName, p.Host, p.SubIPv4Address, p.IPv6Address,
+		p.SSHPort, p.SSHUser, sshKeyEnc,
 		p.APIPort,
 		p.SortOrder,
 		p.TrafficQuotaBytes, p.TrafficResetCycle, p.TrafficResetDay, p.TrafficBillingMode,
@@ -316,8 +328,10 @@ func validateCreate(p *CreateParams) error {
 	if err = validateName(p.Name); err != nil {
 		return err
 	}
-	// 新建节点一律要求 IPv4 字面量。
 	if p.Host, err = normalizeIPv4(p.Host); err != nil {
+		return err
+	}
+	if p.SubIPv4Address, err = normalizeSubIPv4(p.SubIPv4Address); err != nil {
 		return err
 	}
 	if p.IPv6Address, err = normalizeIPv6(p.IPv6Address); err != nil {
@@ -557,13 +571,18 @@ type UpdateParams struct {
 	Name        string
 	DisplayName string
 	Host        string
-	// IPv6Address 留空表示清空 IPv6,不是"保持原值"。
-	// 与下面几个字段的约定相反,因为清空 IPv6 是管理员的显式动作
-	// (把订阅里的 IPv6 条目撤下来),必须有办法表达。
-	IPv6Address string
-	SSHPort     int
-	SSHUser     string
-	SSHKey      string
+	// SubIPv4Address 与 IPv6Address 都是【留空表示清空,不是"保持原值"】。
+	// 与下面几个字段的约定相反,因为把订阅地址改回跟随管理地址、
+	// 把 IPv6 条目从订阅里撤下来都是管理员的显式动作,必须有办法表达。
+	//
+	// 代价是每一处编辑都必须回填这两栏,漏了就是静默清空 ——
+	// 而清空 SubIPv4Address 的表现是全部用户的 IPv4 条目改指管理地址,
+	// 那台机器如果管理口上没开代理端口,所有人当场断线。
+	SubIPv4Address string
+	IPv6Address    string
+	SSHPort        int
+	SSHUser        string
+	SSHKey         string
 	// APIPort 是这台机器上 V2Ray API 的回环端口,全部入站共用一个。
 	APIPort int
 
@@ -631,6 +650,9 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	if p.Host, err = normalizeIPv4(p.Host); err != nil {
 		return nil, effect, err
 	}
+	if p.SubIPv4Address, err = normalizeSubIPv4(p.SubIPv4Address); err != nil {
+		return nil, effect, err
+	}
 	if p.IPv6Address, err = normalizeIPv6(p.IPv6Address); err != nil {
 		return nil, effect, err
 	}
@@ -685,6 +707,8 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	track("节点名称", old.Name != p.Name, old.Name, p.Name)
 	track("展示名称", old.DisplayName != p.DisplayName, old.DisplayName, p.DisplayName)
 	track("IPv4 地址", old.Host != p.Host, old.Host, p.Host)
+	track("订阅 IPv4 地址", old.SubIPv4Address != p.SubIPv4Address,
+		orFollowHost(old.SubIPv4Address), orFollowHost(p.SubIPv4Address))
 	track("IPv6 地址", old.IPv6Address != p.IPv6Address,
 		orNone(old.IPv6Address), orNone(p.IPv6Address))
 	track("SSH 端口", old.SSHPort != p.SSHPort, old.SSHPort, p.SSHPort)
@@ -719,8 +743,10 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// 等级调低会有一批用户凭空获得访问权(但节点上还没有他们的凭据),
 	// 调高则会有一批用户的凭据滞留在节点上继续可用 —— 后者是安全问题。
 	//
-	// IPv6 与节点流量额度同样不进配置文件:前者只改订阅内容,后者只用于
-	// 统计与预警。为它们重启 sing-box 会把全部在线连接踢掉一次,换不来任何东西。
+	// 订阅 IPv4、IPv6 与节点流量额度同样不进配置文件:前两者只改订阅内容,
+	// 后者只用于统计与预警。为它们重启 sing-box 会把全部在线连接踢掉一次,
+	// 换不来任何东西。订阅 IPv4 也不置 SSHChanged —— 管理通道仍然走 host,
+	// 连接池里那条长连接照样有效,断掉它只是白白多一次 1.3 秒的重连。
 	//
 	// 入站那一侧的变更(协议、端口、TFO、入站等级)不在这里判 ——
 	// 它们由 UpdateInbound 返回 InboundEffect,由上层各自处理。
@@ -732,12 +758,19 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// 下游传播的判据与 NeedsDeploy 是两套:主机地址不进本机配置
 	// (改了它重启 sing-box 没有意义),但它正是中转主机 proxy_pass 的目标
 	// —— 那边必须跟着改。入站的公网端口与协议同理,由 UpdateInbound 负责传播。
-	effect.RelayTargetChanged = old.Host != p.Host || old.IPv6Address != p.IPv6Address
+	// 订阅 IPv4 必须算进来:中转的 proxy_pass 与链式出站指向的是落地的
+	// 【对外落脚点】,而这一栏一填,那个落脚点就换了地址。不传播的话,
+	// 中转机上的 nginx 会继续把流量送到旧地址 —— 而管理员刚刚才在
+	// 落地那一页上改完并看到"已保存"。
+	effect.RelayTargetChanged = old.Host != p.Host ||
+		old.SubIPv4Address != p.SubIPv4Address ||
+		old.IPv6Address != p.IPv6Address
 
 	// SSH 私钥留空时保持原值:COALESCE 会因空串仍然是非 NULL 而失效,只能用 CASE。
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE nodes
-		   SET name = ?, display_name = ?, host = ?, ipv6_address = ?,
+		   SET name = ?, display_name = ?, host = ?,
+		       sub_ipv4_address = ?, ipv6_address = ?,
 		       ssh_port = ?, ssh_user = ?,
 		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
 		       api_port = ?,
@@ -747,7 +780,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		       traffic_billing_mode = ?,
 		       updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
-		p.Name, p.DisplayName, p.Host, p.IPv6Address,
+		p.Name, p.DisplayName, p.Host, p.SubIPv4Address, p.IPv6Address,
 		p.SSHPort, p.SSHUser,
 		sshKeyEnc, sshKeyEnc,
 		p.APIPort,
@@ -763,6 +796,13 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		return nil, effect, err
 	}
 
+	// 清空【订阅 IPv4】时刻意什么都不做,与下面 IPv6 那一段正好相反。
+	//
+	// ipv6_public_port 只为 IPv6 条目而存在,地址没了它就没有任何意义;
+	// 而 public_port 在 NAT 机器上本来就独立于订阅 IP 存在(服务商映射的
+	// 外部端口 ≠ 监听端口),跟着归零会把一台正常 NAT 机的订阅端口悄悄
+	// 改成监听端口 —— 用户拿到一条连不上的条目,而面板一个错都不报。
+	//
 	// 清空 IPv6 地址时,这台机器上全部入站的 IPv6 公网端口一并归零。
 	//
 	// 留着它们,下次重新填上 IPv6 会静默套用几个月前的端口,而那些端口
@@ -1025,6 +1065,16 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 }
 
 // orNone 让审计日志里的空值读起来像句话,而不是 " → 2602:...:1"。
+// orFollowHost 把空串写成「跟随管理地址」而不是「(未配置)」——
+// 这一栏留空不是"没配",它有明确的含义:IPv4 条目就用 nodes.host。
+// 审计里写成"未配置"会让人以为那台机器的订阅里没有 IPv4 条目。
+func orFollowHost(v string) string {
+	if v == "" {
+		return "(跟随管理地址)"
+	}
+	return v
+}
+
 func orNone(v string) string {
 	if v == "" {
 		return "(未配置)"
