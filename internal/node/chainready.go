@@ -121,3 +121,47 @@ func (s *Service) checkChainTargetsReady(ctx context.Context, inbounds []*Inboun
 			"后者会按正确的顺序做两次部署(先落地写入凭据,再中转启用出站),"+
 			"那正是这个顺序存在的理由。")
 }
+
+// checkMieruChainTargetReady 在下发一个带出口的 Mieru 入口之前,
+// 确认落地的配置已经同步。
+//
+// **与 checkChainTargetsReady 是同一条规矩的第二次应用**,而且第一次就在
+// 真机上踩到了:链路凭据由 SetMieruChain 写进库,但要出现在【落地】的
+// sing-box 用户列表里才算数,而那要落地重新部署一次。漏了这一步之后,
+// 每一层都正确地沉默:TCP 通、VLESS 握手在落地那边被拒、
+// 中转侧只看到一句 `ssh: handshake failed: EOF`,而落地日志里是另一句话。
+// **两句话对不上,而报错落在这台机器的部署记录里**,看起来完全像是链路不通。
+//
+// 检查放在下发之前:那时 mita 一个字节都还没动过,拒绝的代价只是一句话;
+// 放到后面就是一次 stop+start 加一次回滚,而报错还指向错误的方向。
+//
+// 判据保守 —— **只有确定同步了才放行**。误拦是让管理员先部署落地
+// (本来就该做),漏拦是两次重启加一句指向错误方向的报错,两者不对等。
+func (s *Service) checkMieruChainTargetReady(ctx context.Context, m *MieruInbound) error {
+	kind, err := ParseChainTargetKind(m.ChainTargetKind)
+	if err != nil || kind != ChainTargetInbound {
+		// 外部代理落地不需要这个检查:凭据是机场给的,不由面板下发。
+		return nil
+	}
+	target, err := s.store.GetInbound(ctx, m.ChainTargetInboundID)
+	if err != nil {
+		// 落地入站查不到(被删了)交给渲染期报 —— 那里的错误更准确。
+		return nil
+	}
+	landing, err := s.store.Get(ctx, target.NodeID)
+	if err != nil {
+		return nil
+	}
+	state, _ := s.ConfigStatus(ctx, landing)
+	if !chainTargetBlocks(state) {
+		return nil
+	}
+	return fmt.Errorf("%w。\nMieru 入口「%s」的出口指向落地「%s」上的「%s」,而那台机器%s\n\n%s",
+		ErrChainTargetOutOfSync,
+		m.DisplayName, landing.DisplayName, target.DisplayName,
+		chainTargetStateLabel(state),
+		"落地上很可能还没有这条链路的凭据("+m.ChainCode+")—— 它由面板分配,"+
+			"但要落地重新部署一次才会出现在它的用户列表里。现在下发下去,"+
+			"拨测会在十几秒后失败并自动回滚,而报错会落在【这台机器】上,"+
+			"看起来完全像是链路不通。\n处置:先部署上面那台落地。")
+}

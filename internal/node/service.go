@@ -481,7 +481,19 @@ func (s *Service) inboundUsers(ctx context.Context, in *Inbound) ([]singbox.User
 	if err != nil {
 		return nil, err
 	}
-	return append(users, chainUsers...), nil
+	// **Mieru 那一路的链路凭据也在这里合并。** 它是第三个来源,
+	// 与前两个一样都要出现在这个落地入站的 users 与 stats.users 里。
+	//
+	// 真机上漏过一次:凭据没进落地的用户列表,而链路本身完全正常 ——
+	// 下发中转那一侧时拨测报的是 `ssh: handshake failed: EOF`,
+	// 落地那边只在日志里留一句解密失败。**两句话对不上,而报错落在
+	// 另一台机器的部署记录里**,看起来完全像是链路不通。
+	mieruChainUsers, err := s.store.MieruChainUsersForInbound(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	users = append(users, chainUsers...)
+	return append(users, mieruChainUsers...), nil
 }
 
 // chainOutbound 把一个入站的链式去向解析成渲染参数。

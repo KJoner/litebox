@@ -208,6 +208,14 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/mieru-inbounds", s.handleCreateMieruInbound)
 		authed.HandleFunc("PUT /api/mieru-inbounds/{id}", s.handleUpdateMieruInbound)
 		authed.HandleFunc("DELETE /api/mieru-inbounds/{id}", s.handleDeleteMieruInbound)
+		// 安装、下发与改出口都挂 longOperation:它们在改节点上的东西,
+		// ctx 必须与请求解绑 —— 一次已经开始的节点操作不得因为客户端断开而中止。
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-install",
+			longOperation(s.handleInstallMieru))
+		authed.HandleFunc("POST /api/mieru-inbounds/{id}/deploy",
+			longOperation(s.handleDeployMieru))
+		authed.HandleFunc("POST /api/mieru-inbounds/{id}/chain", s.handleSetMieruChain)
+		authed.HandleFunc("DELETE /api/mieru-inbounds/{id}/chain", s.handleClearMieruChain)
 		authed.HandleFunc("POST /api/inbounds/{id}/dest-check",
 			longOperation(s.handleApplyInboundDest))
 		// 链式出站是两台机器的复合操作,一定慢,走 longOperation。
