@@ -40,6 +40,41 @@ const (
 // 于是流量静默走 direct 从中转机自己的 IP 出去(见 AssertChainRouted)。
 func ChainTagFor(inboundTag string) string { return ChainOutboundPrefix + inboundTag }
 
+// Mieru 出口那一跳的两个前缀。
+//
+// 与 ChainOutboundPrefix 分开是**必需的**,不是风格问题:两套 tag 一旦
+// 撞名,sing-box 不报错 —— 后定义的直接覆盖前一个,表现是两个入口的流量
+// 都从同一个落地出去,而配置里看起来一切正常。
+const (
+	MieruEgressPrefix = "mieru-egress-"
+	MieruChainPrefix  = "mieru-out-"
+)
+
+// MieruEgressTagFor 是一个 Mieru 入口在 sing-box 里那个 socks 入站的 tag。
+//
+// 由 id 派生:它只是两个本机进程之间的接头暗号,不出现在任何用户看得到的
+// 地方。**前缀不能省** —— 它是 AssertChainRouted 分辨"这个入站该配哪套
+// 出站 tag"的唯一依据。
+func MieruEgressTagFor(id int64) string {
+	return fmt.Sprintf("%s%d", MieruEgressPrefix, id)
+}
+
+// MieruChainTagFor 是 Mieru 出口那条链式出站的 tag。
+func MieruChainTagFor(egressTag string) string { return MieruChainPrefix + egressTag }
+
+// chainTagForInbound 给出「这个入站如果有链式出站,那个出站该叫什么」。
+//
+// 两套 tag 方案由入站 tag 的前缀分辨。**这是唯一一处分辨** ——
+// AssertChainRouted 与 buildOutbounds 都走它,各判一遍的话,
+// 判据分叉的表现是断言把一份完全正确的配置判成错的(部署被拦住),
+// 或者更坏:把一份路由写错的配置放行,而那种错误没有任何一层会报。
+func chainTagForInbound(inboundTag string) string {
+	if strings.HasPrefix(inboundTag, MieruEgressPrefix) {
+		return MieruChainTagFor(inboundTag)
+	}
+	return ChainTagFor(inboundTag)
+}
+
 // User 是渲染配置所需的单个用户信息。
 //
 // UUID 与 SSPassword 各自只在对应协议下使用,渲染时不会互相牵连:
@@ -112,6 +147,34 @@ type NodeParams struct {
 	// 只是谁都连不上 —— 渲染不替管理员做判断,但部署的拨测会记 SKIPPED
 	// 并写明原因,不会被误读成「三步健康检查全过」。
 	Inbounds []InboundParams
+
+	// MieruEgress 是 Mieru 入口借道本机 sing-box 出去的那一跳。
+	//
+	// mita 的 egress 只认 SOCKS5(上游 ProxyProtocol 枚举里只有这一个值),
+	// 拨不出 VLESS 或 Shadowsocks —— 所以每个配了出口的 Mieru 入口在这里
+	// 对应一个**只监听回环**的 socks 入站,再由 route.rules 按入站 tag
+	// 分流到它自己的链式出站。那正是 V8 已经在做的事,不需要新机制。
+	//
+	// 它与 Inbounds 分开而不是混进去:socks 入站上没有用户、不进订阅、
+	// 也不该被 access tier 管 —— 混进去之后每一处消费 Inbounds 的代码
+	// 都要先判断"这一项是不是给人用的"。
+	MieruEgress []MieruEgressParams
+}
+
+// MieruEgressParams 是一个 Mieru 入口在 sing-box 侧的那一跳。
+type MieruEgressParams struct {
+	// ID 是 node_mieru_inbounds.id,只用来定序,不进配置 ——
+	// 与 InboundParams.ID 同一条道理:渲染必须是确定性的。
+	ID int64
+	// Tag 是那个 socks 入站的 tag(mieru-egress-<id>)。
+	Tag string
+	// ListenPort 是回环端口。**一律监听 127.0.0.1** ——
+	// 绑到 :: 上等于在公网开了一个无认证的 socks5 代理。
+	ListenPort int
+	// Chain 是这条链路的落地。为 nil 时这一项根本不该出现在列表里:
+	// 一个没有出站去向的 socks 入站会把流量从本机直接送出去,
+	// 而管理员在界面上看到的是"出口:某某落地"。
+	Chain *ChainOutbound
 }
 
 // ChainOutbound 是链式出站的参数,已经与"落地是自建节点还是外部代理"无关。
@@ -194,11 +257,28 @@ func Render(params NodeParams) (Config, error) {
 			statsUsers = append(statsUsers, u.Name)
 		}
 	}
+	// Mieru 的那几个 socks 入站接在后面,顺序由 ID 定 ——
+	// 与用户入站分两段而不是混排:配置读起来一眼能分出"给人用的"和
+	// "给本机 mita 用的",而混排之后要逐个看 tag 才认得出来。
+	egress := normalizeMieruEgress(params.MieruEgress)
+	for _, e := range egress {
+		built, err := buildMieruEgressInbound(e)
+		if err != nil {
+			return Config{}, err
+		}
+		rendered = append(rendered, built)
+		// **它照样进 stats.inbounds。** 那一项的不变量是「正好是全部入站的
+		// tag」,给它开一个例外意味着断言要分两条路走,而这是全配置里
+		// 最不该有分支的地方。它上面没有用户,所以 stats.users 不受影响 ——
+		// 而经它出去的流量本来就已经由 mita 按用户记过一遍了。
+		statsInbounds = append(statsInbounds, built.Tag)
+	}
+
 	// 白名单排序与入站内的用户排序分开做:入站内按代码排序保证同一组用户
 	// 渲染出字节一致的配置,而并集的顺序取决于入站的先后,必须再排一次。
 	sort.Strings(statsUsers)
 
-	outbounds, route, err := buildOutbounds(inbounds)
+	outbounds, route, err := buildOutbounds(inbounds, egress)
 	if err != nil {
 		return Config{}, err
 	}
@@ -263,7 +343,9 @@ func normalizeInbounds(in []InboundParams) []InboundParams {
 // 这一版一律改成 rules + final=direct,那些机器升级后会被判成待部署一次。
 // 刻意不为「只有一条链路」保留旧形状 —— 两种形状意味着断言要分两条路走,
 // 而这是全项目唯一一条错了不会有任何报错的不变量。
-func buildOutbounds(inbounds []InboundParams) ([]Outbound, *RouteConfig, error) {
+func buildOutbounds(
+	inbounds []InboundParams, egress []MieruEgressParams,
+) ([]Outbound, *RouteConfig, error) {
 	outs := []Outbound{{Type: "direct", Tag: OutboundTag}}
 	var rules []RouteRule
 	for _, in := range inbounds {
@@ -277,6 +359,22 @@ func buildOutbounds(inbounds []InboundParams) ([]Outbound, *RouteConfig, error) 
 		}
 		outs = append(outs, chain)
 		rules = append(rules, RouteRule{Inbound: []string{in.Tag}, Outbound: tag})
+	}
+	// Mieru 的那几条走同一套机制:一个 socks 入站配一条规则指向它自己的出站。
+	// **绝不能少写这条规则** —— 少了它,那个 socks 入站会被 final=direct
+	// 接住,流量从本机直接出去,而管理员在界面上看到的是"出口:某某落地"。
+	// 这正是 V7 里 route.final 缺失那一类静默失败,AssertChainRouted 兜底。
+	for _, e := range egress {
+		if e.Chain == nil {
+			return nil, nil, fmt.Errorf("Mieru 出口 %s 没有落地去向", e.Tag)
+		}
+		tag := chainTagForInbound(e.Tag)
+		chain, err := buildChainOutbound(*e.Chain, tag)
+		if err != nil {
+			return nil, nil, fmt.Errorf("Mieru 出口 %s 的%w", e.Tag, err)
+		}
+		outs = append(outs, chain)
+		rules = append(rules, RouteRule{Inbound: []string{e.Tag}, Outbound: tag})
 	}
 	if len(rules) == 0 {
 		return outs, nil, nil
@@ -386,7 +484,8 @@ func AssertChainRouted(cfg Config) error {
 	allOuts := make(map[string]bool)
 	for _, out := range cfg.Outbounds {
 		allOuts[out.Tag] = true
-		if strings.HasPrefix(out.Tag, ChainOutboundPrefix) {
+		if strings.HasPrefix(out.Tag, ChainOutboundPrefix) ||
+			strings.HasPrefix(out.Tag, MieruChainPrefix) {
 			chainOuts[out.Tag] = true
 		}
 	}
@@ -409,7 +508,7 @@ func AssertChainRouted(cfg Config) error {
 	}
 
 	for _, in := range cfg.Inbounds {
-		want := ChainTagFor(in.Tag)
+		want := chainTagForInbound(in.Tag)
 		has, got := chainOuts[want], routed[in.Tag]
 		switch {
 		case has && got != want:
@@ -728,4 +827,42 @@ func RenderJSON(params NodeParams) (Rendered, error) {
 		return Rendered{}, fmt.Errorf("序列化配置: %w", err)
 	}
 	return Rendered{Config: cfg, JSON: data, SHA256: SHA256(data)}, nil
+}
+
+// ---------- Mieru 出口那一跳 ----------
+
+// normalizeMieruEgress 按 ID 升序拷贝一份。
+//
+// 与 normalizeInbounds 同一条道理:确定性不能依赖调用方,否则某条路径
+// 忘了排序,那台机器会在两个哈希之间来回抖 ——「已同步」与「待部署」
+// 反复跳,而两次渲染的内容完全一样。
+func normalizeMieruEgress(in []MieruEgressParams) []MieruEgressParams {
+	out := make([]MieruEgressParams, len(in))
+	copy(out, in)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// buildMieruEgressInbound 渲染那个只监听回环的 socks 入站。
+//
+// 它没有用户 —— socks 入站的空 users 表示不做认证。这在公网上是一个
+// 敞开的代理,所以 **listen 硬编码成 127.0.0.1**,不接受调用方指定:
+// 那一栏一旦可配,某天有人为了"方便调试"填了 0.0.0.0,
+// 而那台机器就此变成一个任何人都能用的开放代理,面板一个字都不会说。
+func buildMieruEgressInbound(e MieruEgressParams) (Inbound, error) {
+	if strings.TrimSpace(e.Tag) == "" {
+		return Inbound{}, errors.New("Mieru 出口的入站 tag 为空")
+	}
+	if err := ValidatePort(e.ListenPort, "Mieru 出口回环端口"); err != nil {
+		return Inbound{}, err
+	}
+	return Inbound{
+		Type:       "socks",
+		Tag:        e.Tag,
+		Listen:     "127.0.0.1",
+		ListenPort: e.ListenPort,
+		// 显式空列表而不是 nil:nil 会渲染成 "users": null,
+		// 而 sing-box 对 null 与 [] 的处理未必一样 —— 这一条不值得赌。
+		Users: []InboundUser{},
+	}, nil
 }

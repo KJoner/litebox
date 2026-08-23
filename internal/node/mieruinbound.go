@@ -91,6 +91,19 @@ type MieruInbound struct {
 	AccessTierName  string `json:"access_tier_name"`
 	AccessTierLevel int    `json:"access_tier_level"`
 
+	// EgressSocksPort 是 mita 与本机 sing-box 之间那一跳的回环端口。
+	// 0 表示这个入口是**直连**的(mita 配置里整个 egress 段不渲染)。
+	EgressSocksPort int `json:"egress_socks_port"`
+	// 出口去向。含义与 node_inbounds 上那三列一字不差。
+	ChainTargetKind       string `json:"chain_target_kind"`
+	ChainTargetInboundID  int64  `json:"chain_target_inbound_id"`
+	ChainTargetExternalID int64  `json:"chain_target_external_id"`
+	// ChainCode 是这条链路在【落地入站】的流量统计里的计数器名。
+	// 凭据本身永不出现在 API 响应里。
+	ChainCode       string `json:"chain_code"`
+	ChainUUID       string `json:"-"`
+	ChainSSPassword string `json:"-"`
+
 	SortOrder           int    `json:"sort_order"`
 	SubscriptionEnabled bool   `json:"subscription_enabled"`
 	PublicRemark        string `json:"public_remark"`
@@ -143,6 +156,9 @@ const mieruColumns = `m.id, m.node_id, n.name, n.display_name,
 	m.transport, m.multiplexing, m.mtu,
 	m.deployed_transport, m.deployed_multiplexing, m.deployed_mtu,
 	m.deployed_listen_port_start, m.deployed_listen_port_end,
+	m.egress_socks_port, m.chain_target_kind,
+	m.chain_target_inbound_id, m.chain_target_external_id,
+	m.chain_code, m.chain_uuid_encrypted, m.chain_ss_password_encrypted,
 	m.access_tier_id, t.code, t.name, t.level,
 	m.sort_order, m.subscription_enabled, m.public_remark, m.enabled,
 	m.created_at, m.updated_at`
@@ -155,6 +171,9 @@ const mieruFrom = ` FROM node_mieru_inbounds m
 // 各处自己拼的话,漏掉一个派生字段的表现是「列表里有、点进详情就没了」。
 func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, error) {
 	var m MieruInbound
+	var chainUUIDEnc, chainSSEnc string
+	// 目标列可空:直连的入口这两列是 NULL,扫进 int64 会报错。
+	var chainInboundID, chainExternalID sql.NullInt64
 	if err := scan(
 		&m.ID, &m.NodeID, &m.NodeName, &m.NodeDisplayName,
 		&m.DisplayName,
@@ -165,6 +184,9 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 		&m.Transport, &m.Multiplexing, &m.MTU,
 		&m.DeployedTransport, &m.DeployedMultiplexing, &m.DeployedMTU,
 		&m.DeployedListenPortStart, &m.DeployedListenPortEnd,
+		&m.EgressSocksPort, &m.ChainTargetKind,
+		&chainInboundID, &chainExternalID,
+		&m.ChainCode, &chainUUIDEnc, &chainSSEnc,
 		&m.AccessTierID, &m.AccessTierCode, &m.AccessTierName, &m.AccessTierLevel,
 		&m.SortOrder, &m.SubscriptionEnabled, &m.PublicRemark, &m.Enabled,
 		&m.CreatedAt, &m.UpdatedAt,
@@ -175,6 +197,24 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 	m.PublicPorts = mieru.PortRange{Start: m.PublicPortStart, End: m.PublicPortEnd}
 	m.IPv6PublicPorts = mieru.PortRange{
 		Start: m.IPv6PublicPortStart, End: m.IPv6PublicPortEnd}
+	m.ChainTargetInboundID = chainInboundID.Int64
+	m.ChainTargetExternalID = chainExternalID.Int64
+	for _, f := range []struct {
+		enc  string
+		dest *string
+		what string
+	}{
+		{chainUUIDEnc, &m.ChainUUID, "链路 UUID"},
+		{chainSSEnc, &m.ChainSSPassword, "链路 Shadowsocks 密钥"},
+	} {
+		if f.enc == "" {
+			continue
+		}
+		var err error
+		if *f.dest, err = s.cipher.Decrypt(f.enc); err != nil {
+			return nil, fmt.Errorf("解密 Mieru 入口 %d 的%s: %w", m.ID, f.what, err)
+		}
+	}
 	m.IPv6EntryName = subscription.IPv6EntryName(m.DisplayName, m.IPv6DisplayName)
 	return &m, nil
 }
