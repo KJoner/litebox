@@ -396,6 +396,13 @@ func cmdServe(args []string) error {
 	} else if n > 0 {
 		logger.Info("已为存量用户补齐 Shadowsocks 密钥", "用户数", n)
 	}
+	// Mieru 口令同理:缺了它,在某台机器上加一个 Mieru 入口的那一刻起,
+	// 全部存量用户都下发不进 mita 的用户列表。
+	if n, err := userStore.BackfillMieruPasswords(ctx); err != nil {
+		return fmt.Errorf("补齐用户 Mieru 口令: %w", err)
+	} else if n > 0 {
+		logger.Info("已为存量用户补齐 Mieru 口令", "用户数", n)
+	}
 
 	// 外部代理:不属于本面板、不由本面板部署的成品线路。
 	// UA 从设置里取,改了不必重启 —— 部分机场按 UA 返回不同格式。

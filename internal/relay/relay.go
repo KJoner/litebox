@@ -12,7 +12,9 @@ package relay
 
 import (
 	"errors"
+
 	"fmt"
+	"github.com/litebox/litebox/internal/nodeport"
 	"strings"
 )
 
@@ -20,9 +22,13 @@ var (
 	ErrNotFound = errors.New("转发规则不存在")
 	// ErrPortConflict 监听端口与这台机器上已有的东西冲突。
 	//
+	// **它就是 nodeport.ErrConflict 本身**,与 node.ErrInboundPortConflict
+	// 是同一个值 —— 检测统一在那一个包里,各留一个哨兵会让 errors.Is
+	// 在跨包传递时静默失配,而失配的表现是 400 变成 500。
+	//
 	// 检测到就拒绝保存,**不自动挪端口** —— 自动避让会让用户手上那份
 	// 订阅静默失效:客户端还连着旧端口,而那里已经没人监听了。
-	ErrPortConflict = errors.New("监听端口冲突")
+	ErrPortConflict = nodeport.ErrConflict
 )
 
 // TargetKind 是落地去向的种类。

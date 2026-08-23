@@ -17,6 +17,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
+	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
@@ -58,6 +59,11 @@ type User struct {
 	// 与 UUID 平级:一份凭据对应一种协议,互不替代。
 	// 全站共用一把 —— 不同节点的 server PSK 不同,拼出来的 password 本来就不同。
 	SSPassword string `json:"-"`
+	// MieruPassword 是该用户在 mita 上的口令,与上面两份平级。
+	//
+	// mieru 没有 Shadowsocks 那样的服务端 PSK —— 客户端用的就是这一串本身,
+	// 所以它是三份凭据里唯一**原样**下发到用户设备上的。
+	MieruPassword string `json:"-"`
 	// SubToken 同上,只在详情与订阅接口按需返回。
 	SubToken string `json:"-"`
 
@@ -139,7 +145,7 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 }
 
 const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypted,
-	u.ss_password_encrypted, u.sub_token_encrypted,
+	u.ss_password_encrypted, u.mieru_password_encrypted, u.sub_token_encrypted,
 	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
 	u.reset_cycle, u.reset_day, u.last_reset_at, u.created_at, u.updated_at,
 	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
@@ -151,8 +157,9 @@ const userFrom = ` FROM proxy_users u JOIN access_tiers t ON t.id = u.access_tie
 
 func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	var u User
-	var uuidEnc, ssKeyEnc, tokenEnc string
-	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &ssKeyEnc, &tokenEnc,
+	var uuidEnc, ssKeyEnc, mieruEnc, tokenEnc string
+	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &ssKeyEnc,
+		&mieruEnc, &tokenEnc,
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
 		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
 		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
@@ -168,6 +175,14 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	if ssKeyEnc != "" {
 		if u.SSPassword, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
 			return nil, fmt.Errorf("解密用户 %s 的 Shadowsocks 密钥: %w", u.UserCode, err)
+		}
+	}
+	// 同上:空串表示还没被 backfill 补齐 Mieru 口令。
+	// **不在这里校验格式** —— 与 Shadowsocks 密钥同理,一个与 Mieru 完全
+	// 无关的操作不该因为这一列还没补上而失败。
+	if mieruEnc != "" {
+		if u.MieruPassword, err = s.cipher.Decrypt(mieruEnc); err != nil {
+			return nil, fmt.Errorf("解密用户 %s 的 Mieru 口令: %w", u.UserCode, err)
 		}
 	}
 	if tokenEnc != "" {
@@ -210,10 +225,15 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 两种协议的凭据一起签发,与本站现有节点跑什么协议无关:
-	// 缺一份的话,管理员把某个节点切成 Shadowsocks 时,那一刻起
+	// **三种协议的凭据一起签发**,与本站现有节点跑什么协议无关:
+	// 缺一份的话,管理员把某个节点切成那种协议的那一刻起,
 	// 全部存量用户都渲染不进配置,而他改的只是一个节点。
+	// 凭据都是纯本地随机数,签发的代价是零。
 	ssKey, err := singbox.GenerateSSKey()
+	if err != nil {
+		return nil, err
+	}
+	mieruPassword, err := mieru.GeneratePassword()
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +246,10 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 		return nil, err
 	}
 	ssKeyEnc, err := s.cipher.Encrypt(ssKey)
+	if err != nil {
+		return nil, err
+	}
+	mieruEnc, err := s.cipher.Encrypt(mieruPassword)
 	if err != nil {
 		return nil, err
 	}
@@ -249,10 +273,11 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO proxy_users
 		  (user_code, display_name, remark, uuid_encrypted, ss_password_encrypted,
-		   sub_token_encrypted, sub_token_hash,
+		   mieru_password_encrypted, sub_token_encrypted, sub_token_hash,
 		   status, quota_bytes, expires_at, reset_cycle, reset_day, access_tier_id, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		userCode, p.DisplayName, p.Remark, uuidEnc, ssKeyEnc, tokenEnc, crypto.HashToken(token),
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		userCode, p.DisplayName, p.Remark, uuidEnc, ssKeyEnc, mieruEnc,
+		tokenEnc, crypto.HashToken(token),
 		StatusActive, p.QuotaBytes, p.ExpiresAt, p.ResetCycle, p.ResetDay, p.AccessTierID, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {

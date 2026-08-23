@@ -10,6 +10,8 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/externalproxy"
+	"github.com/litebox/litebox/internal/mieru"
+	"github.com/litebox/litebox/internal/nodeport"
 )
 
 // Store 读写 node_relays。
@@ -379,50 +381,15 @@ func (s *Store) checkTarget(ctx context.Context, kind TargetKind, nodeID, extern
 
 // checkPortFree 确认监听端口没有被这台机器上的别的东西占着。
 //
-// 除了别的转发规则(靠唯一索引兜底),还要避开这台机器自己的 sing-box:
-// LANDING 角色的 A 同时跑着入站与 V2Ray API。撞上去的表现是 nginx 起不来,
-// 而那要等到部署的健康检查才发现 —— 到那时前一份配置已经被换掉了。
+// 实现整个搬去了 nodeport 包,与 sing-box 入站那一侧共用一份 ——
+// 原来两处各写一遍,而 Mieru 带来的是第三处:它占的是**一整段**端口,
+// 于是原来那种逐张表 `listen_port = ?` 的写法在三处都失效了。
+// 漏查的后果三处一模一样:nginx 或 mita 其中一个 bind 失败、服务起不来,
+// 而问题要到部署的健康检查才暴露,那时配置已经换过去了。
 func (s *Store) checkPortFree(ctx context.Context, nodeID int64, port int, excludeRelayID int64) error {
-	var role string
-	var apiPort int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT role, api_port FROM nodes WHERE id = ? AND deleted_at IS NULL`,
-		nodeID).Scan(&role, &apiPort)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("中转主机不存在: id=%d", nodeID)
-	}
-	if err != nil {
-		return err
-	}
-	var count int
-	if role != "RELAY" {
-		if port == apiPort {
-			return fmt.Errorf("%w:%d 是这台机器上 V2Ray API 的端口", ErrPortConflict, port)
-		}
-		// 同机的 sing-box 入站【逐个】查,不是只查一个。
-		// 少查一个的后果是那个入站 bind 失败、整个 sing-box 起不来,
-		// 而问题要到部署的健康检查才暴露。
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM node_inbounds
-			  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL`,
-			nodeID, port).Scan(&count); err != nil {
-			return err
-		}
-		if count > 0 {
-			return fmt.Errorf("%w:%d 是这台机器上一个 sing-box 入站的监听端口",
-				ErrPortConflict, port)
-		}
-	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM node_relays
-		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL AND id != ?`,
-		nodeID, port, excludeRelayID).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return fmt.Errorf("%w:该主机上已有规则监听 %d", ErrPortConflict, port)
-	}
-	return nil
+	return nodeport.Free(ctx, s.db, nodeID,
+		mieru.PortRange{Start: port, End: port},
+		nodeport.Skip{Kind: nodeport.KindRelay, ID: excludeRelayID})
 }
 
 func targetArgs(kind TargetKind, nodeID, externalID int64) (any, any) {

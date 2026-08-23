@@ -191,14 +191,25 @@ func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, erro
 	if err != nil {
 		return nil, err
 	}
-	cred := Credentials{UUID: u.UUID, SSPassword: u.SSPassword}
+	mierus, err := s.mieruFor(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	cred := Credentials{
+		UUID: u.UUID, SSPassword: u.SSPassword,
+		MieruPassword: u.MieruPassword, UserCode: u.UserCode,
+	}
 
 	// 中转线路紧跟自建节点,排在外部代理之前。
 	//
 	// 它更接近"我们自己的线路"而不是"买来的成品":凭据是我们发的、
 	// 落地多半是我们自己的机器,而且它与某个自建节点是同一条链路的两个入口。
 	// 排到最后会让同一台落地机的两个入口在客户端列表里被外部代理隔开。
-	selfHosted := append(s.entriesFor(cred, nodes), s.relayEntries(cred, relays)...)
+	// Mieru 入口排在 sing-box 入口之后、中转之前:它同样是"我们自己的线路",
+	// 而且与同机的 sing-box 入口是同一台机器上的两个入口 ——
+	// 排到中转后面会把同一台机器的两个入口在客户端列表里隔开。
+	selfHosted := append(s.entriesFor(cred, nodes), s.mieruEntries(cred, mierus)...)
+	selfHosted = append(selfHosted, s.relayEntries(cred, relays)...)
 	return s.mergeEntries(ctx, selfHosted, s.externalEntries(external)), nil
 }
 
@@ -218,6 +229,23 @@ func (s *Service) entriesFor(cred Credentials, nodes []Node) []Entry {
 		if err != nil {
 			s.logger.Error("生成订阅条目失败,已跳过该节点",
 				"node", node.DisplayName, "protocol", node.Protocol, "error", err)
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// mieruEntries 与 entriesFor 同构:单条转不出来时跳过并记错误日志,
+// **不让整份订阅失败** —— 订阅失败会让客户端把已有节点全部清空,
+// 而问题可能只出在一个刚加进来的入口上。
+func (s *Service) mieruEntries(cred Credentials, nodes []MieruNode) []Entry {
+	entries := make([]Entry, 0, len(nodes))
+	for _, node := range nodes {
+		entry, err := EntryForMieru(cred, node)
+		if err != nil {
+			s.logger.Error("生成 Mieru 订阅条目失败,已跳过该入口",
+				"entry", node.DisplayName, "error", err)
 			continue
 		}
 		entries = append(entries, entry)

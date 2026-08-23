@@ -43,6 +43,15 @@ const EffectiveInboundsView = "user_effective_inbounds"
 // 排查的人会先去查中转主机。
 const EffectiveRelaysView = "user_effective_relays"
 
+// EffectiveMieruInboundsView 是 Mieru 入口的有效性视图名(迁移 0024)。
+//
+// 与 EffectiveInboundsView 分开而不是合并:两者的 id 空间会撞
+// (node_inbounds.id = 3 与 node_mieru_inbounds.id = 3 是两个东西),
+// 而这些 id 还要被配置生成与部署脏标记消费 —— 撞了之后,协调器会对着
+// 一个不存在的入口发起下发。与外部代理那张视图不与节点视图合并
+// 是一模一样的理由。
+const EffectiveMieruInboundsView = "user_effective_mieru_inbounds"
+
 // 三个内置等级的 code。程序内一律用 code 判断,不要用 name —— name 可改。
 const (
 	CodeNormal = "normal"
