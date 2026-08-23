@@ -74,6 +74,7 @@ func TestFastOpenSurvivesIPv6Expansion(t *testing.T) {
 		DisplayName: "香港 01",
 		Host:        "192.0.2.10",
 		IPv6Address: "2606:4700::1111",
+		IPv6Enabled: true,
 		Port:        24443,
 		Protocol:    singbox.ProtocolVLESSReality,
 		TCPFastOpen: true,

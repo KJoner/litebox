@@ -16,6 +16,42 @@ import { color } from '@/theme/tokens'
  */
 
 /**
+ * 这个入口在订阅里到底会不会多出一条 IPv6 条目。
+ *
+ * 两个条件缺一不可:机器填了 IPv6 地址,而且这个入口开着 IPv6 条目。
+ * 只看前者的话,管理员关掉某个入口的 IPv6 之后,列表仍然写着「IPv4 + IPv6」,
+ * 而用户拉到的订阅里根本没有那一条。
+ */
+export function inboundHasIPv6Entry(i: NodeInbound, node: Node): boolean {
+  return !!node.ipv6_address && i.ipv6_enabled
+}
+
+/**
+ * 一行在订阅里占几个地址族。
+ *
+ * 两档都用中性色:双栈不是「更好」,只是「多一条地址」—— 用绿色会让单栈
+ * 那些行看起来像出了问题,而机器有没有 IPv6 是商家给的,不是配错了。
+ * 形状仍然区分,打印与色觉障碍下也读得出来。
+ */
+export function addressFamilyMeta(dual: boolean): LbStatusMeta {
+  return dual
+    ? {
+        text: 'IPv4 + IPv6',
+        shape: 'dot',
+        fg: color.neutral,
+        bg: color.neutralBg,
+        bd: color.neutralBorder,
+      }
+    : {
+        text: 'IPv4',
+        shape: 'minus',
+        fg: color.neutral,
+        bg: color.neutralBg,
+        bd: color.neutralBorder,
+      }
+}
+
+/**
  * 协议列的状态编码。
  *
  * 显示的是 deployed_protocol(节点上真正在跑的),不是 protocol(期望值)。

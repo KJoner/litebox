@@ -156,6 +156,7 @@ func TestShadowsocksIPv6Expand(t *testing.T) {
 		DisplayName: "东京 SS",
 		Host:        "192.0.2.30",
 		IPv6Address: "2001:db8::2",
+		IPv6Enabled: true,
 		Port:        8388,
 		Protocol:    singbox.ProtocolShadowsocks,
 		SSMethod:    singbox.SSMethodAES128GCM,

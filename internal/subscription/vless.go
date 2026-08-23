@@ -10,11 +10,27 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 )
 
-// IPv6NameSuffix 是 IPv6 条目追加在展示名称后的后缀。
+// IPv6NameSuffix 是 IPv6 条目【默认】追加在展示名称后的后缀。
 //
-// 固定大写,不做成可配置项:客户端靠节点名区分条目,改一次后缀
-// 所有人的客户端里都会多出一份重复节点,而旧的那份永远留在列表里。
+// 固定大写。它现在是默认值而不是唯一值 —— 管理员可以给某个入口的 IPv6
+// 条目单独起名(node_inbounds.ipv6_display_name)。但**默认值本身仍然
+// 不做成配置项**:客户端靠节点名区分条目,全站统一改一次后缀,
+// 所有人的客户端里都会同时多出一份重复节点,而旧的那份永远留在列表里、
+// 永远连得上。单个入口改名有同样的代价,只是范围小到管理员能预判。
 const IPv6NameSuffix = "-IPV6"
+
+// IPv6EntryName 是 IPv6 条目在订阅里显示的名字。
+//
+// override 为空表示「跟随 IPv4 名字」。**这是唯一一处回落实现** ——
+// 订阅、入口列表与门户都调它。各写一遍的话,分叉的表现是管理员在面板上
+// 看到的名字与用户客户端里那一条不一样,而两边都不报错,也没有任何一处
+// 查得出是哪一侧算错了。
+func IPv6EntryName(displayName, override string) string {
+	if s := strings.TrimSpace(override); s != "" {
+		return s
+	}
+	return displayName + IPv6NameSuffix
+}
 
 // PhysicalNode 是数据库里的一条节点记录。
 //
@@ -30,6 +46,14 @@ type PhysicalNode struct {
 	// 双栈机器的两个协议栈未必映射到同一个外部端口 —— NAT 小鸡上
 	// IPv4 常是服务商映射的高位端口,IPv6 则是直连的 443。
 	IPv6Port int
+	// IPv6Enabled 为假时这个入口不展开 IPv6 条目,即使机器填着 IPv6 地址。
+	//
+	// **零值是"不展开"**,所以构造处必须显式填 —— 生产只有 Service.nodesFor
+	// 一处,由 TestNodesForCarriesIPv6Settings 钉住。漏填的表现是 IPv6 条目
+	// 从所有人的订阅里静默消失,而面板上那个开关明明还开着。
+	IPv6Enabled bool
+	// IPv6Name 为空表示跟随 DisplayName + IPv6NameSuffix,回落由 IPv6EntryName 做。
+	IPv6Name string
 	// Protocol 是节点上【已经生效】的协议(deployed_protocol),
 	// 不是数据库里的期望值。理由见 Service.nodesFor。
 	Protocol singbox.Protocol
@@ -47,6 +71,9 @@ type PhysicalNode struct {
 // 除展示名称、服务器地址与公网端口外两个条目完全相同:UUID、REALITY 公钥、
 // short ID、握手目标、指纹与 flow 都取自同一条记录 —— 它们本来就是同一个入站。
 //
+// 展开与否由入口自己的开关决定(IPv6Enabled),名字可以单独覆盖 ——
+// 两者都只影响订阅内容,一个字节都不进节点配置。
+//
 // 端口在这里解析而不是在写库时:IPv6Port 存 0 表示「跟随 IPv4」,
 // 之后管理员改了 IPv4 公网端口,IPv6 条目会自动跟着变。
 // 写库时就固化成当时的值,改完 IPv4 端口 IPv6 会停在旧端口上,而且不报任何错。
@@ -63,11 +90,11 @@ func (p PhysicalNode) Expand() []Node {
 		SSMethod:         p.SSMethod,
 		SSServerKey:      p.SSServerKey,
 	}
-	if p.IPv6Address == "" {
+	if p.IPv6Address == "" || !p.IPv6Enabled {
 		return []Node{v4}
 	}
 	v6 := v4
-	v6.DisplayName = p.DisplayName + IPv6NameSuffix
+	v6.DisplayName = IPv6EntryName(p.DisplayName, p.IPv6Name)
 	v6.Host = p.IPv6Address
 	if p.IPv6Port > 0 {
 		v6.Port = p.IPv6Port

@@ -11,6 +11,10 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/singbox"
+	// 只为 IPv6 条目名那一条回落规则(subscription.IPv6EntryName)。方向看着
+	// 是反的,但反过来更糟:把规则搬进 node 包,subscription 就要 import
+	// 整个 node(含 deployment/sshx/nginx),而公开订阅路由刻意不依赖它们。
+	"github.com/litebox/litebox/internal/subscription"
 )
 
 // 一台落地机器上的 sing-box 入站(V8)。
@@ -69,6 +73,25 @@ type Inbound struct {
 	ListenPort     int `json:"listen_port"`
 	PublicPort     int `json:"public_port"`
 	IPv6PublicPort int `json:"ipv6_public_port"`
+
+	// IPv6Enabled 决定这个入口在订阅里要不要多出一条 IPv6 条目。
+	// 机器没填 ipv6_address 时它没有意义 —— 展开的前提是两者都成立。
+	IPv6Enabled bool `json:"ipv6_enabled"`
+	// IPv6DisplayName 是 IPv6 条目的独立名称,**空串表示跟随 IPv4 名字**。
+	//
+	// 这里存的是原始值,不是解析后的名字:回落只有
+	// subscription.IPv6EntryName 一处实现,API 层调它算出 ipv6_entry_name
+	// 下发给前端。在这里存解析后的值,「改回跟随」就再也没法表达了。
+	IPv6DisplayName string `json:"ipv6_display_name"`
+
+	// IPv6EntryName 是 IPv6 条目在订阅里【实际】显示的名字,由 IPv6DisplayName
+	// 回落而来(空则 IPv4 名字 + -IPV6)。不落库,只出现在 API 响应里。
+	//
+	// 由后端算好下发而不是让前端自己拼后缀:回落只有
+	// subscription.IPv6EntryName 一处实现,前端再拼一遍的话,某天改了规则
+	// 只会改到一边,表现是面板上显示的名字与用户客户端里那一条对不上,
+	// 而两边都不报错。与「周期重置日只渲染后端给的 next_reset_at」同一条规矩。
+	IPv6EntryName string `json:"ipv6_entry_name"`
 
 	TCPFastOpen         bool `json:"tcp_fast_open"`
 	DeployedTCPFastOpen bool `json:"deployed_tcp_fast_open"`
@@ -137,6 +160,7 @@ const inboundColumns = `i.id, i.node_id, n.name, n.display_name,
 	i.tag, i.display_name, i.protocol, i.ss_method, i.ss_password_encrypted,
 	i.deployed_protocol, i.deployed_ss_method,
 	i.listen_port, i.public_port, i.ipv6_public_port,
+	i.ipv6_enabled, i.ipv6_display_name,
 	i.tcp_fast_open, i.deployed_tcp_fast_open,
 	i.reality_dest, i.reality_dest_port, i.reality_privkey_encrypted, i.reality_pubkey,
 	i.reality_short_id, i.handshake_max_record_size, i.handshake_checked_at,
@@ -162,6 +186,7 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 		&in.Tag, &in.DisplayName, &in.Protocol, &in.SSMethod, &ssKeyEnc,
 		&in.DeployedProtocol, &in.DeployedSSMethod,
 		&in.ListenPort, &in.PublicPort, &in.IPv6PublicPort,
+		&in.IPv6Enabled, &in.IPv6DisplayName,
 		&in.TCPFastOpen, &in.DeployedTCPFastOpen,
 		&in.RealityDest, &in.RealityDestPort, &realityKeyEnc, &in.RealityPublicKey,
 		&in.RealityShortID, &in.HandshakeMaxRecordSize, &in.HandshakeCheckedAt,
@@ -193,6 +218,9 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 			return nil, fmt.Errorf("解密入站 %d 的%s: %w", in.ID, f.what, err)
 		}
 	}
+	// 派生字段在这里填,scanInbound 是 Inbound 唯一的构造入口 ——
+	// 各处自己算的话,漏掉一处的表现是「列表里有、点进详情就没了」。
+	in.IPv6EntryName = subscription.IPv6EntryName(in.DisplayName, in.IPv6DisplayName)
 	return &in, nil
 }
 
@@ -252,7 +280,18 @@ type InboundParams struct {
 	ListenPort     int
 	PublicPort     int
 	IPv6PublicPort int
-	TCPFastOpen    bool
+	// IPv6Enabled 为 nil:新增时默认开,编辑时保持原值 —— 与
+	// SubscriptionEnabled / Enabled 一致。默认开是因为默认关会让升级后
+	// 全部双栈机器的 IPv6 条目从所有人的订阅里同时消失,而没有人做过什么。
+	IPv6Enabled *bool
+	// IPv6DisplayName **空串表示「跟随 IPv4 名字」,不是「保持原值」**。
+	//
+	// 与 AccessTierID 为 0 表示保持原值的约定相反,而这里必须相反:
+	// 清空覆盖值是管理员表达「改回跟随」的唯一方式,当成保持原值的话,
+	// 他把输入框清空、保存、再打开,名字还在,怎么点都回不到跟随状态。
+	// 与外部代理「清空展示名覆盖值 = 跟随上游」是同一条道理。
+	IPv6DisplayName string
+	TCPFastOpen     bool
 	// RealityDest 为空时使用默认候选目标的第一个(仅 VLESS)。
 	RealityDest     string
 	RealityDestPort int
@@ -349,13 +388,15 @@ func (s *Store) createInboundTx(
 	// idx_node_inbounds_tag 的部分索引放过,是插入过程中唯一合法的中间态。
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
-			ss_password_encrypted, listen_port, public_port, ipv6_public_port, tcp_fast_open,
+			ss_password_encrypted, listen_port, public_port, ipv6_public_port,
+			ipv6_enabled, ipv6_display_name, tcp_fast_open,
 			reality_dest, reality_dest_port, reality_privkey_encrypted, reality_pubkey,
 			reality_short_id, access_tier_id, sort_order, subscription_enabled,
 			public_remark, enabled, created_at, updated_at)
-		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		nodeID, p.DisplayName, p.Protocol, p.SSMethod, ssKeyEnc,
-		p.ListenPort, p.PublicPort, p.IPv6PublicPort, p.TCPFastOpen,
+		p.ListenPort, p.PublicPort, p.IPv6PublicPort,
+		boolOr(p.IPv6Enabled, true), p.IPv6DisplayName, p.TCPFastOpen,
 		p.RealityDest, p.RealityDestPort, realityKeyEnc, keys.PublicKey, shortID,
 		p.AccessTierID, p.SortOrder, boolOr(p.SubscriptionEnabled, true),
 		strings.TrimSpace(p.PublicRemark), boolOr(p.Enabled, true), now, now)
@@ -445,6 +486,7 @@ func (s *Store) UpdateInbound(
 
 	subEnabled := boolOr(p.SubscriptionEnabled, cur.SubscriptionEnabled)
 	enabled := boolOr(p.Enabled, cur.Enabled)
+	v6Enabled := boolOr(p.IPv6Enabled, cur.IPv6Enabled)
 	effect := InboundEffect{
 		// 进入配置文件的字段才要重新部署。公网端口、名称与排序只影响订阅内容,
 		// 为它们重启 sing-box 会把这台机器上全部在线连接踢掉一次,换不来任何东西。
@@ -456,9 +498,13 @@ func (s *Store) UpdateInbound(
 			p.RealityDestPort != cur.RealityDestPort ||
 			enabled != cur.Enabled,
 		TierChanged: tierID != cur.AccessTierID,
+		// IPv6 的开关与名称只改订阅内容 —— 它们一个字节都不进节点配置,
+		// 为它们重启 sing-box 会把这台机器上全部在线连接踢掉一次。
 		SubscriptionChanged: p.DisplayName != cur.DisplayName ||
 			p.PublicPort != cur.PublicPort ||
 			p.IPv6PublicPort != cur.IPv6PublicPort ||
+			v6Enabled != cur.IPv6Enabled ||
+			p.IPv6DisplayName != cur.IPv6DisplayName ||
 			p.SortOrder != cur.SortOrder ||
 			subEnabled != cur.SubscriptionEnabled,
 		Changes: []string{},
@@ -482,6 +528,13 @@ func (s *Store) UpdateInbound(
 		followLabel(cur.PublicPort, "监听端口"), followLabel(p.PublicPort, "监听端口"))
 	track("IPv6 公网端口", p.IPv6PublicPort != cur.IPv6PublicPort,
 		followLabel(cur.IPv6PublicPort, "IPv4"), followLabel(p.IPv6PublicPort, "IPv4"))
+	track("IPv6 条目", v6Enabled != cur.IPv6Enabled,
+		onOffLabel(cur.IPv6Enabled), onOffLabel(v6Enabled))
+	// 改名要单独记一条:用户客户端里会因此多出一份新节点,而旧的那份
+	// 永远留着 —— 几个月后有人问"我这里怎么有两个一样的节点",
+	// 审计里得查得到是谁在什么时候改的。
+	track("IPv6 条目名称", p.IPv6DisplayName != cur.IPv6DisplayName,
+		nameFollowLabel(cur.IPv6DisplayName), nameFollowLabel(p.IPv6DisplayName))
 	track("TCP Fast Open", p.TCPFastOpen != cur.TCPFastOpen,
 		onOffLabel(cur.TCPFastOpen), onOffLabel(p.TCPFastOpen))
 	track("握手目标", p.RealityDest != cur.RealityDest,
@@ -494,13 +547,15 @@ func (s *Store) UpdateInbound(
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE node_inbounds SET display_name = ?, protocol = ?, ss_method = ?,
-		       listen_port = ?, public_port = ?, ipv6_public_port = ?, tcp_fast_open = ?,
+		       listen_port = ?, public_port = ?, ipv6_public_port = ?,
+		       ipv6_enabled = ?, ipv6_display_name = ?, tcp_fast_open = ?,
 		       reality_dest = ?, reality_dest_port = ?,
 		       access_tier_id = ?, sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, enabled = ?, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
 		p.DisplayName, p.Protocol, p.SSMethod,
-		p.ListenPort, p.PublicPort, p.IPv6PublicPort, p.TCPFastOpen,
+		p.ListenPort, p.PublicPort, p.IPv6PublicPort,
+		v6Enabled, p.IPv6DisplayName, p.TCPFastOpen,
 		p.RealityDest, p.RealityDestPort,
 		tierID, p.SortOrder, boolOr(p.SubscriptionEnabled, cur.SubscriptionEnabled),
 		strings.TrimSpace(p.PublicRemark), boolOr(p.Enabled, cur.Enabled),
@@ -558,12 +613,23 @@ func normalizeInboundParams(p *InboundParams, fallbackName string) error {
 	if p.DisplayName == "" {
 		p.DisplayName = fallbackName
 	}
-	if len([]rune(p.DisplayName)) > 64 {
-		return errors.New("入口名称不能超过 64 个字符")
+	if err := validateEntryName(p.DisplayName, "入口名称"); err != nil {
+		return err
 	}
-	// 换行与控制字符会把 URI 列表的行数搞乱,客户端解析出一个残缺条目。
-	if strings.ContainsAny(p.DisplayName, "\r\n\t") {
-		return errors.New("入口名称不能包含换行或制表符")
+	// 空串是合法的,它表示「跟随 IPv4 名称」。
+	p.IPv6DisplayName = strings.TrimSpace(p.IPv6DisplayName)
+	if p.IPv6DisplayName != "" {
+		if err := validateEntryName(p.IPv6DisplayName, "IPv6 条目名称"); err != nil {
+			return err
+		}
+		// 两条条目同名的话,用户在客户端里挑不出哪条走 IPv6 —— 而这两条是
+		// 同一个入口的两个地址,「一条通、一条不通」正是最需要分辨的时候。
+		// 想让它跟 IPv4 同名的唯一合理解释是填错了。
+		if p.IPv6DisplayName == p.DisplayName {
+			return errors.New("IPv6 条目名称不能与入口名称相同 —— " +
+				"订阅里会出现两条完全同名的节点,用户分不出哪条走 IPv6;" +
+				"留空即可自动区分")
+		}
 	}
 
 	if err := singbox.ValidatePort(p.ListenPort, "主机监听"); err != nil {
@@ -684,6 +750,31 @@ func followLabel(port int, what string) string {
 		return "跟随" + what
 	}
 	return strconv.Itoa(port)
+}
+
+// validateEntryName 是订阅里可见的名字共用的一套校验。
+//
+// 换行与控制字符会把 URI 列表的行数搞乱,客户端解析出一个残缺条目 ——
+// 这一条对 IPv4 名字与 IPv6 名字是同一件事,分两处写迟早只补上一处。
+func validateEntryName(name, what string) error {
+	if len([]rune(name)) > 64 {
+		return errors.New(what + "不能超过 64 个字符")
+	}
+	if strings.ContainsAny(name, "\r\n\t") {
+		return errors.New(what + "不能包含换行或制表符")
+	}
+	return nil
+}
+
+// nameFollowLabel 把空的 IPv6 条目名写成「跟随 IPv4 名称」而不是「—」。
+//
+// 破折号读起来像"没有名字",而空串的实际含义是"有名字,只是跟着另一个字段走"。
+// 审计要回答的是他把它改成了什么,不是那一格里存着什么。
+func nameFollowLabel(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "跟随 IPv4 名称"
+	}
+	return name
 }
 
 func boolOr(v *bool, fallback bool) bool {

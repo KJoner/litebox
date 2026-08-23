@@ -19,8 +19,10 @@ import InboundChainModal from '@/components/node/InboundChainModal.vue'
 import InboundDestModal from '@/components/node/InboundDestModal.vue'
 import InboundFormModal from '@/components/node/InboundFormModal.vue'
 import {
+  addressFamilyMeta,
   confirmRemoveInbound,
   inboundEnabledMeta,
+  inboundHasIPv6Entry,
   inboundProtocolMeta,
   portText,
 } from '@/components/node/inboundOps'
@@ -360,6 +362,7 @@ const columns = [
       <LbRowCard v-for="r in filtered" :key="r.key">
         <template #head>
           <span class="iv__name">{{ r.inbound.display_name }}</span>
+          <LbStatusTag :meta="addressFamilyMeta(inboundHasIPv6Entry(r.inbound, r.node))" />
           <LbStatusTag :meta="inboundProtocolMeta(r.inbound)" />
           <LbStatusTag
             :meta="r.inbound.enabled ? inboundEnabledMeta.on : inboundEnabledMeta.off"
@@ -409,7 +412,16 @@ const columns = [
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
-          <div class="iv__name">{{ (record as Row).inbound.display_name }}</div>
+          <div class="iv__name">
+            {{ (record as Row).inbound.display_name }}
+            <LbStatusTag
+              :meta="
+                addressFamilyMeta(
+                  inboundHasIPv6Entry((record as Row).inbound, (record as Row).node),
+                )
+              "
+            />
+          </div>
           <div class="iv__dim lb-mono">{{ (record as Row).inbound.tag }}</div>
         </template>
 

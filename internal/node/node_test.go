@@ -64,6 +64,8 @@ func inboundParamsOf(in *Inbound) InboundParams {
 		ListenPort:      in.ListenPort,
 		PublicPort:      in.PublicPort,
 		IPv6PublicPort:  in.IPv6PublicPort,
+		IPv6Enabled:     &in.IPv6Enabled,
+		IPv6DisplayName: in.IPv6DisplayName,
 		TCPFastOpen:     in.TCPFastOpen,
 		RealityDest:     in.RealityDest,
 		RealityDestPort: in.RealityDestPort,
