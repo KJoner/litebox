@@ -1,0 +1,299 @@
+package node
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/litebox/litebox/internal/deployment"
+	"github.com/litebox/litebox/internal/mieru"
+	"github.com/litebox/litebox/internal/singbox"
+	"github.com/litebox/litebox/internal/sshx"
+)
+
+// Mieru 入口的安装与下发。
+//
+// 与 sing-box 的部署并列而不是合并:两者动的是节点上两个互不相干的服务,
+// 一次 Mieru 下发只重启那一个 mita 实例,sing-box 上全部入口的在线连接
+// 一条都不断。合成一次部署会让"改一个 Mieru 入口"变成"重启整台机器的
+// 全部代理",而摩擦档次是按这个差别定的。
+//
+// **但它们不是完全独立的**:配了出口的 Mieru 入口要借道本机 sing-box 的
+// 一个 socks 入站,而那个入站在 sing-box 的配置里 —— 所以启用/改动出口
+// 之后,sing-box 也要重新下发一次。那一步由调用方按顺序做,见 DeployMieru。
+
+// ErrMieruBinaryMissing 表示面板本地没有 mita 二进制。
+var ErrMieruBinaryMissing = errors.New("面板本地没有 Mieru 二进制")
+
+// MieruInstallResult 是一次 Mieru 二进制安装的结果。
+type MieruInstallResult struct {
+	MitaPath     string `json:"mita_path"`
+	MitaSHA256   string `json:"mita_sha256"`
+	ClientPath   string `json:"client_path"`
+	ClientSHA256 string `json:"client_sha256"`
+	MitaVersion  string `json:"mita_version"`
+}
+
+// InstallMieruBinaries 把 mita 与 mieru 客户端装到节点上。
+//
+// **两个二进制都要装**:mita 是服务端;mieru 客户端只在部署的健康检查里
+// 跑那几秒,但少了它,真实拨测就做不了 —— 而那是本项目第一条铁律,
+// Mieru 不给它开口子。sing-box 拨不动 mieru(它没有 mieru 出站),
+// 所以不能借用已经在节点上的那一份。
+//
+// 包装脚本也在这里落地:每个实例一个私有的 /var/lib/mita,理由见
+// deployment.Layout.MieruWrapperPath —— 共用那一份 metrics.pb 会让重启的
+// 实例加载到别的实例的计数器,而没有任何一层会报错。
+func (s *Service) InstallMieruBinaries(
+	ctx context.Context, nodeID int64,
+) (MieruInstallResult, error) {
+	var result MieruInstallResult
+	if s.mieruBinaries == nil || s.mieruClients == nil {
+		return result, ErrMieruBinaryMissing
+	}
+	n, err := s.store.Get(ctx, nodeID)
+	if err != nil {
+		return result, err
+	}
+	if n.Role.IsRelay() {
+		return result, ErrMieruNotOnLanding
+	}
+	arch := n.Arch
+	if arch == "" {
+		// 与 sing-box 那一侧同一条道理:没探测过就不猜。装错架构的二进制
+		// 之后,服务起不来而报错是一句 "Exec format error",
+		// 而管理员刚点的是"安装"。
+		return result, errors.New("这台机器还没有探测过架构,请先探测一次")
+	}
+
+	mita, err := s.mieruBinaries.Load(arch)
+	if err != nil {
+		return result, err
+	}
+	client, err := s.mieruClients.Load(arch)
+	if err != nil {
+		return result, err
+	}
+	layout := s.layout
+	result.MitaPath = layout.MieruBinaryPath()
+	result.ClientPath = layout.MieruClientPath()
+	sum := sha256.Sum256(mita)
+	result.MitaSHA256 = hex.EncodeToString(sum[:])
+	sum = sha256.Sum256(client)
+	result.ClientSHA256 = hex.EncodeToString(sum[:])
+
+	err = s.pool.Do(ctx, nodeID, func(c *sshx.Client) error {
+		// unshare 必须先确认。缺了它,服务定义写下去、服务起不来,
+		// 而报错是一句 "unshare: command not found" —— 那看起来像是
+		// 面板生成的服务定义有问题,而真正的原因是这台机器缺一个包。
+		if _, err := c.RunCheck(ctx, sshx.NewCommand("sh", "-c",
+			"command -v unshare >/dev/null 2>&1")); err != nil {
+			return errors.New("这台机器上没有 unshare(util-linux)。" +
+				"Mieru 的多实例要靠它给每个实例一个私有的 /var/lib/mita —— " +
+				"共用那一份 metrics.pb 会让重启的实例读到别的实例的流量计数," +
+				"而没有任何一层会报错。Debian/Ubuntu:apt-get install -y util-linux;" +
+				"Alpine:apk add util-linux-misc")
+		}
+		if _, err := c.RunCheck(ctx, sshx.NewCommand("mkdir", "-p",
+			layout.MieruDir())); err != nil {
+			return err
+		}
+		if err := c.Upload(ctx, layout.MieruBinaryPath(), mita, 0o755); err != nil {
+			return err
+		}
+		if err := c.Upload(ctx, layout.MieruClientPath(), client, 0o755); err != nil {
+			return err
+		}
+		if err := c.Upload(ctx, layout.MieruWrapperPath(),
+			[]byte(deployment.MieruWrapperScript), 0o755); err != nil {
+			return err
+		}
+		// 装完真的跑一次 —— 与「引导装完公钥后必须用面板密钥真连一次」
+		// 同一条道理:只上传不验证的话,架构不对、缺少动态库这类问题
+		// 要等到第一次下发才暴露,而那时管理员已经以为装好了。
+		res, err := c.RunCheck(ctx, sshx.NewCommand(layout.MieruBinaryPath(), "version"))
+		if err != nil {
+			return fmt.Errorf("mita 装上了但跑不起来: %w", err)
+		}
+		result.MitaVersion = firstLine(res.Stdout, 64)
+		return nil
+	})
+	return result, err
+}
+
+// DesiredMieruConfig 渲染一个 Mieru 入口当前应有的 mita 配置。
+//
+// 用户列表来自 user_effective_mieru_inbounds —— 与订阅、门户查的是同一个视图。
+// 各写一遍等级条件的话,分叉的表现是用户在订阅里看得见这个入口、
+// 连上去认证被拒,而两边都不报错。
+func (s *Service) DesiredMieruConfig(
+	ctx context.Context, m *MieruInbound,
+) (mieru.ServerConfig, error) {
+	users, err := s.users.MieruUsersForInbound(ctx, m.ID)
+	if err != nil {
+		return mieru.ServerConfig{}, err
+	}
+	return mieru.BuildServerConfig(mieru.Params{
+		ListenPorts:     m.ListenPorts,
+		Transport:       m.Transport,
+		MTU:             m.MTU,
+		Users:           users,
+		EgressSocksPort: m.EgressSocksPort,
+	})
+}
+
+// DeployMieru 下发一个 Mieru 入口。
+//
+// usersOnly 为真时只 reload —— 一条连接都不断。它必须由**调用方**判断:
+// 这一层看不出这次改动是只动了用户还是也动了端口,而判错的代价不对等 ——
+// 把端口变更当成用户变更会让新旧两段端口同时监听(实测:reload 只加不减),
+// 而旧端口上那个入口还在服务,管理员以为它已经搬走了。
+func (s *Service) DeployMieru(
+	ctx context.Context, mieruID int64, usersOnly bool,
+) (deployment.Result, error) {
+	// 与 Service.Deploy 一样与请求 ctx 解绑:一次已经开始的节点操作
+	// 不得因为客户端断开而中止。断到一半会让 mita 停在一个刚 apply 完、
+	// 还没验证过的配置上,而面板上连一条记录都没有。
+	ctx = context.WithoutCancel(ctx)
+
+	m, err := s.store.GetMieruInbound(ctx, mieruID)
+	if err != nil {
+		return deployment.Result{}, err
+	}
+	n, err := s.store.Get(ctx, m.NodeID)
+	if err != nil {
+		return deployment.Result{}, err
+	}
+
+	cfg, err := s.DesiredMieruConfig(ctx, m)
+	if err != nil {
+		return deployment.Result{}, err
+	}
+	raw, err := cfg.MarshalIndent()
+	if err != nil {
+		return deployment.Result{}, err
+	}
+
+	req := deployment.MieruRequest{
+		NodeID:      m.NodeID,
+		InboundID:   m.ID,
+		Revision:    time.Now().UTC().Unix(),
+		Config:      raw,
+		ListenPorts: m.ListenPorts,
+		Transport:   m.Transport,
+		UsersOnly:   usersOnly,
+		// 拨测 CONNECT 的目标是**这台机器自己的公网 SSH**,取自数据库 ——
+		// NAT 机上问节点自己会拿到私网地址与本机端口。
+		DialHost: n.Host,
+		DialPort: n.SSHPort,
+	}
+	// 拿这个入口上的第一个用户当探测凭据。**一个都没有时留 nil** ——
+	// 部署那一侧会记 SKIPPED 并写明原因,而不是报成功。
+	if len(cfg.Users) > 0 {
+		req.Probe = &deployment.MieruProbeUser{
+			Code:     cfg.Users[0].Name,
+			Password: cfg.Users[0].Password,
+		}
+	}
+
+	result, deployErr := s.deployer.DeployMieru(ctx, req)
+	// 结局先落系统日志、再落部署记录 —— Save 一失败(数据库锁、磁盘满、
+	// ctx 被取消)这次下发就再也没有任何痕迹可查,而节点上的 mita
+	// 确实已经重启过。
+	s.logMieruResult(m, result, deployErr)
+	s.saveMieruRecord(ctx, m.NodeID, result)
+	if deployErr == nil {
+		if err := s.store.MarkMieruDeployed(ctx, m.ID); err != nil {
+			s.logger.Error("标记 Mieru 入口已下发失败",
+				"mieru_inbound_id", m.ID, "error", err)
+		}
+	}
+	return result, deployErr
+}
+
+func (s *Service) logMieruResult(m *MieruInbound, result deployment.Result, deployErr error) {
+	if deployErr == nil {
+		s.logger.Info("Mieru 入口下发成功",
+			"node", m.NodeName, "inbound", m.DisplayName,
+			"ports", m.ListenPorts.String(), "status", result.Status)
+		return
+	}
+	// 只写失败步骤名与错误的第一行:拨测失败时错误里带着节点上的日志原文,
+	// 而那里面可能有用户凭据 —— journal 通常谁都读得到,
+	// 部署记录才是有访问控制的地方。
+	step := ""
+	for _, st := range result.Steps {
+		if st.Status == deployment.StepFailed {
+			step = st.Name
+		}
+	}
+	s.logger.Error("Mieru 入口下发失败",
+		"node", m.NodeName, "inbound", m.DisplayName,
+		"step", step, "error", firstLine(deployErr.Error(), 200),
+		// 回滚结果回答的是"这个入口现在还能不能用",与"这次下发失败了"
+		// 是两个问题。
+		"rollback", result.RollbackResult)
+}
+
+func (s *Service) saveMieruRecord(ctx context.Context, nodeID int64, result deployment.Result) {
+	_ = nodeID
+	if s.deployStore == nil {
+		return
+	}
+	if _, err := s.deployStore.Save(ctx, result); err != nil {
+		s.logger.Error("保存 Mieru 下发记录失败", "node_id", nodeID, "error", err)
+	}
+}
+
+// UninstallMieru 把一个 Mieru 实例从节点上摘掉。
+func (s *Service) UninstallMieru(ctx context.Context, mieruID int64) error {
+	m, err := s.store.GetMieruInbound(ctx, mieruID)
+	if err != nil {
+		return err
+	}
+	return s.deployer.UninstallMieru(context.WithoutCancel(ctx), m.NodeID, m.ID)
+}
+
+// MieruEgressParamsFor 把这台机器上全部配了出口的 Mieru 入口翻成
+// sing-box 那一侧的 socks 入站参数。
+//
+// 它与 sing-box 的配置渲染绑在一起:出口那一跳的 socks 入站在
+// sing-box 的配置里,所以启用或改动出口之后 sing-box 也要重新下发。
+func (s *Service) MieruEgressParamsFor(
+	ctx context.Context, nodeID int64,
+) ([]singbox.MieruEgressParams, error) {
+	list, err := s.store.MieruInboundsForNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]singbox.MieruEgressParams, 0, len(list))
+	for _, m := range list {
+		if !m.Enabled {
+			// 停用的入口不渲染那一跳:留着它等于在这台机器上开着一个
+			// 没人用的回环 socks,而排查的人会以为那个入口还在服务。
+			continue
+		}
+		target, err := s.store.ResolveMieruChain(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		if target == nil {
+			continue
+		}
+		chain, err := chainOutboundFor(target.Target, target.ChainCode,
+			target.UUID, target.SSPassword)
+		if err != nil {
+			return nil, fmt.Errorf("Mieru 入口 %s 的出口: %w", m.DisplayName, err)
+		}
+		out = append(out, singbox.MieruEgressParams{
+			ID:         m.ID,
+			Tag:        singbox.MieruEgressTagFor(m.ID),
+			ListenPort: target.SocksPort,
+			Chain:      chain,
+		})
+	}
+	return out, nil
+}

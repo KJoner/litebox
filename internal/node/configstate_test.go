@@ -6,14 +6,22 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
 // stubUsers 让配置状态的测试能控制"库里该有哪些用户"。
-type stubUsers struct{ users []singbox.User }
+type stubUsers struct {
+	users      []singbox.User
+	mieruUsers []mieru.User
+}
 
 func (s *stubUsers) UsersForInbound(context.Context, int64) ([]singbox.User, error) {
 	return s.users, nil
+}
+
+func (s *stubUsers) MieruUsersForInbound(context.Context, int64) ([]mieru.User, error) {
+	return s.mieruUsers, nil
 }
 
 func newConfigStateFixture(t *testing.T, users ...singbox.User) (*Service, *Node) {

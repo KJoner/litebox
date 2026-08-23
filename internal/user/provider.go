@@ -2,9 +2,11 @@ package user
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
@@ -129,4 +131,63 @@ func (s *Store) ExpiringSoon(ctx context.Context, before time.Time) (int, error)
 		   AND expires_at IS NOT NULL AND expires_at <= ?`,
 		before.UTC().Format(time.RFC3339)).Scan(&count)
 	return count, err
+}
+
+// MieruUsersForInbound 返回一个 Mieru 入口上应有的用户。
+//
+// 与 UsersForInbound 查的是**两张不同的视图** —— user_effective_inbounds
+// 与 user_effective_mieru_inbounds。合成一个方法就必须再传一个"这是哪一类"
+// 的参数,而那个参数写漏的表现是把 sing-box 入站的用户下发给了 mita 实例:
+// 那些人连不上(mieru 的口令是另一份),而面板显示下发成功。
+//
+// 名字用 user_code —— 它同时是 mita 那边流量计数器的名字,与 sing-box 侧的
+// stats 计数器同名。那正是「同一个用户在同一台机器上的流量合并到一条
+// traffic_ledger 记录」的来源。
+//
+// **口令为空的用户直接跳过并报错**,与 Shadowsocks 那一侧「不校验、
+// 让它空着」相反:SS 密钥空着只影响 SS 节点,而这里空着意味着
+// 这个用户会以一个空口令被写进 mita 的用户表 —— 那是一个谁都能用的账号。
+func (s *Store) MieruUsersForInbound(
+	ctx context.Context, mieruInboundID int64,
+) ([]mieru.User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT u.user_code, u.mieru_password_encrypted, u.status, u.quota_bytes,
+		       u.used_uplink, u.used_downlink, u.expires_at
+		  FROM proxy_users u
+		  JOIN `+access.EffectiveMieruInboundsView+` em ON em.proxy_user_id = u.id
+		 WHERE em.mieru_inbound_id = ? AND u.deleted_at IS NULL
+		 ORDER BY u.user_code`, mieruInboundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	users := make([]mieru.User, 0)
+	for rows.Next() {
+		var u User
+		var enc string
+		if err := rows.Scan(&u.UserCode, &enc, &u.Status, &u.QuotaBytes,
+			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt); err != nil {
+			return nil, err
+		}
+		if !u.Serviceable(now) {
+			continue
+		}
+		if enc == "" {
+			return nil, fmt.Errorf("用户 %s 还没有 Mieru 口令(等待 backfill 补齐)", u.UserCode)
+		}
+		password, err := s.cipher.Decrypt(enc)
+		if err != nil {
+			return nil, fmt.Errorf("解密用户 %s 的 Mieru 口令: %w", u.UserCode, err)
+		}
+		// 最后一道关口再校验一次格式。库里的值理论上都是本包生成的,
+		// 但配置一旦下发就生效 —— 宁可在这里失败,也不能把一个坏口令
+		// 写进 mita 的用户表。
+		if err := mieru.ValidatePassword(password); err != nil {
+			return nil, fmt.Errorf("用户 %s 的 %w", u.UserCode, err)
+		}
+		users = append(users, mieru.UserFor(u.UserCode, password))
+	}
+	return users, rows.Err()
 }

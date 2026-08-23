@@ -420,12 +420,22 @@ func cmdServe(args []string) error {
 
 	relayStore := relay.NewStore(db)
 
+	// mita 与 mieru 客户端都要:前者是服务端,后者只在部署的健康检查里跑
+	// 那几秒 —— 而少了它,Mieru 入口的真实拨测就做不了,那是本项目
+	// 第一条铁律,Mieru 不给它开口子。
+	mieruBinaries := node.NewNamedBinaryProvider(cfg.Node.MieruBinaryDir, "mita",
+		"请先执行 scripts/fetch-mieru.sh 拉取")
+	mieruClients := node.NewNamedBinaryProvider(cfg.Node.MieruBinaryDir, "mieru",
+		"请先执行 scripts/fetch-mieru.sh 拉取")
+
 	nodeService := node.NewService(node.ServiceOptions{
 		Store:            nodeStore,
 		Pool:             pool,
 		Deployer:         deployer,
 		DeployStore:      deployment.NewStore(db),
 		Users:            userStore,
+		MieruBinaries:    mieruBinaries,
+		MieruClients:     mieruClients,
 		Relays:           relayStore,
 		RelayHosts:       relayStore,
 		Keys:             panelKeys,

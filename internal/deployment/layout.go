@@ -173,6 +173,12 @@ const (
 	KindSingBox Kind = "SINGBOX"
 	// KindRelay 是 nginx 转发配置下发,只 reload,不打断在途连接。
 	KindRelay Kind = "RELAY"
+	// KindMieru 是一个 Mieru 入口的下发。
+	//
+	// 它的影响面比另外两种都小:只动这一个入口对应的那个 mita 实例,
+	// sing-box 与 nginx 一个字都不改。部署记录里必须分得出是哪一种 ——
+	// 混在一起会让「部署失败」被读成整台机器出了问题。
+	KindMieru Kind = "MIERU"
 )
 
 // Result 是一次部署事务的完整结果。

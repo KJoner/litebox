@@ -42,6 +42,15 @@ type InitSystem interface {
 	// RecentLogs 返回最近若干行日志。取不到时返回空串而不是错误 ——
 	// 它只是错误信息的附加材料,不该让取日志失败盖住真正的故障。
 	RecentLogs(ctx context.Context, client *sshx.Client, layout Layout, lines int) string
+
+	// RelayInit 与 MieruInit 内嵌进来,而不是让调用方各自做类型断言。
+	//
+	// 一台机器上现在有三类服务(sing-box / nginx / N 个 mita),
+	// 它们的生命周期互不相干。断言的写法会让"这个 init 系统支不支持
+	// Mieru"变成一个运行期问题,而它其实是编译期就该定的 ——
+	// 两种 init 都必须实现全部三套,少一套就编译不过。
+	RelayInit
+	MieruInit
 }
 
 // ErrNoInitSystem 表示节点上既没有 systemd 也没有 OpenRC。

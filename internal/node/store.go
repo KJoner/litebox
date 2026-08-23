@@ -92,6 +92,14 @@ type Node struct {
 	// 绝不返回 nil,理由同上。
 	MieruInbounds []*MieruInbound `json:"mieru_inbounds"`
 
+	// mieruEgress 是渲染 sing-box 配置时用的那一跳(不序列化,也不入库)。
+	//
+	// 挂在 Node 上而不是当参数层层传:renderInputs 是收齐渲染输入的
+	// 唯一一处,而 nodeParams 只此一份 —— 多一个参数意味着两个调用点
+	// 都要记得传,而漏传的表现是那台机器的 Mieru 出口从配置里消失,
+	// 流量从本机直接出去,界面上却写着"出口:某某落地"。
+	mieruEgress []singbox.MieruEgressParams
+
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`

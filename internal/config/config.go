@@ -44,6 +44,13 @@ type NodeConfig struct {
 	// BinaryDir 存放要分发到节点的 sing-box 二进制,
 	// 文件名形如 sing-box-linux-amd64。由 scripts/build-singbox.sh 生成。
 	BinaryDir string `yaml:"binary_dir"`
+	// MieruBinaryDir 存放 mieru / mita 的官方二进制。
+	//
+	// 与 sing-box 分开是因为来源不同:那边是我们自己按固定构建标签构建的
+	// (with_v2ray_api 是整套流量统计的前提),这边是上游 release 的原样
+	// 二进制,由 scripts/fetch-mieru.sh 拉取。混在一个目录里会让
+	// 「这个文件是谁产生的」变成一个要翻脚本才答得出的问题。
+	MieruBinaryDir string `yaml:"mieru_binary_dir"`
 	// SSHDialTimeout 是建立到节点 SSH 连接的超时。
 	SSHDialTimeout time.Duration `yaml:"ssh_dial_timeout"`
 	// DeployTimeout 是单次部署事务的整体超时。
@@ -137,6 +144,7 @@ func Default() Config {
 		},
 		Node: NodeConfig{
 			BinaryDir:        "assets/singbox",
+			MieruBinaryDir:   "assets/mieru",
 			SSHDialTimeout:   20 * time.Second,
 			DeployTimeout:    5 * time.Minute,
 			DeployDebounce:   4 * time.Second,
@@ -192,6 +200,7 @@ func applyEnv(cfg *Config) {
 	envDuration("LITEBOX_SESSION_TTL", &cfg.Security.SessionTTL)
 	envInt("LITEBOX_LOGIN_MAX_ATTEMPTS", &cfg.Security.LoginMaxAttempts)
 	envStr("LITEBOX_NODE_BINARY_DIR", &cfg.Node.BinaryDir)
+	envStr("LITEBOX_NODE_MIERU_BINARY_DIR", &cfg.Node.MieruBinaryDir)
 	envDuration("LITEBOX_DEPLOY_TIMEOUT", &cfg.Node.DeployTimeout)
 	envDuration("LITEBOX_DEPLOY_DEBOUNCE", &cfg.Node.DeployDebounce)
 	envDuration("LITEBOX_TRAFFIC_SYNC_INTERVAL", &cfg.Traffic.SyncInterval)

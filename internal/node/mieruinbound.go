@@ -605,3 +605,28 @@ func mtuLabel(mtu int) string {
 	}
 	return strconv.Itoa(mtu)
 }
+
+// MarkMieruDeployed 记下这个入口在节点上【当前生效】的那几项。
+//
+// 只在下发成功之后调。订阅只看这几列 —— 改配置到下发成功之间的窗口里
+// (部署失败的话是永远),按期望值渲染会让用户拉到一份与节点上不符的参数,
+// 而数据库、节点、面板三方都是"对的",只有订阅站在中间说了假话。
+func (s *Store) MarkMieruDeployed(ctx context.Context, id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE node_mieru_inbounds
+		   SET deployed_transport = transport,
+		       deployed_multiplexing = multiplexing,
+		       deployed_mtu = mtu,
+		       deployed_listen_port_start = listen_port_start,
+		       deployed_listen_port_end = listen_port_end,
+		       updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`, now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrMieruInboundNotFound
+	}
+	return nil
+}
