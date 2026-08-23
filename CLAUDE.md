@@ -20,14 +20,18 @@ V10 增加了服务巡检与自动恢复、Bark/Telegram 消息推送,以及「�
 V11 让 IPv6 条目按入口开关并可单独起名,
 V12 把「面板连的地址」与「用户连的地址」拆成两栏(管理 IPv4 / 订阅 IPv4)
 并增加了 Clash / mihomo 原生订阅输出,
-定位不变。**自建节点的落地协议一个字没变**,仍然只有 VLESS + REALITY 与
-Shadowsocks 2022 —— 那是我们自己要运维的东西,与登记别人配好的线路是两件事。
+V13 增加了 Mieru(服务端是 mita,与 sing-box 并列的第二个代理进程),
+定位不变。**自建节点的落地协议到 V13 才第一次变长** —— 在此之前
+V4~V12 一个字没加。现在是 VLESS + REALITY、Shadowsocks 2022 与 Mieru 三种,
+仍然只有这三种:那是我们自己要运维的东西,与登记别人配好的线路是两件事。
 
 ## 架构约束
 
 * 不引入 MySQL、PostgreSQL、Redis 或消息队列,只用 SQLite;
 * 不引入微服务,保持 Go 单体;
-* 不在节点运行常驻自研 Agent,节点只有 sing-box + init 系统(systemd 或 OpenRC);
+* 不在节点运行常驻自研 Agent。节点上跑的都是上游软件:sing-box、
+  nginx(V7 起,只在中转机上)、mita(V13 起,只在有 Mieru 入口的机器上),
+  加一个 init 系统(systemd 或 OpenRC)。**面板自己一行代码都不在节点上常驻**;
 * 节点不依赖 Docker、数据库或 Node.js;
 * 不增加商业机场功能(公开注册、套餐、订单、支付、优惠券、邀请、工单);
   V2 的门户账号由管理员创建,不开放自助注册;
@@ -1449,21 +1453,19 @@ IPv6 从「机器填了地址就无条件给每个入口加一条」变成「入
   而不是只写在面板上 —— 用户几个月后打开这份 YAML 时,面板上那句话
   早就不在他眼前了,而他会在这里加自己的规则然后在某次更新后全部丢失。
 
-## Mieru 落地协议约束(V13,进行中)
+## Mieru 落地协议约束(V13)
 
 Mieru 是第三类入口(`node_mieru_inbounds`,迁移 0024)。
 **服务端是另一个进程(mita),不是 sing-box 的一个入站** —— 凭据靠
-`mita apply config` 下发,流量走 Unix socket 上的管理 gRPC,指标持久化在
-`/var/lib/mita/metrics.pb` 且跨重启保留。
+`mita apply config` 下发,流量走 Unix socket 上的管理 gRPC。
+真机验证结论见 `docs/开发计划/v13/V13-技术验证报告.md`
+(该目录在 .gitignore 里,只在本地),两台机器:
+101-la(Debian / systemd / 公网)与 lax-1(Alpine / OpenRC / **NAT**)。
 
-**部署与流量采集还没做,而且不许猜着做。** 它们要等
-`phase0/mieruprobe` 在真机上量出计数器语义 —— 验证清单见
-`docs/开发计划/v13/V13-技术验证清单.md`(该目录在 .gitignore 里,只在本地)。
-面板的入账模型建立在三个假设上(计数器单调、以字节为单位、重启归零),
-而这三条在 mita 那边可能一条都不成立:CLI 给的是 1 天/30 天的**滚动窗口**
-且四舍五入到 MiB,gRPC 给的是原始 int64 但 `Metric.type` 有
-COUNTER / COUNTER_TIME_SERIES / **GAUGE** 三种。猜错的表现是用户流量被算成
-天文数字或者归零,而同步任务每一轮都"成功"。
+**一台机器上可以有多个 Mieru 入口,各自的出口互不相干** —— 这是实测过的:
+同一台机器上三个入口,真实客户端量到三个不同的出口 IP(直连本机
+23.169.169.110、链到 lax-1 出 154.31.157.27、链到另一个入站出
+23.169.169.110)。但做到这一点的路只有一条,见下面「一个入口一个实例」。
 
 * **绝不做成 `node_inbounds` 的一种 protocol。** 那张表的每一行都渲染成
   sing-box 的一个 inbound;混进去之后配置渲染、部署、拨测、流量采集四条路径
@@ -1508,10 +1510,12 @@ COUNTER / COUNTER_TIME_SERIES / **GAUGE** 三种。猜错的表现是用户流�
   (比如 socks):那会让用户拿到一条连得上、但完全没有 mieru 那层伪装的线路,
   比拿不到更坏。V12 的 Clash 原生输出正是为这一类协议准备的;
 
-* **不能当中转(nginx 透传)的落地,也不能被链式指向。** 前者两个理由:
+* **Mieru 不能当落地 —— 两个方向都不能。** nginx 透传那一路两个理由:
   nginx stream 只渲染 TCP 的 server 块,而更根本的是**一条 `proxy_pass`
-  只指一个上游端口,而客户端会在整段里跳**;后者是 sing-box 没有 mieru 出站。
-  所以 `node_relays.target_kind` 不新增取值,选落地时压根不列 Mieru 入口;
+  只指一个上游端口,而客户端会在整段里跳**;sing-box 链式那一路是
+  sing-box 压根没有 mieru 出站。所以 `node_relays.target_kind` 不新增取值,
+  选落地时压根不列 Mieru 入口。**但反过来成立**:Mieru 入口自己可以有出口,
+  见下面「出口只能借道本机 sing-box」;
 
 * **用户凭据是第三份**(`proxy_users.mieru_password_encrypted`),与 UUID、
   SS 密钥平级、各管一种协议 —— 复用一把的话,重置其中一种会连带作废另外两种。
@@ -1539,6 +1543,128 @@ COUNTER / COUNTER_TIME_SERIES / **GAUGE** 三种。猜错的表现是用户流�
 * **界面上凡是"这台机器有没有入口"的判断都要把 Mieru 算进去。**
   漏掉的表现是一台只有 Mieru 入口的机器显示「无入口」「谁都连不上」,
   而它好好地在服务用户 —— 一句错误的告警会让管理员去修一台本来就没坏的机器。
+
+以下每一条都是真机上量出来或撞出来的,不是照着文档推的。
+
+* **一个 Mieru 入口 = 一个 mita 实例,不是一份配置里的一个 portBinding。**
+  实测:mita 的出口(`egress`)是**实例级**的 —— `EgressRule` 只按目的地匹配,
+  `PortBinding` 与 `User` 上都没有出口字段。也就是说同一个 mita 进程里的
+  两个端口段**不可能**去往不同的落地。想在一台机器上做到「入口甲直连、
+  入口乙走 A 落地、入口丙走 B 落地」,唯一的路是三个实例
+  (`litebox-mita-<入口id>`,各自的配置、socket 与服务定义)。
+  合成一个实例的话,面板可以正常保存、下发也成功,而三个入口的出口
+  **全是最后一条 egress 规则说了算** —— 界面上三行写着三个落地,
+  实际只有一个,没有任何一层报错;
+
+* **`/var/lib/mita/metrics.pb` 是写死在 mita 里的路径,多实例必须隔离。**
+  它不读环境变量、也没有配置项。两个实例共用一个文件的后果实测过:
+  它们互相覆盖对方的计数,而两个实例都"正常运行"、`mita status` 都是
+  RUNNING —— 表现是用户流量忽大忽小,而这个现象无法复现、无法排查。
+  做法是每个实例一个**挂载命名空间**:
+  `unshare --mount --propagation private` 之后 `mount --bind` 各自的
+  私有目录到 `/var/lib/mita`。因此**安装 Mieru 的第一步是确认机器上有
+  `unshare`**(Debian 的 util-linux 与 Alpine 的 busybox 都带,但不能假设)
+  —— 没有它就拒绝安装,而不是装完之后让指标悄悄串味;
+
+* **服务定义里必须 `ExecStartPre` 删掉那个 metrics 文件。** mita 的指标
+  **跨重启保留**(这一点与 sing-box 相反),而面板的入账模型是
+  「计数器随进程归零」。不删的话,基线与计数器的关系在重启后仍然成立、
+  一切看起来正常,直到某次面板自己的基线被清掉 —— 那时整份历史累计值
+  会被当成一轮新增流量记进去。删掉它就让 mita 的语义与 sing-box 对齐,
+  只需要一套入账逻辑;
+
+* **计数器取 gRPC 的 `DownloadBytes` / `UploadBytes`,不取 CLI。**
+  实测 `mita get users` 给的是 1 天 / 30 天的**滚动窗口**且四舍五入到 MiB,
+  拿它入账会让用户流量既少算又不单调。gRPC 那两个是
+  `COUNTER_TIME_SERIES` 的累积字节数,**只认 COUNTER 与
+  COUNTER_TIME_SERIES,GAUGE 一律跳过** —— GAUGE 会跌,拿它做增量
+  要么算出负数(ledger 有 CHECK,同步每轮失败)、要么被钳成 0(静默少算)。
+  两次独立测量(中间重启过实例)传 10,485,760 字节都得到增量 10,485,976,
+  协议开销 0.002%,完全可复现;
+
+* **`node_counters` 的基线必须带来源维度**(迁移 0026,主键加 `source`)。
+  一台机器上现在有 N+1 个各自独立重启的计数器(一个 sing-box、N 个 mita)。
+  合成一行的后果两种、都不报错:加起来存一行时,sing-box 一重启,
+  重启判定会清基线,而那几个 mita **并没有重启** —— 它们已经入过账的
+  累计值被再计一遍,用户凭空多出一大截;只存一份时,另外几份的增量
+  永远算不出来,那些流量静默丢失。取值用 `mieru:<入口id>` 而不是笼统的
+  `MIERU`,理由同上 —— 实例之间同样各自重启。迁移必须是
+  `INSERT ... SELECT` 全量搬,**一行都不能丢**:丢一行不是"少算一轮",
+  是下一次同步把那个计数器的全部累计值当成新增流量记进去;
+
+* **Mieru 流量同步是每个实例一个 `batch_id`,不是整轮一个。**
+  `traffic_ledger` 的唯一索引是 `(batch_id, node_id, user_code, direction)`,
+  而同一个用户在同一台机器的两个实例上都有流量是常态 ——
+  共用一个 batch 时第二条撞唯一索引,**整轮同步失败,而且此后每一轮都失败**。
+  真机上撞到过,日志里只有一句 `UNIQUE constraint failed`;
+  单实例的测试永远发现不了这件事,所以有
+  `TestMieruSyncAcrossInstancesDoesNotCollide` 钉着;
+
+* **出口只能借道本机 sing-box,那一跳是协议限制。** mita 的出口代理
+  **只认 SOCKS5**(上游枚举里只有这一个值),拨不出 VLESS 或 Shadowsocks。
+  所以链路是三跳:`用户 → mita → 本机 sing-box 的一个回环 socks 入站
+  → 落地`。那个 socks 入站**只监听 127.0.0.1**,而且它的出口由
+  `route.rules` 按入站指过去 —— 与 V8 的链式入站同一套机制,
+  `AssertChainRouted` 现在把 `mieru-egress-` 这一类也认成需要断言的入站。
+  界面上必须把这一跳说出来:不说的话,管理员会问「改个 Mieru 出口
+  为什么要重启 sing-box」,而那个问题没有答案就只能被读成面板有 bug;
+
+* **链路凭据必须真的出现在落地的用户列表里,那是要额外接一根线的。**
+  `MieruChainUsersForInbound` 存在还不够 —— 它必须被合进
+  `inboundUsers` 的返回值。真机上漏接过一次,表现与它自己的注释里
+  预言的一字不差:落地照常部署成功,而**入口机**的下发记录里是一句
+  `ssh: handshake failed: EOF`,看起来完全像是链路不通,
+  排查方向指向另一台机器;
+
+* **下发一个带出口的 Mieru 入口之前,先确认落地的配置已同步**
+  (`checkMieruChainTargetReady`,与 V8 的 `checkChainTargetsReady` 同源)。
+  判据保守 —— 只有确定同步了才放行:误拦是让管理员先部署落地
+  (本来就该做),漏拦是两次重启加一句指向错误方向的报错;
+
+* **改出口要下发三样,顺序不能反:落地 → 入口机的 sing-box → 这个 Mieru 入口。**
+  只发其中一个的表现:只发 sing-box → mita 还在直连,出口没变而界面说变了;
+  只发 Mieru → mita 指向一个还不存在的 socks 端口,这个入口整个不通。
+  接口因此返回 `needs_deploy` 与 `needs_singbox_deploy` 两个标记,
+  而不是一个笼统的"要重新部署";
+
+* **`mita apply config` 是整体替换,`mita reload` 只对用户变更有效。**
+  实测:apply 对列表字段整体替换,所以撤权只要把人从 JSON 里去掉,
+  不需要额外的 `mita delete user`;reload 让用户变更立刻对新会话生效
+  (旧会话存活,与 nginx reload 同类),但它**不释放旧端口** ——
+  改端口段之后新旧两段会同时监听,而 `mita status` 一切正常。
+  所以只有纯用户变更走 reload,其余一律 stop + start;
+
+* **不以启动命令的退出码为准,也不以「守护进程活着」为准。**
+  `mita status` 有 IDLE 与 RUNNING 两种,前者是"管理接口在,但没在代理"
+  —— 那时端口一个都没绑。与「部署不得只看 systemd 状态」是同一类错误;
+
+* **Mieru 的部署健康检查照样做真实拨测**,用节点上的 mieru 客户端连
+  `127.0.0.1:<监听段起点>`,CONNECT 目标是这台机器自己的公网 SSH,
+  并在隧道里**完成一次完整的 SSH 公钥认证**(`sshx.AuthOverConn`)——
+  理由与 sing-box 那一侧一字不差:读横幅会被 OpenSSH 的
+  `PerSourcePenalties` 当成"连上但没认证就断开"而累积惩罚。
+  拨测用**真实用户**的凭据:临时造一个只能证明"新账号能连",
+  而且那两次 apply 之间机器上多了一个谁都不知道的账号。
+  这个入口上一个用户都没有时记 SKIPPED 并写明原因,不判失败;
+
+* **多路复用的配置形状是 `{"level": "..."}` 而不是一个字符串。**
+  写成字符串时 mita 照常接受、照常运行,而客户端连不上 ——
+  这是用 `mieru explain config` 对着面板生成的链接才看出来的。
+  凡是自己拼的客户端参数,都要拿它验一遍;
+
+* **入口的下发按钮在每一行上,不是整台机器一个。** 一个入口一个实例,
+  重启一个不影响其他 —— 做成"下发这台机器的 Mieru"会把本来只该断
+  一个入口的连接扩大到全部;
+
+* **手动点「同步流量」必须两路都同步**(`Scheduler.SyncNodeNow`)。
+  真机上发现过:点完手动同步,Mieru 的 10MB 一个字节都没进去,
+  而接口返回的是一次成功 —— 管理员据此看到的用户用量缺了一整截,
+  却与真实值长得一模一样,要等下一轮定时同步才悄悄补上。
+  **部署事务不走这条路**(它用 `deployment.TrafficSyncer.SyncNode`,
+  只同步 sing-box),所以这里加上 Mieru 不会让每次 sing-box 部署
+  白连 N 个 socket。sing-box 那一半成功而 Mieru 那一半失败时,
+  错误信息里必须说明前半截**已经落库了** —— 否则管理员会以为
+  这次点击什么都没发生,而用户用量已经变了。
 
 ## 前端约束(V3)
 
@@ -1851,6 +1977,7 @@ go run ./cmd/litebox migrate   # 只执行迁移并做一致性检查
 go run ./cmd/litebox ssh-key   # 打印面板专用的节点访问公钥
 
 bash scripts/build-singbox.sh  # 构建带 with_v2ray_api 的节点二进制到 assets/singbox
+bash scripts/fetch-mieru.sh    # 下载并校验 mita/mieru 二进制到 assets/mieru(版本写死在脚本里)
 ```
 
 针对真实节点的集成测试(会重启节点服务,不要指向生产节点):
@@ -2061,14 +2188,30 @@ V12 订阅 IPv4 地址(约束见上面「订阅 IPv4 地址约束(V12)」):
 存量节点这一栏为空,订阅输出与升级前逐字节相同。
 Clash 输出是**新增**的第四种格式,原有三种一个字节都没变。
 
-V13 Mieru 落地协议(约束见上面「Mieru 落地协议约束(V13,进行中)」):
+V13 Mieru 落地协议(约束见上面「Mieru 落地协议约束(V13)」):
 
 * Phase 28 数据模型、端口段与订阅 —— 已完成(迁移 0024 第三类入口表 +
   `proxy_users.mieru_password_encrypted` + `user_effective_mieru_inbounds`、
   `internal/mieru` 的取值与 `PortRange`、`internal/nodeport` 把三处端口
   冲突检测统一成一份、`mierus://` 与 mihomo proxy、管理接口与入口页的第三种类型)
-* Phase 29 部署与流量采集 —— **未开始,被真机验证挡着**。
-  探针在 `phase0/mieruprobe`,清单在 `docs/开发计划/v13/`(本地目录)。
-  在量出 mita 的计数器语义之前不得动入账代码
+* Phase 29 出口落地 —— 已完成(迁移 0025、每个入口一个 mita 实例、
+  `mieru-egress-` 回环 socks 入站 + `route.rules` 按入站分流、
+  链路凭据 `chain_xxxxxx` 与 `checkMieruChainTargetReady`、
+  三步有序下发)。**真机验证推翻了原来「Mieru 不能链式」那一条** ——
+  不能的只是"当落地",它自己完全可以有出口
+* Phase 30 部署事务 —— 已完成(`litebox-mita-<入口id>` 逐实例的服务定义、
+  `unshare --mount` 私有 metrics 目录、apply/reload/stop-start 三种下发路径、
+  四步健康检查含真实拨测与 SSH 公钥认证、失败回滚)
+* Phase 31 流量采集 —— 已完成(迁移 0026 给基线加 `source` 维度、
+  `internal/mieruapi` 经 direct-streamlocal 读管理 gRPC、
+  每实例一个 `batch_id`、重启前强制同步)
+* Phase 32 管理页面 —— 已完成(入口页第三种类型、Mieru 单独一行工具条、
+  逐行的下发与出口按钮、`MieruChainModal` 把三步下发的顺序与后果写进确认框)
+
+真机验证在 101-la(Debian / systemd / 公网)与 lax-1(Alpine / OpenRC / NAT)
+上跑完,决定性的一条:**同一台机器上三个 Mieru 入口,真实客户端量到三个
+不同的出口 IP**。流量口径实测:每实例基线各约 10,514,2xx,
+落地侧 `chain_000001` 记 10,514,259,入口机 `user_000001` 记 31,548,723,
+用户合计 31,600,321 字节 —— 三份计数器各自入账、用户只扣一次。
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

@@ -18,6 +18,7 @@ import { LbRowCard, LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/co
 import InboundChainModal from './InboundChainModal.vue'
 import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
+import MieruChainModal from './MieruChainModal.vue'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
 import {
   addressFamilyMeta,
@@ -283,11 +284,13 @@ function destinationText(row: EntryRow): string {
   if (row.kind === 'nginx') {
     return `透传到 ${row.relay.target_name || '(落地已删除)'}`
   }
-  // Mieru 恒为本机直连:它不能被链式指向(sing-box 没有 mieru 出站),
-  // 也不能当中转的落地(nginx stream 只搬 TCP,而端口跳跃与单端口
-  // proxy_pass 对不上)。写死一句而不是留空 —— 留空会被读成"还没配"。
   if (row.kind === 'mieru') {
-    return '本机直连'
+    // Mieru 的出口要经本机 sing-box 转一跳(mita 的出口代理只认 SOCKS5),
+    // 所以这里写"经 sing-box → 落地"而不是只写落地的名字 ——
+    // 只写落地会让人以为 mita 直接拨到了那台机器上,而排查时那一跳
+    // 恰恰是最容易被忘掉的一环。
+    const t = mieruChainName(row.mieru)
+    return t ? `经本机 sing-box → ${t}` : '本机直连'
   }
   const chain = chainTargetName(row.inbound)
   return chain ? `经 ${chain}` : '本机直连'
@@ -342,6 +345,25 @@ function chainTargetName(i: NodeInbound) {
   if (i.chain_target_kind === 'EXTERNAL') {
     const p = externalProxies.value.find((x) => x.id === i.chain_target_external_id)
     return p ? p.display_name : `外部代理 #${i.chain_target_external_id}`
+  }
+  return ''
+}
+
+/**
+ * Mieru 入口的落地名字。
+ *
+ * 与 chainTargetName 同一套查表,但**故意不合并成一个泛型函数** ——
+ * 两边的字段虽然同名,合并要么改两个类型、要么加一层 any,
+ * 而这几行的重复远比那个便宜。
+ */
+function mieruChainName(m: MieruInbound) {
+  if (m.chain_target_kind === 'INBOUND') {
+    const found = landingInbounds.value.find((c) => c.value === m.chain_target_inbound_id)
+    return found ? found.label : `入口 #${m.chain_target_inbound_id}`
+  }
+  if (m.chain_target_kind === 'EXTERNAL') {
+    const p = externalProxies.value.find((x) => x.id === m.chain_target_external_id)
+    return p ? p.display_name : `外部代理 #${m.chain_target_external_id}`
   }
   return ''
 }
@@ -414,6 +436,86 @@ function removeMieru(m: MieruInbound) {
         message.success('已删除。下次下发这台机器时才会从节点上真正移除')
         emit('changed')
       }),
+  })
+}
+
+const mieruChainOpen = ref(false)
+const mieruChainTarget = ref<MieruInbound | null>(null)
+
+function openMieruChain(m: MieruInbound) {
+  mieruChainTarget.value = m
+  mieruChainOpen.value = true
+}
+
+/**
+ * 装 mita 与 mieru 客户端二进制。
+ *
+ * **与「安装 sing-box」是两件事,按钮也分行。** 两者装的是不同的二进制、
+ * 不同的服务定义,而且这一步还要先确认机器上有 unshare ——
+ * 每个 mita 实例都要一个独立的挂载命名空间,不然它们会共用
+ * /var/lib/mita/metrics.pb,互相覆盖对方的流量计数,而三个实例都"正常运行"。
+ *
+ * 只装二进制、不起任何服务:服务定义由每个入口自己的下发写。
+ */
+async function installMieru() {
+  running.value = '正在安装 Mieru'
+  emit('busy', running.value)
+  try {
+    const r = await api.installMieru(props.node.id)
+    message.success(`已安装 mita ${r.result.mita_version}`)
+    emit('changed')
+  } catch (e) {
+    message.error(e instanceof ApiError ? e.message : '安装失败')
+  } finally {
+    running.value = ''
+    emit('busy', '')
+  }
+}
+
+const lastMieruDeploy = ref<DeployResult | null>(null)
+
+/**
+ * 下发一个 Mieru 入口。
+ *
+ * **逐入口下发,不是整台机器一起。** 一台机器上的每个 Mieru 入口都是一个
+ * 独立的 mita 实例(出口是实例级的,这是上游的限制),重启一个不影响另一个
+ * —— 合成"下发这台机器的 Mieru"会把本来只该断一个入口的连接扩大到全部。
+ */
+function deployMieru(m: MieruInbound) {
+  lbDangerConfirm({
+    title: `确认下发 Mieru 入口「${m.display_name}」?`,
+    okType: 'primary',
+    okText: '开始下发',
+    impacts: [
+      `会重启 ${nodeLabel.value} 上这一个 mita 实例,把**这个入口**的在线连接全部踢掉。`,
+      '同机的其他 Mieru 入口与 sing-box 入口一条连接都不断 —— 它们是各自独立的进程。',
+      '下发前会先同步这个实例的流量:计数器随进程消失,不先同步的话那一段永久丢失。',
+    ],
+    footer: '失败会自动回滚到上一份配置,并把 mita 的日志带回来。',
+    onOk: () => {
+      // 不返回这个 Promise:AntD 会把确认框留在屏幕上转圈等它,
+      // 而下发要十几秒 —— 那期间管理员既看不到进度也点不了别的。
+      void (async () => {
+        running.value = '正在下发 Mieru 入口'
+        emit('busy', running.value)
+        lastMieruDeploy.value = null
+        try {
+          const r = await api.deployMieruInbound(m.id)
+          lastMieruDeploy.value = r.result
+          if (r.error) {
+            message.error(r.error)
+          } else {
+            message.success('Mieru 入口已下发')
+          }
+          emit('changed')
+        } catch (e) {
+          message.error(e instanceof ApiError ? e.message : '下发失败')
+        } finally {
+          running.value = ''
+          emit('busy', '')
+        }
+      })()
+    },
   })
 }
 
@@ -629,21 +731,31 @@ onMounted(async () => {
       <span v-if="running" class="nr__running">{{ running }}…</span>
     </div>
 
-    <!-- 按钮分两行,一行一类。
-         混在一排的话,「部署配置」(重启 sing-box、踢掉全部入口的在线连接)与
-         「下发转发配置」(只 reload,一条在途连接都不断)会长得一样重,
-         而这两件事该不该挑时机完全不同。 -->
+    <!-- 按钮按服务分行,一行一类。
+         混在一排的话,「部署配置」(重启 sing-box、踢掉全部 sing-box 入口的
+         在线连接)、「下发」(只重启一个 mita 实例)与「下发转发配置」
+         (只 reload,一条在途连接都不断)会长得一样重,
+         而这三件事该不该挑时机完全不同。 -->
     <div v-if="!isRelayHost" class="nr__ops">
       <span class="nr__kind">sing-box</span>
       <a-button size="small" type="primary" :disabled="!!running" @click="openCreateInbound">
         新增入口
       </a-button>
-      <a-button size="small" :disabled="!!running" @click="openCreateMieru">
-        新增 Mieru 入口
-      </a-button>
       <a-button size="small" :disabled="!!running" @click="emit('install')">安装 sing-box</a-button>
       <a-button size="small" :disabled="!!running" @click="emit('deploy')">部署配置</a-button>
-      <span class="nr__note">改了要重启,这台机器上<b>全部入口</b>的在线连接都会断开。</span>
+      <span class="nr__note">
+        改了要重启,这台机器上<b>全部 sing-box 入口</b>的在线连接都会断开。
+      </span>
+    </div>
+    <!-- Mieru 单独一行:服务端是 mita,与 sing-box 是两个进程、两套服务定义,
+         下发也是逐入口各下各的 —— 每个入口一个 mita 实例。 -->
+    <div v-if="!isRelayHost" class="nr__ops">
+      <span class="nr__kind">Mieru</span>
+      <a-button size="small" :disabled="!!running" @click="openCreateMieru">新增 Mieru 入口</a-button>
+      <a-button size="small" :disabled="!!running" @click="installMieru">安装 Mieru</a-button>
+      <span class="nr__note">
+        下发在每一行上,<b>各下各的</b> —— 一个入口一个 mita 实例,重启一个不影响其他。
+      </span>
     </div>
     <div v-else class="nr__ops">
       <span class="nr__kind">sing-box</span>
@@ -733,6 +845,8 @@ onMounted(async () => {
           </template>
           <template v-else-if="row.kind === 'mieru'">
             <a-button size="small" type="link" @click="openEditMieru(row.mieru)">编辑</a-button>
+            <a-button size="small" type="link" @click="openMieruChain(row.mieru)">出口</a-button>
+            <a-button size="small" type="link" @click="deployMieru(row.mieru)">下发</a-button>
             <a-button size="small" type="link" danger @click="removeMieru(row.mieru)">删除</a-button>
           </template>
           <template v-else>
@@ -831,8 +945,15 @@ onMounted(async () => {
             <a-button size="small" type="link" @click="openEditMieru(record.mieru)">
               编辑
             </a-button>
-            <!-- 没有「握手目标」与「出口」两个按钮:Mieru 不用 REALITY,
-                 也不能链出去(sing-box 没有 mieru 出站)。 -->
+            <!-- 没有「握手目标」:Mieru 不用 REALITY。
+                 「出口」有,但那一跳要经本机 sing-box —— mita 只拨得出 SOCKS5。 -->
+            <a-button size="small" type="link" @click="openMieruChain(record.mieru)">
+              出口
+            </a-button>
+            <!-- 「下发」逐入口一个,不是整台机器一起:一个入口一个 mita 实例。 -->
+            <a-button size="small" type="link" @click="deployMieru(record.mieru)">
+              下发
+            </a-button>
             <a-button size="small" type="link" danger @click="removeMieru(record.mieru)">
               删除
             </a-button>
@@ -877,8 +998,10 @@ onMounted(async () => {
     <!-- 中转机上没有「部署配置」那个按钮,也不产生任何流量数字 ——
          这两句话照写会指向一个不存在的按钮和一份不存在的统计。 -->
     <p v-if="!isRelayHost" class="nr__note">
-      sing-box 入口的增删改<b>不会自动部署</b>:那会重启服务,把这台机器上全部入口的
-      在线连接一起踢掉。改完之后自己挑时机点上面的「部署配置」。
+      sing-box 入口的增删改<b>不会自动部署</b>:那会重启服务,把这台机器上全部
+      sing-box 入口的在线连接一起踢掉。改完之后自己挑时机点上面的「部署配置」。
+      Mieru 入口同理,但它的下发在<b>每一行上</b> —— 一个入口一个 mita 实例,
+      重启一个不影响其他入口,也不影响 sing-box。
       转发入口只 reload nginx,不需要挑时机。
       <br />
       <b>流量拆不到入口。</b>同一个用户在这台机器上的流量是所有入口的合计 ——
@@ -896,6 +1019,14 @@ onMounted(async () => {
       <div>停在:<b>{{ lastChain.stage }}</b></div>
       <div v-if="lastChain.target_deploy">落地部署:{{ lastChain.target_deploy.status }}</div>
       <div v-if="lastChain.host_deploy">本机部署:{{ lastChain.host_deploy.status }}</div>
+    </div>
+    <div v-if="lastMieruDeploy" class="nr__result">
+      <div>Mieru 下发:<b>{{ lastMieruDeploy.status }}</b></div>
+      <div v-for="(s, i) in lastMieruDeploy.steps" :key="i" class="nr__step">
+        <span class="nr__step-name">{{ s.name }}</span>
+        <span class="nr__step-status">{{ s.status }}</span>
+        <span class="nr__step-detail">{{ s.detail }}</span>
+      </div>
     </div>
     <div v-if="lastDeploy" class="nr__result">
       <div>中转下发:<b>{{ lastDeploy.status }}</b></div>
@@ -925,6 +1056,14 @@ onMounted(async () => {
       :tiers="tiers"
       :existing-count="mierus.length"
       @saved="emit('changed')"
+      @busy="(l: string) => emit('busy', l)"
+    />
+
+    <MieruChainModal
+      v-model:open="mieruChainOpen"
+      :inbound="mieruChainTarget"
+      :node="node"
+      @applied="emit('changed')"
       @busy="(l: string) => emit('busy', l)"
     />
 

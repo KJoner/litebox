@@ -14,7 +14,15 @@ import { Modal } from 'ant-design-vue'
  */
 export interface LbDangerConfirmOptions {
   title: string
-  /** 逐条影响。每条一句话,主语明确。 */
+  /**
+   * 逐条影响。每条一句话,主语明确。
+   *
+   * 支持 `**加粗**`:这几段话往往有一句是「真正会发生什么」,
+   * 其余是铺垫,而管理员在确认框上停留的时间以秒计。
+   * **不接 v-html** —— 这里的文案有一部分带节点名与用户填的展示名,
+   * 拼进 innerHTML 就是一条从数据库到 DOM 的注入路径,而这个弹窗恰好
+   * 是管理员最不会怀疑的地方。所以只认这一种标记,自己切段成文本节点。
+   */
   impacts: string[]
   okText?: string
   cancelText?: string
@@ -57,14 +65,27 @@ export function lbDangerConfirm(o: LbDangerConfirmOptions) {
             h(
               'div',
               { style: `font-size:11.5px;line-height:1.75;color:${danger ? '#8E2117' : '#5C4405'}` },
-              o.impacts.map((t) => h('div', `· ${t}`)),
+              o.impacts.map((t) => h('div', ['· ', ...emphasize(t)])),
             ),
           ],
         ),
         o.footer
-          ? h('div', { style: 'font-size:12px;line-height:1.7;color:#576070' }, o.footer)
+          ? h('div', { style: 'font-size:12px;line-height:1.7;color:#576070' }, emphasize(o.footer))
           : null,
       ]),
     onOk: o.onOk,
   })
+}
+
+/**
+ * 把 `**...**` 切成文本节点与 <b>,其余原样。
+ *
+ * 落单的 `**` 原样留着,不当成标记的开头 —— 吞掉它会让一句话在弹窗里
+ * 少几个字符,而作者对着源码怎么看都看不出哪里少了。
+ */
+function emphasize(text: string) {
+  const parts = text.split('**')
+  // 奇数个分隔符意味着有一个没配对,那时整句按原文出。
+  if (parts.length % 2 === 0) return [text]
+  return parts.map((p, i) => (i % 2 === 1 ? h('b', p) : p))
 }
