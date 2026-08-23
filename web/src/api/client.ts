@@ -316,6 +316,20 @@ export interface MieruInbound {
   deployed_listen_port_start: number
   deployed_listen_port_end: number
 
+  /**
+   * mita 与本机 sing-box 之间那一跳的回环端口。0 表示这个入口是**直连**的。
+   *
+   * 那一跳是协议限制逼出来的:mita 的出口代理只认 SOCKS5,
+   * 拨不出 VLESS 或 Shadowsocks。
+   */
+  egress_socks_port: number
+  /** 出口去向。空串表示直连。 */
+  chain_target_kind: '' | 'INBOUND' | 'EXTERNAL'
+  chain_target_inbound_id: number
+  chain_target_external_id: number
+  /** 这条链路在【落地】的流量统计里的计数器名。凭据本身永不下发到前端。 */
+  chain_code: string
+
   access_tier_id: number
   access_tier_code: string
   access_tier_name: string
@@ -328,6 +342,17 @@ export interface MieruInbound {
 
   created_at: string
   updated_at: string
+}
+
+/** 一次 Mieru 二进制安装的结果。 */
+export interface MieruInstallResult {
+  mita_path: string
+  mita_sha256: string
+  client_path: string
+  client_sha256: string
+  /** 装完真的跑了一次 `mita version` 拿到的 —— 只上传不验证的话,架构不对
+   *  这类问题要等到第一次下发才暴露,而那时管理员已经以为装好了。 */
+  mita_version: string
 }
 
 export interface NodeInbound {
@@ -1679,6 +1704,40 @@ export const api = {
     }),
   deleteMieruInbound: (id: number) =>
     request<{ needs_deploy: boolean }>(`/api/mieru-inbounds/${id}`, { method: 'DELETE' }),
+  /**
+   * 把 mita 与 mieru 客户端装到一台机器上。
+   *
+   * 与「安装 sing-box」并列的一个动作,不是它的一部分:两者装的是不同的
+   * 二进制、不同的服务,失败的原因也完全不同(比如这台机器缺 unshare)。
+   */
+  installMieru: (nodeID: number) =>
+    request<{ result: MieruInstallResult }>(`/api/nodes/${nodeID}/mieru-install`, {
+      method: 'POST',
+      body: {},
+    }),
+  /**
+   * 下发一个 Mieru 入口。
+   *
+   * usersOnly 为真时只 reload —— **一条连接都不断**。它只在"这次改动只动了
+   * 用户"时才成立:端口、传输层与出口的变更 reload 生效不了,而 reload
+   * 不释放旧端口 —— 新旧两段会同时监听,旧端口上那个入口还在服务。
+   */
+  deployMieruInbound: (id: number, usersOnly = false) =>
+    request<{ result: DeployResult; error?: string }>(`/api/mieru-inbounds/${id}/deploy`, {
+      method: 'POST',
+      body: { users_only: usersOnly },
+    }),
+  setMieruChain: (id: number, body: Record<string, unknown>) =>
+    request<{
+      inbound: MieruInbound
+      needs_deploy: boolean
+      needs_singbox_deploy: boolean
+    }>(`/api/mieru-inbounds/${id}/chain`, { method: 'POST', body }),
+  clearMieruChain: (id: number) =>
+    request<{ needs_deploy: boolean; needs_singbox_deploy: boolean }>(
+      `/api/mieru-inbounds/${id}/chain`,
+      { method: 'DELETE' },
+    ),
   /** 实测握手目标并在通过后写入这个入口;不通过时拒绝保存。 */
   applyInboundDest: (id: number, dest: string) =>
     request<{ result: DestCheckResult; error?: string }>(`/api/inbounds/${id}/dest-check`, {

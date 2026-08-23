@@ -2,7 +2,12 @@ package traffic
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
+	"time"
+
+	"github.com/litebox/litebox/internal/v2rayapi"
 )
 
 // stubMieru 是一个内存里的 Mieru 采集器。
@@ -111,5 +116,50 @@ func TestSingBoxRestartDoesNotResetMieruBaseline(t *testing.T) {
 	}
 	if baseline != 10000 {
 		t.Errorf("sing-box 重启把 Mieru 的基线清成了 %d —— 那会让它的累计值被再计一遍", baseline)
+	}
+}
+
+// 手动点「同步流量」必须把 Mieru 那一路也同步了。
+//
+// 只同步 sing-box 的话,管理员点完再去看用户用量,拿到的是一个缺了
+// Mieru 那一截的数字 —— 而它长得与真实值一模一样,要等下一轮定时同步
+// 才悄悄补上。**真机上正是这样发现的**:点完手动同步,Mieru 的 10MB
+// 一个字节都没进去,而接口返回的是一次成功。
+//
+// 部署事务不走这条路(它用 deployment.TrafficSyncer.SyncNode),
+// 所以这里加上 Mieru 不会让每次 sing-box 部署多连 N 个 socket。
+func TestManualSyncCoversMieruToo(t *testing.T) {
+	env := newTestEnv(t)
+	env.sampler.set(time.Now().UTC(), 600, counters(
+		"user_000001", v2rayapi.Downlink, 1000,
+	))
+	env.syncer.WithMieru(&stubMieru{samples: []MieruSample{
+		{InboundID: 1, Counters: []MieruCounter{{UserCode: "user_000001", Downlink: 7000}}},
+		{InboundID: 2, Counters: []MieruCounter{{UserCode: "user_000001", Downlink: 2000}}},
+	}})
+
+	sched := NewScheduler(SchedulerOptions{
+		DB:     env.db,
+		Syncer: env.syncer,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	result, err := sched.SyncNodeNow(t.Context(), env.nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sing-box 的 1000 + 两个实例的 7000 与 2000。少了任何一截都说明
+	// 手动同步漏了一路。
+	if want := int64(1000 + 7000 + 2000); result.BytesAdded != want {
+		t.Errorf("入账字节 = %d,期望 %d(sing-box 与两个 mita 实例合计)",
+			result.BytesAdded, want)
+	}
+
+	var total int64
+	if err := env.db.QueryRow(
+		`SELECT COALESCE(SUM(delta_bytes),0) FROM traffic_ledger`).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != result.BytesAdded {
+		t.Errorf("ledger 合计 = %d,与返回的 %d 对不上", total, result.BytesAdded)
 	}
 }

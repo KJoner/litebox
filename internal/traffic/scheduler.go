@@ -3,6 +3,7 @@ package traffic
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -134,14 +135,41 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	}
 }
 
-// SyncNodeNow 立即同步单个节点,供手动触发与部署前强制同步使用。
+// SyncNodeNow 立即同步单个节点,供管理员手动触发。
 //
-// **它只同步 sing-box 那一路。** 部署事务的第一步靠它,而那次部署重启的是
-// sing-box —— 把 Mieru 也一起同步会在每次 sing-box 部署时多连 N 个 socket,
-// 而那些实例根本不会被这次部署碰到。Mieru 入口自己的下发走
-// SyncMieruNodeNow,见 node.Service.DeployMieru。
+// **两路都要同步。** 一台机器上现在有 sing-box 与 N 个 mita 实例,
+// 各自一份计数器;只同步前者的话,管理员点完「同步流量」再去看用户用量,
+// 拿到的是一个缺了 Mieru 那一截的数字 —— 而它长得与真实值一模一样,
+// 要等下一轮定时同步才悄悄补上。定时那条路(RunOnce)本来就两路都跑,
+// 手动这条不跟上就成了"点一下反而看到更旧的真相"。
+//
+// **部署事务不走这里**,它用的是 deployment.TrafficSyncer.SyncNode
+// (只同步 sing-box)—— 那次部署重启的是 sing-box,顺带去连 N 个
+// mita socket 换不来任何东西。Mieru 入口自己的下发走 SyncMieruNodeNow,
+// 见 node.Service.DeployMieru。
+//
+// sing-box 那一路失败时直接返回,数据库一个字节都没动;
+// 它成功而 Mieru 那一路失败时,**前半截已经落库了**,所以错误信息里
+// 必须说出这一点 —— 否则管理员会以为这次点击什么都没发生,
+// 而实际上用户用量已经变了。
 func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, error) {
-	return s.syncer.Sync(ctx, nodeID)
+	result, err := s.syncer.Sync(ctx, nodeID)
+	if err != nil {
+		return result, err
+	}
+	mieru, err := s.syncer.SyncMieru(ctx, nodeID)
+	if err != nil {
+		return result, fmt.Errorf(
+			"sing-box 那一路已同步(入账 %d 条),Mieru 那一路失败: %w",
+			result.EntriesAdded, err)
+	}
+	// BatchID 只留 sing-box 那一个:每个 mita 实例各有一个 batch,
+	// 这里挑哪一个都是误导。它本来就只用于日志回显,幂等性由每条
+	// ledger 行自己的 batch 保证。
+	result.CountersRead += mieru.CountersRead
+	result.EntriesAdded += mieru.EntriesAdded
+	result.BytesAdded += mieru.BytesAdded
+	return result, nil
 }
 
 // SyncMieruNodeNow 立即同步一台机器上全部 Mieru 入口的流量。
