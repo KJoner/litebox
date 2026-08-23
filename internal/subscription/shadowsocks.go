@@ -96,3 +96,20 @@ func shadowsocksOutbound(o OutboundOptions, password string, node Node) clientSS
 		TCPFastOpen: node.TCPFastOpen,
 	}
 }
+
+// shadowsocksProxy 生成 mihomo 配置里的 ss proxy。
+//
+// password 是已经拼好的 serverPSK:userPSK(singbox.SSClientPassword),
+// 与 URI 和 sing-box 出站用的是同一串 —— 在这里再拼一遍就是第二处实现。
+func shadowsocksProxy(name, password string, node Node) *clashSSProxy {
+	return &clashSSProxy{
+		Name:     name,
+		Type:     "ss",
+		Server:   node.Host,
+		Port:     node.Port,
+		Cipher:   string(node.SSMethod),
+		Password: password,
+		UDP:      true,
+		TFO:      node.TCPFastOpen,
+	}
+}

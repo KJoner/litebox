@@ -44,9 +44,21 @@ const formats = computed(() => {
     {
       key: 'base64',
       name: '通用订阅',
-      apps: 'v2rayN · Shadowrocket · Clash Meta 等',
+      apps: 'v2rayN · Shadowrocket 等',
       url: d.url_base64,
       primary: true,
+    },
+    // Clash 用户单独给一条原生配置,而不是让他们用上面那条通用订阅。
+    //
+    // 两者不是同一份东西的两种包装:通用订阅是分享链接的列表,而**有些线路
+    // 没有通用的分享链接**,在那条路上它们压根不存在 —— 用户看到的是节点数
+    // 比别人少,而没有任何提示。这句差别要写在 apps 里,不然没人会换。
+    {
+      key: 'clash',
+      name: 'Clash 配置',
+      apps: 'Clash Meta · mihomo · Clash Verge 等,部分线路只有这一种能用',
+      url: d.url_clash,
+      primary: false,
     },
     {
       key: 'singbox',

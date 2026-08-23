@@ -1,13 +1,18 @@
 // Package subscription 生成用户订阅内容。
 //
-// 输出三种格式:
+// 输出四种格式:
 //   - base64:换行分隔的分享链接再整体 base64,v2rayN/Shadowrocket 等客户端的通用格式;
 //   - uri:同上但不编码,便于人工核对与调试;
-//   - sing-box:完整的 sing-box 客户端配置 JSON。
+//   - sing-box:完整的 sing-box 客户端配置 JSON;
+//   - clash:完整的 mihomo(Clash.Meta)客户端配置 YAML。
 //
 // 生成分两个阶段:先把各来源转成与协议无关的 Entry,再按格式输出。
-// 三种格式各自认识每一种协议的话,加一个协议要改三处,而漏掉其中一处的表现是
+// 各种格式各自认识每一种协议的话,加一个协议要改四处,而漏掉其中一处的表现是
 // 用 A 客户端的用户能连、用 B 客户端的连不上,两个人都会以为是自己的客户端有问题。
+//
+// **三个字段各自回答"这个条目在这种格式里长什么样",而不是互相转换。**
+// 从 URI 反解出 outbound / proxy 是脆弱的(参数方言太多),而且反解失败时
+// 没有任何东西可以降级到。
 package subscription
 
 import (
@@ -76,6 +81,19 @@ type Entry struct {
 	// URI 与 Outbound 并存,而不是从 URI 反解出 outbound:反解是脆弱的
 	// (参数方言太多),而且反解失败时没有任何东西可以降级到。
 	Outbound func(o OutboundOptions) any
+
+	// Proxy 生成 mihomo(Clash.Meta)配置里的一个 proxy;为 nil 表示这个
+	// 条目表达不成 mihomo 的 proxy,该格式下跳过它。
+	//
+	// **它与 Outbound 的取值范围不一样,这一点是载重的。** 两边支持的协议
+	// 各有各的缺口 —— sing-box 有的 mihomo 未必有,反之亦然 ——
+	// 所以"哪些条目进得了这份配置"必须逐格式各判一次,不能拿其中一个
+	// 当作另一个的近似。合成一个判据的话,某个只有一边支持的协议会从
+	// 另一边的订阅里静默消失,而面板上那个节点明明还在。
+	//
+	// 参数是名字而不是 OutboundOptions:mihomo 没有 detour 这个概念
+	// (它的链式是 dialer-proxy,由模板作者自己写),所以这里只需要名字。
+	Proxy func(name string) any
 }
 
 // EntryFor 把一个节点连同用户凭据转成订阅条目。
@@ -91,12 +109,14 @@ func EntryFor(cred Credentials, node Node) (Entry, error) {
 			DisplayName: node.DisplayName,
 			URI:         ShadowsocksURI(password, node),
 			Outbound:    func(o OutboundOptions) any { return shadowsocksOutbound(o, password, node) },
+			Proxy:       func(name string) any { return shadowsocksProxy(name, password, node) },
 		}, nil
 	default:
 		return Entry{
 			DisplayName: node.DisplayName,
 			URI:         VLESSURI(cred.UUID, node),
 			Outbound:    func(o OutboundOptions) any { return vlessOutbound(o, cred.UUID, node) },
+			Proxy:       func(name string) any { return vlessProxy(name, cred.UUID, node) },
 		}, nil
 	}
 }

@@ -59,6 +59,10 @@ const (
 	PlaceholderSingBoxAllTags     = "singbox_all_tags"
 	PlaceholderSingBoxGeneralTags = "singbox_general_tags"
 	PlaceholderSingBoxLandingTags = "singbox_landing_tags"
+	PlaceholderClashProxies       = "clash_proxies"
+	PlaceholderClashNames         = "clash_proxy_names"
+	PlaceholderClashGeneralNames  = "clash_general_names"
+	PlaceholderClashLandingNames  = "clash_landing_names"
 )
 
 // Placeholder 描述一个占位符。这份表同时供校验与页面上的说明使用 ——
@@ -112,6 +116,27 @@ var Placeholders = []Placeholder{
 		Description: "落地节点的 tag(名字含「落地」或 landing)",
 		Kinds:       []Kind{KindSingBox},
 	},
+	{
+		Name:        PlaceholderClashProxies,
+		Description: "该用户全部节点的 proxies 条目(直接内联,不经 proxy-providers)",
+		Kinds:       []Kind{KindClash},
+		Once:        true,
+	},
+	{
+		Name:        PlaceholderClashNames,
+		Description: "全部节点的名字,YAML 列表项",
+		Kinds:       []Kind{KindClash},
+	},
+	{
+		Name:        PlaceholderClashGeneralNames,
+		Description: "非落地节点的名字",
+		Kinds:       []Kind{KindClash},
+	},
+	{
+		Name:        PlaceholderClashLandingNames,
+		Description: "落地节点的名字(名字含「落地」或 landing)",
+		Kinds:       []Kind{KindClash},
+	},
 }
 
 func placeholderByName(name string) (Placeholder, bool) {
@@ -138,13 +163,22 @@ func (p Placeholder) allows(kind Kind) bool {
 // 要么一个节点都没有。示例配置正是这样 —— 节点定义是硬编码的,
 // 只有两个分组用了占位符,直接上传就以为配好了是最容易犯的错。
 //
-// CLASH 必须含订阅占位符,这一条是**安全要求**:管理员的模板是从他自己在用的
-// 配置改来的,里面 proxy-providers 的 url 原本是**他自己的订阅地址**。
-// 忘了换成占位符就保存,等于把自己的订阅链接发给全部用户,而且没有事后补救 ——
-// 链接一旦发出去就该按泄露处理。
+// CLASH 必须含订阅占位符**或者** clash_proxies:两者都能让节点进到配置里,
+// 前者经 proxy-providers 拉那份 URI 列表,后者直接内联。
+//
+// 加上后一条不是放宽,原来那条**安全要求**由下面的 checkNoHardcodedProvider
+// 单独接住,而且比原来更严:管理员的模板是从他自己在用的配置改来的,
+// 里面 proxy-providers 的 url 原本是**他自己的订阅地址**;忘了换成占位符
+// 就保存,等于把自己的订阅链接发给全部用户,而且没有事后补救 ——
+// 链接一旦发出去就该按泄露处理。原来靠「必须有订阅占位符」间接挡住它,
+// 而 clash_proxies 一旦也算数,那条间接的保护就漏了:一份既有
+// clash_proxies、又留着写死 url 的模板会被放行。
+//
+// 两种写法的差别要让管理员知道:proxy-providers 拉的是分享链接列表,
+// 而**有些协议根本没有通用的分享链接**,走那条路它们不会出现在配置里。
 var requiredPlaceholders = map[Kind][][]string{
 	KindSingBox: {{PlaceholderSingBoxOutbounds}},
-	KindClash:   {{PlaceholderClashSubURL, PlaceholderSubURL}},
+	KindClash:   {{PlaceholderClashSubURL, PlaceholderSubURL, PlaceholderClashProxies}},
 }
 
 // ErrNotRenderable 表示模板本身没问题,但这个用户当前渲染不出来
@@ -331,6 +365,13 @@ func ValidateTemplate(kind Kind, content, landingDetour string) error {
 		}
 	}
 
+	// 排在必填检查【之前】:两条都会拦下"留着写死订阅地址"的模板,
+	// 而这一条的诊断具体得多。先报通用的「缺占位符」会让管理员顺手加一个
+	// $(clash_proxies) 就过了 —— 而那个写死的地址还在,照样会发给全部用户。
+	if err := checkNoHardcodedProvider(kind, content, seen); err != nil {
+		return err
+	}
+
 	for _, group := range requiredPlaceholders[kind] {
 		hit := false
 		for _, name := range group {
@@ -359,6 +400,33 @@ func ValidateTemplate(kind Kind, content, landingDetour string) error {
 	return nil
 }
 
+// checkNoHardcodedProvider 挡住「模板里留着一个写死的 proxy-providers 地址」。
+//
+// **这是这一版新加的,不是原来那条规则的复述。** 原来「Clash 模板必须含订阅
+// 占位符」间接挡住了它:一份留着自己订阅地址的模板通不过那一关。而
+// $(clash_proxies) 一旦也算数,那条间接保护就漏了 —— 既有 clash_proxies、
+// 又留着写死 url 的模板会被放行,而管理员的订阅链接就此发给了全部用户。
+// 链接一旦发出去就该按泄露处理,没有事后补救,所以这里拦死而不是给个警告。
+//
+// 在【去掉注释】的正文上找:管理员在注释里写一句「原来这里是 proxy-providers」
+// 是很自然的事,拿它拦住保存会让他完全不知道该改哪里。
+// 与占位符不在注释里展开是同一条道理,同样宁可漏判不可误判 ——
+// 漏判的代价由「必须含订阅占位符或 clash_proxies」那一关兜着一部分。
+func checkNoHardcodedProvider(kind Kind, content string, seen map[string]int) error {
+	if kind != KindClash {
+		return nil
+	}
+	if seen[PlaceholderSubURL] > 0 || seen[PlaceholderClashSubURL] > 0 {
+		return nil
+	}
+	if !strings.Contains(string(blankComments(kind, content)), "proxy-providers") {
+		return nil
+	}
+	return errors.New("模板里有 proxy-providers,但没有用到 $(sub_url) 或 $(clash_sub_url) —— " +
+		"那里的地址如果还是你自己的订阅地址,保存之后它会发给全部用户,而且没有办法收回。" +
+		"请把 url 换成占位符;如果这一段已经不用了(节点走 $(clash_proxies) 内联),请把它整段删掉")
+}
+
 func missingRequiredMessage(kind Kind, group []string) string {
 	names := make([]string, 0, len(group))
 	for _, n := range group {
@@ -371,7 +439,8 @@ func missingRequiredMessage(kind Kind, group []string) string {
 			"不含它的模板要么里面写死着示例节点,要么一个节点都没有"
 	case KindClash:
 		return "Clash 模板必须包含 " + joined + " —— " +
-			"proxy-providers 的 url 如果还是你自己的订阅地址,保存之后它会发给全部用户"
+			"$(clash_proxies) 把节点直接写进配置(有些协议没有通用分享链接,只有这条路走得通);" +
+			"$(sub_url) 则让 proxy-providers 去拉订阅。一个都不含的话,这份配置里不会有任何节点"
 	}
 	return "该类型的模板必须包含 " + joined
 }
@@ -477,6 +546,10 @@ func RenderTemplate(kind Kind, content, landingDetour string, ctx ProfileContext
 	// 各算一遍的话,重名节点的去重后缀(香港-2)可能落到不同的对象上,
 	// 表现是 sing-box 报 outbound not found,而管理员看模板、看节点列表都看不出问题。
 	tagged := AssignTags(ctx.Entries)
+	// Clash 那一侧的名字必须由 AssignClashNames 单独分配一次:两种格式
+	// 支持的协议各有各的缺口,共用一份结果会让只有一边支持的协议
+	// 从另一边静默消失(或者反过来,凭空多出一个连不上的名字)。
+	named := AssignClashNames(ctx.Entries)
 
 	var b strings.Builder
 	for _, seg := range segs {
@@ -484,7 +557,7 @@ func RenderTemplate(kind Kind, content, landingDetour string, ctx ProfileContext
 			b.WriteString(seg.text)
 			continue
 		}
-		value, err := renderPlaceholder(seg, kind, landingDetour, ctx, tagged)
+		value, err := renderPlaceholder(seg, kind, landingDetour, ctx, tagged, named)
 		if err != nil {
 			return "", err
 		}
@@ -495,7 +568,7 @@ func RenderTemplate(kind Kind, content, landingDetour string, ctx ProfileContext
 
 func renderPlaceholder(
 	seg templateSegment, kind Kind, landingDetour string,
-	ctx ProfileContext, tagged []TaggedEntry,
+	ctx ProfileContext, tagged, named []TaggedEntry,
 ) (string, error) {
 	ph, ok := placeholderByName(seg.name)
 	if !ok {
@@ -520,6 +593,17 @@ func renderPlaceholder(
 			"这份配置需要非落地节点,而你的可用节点全都是落地节点")
 	case PlaceholderSingBoxLandingTags:
 		return renderTagList(filterTags(tagged, tagLanding), seg.indent,
+			"这份配置需要落地节点(名字里带「落地」的那种),而你的可用节点里一个都没有")
+	case PlaceholderClashProxies:
+		return renderClashProxies(named, seg.indent)
+	case PlaceholderClashNames:
+		return renderClashNames(filterTags(named, tagAll), seg.indent,
+			"你的订阅里目前没有任何节点")
+	case PlaceholderClashGeneralNames:
+		return renderClashNames(filterTags(named, tagGeneral), seg.indent,
+			"这份配置需要非落地节点,而你的可用节点全都是落地节点")
+	case PlaceholderClashLandingNames:
+		return renderClashNames(filterTags(named, tagLanding), seg.indent,
 			"这份配置需要落地节点(名字里带「落地」的那种),而你的可用节点里一个都没有")
 	}
 	return "", fmt.Errorf("占位符 $(%s) 还没有实现", seg.name)
@@ -605,6 +689,15 @@ func SampleContext() ProfileContext {
 					Server: "203.0.113.1", ServerPort: port,
 					Method: "2022-blake3-aes-128-gcm", Password: "SAMPLE:SAMPLE",
 					Detour: o.Detour,
+				}
+			},
+			// Proxy 必须一并给上,否则含 $(clash_proxies) 的模板在保存时的
+			// 自检里会因为"一条 proxy 都渲染不出来"被判成不可渲染 ——
+			// 而那份模板本身完全正确,管理员会照着那句话去改一个没有问题的地方。
+			Proxy: func(n string) any {
+				return &clashSSProxy{
+					Name: n, Type: "ss", Server: "203.0.113.1", Port: port,
+					Cipher: "2022-blake3-aes-128-gcm", Password: "SAMPLE:SAMPLE", UDP: true,
 				}
 			},
 		}

@@ -508,11 +508,18 @@ func (q *Querier) Traffic(ctx context.Context, proxyUserID int64, days int) (*Tr
 type Subscription struct {
 	Available bool   `json:"available"`
 	Reason    string `json:"reason"`
-	// 三种格式的完整地址。不可用时全部为空串,不给一个点了没用的链接。
+	// 四种格式的完整地址。不可用时全部为空串,不给一个点了没用的链接。
 	BaseURL    string `json:"base_url"`
 	URLBase64  string `json:"url_base64"`
 	URLURI     string `json:"url_uri"`
 	URLSingBox string `json:"url_singbox"`
+	// URLClash 是 mihomo(Clash.Meta)的原生 YAML。
+	//
+	// 与 URLBase64 不是同一份东西的两种包装:通用订阅是分享链接的列表,
+	// 而**有些协议没有通用的分享链接**,只有这一条路能把它们送到 Clash 用户
+	// 手上。两条都给出来,并在界面上说清楚差别 —— 只给一条的话,
+	// 拿通用订阅的人会看到节点数比管理员说的少,而没有任何提示。
+	URLClash string `json:"url_clash"`
 	// NodeCount 是物理节点数,与"我的节点"页面的条数一致。
 	// EntryCount 是订阅文件里的条目数 —— 配了 IPv6 的节点会多出一条
 	// "展示名称-IPV6"。两个数字都给出来,用户导入后数不对才不会来问。
@@ -568,6 +575,7 @@ func (q *Querier) Subscription(ctx context.Context, proxyUserID int64, baseURL s
 	sub.URLBase64 = root
 	sub.URLURI = root + "?format=uri"
 	sub.URLSingBox = root + "?format=sing-box"
+	sub.URLClash = root + "?format=clash"
 	return sub, nil
 }
 
