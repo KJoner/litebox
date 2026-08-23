@@ -120,6 +120,7 @@ func (s *Service) DeployRelays(ctx context.Context, nodeID int64) (deployment.Re
 	req.ConfigText = text
 
 	result, deployErr := s.deployer.DeployRelays(ctx, req)
+	logDeployResult(s.logger, nodeID, result, deployErr)
 	s.saveRelayRecord(ctx, nodeID, result)
 	return result, deployErr
 }
@@ -128,7 +129,9 @@ func (s *Service) saveRelayRecord(ctx context.Context, nodeID int64, result depl
 	if s.deployStore == nil {
 		return
 	}
-	if _, err := s.deployStore.Save(ctx, result); err != nil {
+	// 与 Service.Deploy 的收尾同一条道理:DeployRelays 一返回,那台机器上的
+	// nginx 状态就已经定了,记录它与"谁还在等这个响应"没有关系。
+	if _, err := s.deployStore.Save(context.WithoutCancel(ctx), result); err != nil {
 		s.logger.Error("保存中转下发记录失败", "node_id", nodeID, "error", err)
 	}
 }
