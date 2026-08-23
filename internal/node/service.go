@@ -33,6 +33,15 @@ type UserProvider interface {
 	MieruUsersForInbound(ctx context.Context, mieruInboundID int64) ([]mieru.User, error)
 }
 
+// MieruSyncer 在重启一个 mita 实例之前强制同步一次流量。
+//
+// 与 sing-box 那条规矩一字不差:计数器随进程消失,未同步窗口内的流量
+// 永久丢失。Mieru 这边还多一层 —— 面板在每次启动前删掉 metrics.pb,
+// 连"重启后还留着上一代的值"这条退路都没有。
+type MieruSyncer interface {
+	SyncMieruNode(ctx context.Context, nodeID int64) error
+}
+
 // PanelKeyProvider 返回面板专用的节点访问密钥。由 settings.KeyManager 实现。
 type PanelKeyProvider interface {
 	Ensure(ctx context.Context) (settings.PanelKey, error)
@@ -48,6 +57,7 @@ type Service struct {
 	// mieruBinaries / mieruClients 为 nil 表示面板本地没有 Mieru 二进制。
 	mieruBinaries BinaryProvider
 	mieruClients  BinaryProvider
+	mieruSync     MieruSyncer
 	// relays 是中转主机上的 nginx 转发规则来源。为 nil 时 DeployRelays 直接报错,
 	// 而不是当成"没有规则"去停服务 —— 后者会在装配漏了的时候
 	// 悄悄把一台机器上全部转发停掉。
@@ -76,12 +86,14 @@ type ServiceOptions struct {
 	// 拒绝 —— 而不是在下发到一半时才失败。
 	MieruBinaries BinaryProvider
 	MieruClients  BinaryProvider
-	Relays        RelayProvider
-	RelayHosts    RelayHostProvider
-	Trigger       DeployTrigger
-	Keys          PanelKeyProvider
-	Layout        deployment.Layout
-	Logger        *slog.Logger
+	// MieruSync 为 nil 时下发会拒绝走「重启」那一档 —— 见 DeployMieru。
+	MieruSync  MieruSyncer
+	Relays     RelayProvider
+	RelayHosts RelayHostProvider
+	Trigger    DeployTrigger
+	Keys       PanelKeyProvider
+	Layout     deployment.Layout
+	Logger     *slog.Logger
 	// BootstrapKeyDirs 是引导新节点时搜索主控本机私钥的目录。
 	// 为空时用默认清单($HOME/.ssh 与 /etc/litebox/keys)。
 	BootstrapKeyDirs []string
@@ -97,6 +109,7 @@ func NewService(opts ServiceOptions) *Service {
 		users:          opts.Users,
 		mieruBinaries:  opts.MieruBinaries,
 		mieruClients:   opts.MieruClients,
+		mieruSync:      opts.MieruSync,
 		relays:         opts.Relays,
 		relayHosts:     opts.RelayHosts,
 		trigger:        opts.Trigger,

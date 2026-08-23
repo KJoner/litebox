@@ -436,6 +436,7 @@ func cmdServe(args []string) error {
 		Users:            userStore,
 		MieruBinaries:    mieruBinaries,
 		MieruClients:     mieruClients,
+		MieruSync:        syncer,
 		Relays:           relayStore,
 		RelayHosts:       relayStore,
 		Keys:             panelKeys,
@@ -444,6 +445,13 @@ func cmdServe(args []string) error {
 		BootstrapKeyDirs: cfg.Node.BootstrapKeyDirs,
 		SSHDialTimeout:   cfg.Node.SSHDialTimeout,
 	})
+
+	// Mieru 的采集器要等 nodeService 建出来才能接上:socket 路径来自
+	// deployment.Layout,而只有 node 那一侧知道哪些入口已经下发过。
+	// 接在这里而不是塞进 NewSyncer:那个构造函数有好几个调用点,
+	// 加一个参数意味着每一处都要改,而其中一处传了 nil 的表现是
+	// "这台机器的 Mieru 流量永远是 0" —— 与"真的没人用"长得一模一样。
+	syncer.WithMieru(traffic.NewMieruTunnelSampler(pool, nodeService.MieruEndpoints))
 
 	// 用户变更不直接部署,而是标脏后由协调器合并 ——
 	// 连续编辑多个用户只会让同一节点重启一次。
