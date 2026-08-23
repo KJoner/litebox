@@ -406,6 +406,14 @@ func (d *Deployer) rollback(
 ) error {
 	// 回滚必须执行完,不能因为原 ctx 已超时而半途退出,
 	// 否则节点会停在坏配置上。
+	//
+	// 返回值一律经 sshx.RemoteFailure 打标:走到这里说明配置已经换过、
+	// 服务已经重启过,而 pool.Do 在传输层错误上会重连并【重跑整个事务】。
+	// 拨测失败的错误几乎一定带 "EOF",正好命中它那张特征串表 ——
+	// 真机上因此跑过两轮、重启两次,而第二轮的拨测撞上第一轮攒下的
+	// PerSourcePenalties,失败得更快也更没道理。
+	// 写配置【之前】的失败不打标:那时节点一个字节都没动过,
+	// 而连接陈旧正是 pool.Do 那次重连要救的场景。
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer cancel()
 
@@ -414,7 +422,7 @@ func (d *Deployer) rollback(
 		rec.steps = append(rec.steps, Step{
 			Name: "回滚", Status: StepFailed, Detail: result.RollbackResult,
 		})
-		return cause
+		return sshx.RemoteFailure(cause)
 	}
 
 	rbErr := rec.run("回滚到上一版本", func() (string, error) {
@@ -446,7 +454,7 @@ func (d *Deployer) rollback(
 	} else {
 		result.RollbackResult = "回滚成功,节点已恢复服务"
 	}
-	return cause
+	return sshx.RemoteFailure(cause)
 }
 
 // restoredListenPorts 读出刚恢复的那份配置里的入站端口。
