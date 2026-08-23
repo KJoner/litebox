@@ -29,6 +29,15 @@ type Credentials struct {
 	UUID string
 	// SSPassword 是用户的 32 字节 base64 密钥,按节点的加密方法截取。
 	SSPassword string
+	// MieruPassword 是用户在 mita 上的口令。它与上面两份不同的地方是
+	// **原样下发** —— mieru 没有服务端 PSK,客户端用的就是这一串本身。
+	MieruPassword string
+	// UserCode 是 mieru 的用户名(user_000001)。
+	//
+	// 它同时是 mita 那边的流量计数器名,与 sing-box 侧的 stats 计数器同名 ——
+	// 那正是"同一个用户在同一台机器上的流量合并到一条 ledger 记录"的来源。
+	// 另外两种协议的凭据里不需要它(用户名是 UUID / PSK 本身)。
+	UserCode string
 }
 
 // Node 是订阅里的一个节点条目(IPv6 展开之后)。

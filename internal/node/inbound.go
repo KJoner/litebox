@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/mieru"
+	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/singbox"
 	// 只为 IPv6 条目名那一条回落规则(subscription.IPv6EntryName)。方向看着
 	// 是反的,但反过来更糟:把规则搬进 node 包,subscription 就要 import
@@ -31,10 +33,15 @@ var (
 	ErrInboundNotFound = errors.New("入站不存在")
 	// ErrInboundPortConflict 监听端口与这台机器上已有的东西冲突。
 	//
-	// 与 relay.ErrPortConflict 同一条道理:检测到就拒绝保存,不自动挪端口。
-	// 自动避让会让用户手上那份订阅静默失效 —— 客户端还连着旧端口,
-	// 而那里已经没人监听了。
-	ErrInboundPortConflict = errors.New("监听端口冲突")
+	// **它就是 nodeport.ErrConflict 本身**,relay.ErrPortConflict 同理 ——
+	// 检测已经统一到那一个包里,而三个包各留一个自己的哨兵会让
+	// errors.Is 在跨包传递时静默失配:上层拿 node 的哨兵去判一个由
+	// relay 那条路径产生的冲突,判不出来,于是 400 变成 500。
+	// 名字保留是为了不动十几个调用点。
+	//
+	// 检测到就拒绝保存,**不自动挪端口** —— 自动避让会让用户手上那份订阅
+	// 静默失效:客户端还连着旧端口,而那里已经没人监听了。
+	ErrInboundPortConflict = nodeport.ErrConflict
 	// ErrInboundNotOnLanding 中转机上没有 sing-box,谈不上入站。
 	ErrInboundNotOnLanding = errors.New("中转角色的节点没有 sing-box 入站")
 )
@@ -703,35 +710,21 @@ type queryer interface {
 
 // checkInboundPortFree 确认这个监听端口在这台机器上没被占用。
 //
-// 三类占用都要查:同机的别的入站、V2Ray API 的回环端口、nginx 转发规则。
-// 少查任何一类的后果都是同一个 —— sing-box 或 nginx 起不来,
-// 而问题要到部署的健康检查才暴露,那时配置已经换过去了。
+// 实现整个搬去了 nodeport 包:一台机器上抢端口的东西现在有四类,
+// 其中 Mieru 入口占的是**一整段**。原来这里逐张表写 `listen_port = ?` 的写法
+// 对区间是无效的 —— 它查不出"这个端口落在某个 Mieru 段里",
+// 而漏查的表现是 sing-box 或 mita 其中一个 bind 失败、整个服务起不来,
+// 要到部署的健康检查才暴露。
+//
+// apiPort 参数留着不用:节点角色与 API 端口由 nodeport 自己去 nodes 表读,
+// 那样三个调用点不必各自记得传对。签名保持不变是为了不动两个调用点。
 func checkInboundPortFree(
 	ctx context.Context, q queryer, nodeID int64, port, apiPort int, excludeID int64,
 ) error {
-	if port == apiPort {
-		return fmt.Errorf("%w:%d 是这台机器上 V2Ray API 的端口", ErrInboundPortConflict, port)
-	}
-	var count int
-	if err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM node_inbounds
-		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL AND id != ?`,
-		nodeID, port, excludeID).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return fmt.Errorf("%w:该机器上已有入站监听 %d", ErrInboundPortConflict, port)
-	}
-	if err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM node_relays
-		  WHERE node_id = ? AND listen_port = ? AND deleted_at IS NULL`,
-		nodeID, port).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return fmt.Errorf("%w:该机器上已有 nginx 转发规则监听 %d", ErrInboundPortConflict, port)
-	}
-	return nil
+	_ = apiPort
+	return nodeport.Free(ctx, q, nodeID,
+		mieru.PortRange{Start: port, End: port},
+		nodeport.Skip{Kind: nodeport.KindInbound, ID: excludeID})
 }
 
 // onOffLabel 用于审计里的开关变更。写「开 → 关」而不是「true → false」——
