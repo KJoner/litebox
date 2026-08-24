@@ -344,6 +344,15 @@ export interface MieruInbound {
   updated_at: string
 }
 
+/** 一次按服务的安装/卸载的结果。 */
+export interface ServiceOpResult {
+  /** singbox / mieru / nginx 之一 */
+  service: string
+  /** 逐步的可读结果,失败的那一步在最后 */
+  steps: string[]
+  detail: string
+}
+
 /** 一次 Mieru 二进制安装的结果。 */
 export interface MieruInstallResult {
   mita_path: string
@@ -1756,6 +1765,35 @@ export const api = {
     request<{ relay: NodeRelay }>(`/api/relays/${id}`, { method: 'PUT', body }),
   deleteRelay: (id: number) =>
     request<{ deleted: boolean }>(`/api/relays/${id}`, { method: 'DELETE' }),
+  /**
+   * 按服务的安装/卸载。
+   *
+   * 与整机的 uninstallNode 分开:那一个把三类服务一起摘掉,给的是
+   * "这台机器不归面板管了";这几个只动一类,另外两类还在服务用户。
+   *
+   * 失败时后端仍然返回已经做完的步骤 —— "停了服务但没删定义"与
+   * "什么都没做"要人做的事完全不同。
+   */
+  uninstallSingBox: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(
+      `/api/nodes/${nodeID}/singbox-uninstall`,
+      { method: 'POST', body: {} },
+    ),
+  uninstallMieru: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(
+      `/api/nodes/${nodeID}/mieru-uninstall`,
+      { method: 'POST', body: {} },
+    ),
+  installNginx: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(`/api/nodes/${nodeID}/nginx-install`, {
+      method: 'POST',
+      body: {},
+    }),
+  uninstallNginx: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(`/api/nodes/${nodeID}/nginx-uninstall`, {
+      method: 'POST',
+      body: {},
+    }),
   deployRelays: (nodeID: number) =>
     request<{ result: DeployResult; error?: string }>(`/api/nodes/${nodeID}/relays/deploy`, {
       method: 'POST',

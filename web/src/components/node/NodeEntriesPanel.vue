@@ -14,11 +14,19 @@ import {
   type NodeInbound,
   type NodeRelay,
 } from '@/api/client'
-import { LbRowCard, LbStatusTag, lbDangerConfirm, type LbStatusMeta } from '@/components/lb'
+import {
+  LbNameConfirm,
+  LbRowCard,
+  LbStatusTag,
+  lbDangerConfirm,
+  type LbStatusMeta,
+} from '@/components/lb'
 import InboundChainModal from './InboundChainModal.vue'
 import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
 import MieruChainModal from './MieruChainModal.vue'
+import NodeOpProgressModal from './NodeOpProgressModal.vue'
+import { confirmDeployNode, confirmRestartNode } from './nodeOps'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
 import {
   addressFamilyMeta,
@@ -56,15 +64,6 @@ const emit = defineEmits<{
   busy: [label: string]
   /** 变更之后节点本身可能变了,让页面重新拉一次 */
   changed: []
-  /**
-   * 部署与安装由页面执行,面板只负责把按钮放在管理员正在看的地方。
-   *
-   * 不在这里各写一遍:部署要走 lbDangerConfirm、开进度弹窗、失败后还要
-   * 展示步骤明细,而那一整套已经在页面上了。两处各一份的话,某天改了
-   * 确认文案只改到一处,而两处点下去做的是同一件事。
-   */
-  deploy: []
-  install: []
 }>()
 
 const narrow = useNarrow()
@@ -104,7 +103,6 @@ const loadError = ref('')
 const running = ref('')
 const nginx = ref<NginxFacts | null>(null)
 const nginxError = ref('')
-const lastDeploy = ref<DeployResult | null>(null)
 const lastChain = ref<ChainApplyResult | null>(null)
 
 /**
@@ -439,6 +437,215 @@ function removeMieru(m: MieruInbound) {
   })
 }
 
+// ---------------------------------------------------------------- 去节点上做事
+//
+// 装、卸、下发、重启都要连 SSH,少则两三秒、多则二十几秒,而结果恰恰是
+// 最需要读的:失败时要看卡在哪一步,成功时要看它到底做了什么。
+// 所以它们**一律走进度弹窗**,不用吐司 —— 三秒吐司交付不了一份步骤表。
+//
+// 全部收在这个面板里而不是散到页面上:一台机器上有三类服务,
+// 它们的装卸下发是九个动作,分散之后"这一下影响谁"就要在两个文件之间
+// 来回看才拼得出来。
+
+// 卸载是那四个不可逆动作之一,走打字确认(LbNameConfirm)。
+// **不给它降档成 lbDangerConfirm**:给可撤回的操作也加打字摩擦,
+// 管理员很快会变成无脑复制粘贴,真正不可逆的那几个反而失去警示作用 ——
+// 反过来把不可逆的降档,是把唯一一道刹车拿掉。
+type UninstallKind = 'singbox' | 'mieru' | 'nginx'
+const uninstallKind = ref<UninstallKind | null>(null)
+
+const uninstallMeta = computed(() => {
+  if (!uninstallKind.value) return null
+  return {
+    singbox: {
+      title: `卸载 ${nodeLabel.value} 上的 sing-box`,
+      okText: '卸载 sing-box',
+      impacts: [
+        '停止并删除 sing-box 服务、二进制、配置与备份。',
+        `这台机器上全部 ${inbounds.value.length} 个 sing-box 入口的用户立刻断线。`,
+        'Mieru 入口与 nginx 转发不受影响 —— 它们是另外两个服务。',
+        '入口记录都留在面板里,重新「安装 sing-box」+「下发配置」就能回来。',
+      ],
+    },
+    mieru: {
+      title: `卸载 ${nodeLabel.value} 上的 Mieru`,
+      okText: '卸载 Mieru',
+      impacts: [
+        `停止并删除全部 ${mierus.value.length} 个 mita 实例、二进制与实例目录。`,
+        '这台机器上全部 Mieru 入口的用户立刻断线。',
+        'sing-box 与 nginx 不受影响。',
+        '入口记录都留在面板里(端口段、等级、链路凭据都不删),' +
+          '重新「安装 Mieru」再逐个「下发」就能回来。',
+        '但它们会先从订阅里消失 —— 节点上已经没有它们了,' +
+          '继续下发会让用户拿到一条永远连不上的线路。',
+      ],
+    },
+    nginx: {
+      title: `卸载 ${nodeLabel.value} 上的 nginx 转发`,
+      okText: '卸载 nginx',
+      impacts: [
+        '停止并删除面板托管的那个 nginx 实例(litebox-nginx)与它的配置。',
+        `这台机器上全部 ${relays.value.length} 条转发线路立刻中断。`,
+        '**节点自带的 nginx 一个字不动** —— 面板装的是一个独立实例。',
+        'sing-box 与 Mieru 入口不受影响。',
+        '转发规则都留在面板里,重新「下发转发配置」就能回来。',
+      ],
+    },
+  }[uninstallKind.value]
+})
+
+function doUninstall() {
+  const kind = uninstallKind.value
+  uninstallKind.value = null
+  if (kind === 'singbox') {
+    void runOp('卸载 sing-box', '正在停止服务并清理文件', async () => {
+      const r = await api.uninstallSingBox(props.node.id)
+      opSteps.value = r.result.steps
+      opError.value = r.error ?? ''
+    })
+  } else if (kind === 'mieru') {
+    void runOp('卸载 Mieru', '正在停止全部实例并清理文件', async () => {
+      const r = await api.uninstallMieru(props.node.id)
+      opSteps.value = r.result.steps
+      opError.value = r.error ?? ''
+    })
+  } else if (kind === 'nginx') {
+    void runOp('卸载 nginx 转发', '正在停止实例并清理配置', async () => {
+      const r = await api.uninstallNginx(props.node.id)
+      opSteps.value = r.result.steps
+      opError.value = r.error ?? ''
+      await checkNginx()
+    })
+  }
+}
+
+const opOpen = ref(false)
+const opTitle = ref('')
+const opRunning = ref('')
+const opSteps = ref<string[]>([])
+const opDeploy = ref<DeployResult | null>(null)
+const opError = ref('')
+const opNote = ref('')
+
+/**
+ * 跑一个节点操作,把过程与结果放进弹窗。
+ *
+ * fn 抛错与 fn 返回 error 字段是两回事:前者是没跑起来(网络、鉴权),
+ * 后者是跑了但失败了(而且通常带着已经做完的步骤)。两种都要显示,
+ * 但后者必须连步骤一起 —— "停了服务但没删定义"与"什么都没做"
+ * 要人做的事完全不同。
+ */
+async function runOp(title: string, running: string, fn: () => Promise<void>) {
+  opTitle.value = title
+  opRunning.value = running
+  opSteps.value = []
+  opDeploy.value = null
+  opError.value = ''
+  opNote.value = ''
+  opOpen.value = true
+  // busy 同时抬起来:外面那个抽屉据此屏蔽遮罩点击与 ESC。
+  emit('busy', running)
+  try {
+    await fn()
+  } catch (e) {
+    opError.value = e instanceof ApiError ? e.message : '操作失败'
+  } finally {
+    opRunning.value = ''
+    emit('busy', '')
+    // 结果出来之后让外面重拉:装完之后「已安装」的判据变了,
+    // 下发完之后 deployed_* 变了 —— 不刷新的话按钮上的状态是旧的。
+    emit('changed')
+  }
+}
+
+// ---------- sing-box ----------
+
+function installSingBox() {
+  void runOp('安装 sing-box', '正在上传二进制并写入服务定义', async () => {
+    const r = await api.installNode(props.node.id)
+    opSteps.value = [
+      `二进制已就位:${r.binary_path}`,
+      `服务定义:${r.service_name}(${r.init_system})`,
+    ]
+    // 改了别人机器上的 sshd 就必须说出来,而且要说清改了什么、
+    // 用的是 reload 还是 restart。悄悄改完再报一句"安装完成"是不能接受的。
+    if (r.tcp_forwarding?.changed) {
+      opSteps.value.push('已顺带打开节点的 SSH TCP 转发:' + r.tcp_forwarding.detail)
+      opSteps.value.push(
+        '面板读流量、实测 REALITY 握手目标、部署时拨测都要经这条通道,' +
+          '原先它被 sshd 挡着。只加了一行 AllowTcpForwarding yes,' +
+          '用 reload 而不是 restart,没有断开任何已有连接。',
+      )
+    }
+    opNote.value = '接下来点「下发配置」把这台机器的入口配置推上去。'
+  })
+}
+
+function uninstallSingBox() {
+  uninstallKind.value = 'singbox'
+}
+
+function deploySingBox() {
+  confirmDeployNode(props.node, () =>
+    runOp('下发 sing-box 配置', '正在下发并做健康检查(约 15~25 秒)', async () => {
+      opDeploy.value = await api.deployNode(props.node.id)
+      if (opDeploy.value.status !== 'SUCCESS') {
+        opError.value = opDeploy.value.error_message || '下发未成功'
+      }
+    }),
+  )
+}
+
+function restartSingBox() {
+  confirmRestartNode(props.node, () =>
+    runOp('重启 sing-box', '正在重启服务', async () => {
+      await api.restartNode(props.node.id)
+      opSteps.value = ['服务已重启']
+      // 重启不同步流量,这一点必须说 —— 计数器随进程消失,
+      // 未同步窗口内的那一段永久丢失。常规变更该走「下发配置」。
+      opNote.value =
+        '重启**不会先同步流量**:计数器随进程消失,未同步的那一段永久丢失。' +
+        '常规变更请用「下发配置」,它的第一步就是强制同步。'
+    }),
+  )
+}
+
+// ---------- Mieru ----------
+
+function installMieru() {
+  void runOp('安装 Mieru', '正在确认 unshare 并上传 mita/mieru', async () => {
+    const r = await api.installMieru(props.node.id)
+    opSteps.value = [
+      `mita:${r.result.mita_path}`,
+      `mieru 客户端:${r.result.client_path}(部署时的真实拨测要用它)`,
+      `已在节点上跑通:mita ${r.result.mita_version}`,
+    ]
+    opNote.value = '接下来在每个 Mieru 入口那一行点「下发」—— 一个入口一个 mita 实例。'
+  })
+}
+
+function uninstallMieru() {
+  uninstallKind.value = 'mieru'
+}
+
+// ---------- nginx ----------
+
+function installNginx() {
+  void runOp('安装 nginx', '正在安装 nginx 与 stream 模块', async () => {
+    const r = await api.installNginx(props.node.id)
+    opSteps.value = r.result.steps
+    opError.value = r.error ?? ''
+    if (!r.error) {
+      opNote.value = '接下来点「下发转发配置」。它只 reload,在途连接一条不断。'
+    }
+    await checkNginx()
+  })
+}
+
+function uninstallNginx() {
+  uninstallKind.value = 'nginx'
+}
+
 const mieruChainOpen = ref(false)
 const mieruChainTarget = ref<MieruInbound | null>(null)
 
@@ -446,33 +653,6 @@ function openMieruChain(m: MieruInbound) {
   mieruChainTarget.value = m
   mieruChainOpen.value = true
 }
-
-/**
- * 装 mita 与 mieru 客户端二进制。
- *
- * **与「安装 sing-box」是两件事,按钮也分行。** 两者装的是不同的二进制、
- * 不同的服务定义,而且这一步还要先确认机器上有 unshare ——
- * 每个 mita 实例都要一个独立的挂载命名空间,不然它们会共用
- * /var/lib/mita/metrics.pb,互相覆盖对方的流量计数,而三个实例都"正常运行"。
- *
- * 只装二进制、不起任何服务:服务定义由每个入口自己的下发写。
- */
-async function installMieru() {
-  running.value = '正在安装 Mieru'
-  emit('busy', running.value)
-  try {
-    const r = await api.installMieru(props.node.id)
-    message.success(`已安装 mita ${r.result.mita_version}`)
-    emit('changed')
-  } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '安装失败')
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
-}
-
-const lastMieruDeploy = ref<DeployResult | null>(null)
 
 /**
  * 下发一个 Mieru 入口。
@@ -492,29 +672,14 @@ function deployMieru(m: MieruInbound) {
       '下发前会先同步这个实例的流量:计数器随进程消失,不先同步的话那一段永久丢失。',
     ],
     footer: '失败会自动回滚到上一份配置,并把 mita 的日志带回来。',
+    // 不返回 Promise:AntD 会把确认框留在屏幕上转圈等它,而下发要十几秒
+    // —— 那期间进度弹窗已经开着,两个 Modal 同层叠着,后开的反被压住。
     onOk: () => {
-      // 不返回这个 Promise:AntD 会把确认框留在屏幕上转圈等它,
-      // 而下发要十几秒 —— 那期间管理员既看不到进度也点不了别的。
-      void (async () => {
-        running.value = '正在下发 Mieru 入口'
-        emit('busy', running.value)
-        lastMieruDeploy.value = null
-        try {
-          const r = await api.deployMieruInbound(m.id)
-          lastMieruDeploy.value = r.result
-          if (r.error) {
-            message.error(r.error)
-          } else {
-            message.success('Mieru 入口已下发')
-          }
-          emit('changed')
-        } catch (e) {
-          message.error(e instanceof ApiError ? e.message : '下发失败')
-        } finally {
-          running.value = ''
-          emit('busy', '')
-        }
-      })()
+      void runOp(`下发 Mieru 入口「${m.display_name}」`, '正在下发并做健康检查', async () => {
+        const r = await api.deployMieruInbound(m.id)
+        opDeploy.value = r.result
+        opError.value = r.error ?? ''
+      })
     },
   })
 }
@@ -697,24 +862,15 @@ function removeRelay(r: NodeRelay) {
 }
 
 /** 立刻下发。只 reload nginx,在途连接不断 —— 普通确认即可。 */
-async function deployNow() {
-  running.value = '正在下发中转配置'
-  emit('busy', running.value)
-  lastDeploy.value = null
-  try {
+function deployNow() {
+  void runOp('下发 nginx 转发配置', '正在下发并做健康检查', async () => {
     const r = await api.deployRelays(props.node.id)
-    lastDeploy.value = r.result
-    if (r.error) {
-      message.error(r.error)
-    } else {
-      message.success('中转配置已下发')
+    opDeploy.value = r.result
+    opError.value = r.error ?? ''
+    if (!r.error) {
+      opNote.value = '只 reload,在途连接一条不断。'
     }
-  } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '下发失败')
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
+  })
 }
 
 onMounted(async () => {
@@ -741,10 +897,13 @@ onMounted(async () => {
       <a-button size="small" type="primary" :disabled="!!running" @click="openCreateInbound">
         新增入口
       </a-button>
-      <a-button size="small" :disabled="!!running" @click="emit('install')">安装 sing-box</a-button>
-      <a-button size="small" :disabled="!!running" @click="emit('deploy')">部署配置</a-button>
+      <a-button size="small" :disabled="!!running" @click="installSingBox">安装</a-button>
+      <a-button size="small" :disabled="!!running" @click="deploySingBox">下发配置</a-button>
+      <a-button size="small" :disabled="!!running" @click="restartSingBox">重启</a-button>
+      <a-button size="small" danger :disabled="!!running" @click="uninstallSingBox">卸载</a-button>
       <span class="nr__note">
-        改了要重启,这台机器上<b>全部 sing-box 入口</b>的在线连接都会断开。
+        下发与重启都会重启服务,这台机器上<b>全部 sing-box 入口</b>的在线连接都会断开。
+        「下发配置」会先强制同步流量,「重启」不会。
       </span>
     </div>
     <!-- Mieru 单独一行:服务端是 mita,与 sing-box 是两个进程、两套服务定义,
@@ -752,16 +911,19 @@ onMounted(async () => {
     <div v-if="!isRelayHost" class="nr__ops">
       <span class="nr__kind">Mieru</span>
       <a-button size="small" :disabled="!!running" @click="openCreateMieru">新增 Mieru 入口</a-button>
-      <a-button size="small" :disabled="!!running" @click="installMieru">安装 Mieru</a-button>
+      <a-button size="small" :disabled="!!running" @click="installMieru">安装</a-button>
+      <a-button size="small" danger :disabled="!!running" @click="uninstallMieru">卸载</a-button>
       <span class="nr__note">
-        下发在每一行上,<b>各下各的</b> —— 一个入口一个 mita 实例,重启一个不影响其他。
+        <b>下发在每一行上,各下各的</b> —— 一个入口一个 mita 实例,重启一个不影响其他。
+        「卸载」摘掉的是这台机器上全部实例。
       </span>
     </div>
     <div v-else class="nr__ops">
       <span class="nr__kind">sing-box</span>
-      <a-button size="small" :disabled="!!running" @click="emit('install')">
-        安装 sing-box(仅二进制)
+      <a-button size="small" :disabled="!!running" @click="installSingBox">
+        安装(仅二进制)
       </a-button>
+      <a-button size="small" danger :disabled="!!running" @click="uninstallSingBox">卸载</a-button>
       <!-- 中转机上不装服务:一个没有配置的 sing-box 只会反复崩溃重启,
            而 supervise-daemon 会让它一直重试。二进制要留 ——
            转发规则的健康检查要用它做真实拨测,只跑那几秒。 -->
@@ -770,9 +932,13 @@ onMounted(async () => {
     <div class="nr__ops">
       <span class="nr__kind">nginx 转发</span>
       <a-button size="small" :disabled="!!running" @click="openCreate">新增转发入口</a-button>
-      <a-button size="small" :loading="!!running" @click="checkNginx">检查 nginx</a-button>
+      <a-button size="small" :disabled="!!running" @click="installNginx">安装</a-button>
+      <a-button size="small" :loading="!!running" @click="checkNginx">检查</a-button>
       <a-button size="small" :loading="!!running" @click="deployNow">下发转发配置</a-button>
-      <span class="nr__note">只 reload,在途连接一条不断 —— 不需要挑时机。</span>
+      <a-button size="small" danger :disabled="!!running" @click="uninstallNginx">卸载</a-button>
+      <span class="nr__note">
+        下发只 reload,在途连接一条不断 —— 不需要挑时机。「卸载」会中断全部转发线路。
+      </span>
     </div>
 
     <!-- nginx 现状。缺 stream 模块在两个发行版上都是默认情况,
@@ -1020,23 +1186,6 @@ onMounted(async () => {
       <div v-if="lastChain.target_deploy">落地部署:{{ lastChain.target_deploy.status }}</div>
       <div v-if="lastChain.host_deploy">本机部署:{{ lastChain.host_deploy.status }}</div>
     </div>
-    <div v-if="lastMieruDeploy" class="nr__result">
-      <div>Mieru 下发:<b>{{ lastMieruDeploy.status }}</b></div>
-      <div v-for="(s, i) in lastMieruDeploy.steps" :key="i" class="nr__step">
-        <span class="nr__step-name">{{ s.name }}</span>
-        <span class="nr__step-status">{{ s.status }}</span>
-        <span class="nr__step-detail">{{ s.detail }}</span>
-      </div>
-    </div>
-    <div v-if="lastDeploy" class="nr__result">
-      <div>中转下发:<b>{{ lastDeploy.status }}</b></div>
-      <div v-for="(s, i) in lastDeploy.steps" :key="i" class="nr__step">
-        <span class="nr__step-name">{{ s.name }}</span>
-        <span class="nr__step-status">{{ s.status }}</span>
-        <span class="nr__step-detail">{{ s.detail }}</span>
-      </div>
-    </div>
-
     <!-- ---------------- sing-box 入口表单 ---------------- -->
     <InboundFormModal
       v-model:open="inboundOpen"
@@ -1057,6 +1206,32 @@ onMounted(async () => {
       :existing-count="mierus.length"
       @saved="emit('changed')"
       @busy="(l: string) => emit('busy', l)"
+    />
+
+    <!-- 去节点上做事的进度与结果。跑的时候关不掉 —— 这些操作要十几秒,
+         随手一点关掉的话结果几秒后才回来、已经没有地方呈现。 -->
+    <NodeOpProgressModal
+      v-model:open="opOpen"
+      :title="opTitle"
+      :running="opRunning"
+      :steps="opSteps"
+      :deploy="opDeploy"
+      :error="opError"
+      :note="opNote"
+    />
+
+    <!-- 卸载是不可逆的那一档,走打字确认。要求输入的是**内部名称** ——
+         内部名称唯一,展示名称可以重复。 -->
+    <LbNameConfirm
+      v-if="uninstallMeta"
+      :open="uninstallKind !== null"
+      :title="uninstallMeta.title"
+      :name="node.name"
+      :ok-text="uninstallMeta.okText"
+      :impacts="uninstallMeta.impacts"
+      prompt="输入内部名称以确认"
+      @update:open="(v: boolean) => (uninstallKind = v ? uninstallKind : null)"
+      @confirm="doUninstall"
     />
 
     <MieruChainModal
