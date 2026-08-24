@@ -31,6 +31,7 @@ import MieruInboundFormModal from './MieruInboundFormModal.vue'
 import {
   addressFamilyMeta,
   confirmRemoveInbound,
+  confirmRemoveMieruInbound,
   inboundHasIPv6Entry,
   inboundProtocolMeta as protocolMeta,
   portText,
@@ -419,22 +420,7 @@ function openEditMieru(m: MieruInbound) {
  * 而且这一下不打断任何人。
  */
 function removeMieru(m: MieruInbound) {
-  lbDangerConfirm({
-    title: `确认删除 Mieru 入口「${m.display_name}」?`,
-    okText: '确认删除',
-    impacts: [
-      `它会从 ${nodeLabel.value} 的订阅里立刻消失,新拉订阅的人看不到它。`,
-      '但它在节点上仍然跑着,已经拿到订阅的人照常能连 —— 直到下一次下发这台机器。',
-      '下发时会重启 mita,把这台机器上全部 Mieru 连接一起踢掉(不影响 sing-box 入口)。',
-    ],
-    footer: '这台机器上别的入口不受影响。',
-    onOk: () =>
-      runWithBusy(async () => {
-        await api.deleteMieruInbound(m.id)
-        message.success('已删除。下次下发这台机器时才会从节点上真正移除')
-        emit('changed')
-      }),
-  })
+  confirmRemoveMieruInbound(m, nodeLabel.value, runWithBusy, () => emit('changed'))
 }
 
 // ---------------------------------------------------------------- 去节点上做事

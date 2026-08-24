@@ -10,6 +10,7 @@ import {
   type ConfigDiff,
   type DailyPoint,
   type DeployResult,
+  type MieruInbound,
   type DeploymentRecord,
   type Node,
   type NodeCycleUsage,
@@ -135,6 +136,24 @@ const hostIsDomain = computed(() => {
 
 /** 这台机器上的入口。中转角色恒为空数组。 */
 const inbounds = computed(() => node.value?.inbounds ?? [])
+
+/** Mieru 入口。它们是另一个进程(mita),与上面那些不是一回事。 */
+const mierus = computed(() => node.value?.mieru_inbounds ?? [])
+
+/** 端口段的可读形式。起止相同表示只有一个端口。 */
+function portRangeText(start: number, end: number) {
+  if (!start) return '—'
+  return start === end ? String(start) : `${start}-${end}`
+}
+
+/** 这个 Mieru 入口的端口段与节点上生效的那份不一致。 */
+function mieruPending(m: MieruInbound) {
+  if (!m.deployed_transport) return true
+  return (
+    m.deployed_listen_port_start !== m.listen_port_start ||
+    m.deployed_listen_port_end !== m.listen_port_end
+  )
+}
 
 /**
  * 中转角色:这台机器上不跑 sing-box。
@@ -850,6 +869,18 @@ const needsPortForward = computed(() =>
           nginx 转发
           <LbStatusTag kind="service" :status="health.nginx" small />
         </span>
+        <!-- **每个 Mieru 入口一行,点名。** 一个入口一个 mita 实例,
+             它们各自独立地跑与崩 —— 合成一个状态的话,挂了哪一个看不出来,
+             而要去救的也只是其中一个。 -->
+        <span
+          v-for="m in health.mieru ?? []"
+          :key="m.inbound_id"
+          class="nd__health-item"
+          :title="m.detail"
+        >
+          {{ m.display_name }}
+          <LbStatusTag kind="service" :status="m.state" small />
+        </span>
         <span v-if="health.recovered" class="nd__health-note nd__health-note--ok">
           面板刚刚自动把它拉起来了
         </span>
@@ -970,12 +1001,35 @@ const needsPortForward = computed(() =>
             <span>sing-box</span>
             <b class="lb-mono">{{ probe.singbox_version || '未安装' }}</b>
           </div>
-          <div>
-            <span>统计接口</span>
+          <!-- **只在这台机器该有 sing-box 时才把"缺 with_v2ray_api"标红。**
+               一台只有 Mieru 入口的机器上根本没装 sing-box,那一行标红
+               会让管理员去查一个不存在的问题 —— 它的流量走的是 mita 的
+               管理 gRPC,与 v2ray_api 毫无关系。 -->
+          <div v-if="probe.singbox_version">
+            <span>sing-box 统计接口</span>
             <b :style="{ color: probe.has_v2ray_api ? color.success : color.danger }">
               {{ probe.has_v2ray_api ? 'with_v2ray_api 已启用' : '缺少 with_v2ray_api —— 流量统计不可用' }}
             </b>
           </div>
+          <!-- Mieru 那两项只在这台机器有 Mieru 入口时问,所以也只在那时显示。 -->
+          <template v-if="mierus.length">
+            <div>
+              <span>mita</span>
+              <b class="lb-mono" :style="{ color: probe.mita_version ? undefined : color.warning }">
+                {{ probe.mita_version || '未安装 —— 去「入口」Tab 点「安装」' }}
+              </b>
+            </div>
+            <div>
+              <span>多实例隔离(unshare)</span>
+              <b :style="{ color: probe.has_unshare ? color.success : color.danger }">
+                {{
+                  probe.has_unshare
+                    ? '可用'
+                    : '缺少 util-linux —— 多个 mita 实例会共用同一份流量计数'
+                }}
+              </b>
+            </div>
+          </template>
           <!-- 单列一行:它关着的时候,流量同步、握手目标实测、部署健康检查
                三样一起失败,而 sshd 只回一句 administratively prohibited。 -->
           <div>
@@ -1014,7 +1068,13 @@ const needsPortForward = computed(() =>
             ↔ 库中 rev {{ diff.revision }}
           </span>
         </div>
-        <div v-if="diff.in_sync" class="nd__panel-ok">
+        <!-- sing-box 那一段:只有这台机器确实有 sing-box 入口时才有意义。
+             一台只有 Mieru 入口的机器上那份 config.json 本来就不该存在,
+             说「尚无配置」会被读成"部署丢了"。 -->
+        <div v-if="!diff.has_singbox" class="nd__panel-ok">
+          这台机器上没有 sing-box 入口,不需要 sing-box 配置。
+        </div>
+        <div v-else-if="diff.in_sync" class="nd__panel-ok">
           节点上跑的配置与库里当前应有的完全一致,没有需要下发的改动。
         </div>
         <template v-else>
@@ -1036,6 +1096,32 @@ const needsPortForward = computed(() =>
           <a-button type="primary" size="small" @click="confirmDeploy">
             部署 rev {{ node.config_revision + 1 }}
           </a-button>
+        </template>
+
+        <!-- **Mieru 单独一段,不并进上面。** 它们是另一个进程、另一份配置,
+             逐入口各自下发 —— sing-box 一字未改而某个实例少了一个用户
+             是完全可能的,而那正是最需要看见的。 -->
+        <template v-if="(diff.mieru ?? []).length">
+          <div class="nd__diff-sum nd__diff-mieru-head">Mieru 入口(每个入口一个 mita 实例)</div>
+          <div v-for="m in diff.mieru ?? []" :key="m.inbound_id" class="nd__diff">
+            <div class="nd__diff-name">
+              {{ m.display_name }}
+              <span v-if="!m.deployed" class="nd__dim">· 还没下发过</span>
+              <span v-else-if="!m.changed" class="nd__dim">· 无差异</span>
+            </div>
+            <div v-if="m.error" class="nd__diff-del">! {{ m.error }}</div>
+            <div v-for="(a, i) in m.attrs ?? []" :key="'ma' + i" class="nd__diff-add">± {{ a }}</div>
+            <div v-for="(u, i) in m.users_added ?? []" :key="'mu' + i" class="nd__diff-add">
+              + 新增用户 {{ u }}
+            </div>
+            <div v-for="(u, i) in m.users_removed ?? []" :key="'md' + i" class="nd__diff-del">
+              − 移除用户 {{ u }}
+            </div>
+          </div>
+          <div class="nd__panel-note">
+            Mieru 的下发在「入口」Tab 的每一行上,各下各的 —— 重启一个实例
+            不影响同机的其他入口,也不影响 sing-box。
+          </div>
         </template>
       </section>
 
@@ -1169,8 +1255,14 @@ const needsPortForward = computed(() =>
                 <a @click="tab = 'entries'">去「入口」管理</a>
               </div>
               <div class="nd__card-body">
-                <div v-if="!inbounds.length" class="nd__card-note">
-                  这台机器上一个入口都没有 —— sing-box 会正常运行,但谁都连不上。
+                <!-- 判据要把 Mieru 一起算上:只有 Mieru 入口的机器上用户是连得上的,
+                     而「谁都连不上」在那种机器上是错的 —— 一句错误的告警
+                     会让管理员去修一台本来就好好的机器。 -->
+                <div v-if="!inbounds.length && !mierus.length" class="nd__card-note">
+                  这台机器上一个入口都没有 —— 服务会正常运行,但谁都连不上。
+                </div>
+                <div v-else-if="!inbounds.length" class="nd__card-note">
+                  这台机器上只有 Mieru 入口,没有 sing-box 入口。
                 </div>
                 <div v-for="i in inbounds" :key="i.id" class="nd__kv">
                   <!-- 「期望」与「节点上生效」分两行,不合成一行。
@@ -1238,6 +1330,51 @@ const needsPortForward = computed(() =>
                     >
                       {{ i.deployed_tcp_fast_open ? '已开启' : '未开启' }}
                     </b>
+                  </div>
+                </div>
+                <!-- Mieru 入口单独列。它们不是 sing-box 的入站:服务端是 mita,
+                     另一个进程、另一套服务定义、逐入口各自下发 ——
+                     混在上面那一段里会让"配置版本 rev N"看起来也管着它们。 -->
+                <div v-for="m in mierus" :key="`m${m.id}`" class="nd__kv">
+                  <div class="nd__kv-wide">
+                    <span>Mieru 入口</span>
+                    <b>{{ m.display_name }}</b>
+                  </div>
+                  <div>
+                    <span>期望端口段</span>
+                    <b class="lb-mono">{{ portRangeText(m.listen_port_start, m.listen_port_end) }}</b>
+                  </div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      class="lb-mono"
+                      :style="{ color: mieruPending(m) ? color.warning : undefined }"
+                    >
+                      {{
+                        m.deployed_transport
+                          ? portRangeText(m.deployed_listen_port_start, m.deployed_listen_port_end)
+                          : '从未下发'
+                      }}
+                    </b>
+                  </div>
+                  <div><span>期望传输层</span><b class="lb-mono">{{ m.transport }}</b></div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      class="lb-mono"
+                      :style="{
+                        color:
+                          m.deployed_transport && m.deployed_transport !== m.transport
+                            ? color.warning
+                            : undefined,
+                      }"
+                    >
+                      {{ m.deployed_transport || '从未下发' }}
+                    </b>
+                  </div>
+                  <div class="nd__kv-wide">
+                    <span>出口</span>
+                    <b>{{ m.chain_target_kind ? '经本机 sing-box 转一跳到落地' : '本机直连' }}</b>
                   </div>
                 </div>
                 <div class="nd__kv">
@@ -2086,5 +2223,21 @@ const needsPortForward = computed(() =>
   .nd__kv {
     grid-template-columns: 1fr;
   }
+}
+
+/* Mieru 差异那一段的两个小样式。颜色只用 tokens.ts 里已有的 text3。 */
+.nd__diff-mieru-head {
+  margin-top: 12px;
+}
+
+.nd__diff-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #576070;
+}
+
+.nd__dim {
+  font-weight: 400;
+  color: #6b7480;
 }
 </style>

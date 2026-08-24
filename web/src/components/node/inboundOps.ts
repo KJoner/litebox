@@ -1,5 +1,12 @@
 import { message } from 'ant-design-vue'
-import { ApiError, PROTOCOL_SHORT, api, type Node, type NodeInbound } from '@/api/client'
+import {
+  ApiError,
+  PROTOCOL_SHORT,
+  api,
+  type MieruInbound,
+  type Node,
+  type NodeInbound,
+} from '@/api/client'
 import { lbDangerConfirm, type LbStatusMeta } from '@/components/lb'
 import { color } from '@/theme/tokens'
 
@@ -102,6 +109,44 @@ export function nodeLabelOf(n: Pick<Node, 'display_name' | 'name'>): string {
  * 这一个可以重建,所以用 lbDangerConfirm 而不是打字确认 ——
  * 但它的影响面比删一条 nginx 转发大得多,必须逐条列出来。
  */
+/**
+ * 删除一个 Mieru 入口。
+ *
+ * 与 confirmRemoveInbound 分开写而不是加个类型参数:两者的影响清单不一样
+ * —— 那边下发会踢掉这台机器上**全部 sing-box 入口**的连接,
+ * 这边只重启那一个 mita 实例。合成一份的话,文案只能写一句
+ * 放之四海而皆准的废话,而那正是管理员判断"要不要挑时机"的全部依据。
+ */
+export function confirmRemoveMieruInbound(
+  m: MieruInbound,
+  nodeLabel: string,
+  run: (fn: () => Promise<void>) => void,
+  onDone: () => void,
+) {
+  lbDangerConfirm({
+    title: `删除 Mieru 入口「${m.display_name}」?`,
+    impacts: [
+      `它会从 ${nodeLabel} 的订阅里立刻消失,新拉订阅的人看不到它。`,
+      '但它在节点上仍然跑着,已经拿到订阅的人照常能连 —— 直到下一次下发。',
+      '下发时会停掉这一个 mita 实例;同机其他 Mieru 入口与 sing-box 不受影响。',
+      '这个入口的链路凭据会一并释放 —— 它在落地那一侧的用户列表里也会消失。',
+    ],
+    okText: '删除',
+    footer: '这台机器上别的入口不受影响。',
+    onOk: () => {
+      run(async () => {
+        try {
+          await api.deleteMieruInbound(m.id)
+          onDone()
+          message.success('已删除。下次下发这台机器时才会从节点上真正移除')
+        } catch (e) {
+          message.error(e instanceof ApiError ? e.message : '删除失败')
+        }
+      })
+    },
+  })
+}
+
 export function confirmRemoveInbound(
   i: NodeInbound,
   nodeLabel: string,

@@ -890,6 +890,17 @@ const keyOpen = ref(false)
                 <span class="nv__hname">nginx</span>
                 <LbStatusTag kind="service" :status="health[record.id].nginx" small />
               </span>
+              <!-- **逐实例列出来并点名。** 一台机器上可以有好几个 Mieru 入口,
+                   合成一行的话,挂了哪一个看不出来 —— 而它们是各自独立的进程,
+                   要去救的也只是其中一个。 -->
+              <span
+                v-for="m in health[record.id].mieru ?? []"
+                :key="m.inbound_id"
+                class="nv__hitem"
+              >
+                <span class="nv__hname lb-ellipsis" :title="m.display_name">{{ m.display_name }}</span>
+                <LbStatusTag kind="service" :status="m.state" small />
+              </span>
               <span v-if="health[record.id].recover_error" class="nv__hfail">
                 自动恢复失败
               </span>
