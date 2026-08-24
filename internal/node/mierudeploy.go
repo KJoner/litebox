@@ -199,8 +199,16 @@ func (s *Service) DeployMieru(
 		return deployment.Result{}, err
 	}
 
-	// 落地的配置必须先同步 —— 真机上踩过一次,见 checkMieruChainTargetReady。
-	// 放在这里:那时 mita 一个字节都还没动过,拒绝的代价只是一句话。
+	// 出口那一跳的两个前提,都要在动节点之前确认 —— 那时 mita 一个字节都
+	// 还没动过,拒绝的代价只是一句话。两个检查分开,因为要人做的事不一样:
+	//
+	//	本机   sing-box 里那个回环 socks 入站有没有下发上去(→ 部署这一台);
+	//	落地   链路凭据有没有出现在它的用户列表里(→ 部署那一台)。
+	//
+	// 两者都会让拨测在十几秒后失败并回滚,而报错看起来一模一样。
+	if err := s.checkMieruEgressReady(ctx, m, n); err != nil {
+		return deployment.Result{}, err
+	}
 	if err := s.checkMieruChainTargetReady(ctx, m); err != nil {
 		return deployment.Result{}, err
 	}
