@@ -103,11 +103,28 @@ func (s *Service) ConfigStatus(ctx context.Context, n *Node) (ConfigState, bool)
 //	有 Mieru 入口        两种入口都没有的新机器仍然按 NEVER_DEPLOYED,
 //	                     那时"去装 sing-box"正是管理员要做的下一步。
 //
+// **还有第四条:一个带出口的 Mieru 入口都没有。** 出口要借道本机 sing-box
+// 的一个回环 socks 入站(mita 的出口代理只认 SOCKS5),所以那台机器
+// **需要** sing-box —— 哪怕它一个 sing-box 入口都没有。这时报「不适用」
+// 会把管理员必须做的那一步藏起来,而他会一直等到下发 Mieru 时才撞上
+// 「SOCKS5 CONNECT 响应读取失败: EOF」。生产上就是这么撞的。
+//
 // 抽成纯函数是为了能被测试直接盯住:上面那条路径要连库才走得到。
 func hasNoSingBox(n *Node) bool {
 	return len(n.Inbounds) == 0 &&
 		n.DeployedConfigSHA256 == "" &&
-		len(n.MieruInbounds) > 0
+		len(n.MieruInbounds) > 0 &&
+		!anyMieruEgress(n)
+}
+
+// anyMieruEgress 表示这台机器上至少有一个 Mieru 入口配了出口。
+func anyMieruEgress(n *Node) bool {
+	for _, m := range n.MieruInbounds {
+		if m.ChainTargetKind != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfigStatuses 批量计算,供节点列表一次算完。
