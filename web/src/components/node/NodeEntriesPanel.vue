@@ -512,6 +512,9 @@ const opSteps = ref<string[]>([])
 const opDeploy = ref<DeployResult | null>(null)
 const opError = ref('')
 const opNote = ref('')
+// 装完之后「已安装」的判据变了、下发完之后 deployed_* 变了,
+// 所以要重拉 —— 但不能在结果还在屏幕上时拉,见 runOp 的 finally。
+const opNeedsReload = ref(false)
 
 /**
  * 跑一个节点操作,把过程与结果放进弹窗。
@@ -538,8 +541,19 @@ async function runOp(title: string, running: string, fn: () => Promise<void>) {
   } finally {
     opRunning.value = ''
     emit('busy', '')
-    // 结果出来之后让外面重拉:装完之后「已安装」的判据变了,
-    // 下发完之后 deployed_* 变了 —— 不刷新的话按钮上的状态是旧的。
+    // **重拉要等到弹窗关掉。** 页面的 reload 会把 loading 抬起来,
+    // 而那一屏在 loading 期间整个换成骨架 —— 这个面板会被卸载,
+    // 连同刚刚跑完的那份结果一起消失。表现是"点了安装,转了几秒,
+    // 窗口自己没了",而操作其实是成功的。
+    opNeedsReload.value = true
+  }
+}
+
+/** 弹窗关掉时才让外面重拉,理由见 runOp 的 finally。 */
+function closeOp(v: boolean) {
+  opOpen.value = v
+  if (!v && opNeedsReload.value) {
+    opNeedsReload.value = false
     emit('changed')
   }
 }
@@ -1197,7 +1211,8 @@ onMounted(async () => {
     <!-- 去节点上做事的进度与结果。跑的时候关不掉 —— 这些操作要十几秒,
          随手一点关掉的话结果几秒后才回来、已经没有地方呈现。 -->
     <NodeOpProgressModal
-      v-model:open="opOpen"
+      :open="opOpen"
+      @update:open="closeOp"
       :title="opTitle"
       :running="opRunning"
       :steps="opSteps"
