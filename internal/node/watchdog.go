@@ -67,6 +67,13 @@ type HealthReport struct {
 	SingBoxDetail string       `json:"singbox_detail"`
 	Nginx         ServiceState `json:"nginx"`
 	NginxDetail   string       `json:"nginx_detail"`
+	// Mieru 是这台机器上每个 Mieru 入口的实例状态。
+	//
+	// **必须逐实例给,不能合成一个状态。** 一个入口一个 mita 实例,
+	// 它们各自独立地跑与崩 —— 合成一个的话,三个入口里挂了一个会显示成
+	// "Mieru 没在跑",而管理员看不出该去看哪一个;反过来把"有一个在跑"
+	// 算成正常,挂掉的那个就再也不会被发现。
+	Mieru []MieruServiceReport `json:"mieru"`
 
 	// Recovered / RecoverError 记录这一轮自动恢复做了什么。
 	Recovered    bool   `json:"recovered"`
@@ -75,9 +82,46 @@ type HealthReport struct {
 	FailStreak int `json:"fail_streak"`
 }
 
+// MieruServiceReport 是一个 Mieru 入口(= 一个 mita 实例)的状态。
+type MieruServiceReport struct {
+	InboundID   int64        `json:"inbound_id"`
+	DisplayName string       `json:"display_name"`
+	State       ServiceState `json:"state"`
+	Detail      string       `json:"detail"`
+}
+
 // Healthy 表示这台机器该跑的都在跑。
 func (r HealthReport) Healthy() bool {
-	return !r.SingBox.Down() && !r.Nginx.Down()
+	if r.SingBox.Down() || r.Nginx.Down() {
+		return false
+	}
+	for _, m := range r.Mieru {
+		if m.State.Down() {
+			return false
+		}
+	}
+	return true
+}
+
+// anyMieruUnreachable 表示至少有一个 Mieru 实例连不上(而不是"停了")。
+func (r HealthReport) anyMieruUnreachable() bool {
+	for _, m := range r.Mieru {
+		if m.State == ServiceUnreachable {
+			return true
+		}
+	}
+	return false
+}
+
+// mieruDown 返回没在跑的那几个 Mieru 入口。
+func (r HealthReport) mieruDown() []MieruServiceReport {
+	out := make([]MieruServiceReport, 0, len(r.Mieru))
+	for _, m := range r.Mieru {
+		if m.State.Down() {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // Watchdog 周期巡检全部节点上的 sing-box 与 nginx,必要时自动救回来。
@@ -211,14 +255,21 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 	if err != nil {
 		w.logger.Error("查询转发规则失败", "node_id", n.ID, "error", err)
 	}
-	if !wantSingBox && !wantNginx {
-		// 一台还没部署过、也没有转发规则的机器上什么服务都不该有。
+	// **只巡检下发过的 Mieru 入口**(deployed_transport 非空)。
+	// 没下发过的入口在节点上根本没有那个服务定义,问它一定得到"没跑",
+	// 而那不是故障 —— 报出来会让管理员去救一个他还没上线的入口。
+	wantMieru, err := w.deployedMieruInbounds(ctx, n.ID)
+	if err != nil {
+		w.logger.Error("查询 Mieru 入口失败", "node_id", n.ID, "error", err)
+	}
+	if !wantSingBox && !wantNginx && len(wantMieru) == 0 {
+		// 一台还没部署过、也没有转发规则与 Mieru 入口的机器上什么服务都不该有。
 		// 这不是"正常",是"不适用" —— 显示成正常会让人以为它在服务用户。
 		w.save(&report)
 		return
 	}
 
-	probeErr := w.probe(ctx, n, wantSingBox, wantNginx, &report)
+	probeErr := w.probe(ctx, n, wantSingBox, wantNginx, wantMieru, &report)
 	if probeErr != nil {
 		// SSH 不通:**不知道**服务是死是活,所以不恢复,也不说"服务停了"。
 		if wantSingBox {
@@ -229,6 +280,13 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 		}
 		report.SingBoxDetail = truncateDetail(probeErr.Error())
 		report.NginxDetail = report.SingBoxDetail
+		report.Mieru = make([]MieruServiceReport, 0, len(wantMieru))
+		for _, m := range wantMieru {
+			report.Mieru = append(report.Mieru, MieruServiceReport{
+				InboundID: m.ID, DisplayName: m.DisplayName,
+				State: ServiceUnreachable, Detail: report.SingBoxDetail,
+			})
+		}
 	}
 
 	// 恢复只在「服务定义在、进程没跑」时做。SSH 不通时做不了任何事,
@@ -247,7 +305,8 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 // 合在一条连接里:节点级互斥锁不可重入,而且每建一次连接约 1.3 秒 ——
 // 分两次问等于把巡检的开销翻倍,换不来任何东西。
 func (w *Watchdog) probe(
-	ctx context.Context, n *Node, wantSingBox, wantNginx bool, report *HealthReport,
+	ctx context.Context, n *Node, wantSingBox, wantNginx bool,
+	wantMieru []*MieruInbound, report *HealthReport,
 ) error {
 	return w.service.pool.Do(ctx, n.ID, func(client *sshx.Client) error {
 		init, err := deployment.DetectInit(ctx, client)
@@ -291,6 +350,41 @@ func (w *Watchdog) probe(
 			report.Nginx = stateOf(active)
 			report.NginxDetail = truncateDetail(detail)
 		}
+		if len(wantMieru) > 0 {
+			// InitSystem 本身就内嵌了 MieruInit,不用断言。
+			report.Mieru = make([]MieruServiceReport, 0, len(wantMieru))
+			for _, m := range wantMieru {
+				one := MieruServiceReport{InboundID: m.ID, DisplayName: m.DisplayName}
+				active, detail, err := init.IsMieruActive(ctx, client, layout, m.ID)
+				if err != nil {
+					return err
+				}
+				if !active {
+					one.State, one.Detail = ServiceStopped, truncateDetail(detail)
+					report.Mieru = append(report.Mieru, one)
+					continue
+				}
+				// **守护进程活着不等于代理在服务。** `mita status` 有 IDLE
+				// 与 RUNNING 两种,前者是"管理接口在,但一个端口都没绑"
+				// —— 只看服务是否 active 会把 IDLE 报成正常,而那个入口
+				// 谁都连不上。与「部署不得只看 systemd 状态」一模一样的错误。
+				status, statusErr := deployment.MieruProxyRunning(ctx, client, layout, m.ID)
+				switch {
+				case statusErr != nil:
+					one.State = ServiceStopped
+					one.Detail = truncateDetail("守护进程在跑,但问不到代理状态:" +
+						statusErr.Error())
+				case !status.Running:
+					one.State = ServiceStopped
+					one.Detail = truncateDetail("守护进程在跑,但代理是 " +
+						status.Status + "(一个端口都没绑)")
+				default:
+					one.State = ServiceRunning
+					one.Detail = truncateDetail(detail + " · " + status.Status)
+				}
+				report.Mieru = append(report.Mieru, one)
+			}
+		}
 		return nil
 	})
 }
@@ -300,7 +394,7 @@ func (w *Watchdog) probe(
 // **必须在 pool.Do 之外调用 Deploy** —— 节点级互斥锁不可重入,
 // 在连接回调里再发起一次部署会当场自我死锁。
 func (w *Watchdog) recover(ctx context.Context, n *Node, report *HealthReport) {
-	if !report.SingBox.Down() && !report.Nginx.Down() {
+	if report.Healthy() {
 		w.clearSkip(n.ID)
 		return
 	}
@@ -319,6 +413,16 @@ func (w *Watchdog) recover(ctx context.Context, n *Node, report *HealthReport) {
 	if report.Nginx == ServiceStopped {
 		if err := w.recoverNginx(ctx, n, report); err != nil {
 			errs = append(errs, "nginx:"+err.Error())
+		}
+	}
+	// **逐实例救,一个失败不影响另一个。** 它们是各自独立的进程,
+	// 合成一次"救 Mieru"会让第一个救不回来时后面几个连试都不试。
+	for i := range report.Mieru {
+		if report.Mieru[i].State != ServiceStopped {
+			continue
+		}
+		if err := w.recoverMieru(ctx, n, &report.Mieru[i]); err != nil {
+			errs = append(errs, "Mieru 入口 "+report.Mieru[i].DisplayName+":"+err.Error())
 		}
 	}
 
@@ -373,6 +477,74 @@ func (w *Watchdog) recoverNginx(ctx context.Context, n *Node, report *HealthRepo
 	report.Nginx = ServiceRunning
 	report.NginxDetail = "已重新下发转发配置并拉起"
 	return nil
+}
+
+// recoverMieru 救一个 mita 实例。
+//
+// 两步与 sing-box 那一侧同构,但**第一步要多做一件事**:mita 的守护进程
+// 起来只代表管理接口可用,代理还要再 `mita start` 一次。只拉起服务就
+// 宣布恢复的话,那个入口会停在 IDLE —— 端口一个都没绑,而巡检报的是
+// "已恢复"。这正是「不以启动命令的退出码为准」的同一类错误。
+func (w *Watchdog) recoverMieru(
+	ctx context.Context, n *Node, one *MieruServiceReport,
+) error {
+	started, err := w.startMieruAndVerify(ctx, n.ID, n.ConfigInRAM, one.InboundID)
+	if err == nil && started {
+		one.State = ServiceRunning
+		one.Detail = "已自动拉起"
+		return nil
+	}
+
+	// 第二步:重新下发。配置不在了或者坏了时,拉起永远不会成功。
+	// **走 usersOnly = false** —— 这个实例此刻没在跑,reload 无从谈起。
+	// DeployMieru 自己会取节点锁,所以这里不能在 pool.Do 里面。
+	result, derr := w.service.DeployMieru(ctx, one.InboundID, false)
+	if derr != nil {
+		return fmt.Errorf("拉起失败,重新下发也失败:%v", derr)
+	}
+	if result.Status != deployment.StatusSuccess {
+		return fmt.Errorf("重新下发未成功:%s", result.ErrorMessage)
+	}
+	one.State = ServiceRunning
+	one.Detail = "已重新下发配置并拉起"
+	return nil
+}
+
+// startMieruAndVerify 拉起一个 mita 实例,并确认**代理**真的在服务。
+func (w *Watchdog) startMieruAndVerify(
+	ctx context.Context, nodeID int64, inRAM bool, inboundID int64,
+) (bool, error) {
+	var ok bool
+	err := w.service.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		init, err := deployment.DetectInit(ctx, client)
+		if err != nil {
+			return err
+		}
+		layout := w.service.deployer.Layout().WithConfigInRAM(inRAM)
+		if err := init.RestartMieru(ctx, client, layout, inboundID); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		active, _, err := init.IsMieruActive(ctx, client, layout, inboundID)
+		if err != nil || !active {
+			return err
+		}
+		// 守护进程活着还不够 —— 代理要自己 start 一次。
+		if _, err := client.Run(ctx, deployment.MieruStartCommand(layout, inboundID)); err != nil {
+			return err
+		}
+		status, err := deployment.MieruProxyRunning(ctx, client, layout, inboundID)
+		if err != nil {
+			return err
+		}
+		ok = status.Running
+		return nil
+	})
+	return ok, err
 }
 
 // startAndVerify 拉起服务并**再问一次**它是不是真的起来了。
@@ -509,16 +681,34 @@ func (w *Watchdog) announce(
 }
 
 func downTitle(r HealthReport) string {
-	switch {
-	case r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable:
-		return "节点连不上"
-	case r.SingBox.Down() && r.Nginx.Down():
-		return "sing-box 与 nginx 都没在跑"
-	case r.SingBox.Down():
-		return "sing-box 没在跑"
-	default:
-		return "nginx 转发没在跑"
+	down := r.mieruDown()
+	unreachable := r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable
+	for _, m := range down {
+		if m.State == ServiceUnreachable {
+			unreachable = true
+		}
 	}
+	if unreachable {
+		return "节点连不上"
+	}
+	// 逐项列出来,不合并成"多个服务没在跑" —— 标题是推送里唯一
+	// 一眼能看到的东西,而三类服务要做的事完全不同。
+	var parts []string
+	if r.SingBox.Down() {
+		parts = append(parts, "sing-box")
+	}
+	if r.Nginx.Down() {
+		parts = append(parts, "nginx 转发")
+	}
+	if len(down) == 1 {
+		parts = append(parts, "Mieru 入口「"+down[0].DisplayName+"」")
+	} else if len(down) > 1 {
+		parts = append(parts, fmt.Sprintf("%d 个 Mieru 入口", len(down)))
+	}
+	if len(parts) == 0 {
+		return "服务没在跑"
+	}
+	return strings.Join(parts, "、") + "没在跑"
 }
 
 func downSummary(r HealthReport) string {
@@ -529,13 +719,19 @@ func downSummary(r HealthReport) string {
 	if r.Nginx.Down() {
 		fmt.Fprintf(&b, "nginx:%s %s\n", r.Nginx, r.NginxDetail)
 	}
+	// **逐个点名。** 一台机器上可以有好几个 Mieru 入口,只说"Mieru 挂了"
+	// 会让管理员连该看哪一个都不知道 —— 而它们是各自独立的进程。
+	for _, m := range r.mieruDown() {
+		fmt.Fprintf(&b, "Mieru 入口「%s」:%s %s\n", m.DisplayName, m.State, m.Detail)
+	}
 	// **说清楚为什么没恢复。** 三种原因要人做的事完全不同,
 	// 混成一句"未做自动恢复"的话,自动恢复明明开着的人会先跑去设置页
 	// 找一个已经打开的开关。
 	switch {
 	case r.RecoverError != "":
 		fmt.Fprintf(&b, "自动恢复失败:%s", r.RecoverError)
-	case r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable:
+	case r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable ||
+		r.anyMieruUnreachable():
 		b.WriteString("SSH 连不上,面板做不了任何事 —— 服务是死是活也无从判断。" +
 			"机器可能在重启,也可能真的没了")
 	default:
@@ -601,6 +797,28 @@ func (w *Watchdog) hasRelayRules(ctx context.Context, nodeID int64) (bool, error
 	}
 	rules, err := w.service.relays.EnabledForNode(ctx, nodeID)
 	return len(rules) > 0, err
+}
+
+// deployedMieruInbounds 返回**下发过的**那些 Mieru 入口。
+//
+// 判据是 deployed_transport 非空,与订阅、门户那边一字不差:
+// 没下发过的入口在节点上根本没有服务定义,问它一定得到"没跑" ——
+// 而那不是故障,是还没上线。报出来会让管理员去救一个他还没启用的入口,
+// 与「有转发规则但没下发过 nginx 配置不算故障」是同一条道理。
+func (w *Watchdog) deployedMieruInbounds(
+	ctx context.Context, nodeID int64,
+) ([]*MieruInbound, error) {
+	all, err := w.service.store.MieruInboundsForNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*MieruInbound, 0, len(all))
+	for _, m := range all {
+		if m.Enabled && m.DeployedTransport != "" {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 func stateOf(active bool) ServiceState {

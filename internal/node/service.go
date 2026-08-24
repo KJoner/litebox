@@ -198,11 +198,38 @@ func (s *Service) TestConnection(ctx context.Context, nodeID int64) (output, res
 }
 
 // ProbeNode 探测节点信息并落库。
+//
+// **探测要对什么负责,由这台机器上有什么入口决定。** 只有 Mieru 入口的
+// 机器上没有 sing-box 是正常的;把它当成问题会让那台机器被判成 OFFLINE
+// (Problems 决定 Usable(),Usable() 写 nodes.status),而它正靠 mita
+// 好好地服务用户 —— 与「监控数据过期不得判离线」是同一条道理。
 func (s *Service) ProbeNode(ctx context.Context, nodeID int64) (ProbeResult, error) {
+	n, err := s.store.Get(ctx, nodeID)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	params := ProbeParams{
+		SingBoxPath: s.layout.BinaryPath,
+		// 中转机上也要:它虽然不装服务,但二进制要留着做转发拨测。
+		WantSingBox: n.Role.IsRelay() || len(n.Inbounds) > 0,
+	}
+	mierus, err := s.store.MieruInboundsForNode(ctx, nodeID)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	if len(mierus) > 0 {
+		params.MieruPath = s.layout.MieruBinaryPath()
+	}
+	// 两种入口都没有的新机器:按"应该有 sing-box"探,那是绝大多数情况,
+	// 而这时说一句"没装 sing-box"正是管理员需要看到的下一步。
+	if len(n.Inbounds) == 0 && len(mierus) == 0 {
+		params.WantSingBox = true
+	}
+
 	var result ProbeResult
-	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		var err error
-		result, err = Probe(ctx, client, s.layout.BinaryPath)
+		result, err = ProbeWith(ctx, client, params)
 		return err
 	})
 	if err != nil {
@@ -305,6 +332,15 @@ type ConfigDiffResult struct {
 	InSync        bool         `json:"in_sync"`
 	Diff          singbox.Diff `json:"diff"`
 	DesiredUsers  []string     `json:"desired_users"`
+
+	// HasSingBox 为 false 表示这台机器上一个 sing-box 入口都没有。
+	// 那时上面那几项没有意义 —— 界面必须据此换一句话,
+	// 否则「节点上尚无配置」会被读成"部署丢了"。
+	HasSingBox bool `json:"has_singbox"`
+	// Mieru 是逐个 Mieru 入口的比对结果。**与上面那份分开** ——
+	// sing-box 一字未改而某个 mita 实例少了一个用户是完全可能的,
+	// 而那正是管理员最需要看见的。
+	Mieru []MieruConfigDiff `json:"mieru"`
 }
 
 // ConfigDiff 比较数据库中的期望配置与节点上正在使用的配置。
@@ -325,6 +361,8 @@ func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResul
 		NodeID:        nodeID,
 		Revision:      n.ConfigRevision,
 		DesiredSHA256: desired.SHA256,
+		HasSingBox:    len(n.Inbounds) > 0,
+		Mieru:         []MieruConfigDiff{},
 	}
 	// 全部入站的用户并集。只取第一个入站的话,一台机器上 VIP 入口
 	// 独有的那些用户会在"期望用户"里凭空消失。
@@ -342,16 +380,39 @@ func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResul
 	sort.Strings(result.DesiredUsers)
 
 	var remoteJSON []byte
+	var downloadErr error
+	// **一次连接里把两边都比完。** 节点级互斥锁不可重入,而每建一次连接
+	// 约 1.3 秒 —— 分两次会让「比对配置」在有 Mieru 入口的机器上白多一次。
 	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
-		var readErr error
 		// 按这台机器自己的设置取路径:配置进了内存文件系统之后,
 		// 拿全局默认的那个路径去读,永远读不到 —— 而"读不到"会被
 		// 呈现成「节点上尚无配置」,管理员看到的是一台明明在服务用户、
 		// 却显示从未部署过的机器。
-		remoteJSON, readErr = client.Download(
+		remoteJSON, downloadErr = client.Download(
 			ctx, s.layout.WithConfigInRAM(n.ConfigInRAM).ConfigPath())
-		return readErr
+
+		// **sing-box 那一侧读不到也要继续比 Mieru。** 一台只有 Mieru 入口
+		// 的机器上根本没有 config.json,而它的三个 mita 实例正在服务用户 ——
+		// 因为读不到一份本来就不该存在的文件而整份比对失败,
+		// 管理员会以为这台机器出了问题。
+		mierus, mieruErr := s.mieruDiffs(ctx, client, n)
+		if mieruErr != nil {
+			return mieruErr
+		}
+		result.Mieru = mierus
+		return nil
 	})
+	if err != nil {
+		return result, err
+	}
+	err = downloadErr
+	if !result.HasSingBox {
+		// 这台机器上一个 sing-box 入口都没有 —— 那份配置本来就不该存在。
+		// 说"尚无配置"会被读成"部署丢了",而真相是它压根不需要。
+		result.Diff.Summary = "这台机器上没有 sing-box 入口,不需要 sing-box 配置"
+		result.InSync = true
+		return result, nil
+	}
 	if err != nil {
 		// 节点上还没有配置(未部署过)时,差异就是"全部用户都是新增的"。
 		result.Diff = singbox.Compare(singbox.Config{}, desired.Config)

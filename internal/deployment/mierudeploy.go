@@ -318,6 +318,66 @@ func waitMieruDaemon(ctx context.Context, client *sshx.Client, layout Layout, id
 		layout.MieruSocketPath(id))
 }
 
+// MieruStartCommand 是「让这个实例的代理开始服务」那条命令。
+//
+// 导出它而不是让巡检自己拼:那几个环境变量决定这条命令打到**哪个实例**上,
+// 拼漏一个就会去连默认的 socket —— 而那个 socket 属于另一个实例
+// (或者根本不存在),表现是巡检"救"了一个与它无关的入口。
+func MieruStartCommand(layout Layout, id int64) sshx.Command {
+	return mieruCmd(layout, id, "start")
+}
+
+// MieruDescribeCommand 是「把这个实例此刻的配置打出来」那条命令。
+//
+// 导出它的理由与 MieruStartCommand 一样:那几个环境变量决定命令打到
+// 哪个实例上,拼漏一个就会去问另一个实例(或者根本不存在的那个)。
+func MieruDescribeCommand(layout Layout, id int64) sshx.Command {
+	return mieruCmd(layout, id, "describe", "config")
+}
+
+// MieruProxyStatus 是一个 mita 实例的代理状态。
+type MieruProxyStatus struct {
+	// Status 是 mita 自己给的那个词:RUNNING / IDLE / …
+	Status string
+	// Running 只有 RUNNING 算真。
+	//
+	// **IDLE 不是正常。** 它的意思是"管理接口在,但没在代理" ——
+	// 那时端口一个都没绑,这个入口谁都连不上,而服务在 systemd 眼里
+	// 是 active 的。与「部署不得只看 systemd 状态」一模一样的错误。
+	Running bool
+}
+
+// MieruProxyRunning 问一个实例的代理状态,不把 IDLE 当成错误。
+//
+// 与 mieruProxyStatus 的差别只在这里:部署那一侧 IDLE 就是失败,
+// 而巡检要把它当成一个**可报告的状态** —— 巡检的产物是一份报告,
+// 不是一次成败。
+func MieruProxyRunning(
+	ctx context.Context, client *sshx.Client, layout Layout, id int64,
+) (MieruProxyStatus, error) {
+	res, err := client.Run(ctx, mieruCmd(layout, id, "status"))
+	if err != nil {
+		return MieruProxyStatus{}, err
+	}
+	out := strings.TrimSpace(res.Stdout + res.Stderr)
+	return MieruProxyStatus{
+		Status:  firstLineOf(out, 120),
+		Running: strings.Contains(out, "RUNNING"),
+	}, nil
+}
+
+// firstLineOf 取第一行并截断 —— 状态串进的是报告与推送,不能太长。
+func firstLineOf(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
+}
+
 // mieruProxyStatus 读代理自己的状态。
 //
 // 守护进程活着不等于代理在服务:`mita status` 有 IDLE 与 RUNNING 两种,
