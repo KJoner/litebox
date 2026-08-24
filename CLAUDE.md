@@ -1656,6 +1656,30 @@ Mieru 是第三类入口(`node_mieru_inbounds`,迁移 0024)。
   重启一个不影响其他 —— 做成"下发这台机器的 Mieru"会把本来只该断
   一个入口的连接扩大到全部;
 
+* **`user_effective_mieru_inbounds` 不得借道 `user_effective_nodes`**
+  (迁移 0028 重建)。后者是 `user_effective_inbounds` 的投影,而那一层
+  只读 `node_inbounds` —— **只认 sing-box**。借道的后果是一台
+  「只有 Mieru 入口、不装 sing-box」的机器对**所有人**都查不出用户,
+  而那正是这个功能最自然的用法。三处同时静默失效:渲染出的 mita 配置
+  users 为空(`mita start` 报 `server mux listening failed: no user found`,
+  部署失败并回滚,错误里一个字都没提"这台机器没有 sing-box 入口")、
+  这个入口不进任何人的订阅、门户里也看不到 —— 而面板上它显示的是
+  启用、在订阅里。**生产上撞到了。** 这个视图自己写那两条规则
+  (等级继承 + `user_nodes` 整机授权穿透入口等级),
+  `TestMieruOnlyNodeStillHasUsers` 钉着;
+
+* **下发一个 Mieru 入口之前必须确认它至少有一个用户**(`ErrMieruNoUsers`)。
+  上游只在 `ValidateFullServerConfig` 里放行空用户列表(注释写着
+  "不是错误,只是不工作"),真正 bind 端口时却直接拒绝。拦在动节点之前 ——
+  那时一个字节都还没改,拒绝的代价只是一句话;走到回滚要重启一次实例,
+  而报错落在一句与"没有用户"毫无关系的话上;
+
+* **mita 与 mieru 二进制必须先传临时路径再 rename。** 直接覆盖会得到
+  ETXTBSY,而这台机器上每个 Mieru 入口都有一个 mita 进程正在执行那个文件
+  —— **只要装过一次,重装就一定失败**。经 SFTP 时那个 errno 变成一句
+  `sftp: "Failure" (SSH_FX_FAILURE)`,完全看不出是"文件正在被执行"。
+  sing-box 那一侧早就这么做了;
+
 * **加一种下发就要改迁移里那条 `deployments.kind` 的 CHECK。**
   生产上撞到了:V13 加了 MIERU 这一种,而迁移 0018 那条 CHECK 只写了
   SINGBOX 与 RELAY,于是**每一次 Mieru 下发都落不了库** ——

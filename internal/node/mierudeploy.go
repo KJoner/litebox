@@ -29,6 +29,19 @@ import (
 // ErrMieruBinaryMissing 表示面板本地没有 mita 二进制。
 var ErrMieruBinaryMissing = errors.New("面板本地没有 Mieru 二进制")
 
+// ErrMieruNoUsers 表示这个入口上一个够格的用户都没有。
+//
+// **mita 的代理起不来**:实测 `mita start` 会在初始化多路复用之后报
+// `server mux listening failed: no user found`,而 apply 那一步是成功的
+// —— 上游只在 ValidateFullServerConfig 里放行空用户列表("不是错误,
+// 只是不工作"),真正 bind 端口时却拒绝。
+//
+// 拦在下发之前而不是让它失败并回滚:那时节点上一个字节都还没动过,
+// 拒绝的代价只是一句话;而走到回滚要重启一次 mita 实例,
+// 报错还落在一句与"没有用户"毫无关系的话上。与 checkMieruChainTargetReady
+// 是同一条道理。
+var ErrMieruNoUsers = errors.New("这个 Mieru 入口上一个用户都没有")
+
 // MieruInstallResult 是一次 Mieru 二进制安装的结果。
 type MieruInstallResult struct {
 	MitaPath     string `json:"mita_path"`
@@ -102,11 +115,28 @@ func (s *Service) InstallMieruBinaries(
 			layout.MieruDir())); err != nil {
 			return err
 		}
-		if err := c.Upload(ctx, layout.MieruBinaryPath(), mita, 0o755); err != nil {
-			return err
-		}
-		if err := c.Upload(ctx, layout.MieruClientPath(), client, 0o755); err != nil {
-			return err
+		// **两个二进制都必须先传临时路径再 rename。**
+		// 直接覆盖会得到 ETXTBSY("text file busy"),而这台机器上
+		// 每个 Mieru 入口都有一个 mita 进程正在执行这个文件 ——
+		// 也就是说**只要装过一次,重装就一定失败**。
+		// 经 SFTP 时那个 errno 变成一句 `sftp: "Failure" (SSH_FX_FAILURE)`,
+		// 完全看不出是"文件正在被执行"。rename 只是换 inode,
+		// 运行中的进程抱着旧 inode 不受影响,下次重启才用上新的。
+		// sing-box 那一侧早就这么做了,这里当时漏了。
+		for _, up := range []struct {
+			path string
+			data []byte
+		}{
+			{layout.MieruBinaryPath(), mita},
+			{layout.MieruClientPath(), client},
+		} {
+			tmp := up.path + ".new"
+			if err := c.Upload(ctx, tmp, up.data, 0o755); err != nil {
+				return err
+			}
+			if _, err := c.RunCheck(ctx, sshx.NewCommand("mv", tmp, up.path)); err != nil {
+				return err
+			}
 		}
 		if err := c.Upload(ctx, layout.MieruWrapperPath(),
 			[]byte(deployment.MieruWrapperScript), 0o755); err != nil {
@@ -198,6 +228,16 @@ func (s *Service) DeployMieru(
 	cfg, err := s.DesiredMieruConfig(ctx, m)
 	if err != nil {
 		return deployment.Result{}, err
+	}
+	if len(cfg.Users) == 0 {
+		// 放在同步流量【之后】、动节点之前:同步是只读的,而且这个入口
+		// 上仍然可能有历史流量没落库。
+		return deployment.Result{}, fmt.Errorf(
+			"%w —— mita 的代理在没有用户时起不来(server mux listening failed: no user found),"+
+				"所以这次下发被拒绝,节点上一个字节都没动。"+
+				"检查一下:这个入口的访问等级是不是高于所有用户的等级;"+
+				"或者在用户那边把这台机器授权给他",
+			ErrMieruNoUsers)
 	}
 	raw, err := cfg.MarshalIndent()
 	if err != nil {
