@@ -44,6 +44,12 @@ install -d -m 0750 -o "$LITEBOX_USER" -g "$LITEBOX_USER" "$DATA_DIR"
 # 配置目录含主密钥,只有属主可进入。
 install -d -m 0700 -o "$LITEBOX_USER" -g "$LITEBOX_USER" "$CONFIG_DIR"
 install -d -m 0755 "$INSTALL_DIR/assets/singbox"
+# Mieru 的 mita/mieru 二进制。与 sing-box 分开放:来源不同(那边是我们按
+# 固定构建标签自己构建的,这边是上游 release 原样拉下来的),混在一起会让
+# 「这个文件是谁产生的」变成一个要翻脚本才答得出的问题。
+# 目录留着即使还没拉二进制 —— 有目录没文件时面板报的是「未找到 mita 二进制,
+# 请先执行 scripts/fetch-mieru.sh」,而连目录都没有时管理员会先怀疑装漏了。
+install -d -m 0755 "$INSTALL_DIR/assets/mieru"
 
 log "安装二进制到 $INSTALL_DIR/litebox"
 install -m 0755 "$BINARY" "$INSTALL_DIR/litebox.new"
@@ -88,6 +94,11 @@ database:
 
 node:
   binary_dir: "$INSTALL_DIR/assets/singbox"
+  # Mieru 用的 mita/mieru 二进制,由 scripts/fetch-mieru.sh 拉取。
+  # 写绝对路径而不是靠默认值:默认是相对路径 assets/mieru,只在
+  # WorkingDirectory 恰好是 $INSTALL_DIR 时才对 —— 那是一个能用但没人
+  # 说得清为什么能用的巧合,改一下 systemd 单元就会变成「找不到二进制」。
+  mieru_binary_dir: "$INSTALL_DIR/assets/mieru"
   # 节点资源采集间隔。放得比流量同步宽,避免和部署抢节点连接锁;负数则关闭。
   metrics_interval: 5m
   metrics_retention: 168h
@@ -180,6 +191,8 @@ cat <<EOF
      经 HTTPS 反代时还要把 $CONFIG_FILE 里的 secure_cookie 改成 true
   3. 构建节点用的 sing-box 并放到 $INSTALL_DIR/assets/singbox/
      (见 scripts/build-singbox.sh)
+     要用 Mieru 入口的话,再拉一次 mita/mieru:
+     OUTPUT_DIR=$INSTALL_DIR/assets/mieru bash scripts/fetch-mieru.sh
   4. 配置 Nginx 反代,示例见 deploy/nginx/litebox.conf
   5. 备份主密钥:$ENV_FILE
 

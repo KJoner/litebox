@@ -5,7 +5,8 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #
 # 它做这些事:检查并补齐 make / Node.js / Go → 拉源码 → 构建主控与节点用的
-# sing-box → 调用 scripts/install.sh 安装或升级主控 → 打印登录信息。
+# sing-box、拉取 Mieru 用的 mita/mieru → 调用 scripts/install.sh 安装或
+# 升级主控 → 打印登录信息。
 #
 # 全程幂等,重复执行即为升级:已装且版本达标的依赖不会重复安装,
 # 已有的数据库、主密钥、配置文件都不会被覆盖。
@@ -16,6 +17,7 @@
 #   LITEBOX_SRC        源码目录,默认 /usr/local/src/litebox
 #   GO_MIN / NODE_MIN  依赖的最低主版本
 #   SKIP_SINGBOX=1     跳过节点用 sing-box 的构建(它要拉 sing-box 源码,最慢)
+#   SKIP_MIERU=1       跳过 Mieru 用的 mita/mieru 下载(不打算用 Mieru 入口时)
 set -euo pipefail
 
 REPO="${LITEBOX_REPO:-https://github.com/KJoner/litebox.git}"
@@ -181,6 +183,23 @@ else
     ok "sing-box 已构建"
 fi
 
+# mita/mieru 不自己构建,拉上游 release 的原样二进制(约 13MB,很快)。
+# 拉不到不中止安装:面板没有 Mieru 入口时用不到它们,而这一步依赖
+# GitHub release 能不能连上 —— 让它挡住整个安装,换来的是一台
+# 装了一半的机器。真要用时面板会明确报「请先执行 scripts/fetch-mieru.sh」。
+if [ "${SKIP_MIERU:-0}" = "1" ]; then
+    warn "已跳过 Mieru 二进制下载。要用 Mieru 入口时执行 bash scripts/fetch-mieru.sh"
+elif ls assets/mieru/mita-linux-* >/dev/null 2>&1; then
+    ok "已有 Mieru 二进制,跳过下载(要重拉请删掉 assets/mieru/ 后重跑)"
+else
+    log "下载 Mieru 用的 mita/mieru(上游 release,带 sha256 校验)"
+    if bash scripts/fetch-mieru.sh; then
+        ok "mita/mieru 已就绪"
+    else
+        warn "Mieru 二进制下载失败,已跳过。要用 Mieru 入口时重跑 bash scripts/fetch-mieru.sh"
+    fi
+fi
+
 # ---------------------------------------------------------------- 安装主控
 
 FIRST_INSTALL=0
@@ -194,13 +213,22 @@ else
     bash scripts/upgrade.sh
 fi
 
-# 把节点用的 sing-box 放到主控能读到的位置。
+# 把节点用的二进制放到主控能读到的位置。
+# 主控以 litebox 用户运行,而它只需要**读** —— chown 只是让权限一目了然,
+# 失败了也不影响(0644 + 目录 0755 本来就人人可读)。
 if ls assets/singbox/sing-box-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/singbox"
     cp -f assets/singbox/sing-box-linux-* "$INSTALL_DIR/assets/singbox/"
-    chown -R litebox:litebox "$INSTALL_DIR/assets" 2>/dev/null || true
     ok "节点用 sing-box 已就位"
 fi
+if ls assets/mieru/mita-linux-* >/dev/null 2>&1; then
+    install -d -m 0755 "$INSTALL_DIR/assets/mieru"
+    # mieru 客户端也要:Mieru 入口的部署健康检查要用它做一次真实拨测,
+    # 那是本项目第一条铁律。只拷 mita 的话,部署会卡在拨测那一步。
+    cp -f assets/mieru/mita-linux-* assets/mieru/mieru-linux-* "$INSTALL_DIR/assets/mieru/"
+    ok "Mieru 用的 mita/mieru 已就位"
+fi
+chown -R litebox:litebox "$INSTALL_DIR/assets" 2>/dev/null || true
 
 # ---------------------------------------------------------------- 收尾信息
 
