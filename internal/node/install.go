@@ -177,6 +177,15 @@ func remoteSHA256(ctx context.Context, client *sshx.Client, path string) (string
 // 只动 litebox- 前缀的服务与 /opt/litebox 目录,不触碰机器上其他服务。
 func (s *Service) Uninstall(ctx context.Context, nodeID int64) error {
 	layout := s.layout
+	// **每个 Mieru 入口一个服务定义,一个都不能漏。** 它们在
+	// /etc/systemd/system 下,而 rm -rf /opt/litebox 删不到 ——
+	// 留下的是一堆指向不存在文件的服务,每次开机各失败一次,
+	// 而机器上再也没有任何东西能解释它们是哪来的。
+	// 与下面 nginx 那一段是同一条道理。
+	mierus, err := s.store.MieruInboundsForNode(ctx, nodeID)
+	if err != nil {
+		return err
+	}
 	return s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		// 卸载时 init 系统探测失败不该阻断清理:节点可能已经被换了系统,
 		// 而 /opt/litebox 那堆文件仍然需要删掉。
@@ -191,6 +200,9 @@ func (s *Service) Uninstall(ctx context.Context, nodeID int64) error {
 			if relayInit, ok := init.(deployment.RelayInit); ok {
 				relayInit.StopRelay(ctx, client, layout)
 				relayInit.RemoveRelayUnit(ctx, client, layout)
+			}
+			for _, m := range mierus {
+				init.RemoveMieruUnit(ctx, client, layout, m.ID)
 			}
 		}
 		// RuntimeDir 一并删掉。**不能只删 BaseDir** —— 开了「配置不落盘」的
