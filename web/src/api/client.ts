@@ -723,6 +723,15 @@ export interface ProbeResult {
   singbox_version: string
   build_tags: string[]
   has_v2ray_api: boolean
+  /** 节点上 mita 的版本。只在这台机器有 Mieru 入口时才问,空串表示没问或没装。 */
+  mita_version: string
+  /**
+   * 有没有 unshare(util-linux)。
+   *
+   * 每个 mita 实例要一个私有的挂载命名空间 —— 共用 /var/lib/mita 的那份
+   * metrics.pb 会让实例之间互相覆盖流量计数,而每个实例都"正常运行"。
+   */
+  has_unshare: boolean
   /** systemd 或 openrc,两者都没有则为空 */
   init_system: string
   init_version: string
@@ -846,6 +855,23 @@ export interface DeploymentRecord {
   steps: DeployStep[]
 }
 
+/** 一个 Mieru 入口的「库里想要的」与「节点上跑着的」之差。 */
+export interface MieruConfigDiff {
+  inbound_id: number
+  display_name: string
+  /** false 表示这个入口还没上过节点 —— 那不是"有差异",是"还没开始"。 */
+  deployed: boolean
+  changed: boolean
+  /** 参数层面的差异(端口段、传输层、MTU),判据是库里的期望值与 deployed_*。 */
+  attrs: string[] | null
+  desired_users: string[] | null
+  remote_users: string[] | null
+  users_added: string[] | null
+  users_removed: string[] | null
+  /** 读节点那一步失败的原因。不中止整份比对 —— 一台机器上有好几个实例。 */
+  error?: string
+}
+
 export interface ConfigDiff {
   node_id: number
   revision: number
@@ -853,6 +879,13 @@ export interface ConfigDiff {
   remote_sha256: string
   in_sync: boolean
   desired_users: string[] | null
+  /**
+   * 这台机器上有没有 sing-box 入口。false 时上面那几项没有意义 ——
+   * 界面必须据此换一句话,否则「节点上尚无配置」会被读成"部署丢了"。
+   */
+  has_singbox: boolean
+  /** 逐个 Mieru 入口的比对。与上面那份分开:它们是另一个进程、另一份配置。 */
+  mieru: MieruConfigDiff[] | null
   diff: {
     changed: boolean
     users: { added: string[] | null; removed: string[] | null; uuid_reset: string[] | null }
@@ -1364,6 +1397,14 @@ export type ServiceState = 'RUNNING' | 'STOPPED' | 'UNREACHABLE' | 'NOT_APPLICAB
  * 我们并不知道」,后者是「服务定义在、进程没跑」。混为一谈会让管理员
  * 在一次正常重启后收到"服务停了"。
  */
+/** 一个 Mieru 入口(= 一个 mita 实例)的巡检状态。 */
+export interface MieruServiceReport {
+  inbound_id: number
+  display_name: string
+  state: ServiceState
+  detail: string
+}
+
 export interface NodeHealth {
   node_id: number
   node_name: string
@@ -1372,6 +1413,14 @@ export interface NodeHealth {
   singbox_detail: string
   nginx: ServiceState
   nginx_detail: string
+  /**
+   * 每个 Mieru 入口(= 一个 mita 实例)的状态。
+   *
+   * **逐实例给,不能合成一个。** 它们各自独立地跑与崩 —— 把"有一个在跑"
+   * 算成正常的话,挂掉的那个再也不会被发现;合成一句"Mieru 没在跑"
+   * 又看不出该查哪一个。
+   */
+  mieru: MieruServiceReport[] | null
   recovered: boolean
   recover_error?: string
   fail_streak: number
