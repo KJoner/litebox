@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS = -s -w -X 'main.Version=$(VERSION)'
 GOFLAGS = -trimpath
 
-.PHONY: all build build-linux web test lint clean run dev tidy
+.PHONY: all build build-linux web test lint clean run dev tidy singbox mieru
 
 all: web build
 
@@ -39,6 +39,10 @@ tidy:
 ## singbox: 构建带 with_v2ray_api 的节点二进制到 assets/singbox
 singbox:
 	bash scripts/build-singbox.sh
+
+## mieru: 下载并校验 mita/mieru 二进制到 assets/mieru(Mieru 入口才需要)
+mieru:
+	bash scripts/fetch-mieru.sh
 
 ## run: 本地启动后端(前端用 make dev 另开)
 run:
