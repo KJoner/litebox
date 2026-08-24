@@ -25,14 +25,6 @@ import (
 // 代价还不只是排查:部署已经重启过一次服务,回滚又重启一次。
 var ErrChainTargetOutOfSync = errors.New("链式出口的落地节点配置未同步")
 
-// ErrMieruEgressNotDeployed 表示**这台机器自己的** sing-box 还没把那个
-// 回环 socks 入站下发上去。
-//
-// 与 ErrChainTargetOutOfSync 分开:那一个说的是落地那台机器,这一个说的是
-// 本机。两者要人做的事不一样(去部署另一台 / 去部署这一台),
-// 合成一个哨兵的话,错误信息只能写一句两边都沾的废话。
-var ErrMieruEgressNotDeployed = errors.New("这台机器的 sing-box 还没下发出口那一跳")
-
 // chainTargetBlocks 判断落地的配置状态该不该拦住这次部署。
 //
 // 拆成纯函数才好把每一档的取舍写成用例 —— 留在调用点里只能靠真机验,
@@ -145,64 +137,6 @@ func (s *Service) checkChainTargetsReady(ctx context.Context, inbounds []*Inboun
 //
 // 判据保守 —— **只有确定同步了才放行**。误拦是让管理员先部署落地
 // (本来就该做),漏拦是两次重启加一句指向错误方向的报错,两者不对等。
-// checkMieruEgressReady 确认**这台机器自己**已经具备那一跳。
-//
-// mita 的出口代理只认 SOCKS5,拨不出 VLESS 或 Shadowsocks —— 所以带出口的
-// Mieru 入口要借道本机 sing-box 的一个回环 socks 入站(mieru-egress-<id>)。
-// 那个入站在**本机的 sing-box 配置**里,而 mita 的配置只写着
-// 「代理到 127.0.0.1:<socks_port>」。
-//
-// **两件事都要成立**:本机装了 sing-box,而且那份配置已经下发上去了。
-// 缺任何一件,mita 都会拨到一个没人监听的回环端口 —— 而表现是拨测
-// 「SOCKS5 CONNECT 响应读取失败: EOF」,与"链路不通"长得一模一样。
-// **生产上撞到过**:一台管理员刻意不装 sing-box 的机器,Mieru 入口配了出口,
-// 前五步全绿(端口全在监听、mita 是 RUNNING),只有拨测失败并回滚。
-//
-// 拦在动节点之前,与 checkMieruChainTargetReady 同一条道理:那时一个字节
-// 都还没改,拒绝的代价只是一句话;放行的代价是一次重启加一句指向错误
-// 方向的报错。判据同样保守 —— **只有确定同步了才放行**。
-func (s *Service) checkMieruEgressReady(ctx context.Context, m *MieruInbound, host *Node) error {
-	kind, err := ParseChainTargetKind(m.ChainTargetKind)
-	if err != nil || !kind.Enabled() {
-		// 直连入口不经 sing-box,这台机器上有没有它都无所谓。
-		return nil
-	}
-	state, _ := s.ConfigStatus(ctx, host)
-	if state == ConfigInSync {
-		return nil
-	}
-	// NOT_APPLICABLE 也要拦:它的意思是"这台机器上没有 sing-box",
-	// 而带出口的 Mieru 入口恰恰需要它。这一档与落地那一侧正好相反 ——
-	// 那边 NOT_APPLICABLE 说明数据本身不对(中转机不该当落地),
-	// 这边说明**还差一步**,而那一步管理员做得到。
-	return fmt.Errorf("%w。\nMieru 入口「%s」配了出口,而出口要经**这台机器自己的 sing-box**"+
-		"转一跳(mita 的出口代理只认 SOCKS5,拨不出 VLESS 或 Shadowsocks)。\n"+
-		"那一跳是一个只监听 127.0.0.1:%d 的 socks 入站,它在本机的 sing-box 配置里,"+
-		"而这台机器%s\n\n"+
-		"现在下发下去,mita 会拨到一个没人监听的回环端口,拨测会在十几秒后失败并"+
-		"自动回滚,而报错看起来完全像是链路不通。\n"+
-		"处置:先在「入口」Tab 里点 sing-box 那一行的「安装」与「下发配置」——"+
-		"哪怕这台机器上一个 sing-box 入口都没有,那份配置里也有这个回环入站。",
-		ErrMieruEgressNotDeployed, m.DisplayName, m.EgressSocksPort,
-		mieruEgressStateLabel(state))
-}
-
-// mieruEgressStateLabel 把本机的配置状态翻成一句管理员看得懂的话。
-func mieruEgressStateLabel(state ConfigState) string {
-	switch state {
-	case ConfigNotApplicable:
-		return "上还没有 sing-box(它只有 Mieru 入口)。"
-	case ConfigNeverDeployed:
-		return "从未下发过 sing-box 配置。"
-	case ConfigPending:
-		return "上的 sing-box 配置还没下发(库里已经变了,节点上还是旧的)。"
-	case ConfigDeployFailed:
-		return "上一次 sing-box 下发失败了,节点上跑的是旧配置。"
-	default:
-		return "的 sing-box 配置算不出来 —— 那台机器本身可能有问题。"
-	}
-}
-
 func (s *Service) checkMieruChainTargetReady(ctx context.Context, m *MieruInbound) error {
 	kind, err := ParseChainTargetKind(m.ChainTargetKind)
 	if err != nil || kind != ChainTargetInbound {

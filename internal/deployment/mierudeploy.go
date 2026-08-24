@@ -60,6 +60,9 @@ type MieruRequest struct {
 	// **但它只在 Chained 为真时用得上**,见下。
 	DialHost string
 	DialPort int
+	// EgressSocksPort 是 mita 与本机 sing-box 之间那一跳的回环端口。
+	// 0 表示直连。非 0 时健康检查会**先单独验这一跳**,见 dialEgressHop。
+	EgressSocksPort int
 	// Chained 决定拨测打向哪里,而这一条是被 NAT 机逼出来的。
 	//
 	//	直连   mita 就在这台机器上,出口也是它自己 —— 拿公网地址当 CONNECT
@@ -252,6 +255,25 @@ func (d *Deployer) runMieruTransaction(
 			first, last, req.ListenPorts.Count()), nil
 	}); err != nil {
 		return d.rollbackMieru(ctx, client, init, req, rec, result, backup, applied, err)
+	}
+
+	// ---------- 出口那一跳单独验一次 ----------
+	//
+	// **两跳分开验,失败时才知道该修哪一半。** 带出口的链路是
+	// `mita → 本机 sing-box 的回环 socks → 落地`,而合在一起验的话,
+	// 任何一环断了都表现为同一句「SOCKS5 CONNECT 响应读取失败: EOF」——
+	// 而那与"mita 坏了"长得一模一样。生产上正是这样卡住的:
+	// 前面五步全绿,只有最后一步失败,而真正的原因在 sing-box 那一侧。
+	//
+	// 这一跳**不经 mita**:直接连本机的那个 socks 端口。它验的是
+	// 「sing-box 的回环入站在不在、route 规则有没有把它指到落地、
+	// 落地收不收这条链路的凭据」——恰好是 mita 之外的全部环节。
+	if req.EgressSocksPort > 0 {
+		if err := rec.run("出口那一跳(本机 sing-box → 落地)", func() (string, error) {
+			return d.dialEgressHop(ctx, client, req)
+		}); err != nil {
+			return d.rollbackMieru(ctx, client, init, req, rec, result, backup, applied, err)
+		}
 	}
 
 	if req.Probe == nil {
@@ -492,13 +514,23 @@ func (d *Deployer) dialMieru(
 	}
 	// 客户端起在后台;它随这条 SSH 会话结束而结束是不行的,
 	// 所以要 setsid 脱离 —— 但测完一定要杀掉,不然节点上会留下一个
-	// 常驻的、带着真实用户口令的进程。
+	// 常驻的、带着真实用户口令的进程,还占着一个 socks 端口。
 	startScript := fmt.Sprintf("setsid %s > %s 2>&1 < /dev/null &",
 		sshx.ShellQuote(layout.MieruClientPath())+" start",
 		sshx.ShellQuote(probeDir+"/client.log"))
 	startScript = "env MIERU_CONFIG_FILE=" + sshx.ShellQuote(pbPath) + " " + startScript
-	defer client.Run(ctx, sshx.NewCommand("sh", "-c",
-		"pkill -f "+sshx.ShellQuote(pbPath)+" 2>/dev/null; exit 0"))
+	// **收尾走客户端自己的 stop,不能用 pkill -f 配置路径。**
+	//
+	// `env FOO=bar cmd` 里的 env 会 exec 掉自己,所以那个进程的 cmdline
+	// 就是 `/opt/litebox/mieru/mieru start` —— 配置路径只在**环境变量**里,
+	// 而 pkill -f 匹配的是 cmdline。于是那条 pkill 一次都没命中过:
+	// 每做一次拨测,节点上就多一个常驻的探测客户端,带着一个真实用户的
+	// 明文口令,还听着一个 socks 端口。生产上翻出来两个。
+	//
+	// 也不能 pkill 那个二进制名 —— 同一台机器上可能有别的 mieru 进程
+	// (比如另一个入口正在拨测),按名字杀会杀掉别人的。
+	// `mieru stop` 走的是它自己的 RPC,只停这一个实例。
+	defer client.Run(ctx, probeEnv("stop"))
 	if _, err := client.Run(ctx, sshx.NewCommand("sh", "-c", startScript)); err != nil {
 		return "", err
 	}
@@ -515,6 +547,35 @@ func (d *Deployer) dialMieru(
 			prefixIfSet("\n探测客户端日志:\n", logs))
 	}
 	return fmt.Sprintf("经 Mieru 完成 SSH 认证(目标 %s):%s", where, detail), nil
+}
+
+// dialEgressHop 只验 mita 之外的那一段:本机 sing-box 的回环 socks → 落地。
+//
+// 先确认端口在听,再从那个 socks 走一次真实的 SSH 认证。两件事都要:
+// 端口在听只说明 sing-box 起来了,而 route 规则指错、落地没有这条链路的
+// 凭据,都要到真的走一遍才看得出来 —— 与「部署不得只看 systemd 状态」
+// 是同一条道理。
+//
+// CONNECT 目标与链式拨测同一个(这台机器的公网 SSH):流量要从落地绕回来,
+// 而那正是这一跳该验的事。
+func (d *Deployer) dialEgressHop(
+	ctx context.Context, client *sshx.Client, req MieruRequest,
+) (string, error) {
+	if _, err := d.checkPortListening(ctx, client, req.EgressSocksPort); err != nil {
+		return "", fmt.Errorf("本机 sing-box 的回环 socks 入站(127.0.0.1:%d)没有在监听:%w\n"+
+			"那个入站在这台机器的 sing-box 配置里 —— 先在「入口」Tab 里"+
+			"确认 sing-box 已安装并下发过配置",
+			req.EgressSocksPort, err)
+	}
+	detail, err := dialThroughProxy(ctx, d.pool, req.NodeID, client,
+		req.EgressSocksPort, req.DialHost, req.DialPort)
+	if err != nil {
+		return "", fmt.Errorf("从本机 socks(127.0.0.1:%d)到落地这一段不通:%w\n"+
+			"mita 还没参与,所以问题在 sing-box 那一侧 —— 可能是 route 规则没把"+
+			"这个入站指到落地,也可能是落地上还没有这条链路的凭据(要落地重新下发一次)",
+			req.EgressSocksPort, err)
+	}
+	return "本机 socks → 落地 → 回到这台机器的公网 SSH,认证通过:" + detail, nil
 }
 
 // mieruDialTarget 选拨测的 CONNECT 目标,并给出一句可读的说明。

@@ -1,56 +1,30 @@
 package node
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
 
-// 带出口的 Mieru 入口,在本机 sing-box 还没下发那一跳之前不许下发。
+// 直连入口不经 sing-box,准备那一跳的整段都要跳过。
 //
-// **生产上撞到过。** 一台管理员刻意不装 sing-box 的机器,Mieru 入口配了出口,
-// 下发时前五步全绿(端口全在监听、mita 是 RUNNING、探测客户端也起来了),
-// 只有拨测失败:「SOCKS5 CONNECT 响应读取失败: EOF」—— 而那与"链路不通"
-// 长得一模一样。真正的原因是 mita 拨到了一个没人监听的回环端口:
-// 那个 socks 入站在**本机的 sing-box 配置**里,而这台机器上根本没有 sing-box。
-func TestMieruEgressNeedsLocalSingBox(t *testing.T) {
+// 不跳的话,一台只跑直连 Mieru 的机器会在每次下发时被顺带装上 sing-box
+// 并重启一次 —— 而管理员点的是「下发这个 Mieru 入口」。
+func TestPrepareEgressHopSkipsDirect(t *testing.T) {
 	s := &Service{}
-	// 这台机器只有 Mieru 入口,而其中一个配了出口 —— 它**需要** sing-box。
-	host := &Node{MieruInbounds: []*MieruInbound{
-		{ID: 2, DisplayName: "JP-1", ChainTargetKind: "INBOUND"},
-	}}
-	m := &MieruInbound{
-		ID: 2, DisplayName: "JP-1",
-		ChainTargetKind: "INBOUND", EgressSocksPort: 11081,
+	steps, err := s.prepareEgressHop(t.Context(), &MieruInbound{ID: 2}, &Node{})
+	if err != nil {
+		t.Fatalf("直连入口不该走这一段:%v", err)
 	}
-
-	err := s.checkMieruEgressReady(t.Context(), m, host)
-	if !errors.Is(err, ErrMieruEgressNotDeployed) {
-		t.Fatalf("期望被拦下,得到 %v", err)
-	}
-	// 错误里必须写清「去部署这一台」而不是"链路不通" ——
-	// 拦下来的意义正是给出方向。
-	for _, want := range []string{"这台机器自己的 sing-box", "11081", "安装"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("错误信息里少了 %q:\n%s", want, err)
-		}
-	}
-}
-
-// 直连入口不经 sing-box,这台机器上有没有它都无所谓。
-func TestDirectMieruNeedsNoLocalSingBox(t *testing.T) {
-	s := &Service{}
-	host := &Node{MieruInbounds: []*MieruInbound{{ID: 2}}}
-	if err := s.checkMieruEgressReady(t.Context(), &MieruInbound{ID: 2}, host); err != nil {
-		t.Fatalf("直连入口不该被拦:%v", err)
+	if len(steps) != 0 {
+		t.Errorf("直连入口不该产生任何步骤,得到 %d 条", len(steps))
 	}
 }
 
 // 有出口的 Mieru 入口意味着这台机器**需要** sing-box ——
 // 配置状态不能报「不适用」。
 //
-// 报「不适用」会把管理员必须做的那一步藏起来,而他会一直等到下发 Mieru
-// 时才撞上拨测失败。
+// 报「不适用」会把这台机器该有 sing-box 这件事藏起来,而它恰恰是
+// 出口那一跳的载体。
 func TestMieruEgressMakesSingBoxApplicable(t *testing.T) {
 	direct := &Node{MieruInbounds: []*MieruInbound{{ID: 1}}}
 	if !hasNoSingBox(direct) {
@@ -62,5 +36,31 @@ func TestMieruEgressMakesSingBoxApplicable(t *testing.T) {
 	}}
 	if hasNoSingBox(chained) {
 		t.Error("有出口的 Mieru 入口要借道本机 sing-box —— 不能报「不适用」")
+	}
+}
+
+// 装不了 sing-box 时要说清是哪一种装不了,而不是一句"装不了"。
+//
+// 两种原因要人做的事完全不同:面板本地没有二进制(去 make singbox),
+// 还是这台机器没探测过架构(去点探测)。
+func TestBinaryBlockReasonNamesTheCause(t *testing.T) {
+	if got := binaryBlockReason(true, false); !strings.Contains(got, "make singbox") {
+		t.Errorf("缺二进制时要给出命令,得到 %q", got)
+	}
+	if got := binaryBlockReason(false, true); !strings.Contains(got, "探测") {
+		t.Errorf("缺架构时要让他去探测,得到 %q", got)
+	}
+}
+
+// 「原来是什么状态」要能翻成一句人话 —— 它会出现在步骤详情里,
+// 而那句话回答的是"面板刚才为什么重启了 sing-box"。
+func TestStateWasCoversEveryState(t *testing.T) {
+	for _, st := range []ConfigState{
+		ConfigNeverDeployed, ConfigPending, ConfigDeployFailed,
+		ConfigNotApplicable, ConfigUnknown, ConfigInSync,
+	} {
+		if got := stateWas(st); got == "" {
+			t.Errorf("状态 %s 没有对应的说法", st)
+		}
 	}
 }

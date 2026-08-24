@@ -662,24 +662,48 @@ function openMieruChain(m: MieruInbound) {
  * —— 合成"下发这台机器的 Mieru"会把本来只该断一个入口的连接扩大到全部。
  */
 function deployMieru(m: MieruInbound) {
+  // 带出口的入口会**顺带准备本机 sing-box 那一跳**,而那一下可能重启
+  // sing-box —— 会踢掉这台机器上全部 sing-box 入口的在线连接。
+  // 自动做是对的(那一步没有任何判断余地),但绝不能不说:
+  // 管理员是冲着"只动这一个 Mieru 入口"来点这个按钮的。
+  const chained = !!m.chain_target_kind
   lbDangerConfirm({
     title: `确认下发 Mieru 入口「${m.display_name}」?`,
     okType: 'primary',
     okText: '开始下发',
     impacts: [
+      ...(chained
+        ? [
+            '这个入口配了出口,而出口要经**本机 sing-box 的一个回环 socks 入站**' +
+              '转一跳(mita 的出口代理只认 SOCKS5)。面板会先把那一跳准备好:',
+            '· 这台机器上没有 sing-box 的话,**自动安装**;',
+            '· 它的配置没同步的话,**自动下发并重启 sing-box** ——' +
+              '这台机器上其他 sing-box 入口的在线连接会一起断开;',
+            '· 然后确认那个回环端口真的在监听。',
+            '**落地那一台不会被自动部署** —— 那是另一台机器,重启它会断掉' +
+              '它上面全部用户。它没就绪时这次下发会被拦下并告诉你去部署哪一台。',
+          ]
+        : []),
       `会重启 ${nodeLabel.value} 上这一个 mita 实例,把**这个入口**的在线连接全部踢掉。`,
-      '同机的其他 Mieru 入口与 sing-box 入口一条连接都不断 —— 它们是各自独立的进程。',
+      '同机的其他 Mieru 入口一条连接都不断 —— 它们是各自独立的进程。',
       '下发前会先同步这个实例的流量:计数器随进程消失,不先同步的话那一段永久丢失。',
     ],
-    footer: '失败会自动回滚到上一份配置,并把 mita 的日志带回来。',
+    footer: chained
+      ? '两跳会分开验:先单独验「本机 sing-box → 落地」那一段(不经 mita),' +
+        '再验完整链路 —— 失败时看得出是哪一半断的。'
+      : '失败会自动回滚到上一份配置,并把 mita 的日志带回来。',
     // 不返回 Promise:AntD 会把确认框留在屏幕上转圈等它,而下发要十几秒
     // —— 那期间进度弹窗已经开着,两个 Modal 同层叠着,后开的反被压住。
     onOk: () => {
-      void runOp(`下发 Mieru 入口「${m.display_name}」`, '正在下发并做健康检查', async () => {
-        const r = await api.deployMieruInbound(m.id)
-        opDeploy.value = r.result
-        opError.value = r.error ?? ''
-      })
+      void runOp(
+        `下发 Mieru 入口「${m.display_name}」`,
+        chained ? '正在准备本机 sing-box 那一跳,然后下发' : '正在下发并做健康检查',
+        async () => {
+          const r = await api.deployMieruInbound(m.id)
+          opDeploy.value = r.result
+          opError.value = r.error ?? ''
+        },
+      )
     },
   })
 }

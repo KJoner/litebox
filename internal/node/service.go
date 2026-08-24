@@ -54,6 +54,13 @@ type Service struct {
 	deployer    *deployment.Deployer
 	deployStore *deployment.Store
 	users       UserProvider
+	// binaries 是 sing-box 二进制来源。
+	//
+	// 服务自己也要它:一个带出口的 Mieru 入口要借道本机 sing-box,
+	// 而那台机器上很可能一个 sing-box 入口都没有、从来没装过。
+	// 让管理员先去点一遍「安装」再回来点「下发」,是把一件必然要做的事
+	// 变成一步他会忘的手工操作 —— 而忘掉的表现是拨测失败。
+	binaries BinaryProvider
 	// mieruBinaries / mieruClients 为 nil 表示面板本地没有 Mieru 二进制。
 	mieruBinaries BinaryProvider
 	mieruClients  BinaryProvider
@@ -81,6 +88,9 @@ type ServiceOptions struct {
 	Deployer    *deployment.Deployer
 	DeployStore *deployment.Store
 	Users       UserProvider
+	// Binaries 提供 sing-box 二进制,供带出口的 Mieru 入口自动补装那一跳。
+	// 为 nil 时不自动装,只在缺的时候把话说清楚。
+	Binaries BinaryProvider
 	// MieruBinaries / MieruClients 分别提供 mita 与 mieru 客户端二进制。
 	// 两者都为 nil 时 Mieru 相关操作会以「面板本地没有 Mieru 二进制」
 	// 拒绝 —— 而不是在下发到一半时才失败。
@@ -107,6 +117,7 @@ func NewService(opts ServiceOptions) *Service {
 		deployer:       opts.Deployer,
 		deployStore:    opts.DeployStore,
 		users:          opts.Users,
+		binaries:       opts.Binaries,
 		mieruBinaries:  opts.MieruBinaries,
 		mieruClients:   opts.MieruClients,
 		mieruSync:      opts.MieruSync,

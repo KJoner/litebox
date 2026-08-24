@@ -63,6 +63,17 @@ const portListenTimeout = 15 * time.Second
 // 两者相距不到 100ms,而 bind 恰好也要 100ms 左右,于是每次部署都判失败并回滚。
 //
 // 轮询在节点上一次完成,不是每秒一个往返 —— 跨洲链路上后者本身就要几百毫秒。
+// CheckPortListening 是给部署事务之外的调用方用的同一份判据。
+//
+// 导出它而不是让别处自己拼一句 ss/netstat:那个脚本里有两件必须写对的事
+// —— 回落 netstat(Alpine 这类最小镜像不装 iproute2),以及**轮询而不是
+// 单次采样**(服务刚起来时端口还没 bind,主控离节点越近越容易抢在前面,
+// 实测同区域时每次都判失败)。各写一遍的话,漏掉后者的那一处会
+// 稳定地把一个健康的服务判成没起来。
+func CheckPortListening(ctx context.Context, client *sshx.Client, port int) (string, error) {
+	return (&Deployer{}).checkPortListening(ctx, client, port)
+}
+
 func (d *Deployer) checkPortListening(ctx context.Context, client *sshx.Client, port int) (string, error) {
 	attempts := int(portListenTimeout / time.Second)
 	script := fmt.Sprintf(`i=0

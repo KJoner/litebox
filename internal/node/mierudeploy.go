@@ -199,18 +199,31 @@ func (s *Service) DeployMieru(
 		return deployment.Result{}, err
 	}
 
-	// 出口那一跳的两个前提,都要在动节点之前确认 —— 那时 mita 一个字节都
-	// 还没动过,拒绝的代价只是一句话。两个检查分开,因为要人做的事不一样:
-	//
-	//	本机   sing-box 里那个回环 socks 入站有没有下发上去(→ 部署这一台);
-	//	落地   链路凭据有没有出现在它的用户列表里(→ 部署那一台)。
-	//
-	// 两者都会让拨测在十几秒后失败并回滚,而报错看起来一模一样。
-	if err := s.checkMieruEgressReady(ctx, m, n); err != nil {
-		return deployment.Result{}, err
-	}
+	// **落地那一台必须先就绪,而且面板不替他部署。** 那是另一台机器,
+	// 重启它会断掉它上面全部用户的连接 —— 那个决定不该由"我点了这个入口
+	// 的下发"顺带做出。拦在动节点之前:那时 mita 一个字节都还没动过,
+	// 拒绝的代价只是一句话。
 	if err := s.checkMieruChainTargetReady(ctx, m); err != nil {
 		return deployment.Result{}, err
+	}
+
+	// **本机那一跳则替他做完。** 它没有任何判断余地:出口要经本机
+	// sing-box 的一个回环 socks 入站(mita 的出口代理只认 SOCKS5),
+	// 缺了 mita 就拨到一个没人监听的端口。把它拆成"先去点安装、
+	// 再点下发配置、再回来点这一行"只是把一件必然要做的事变成三步
+	// 手工操作 —— 而漏掉其中一步的表现是拨测失败,报错还落在这一行上。
+	//
+	// 每一步都记进结果:自动不等于不告知,尤其是"顺带重启了 sing-box"
+	// 这种会踢掉别人连接的事。
+	preSteps, err := s.prepareEgressHop(ctx, m, n)
+	if err != nil {
+		// 前置步骤失败时也要把已经做完的那几步带回去 —— 管理员要看得出
+		// 卡在"装 sing-box"还是"下发它的配置"上,两者要做的事完全不同。
+		return deployment.Result{
+			NodeID: m.NodeID, Kind: deployment.KindMieru,
+			Status: deployment.StatusFailed, Steps: preSteps,
+			ErrorMessage: err.Error(),
+		}, err
 	}
 
 	// **重启之前必须先同步一次流量。** 必须在取得节点连接锁【之前】做:
@@ -267,6 +280,9 @@ func (s *Service) DeployMieru(
 		DialHost: n.Host,
 		DialPort: n.SSHPort,
 		Chained:  m.ChainTargetKind != "",
+		// 非 0 时健康检查会**先单独验出口那一跳**(不经 mita),
+		// 这样失败时分得出是 sing-box 那一半还是 mita 那一半。
+		EgressSocksPort: m.EgressSocksPort,
 	}
 	// 拿这个入口上的第一个用户当探测凭据。**一个都没有时留 nil** ——
 	// 部署那一侧会记 SKIPPED 并写明原因,而不是报成功。
@@ -278,6 +294,8 @@ func (s *Service) DeployMieru(
 	}
 
 	result, deployErr := s.deployer.DeployMieru(ctx, req)
+	// 前置步骤拼在最前面:管理员读的是一条时间线,而那几步确实发生在前面。
+	result.Steps = append(preSteps, result.Steps...)
 	// 结局先落系统日志、再落部署记录 —— Save 一失败(数据库锁、磁盘满、
 	// ctx 被取消)这次下发就再也没有任何痕迹可查,而节点上的 mita
 	// 确实已经重启过。
