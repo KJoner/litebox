@@ -449,37 +449,6 @@ const deployAsRecord = computed<DeploymentRecord | null>(() =>
     : null,
 )
 
-// ---------- 会改变节点的动作 ----------
-
-async function run(label: string, fn: () => Promise<unknown>, done: string) {
-  running.value = label
-  try {
-    await fn()
-    message.success(done)
-    reload()
-  } catch (err) {
-    message.error(err instanceof ApiError ? err.message : `${label}失败`)
-  } finally {
-    running.value = ''
-  }
-}
-
-const doInstall = () =>
-  run('安装 sing-box', async () => {
-    const r = await api.installNode(nodeId.value!)
-    message.success(`sing-box 与 ${r.init_system} 服务定义已就绪`)
-    // 改了节点的 sshd 配置就必须说出来,而且要说清改了哪个文件、备份在哪。
-    // 悄悄改别人机器上的 sshd_config 再报一句"安装完成",是不能接受的。
-    if (r.tcp_forwarding?.changed) {
-      Modal.info({
-        title: '已顺带打开节点的 SSH TCP 转发',
-        width: 560,
-        content: `${r.tcp_forwarding.detail}。\n\n面板读流量、从节点出口实测 REALITY 握手目标、部署时拨测 VLESS 都要经这条通道,原先它被 sshd 挡着。改动只加了一行 AllowTcpForwarding yes,用的是 reload 而不是 restart,没有断开任何已有连接。`,
-        okText: '知道了',
-      })
-    }
-  }, '安装完成,接下来执行「部署」')
-
 // 三个不可逆的动作各自一个输入名称确认。要求输入的是**内部名称** ——
 // 内部名称唯一,展示名称可以重复。
 type NameConfirmKind = 'resetKey' | 'delete'
@@ -1533,8 +1502,6 @@ const needsPortForward = computed(() =>
             :tiers="tiers"
             @busy="(label) => (running = label)"
             @changed="reload"
-            @deploy="confirmDeploy"
-            @install="doInstall"
           />
         </a-tab-pane>
       </a-tabs>
