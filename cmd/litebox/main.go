@@ -434,6 +434,7 @@ func cmdServe(args []string) error {
 		Deployer:         deployer,
 		DeployStore:      deployment.NewStore(db),
 		Users:            userStore,
+		Binaries:         node.NewDirBinaryProvider(cfg.Node.BinaryDir),
 		MieruBinaries:    mieruBinaries,
 		MieruClients:     mieruClients,
 		MieruSync:        syncer,
