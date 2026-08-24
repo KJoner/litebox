@@ -87,14 +87,19 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 
 	var totalBytes int64
 	var totalEntries int
-	for _, nodeID := range nodeIDs {
-		result, err := s.syncer.Sync(ctx, nodeID)
-		if err != nil {
-			// 单个节点不可达不应影响其他节点。数据库未被修改,
-			// 下个周期会连同这次的增量一起入账。
-			s.recordError(nodeID, err.Error())
-			s.logger.Warn("节点流量同步失败,已跳过", "node_id", nodeID, "error", err)
-			continue
+	for _, n := range nodeIDs {
+		nodeID := n.ID
+		var result SyncResult
+		if n.HasSingBox {
+			var err error
+			result, err = s.syncer.Sync(ctx, nodeID)
+			if err != nil {
+				// 单个节点不可达不应影响其他节点。数据库未被修改,
+				// 下个周期会连同这次的增量一起入账。
+				s.recordError(nodeID, err.Error())
+				s.logger.Warn("节点流量同步失败,已跳过", "node_id", nodeID, "error", err)
+				continue
+			}
 		}
 		// Mieru 那一路单独跑一次,而且**不因为它失败就把整个节点判成失败**。
 		//
@@ -153,9 +158,16 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 // 必须说出这一点 —— 否则管理员会以为这次点击什么都没发生,
 // 而实际上用户用量已经变了。
 func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, error) {
-	result, err := s.syncer.Sync(ctx, nodeID)
-	if err != nil {
-		return result, err
+	// 与定时那条路同一条判据:没部署过 sing-box 的机器上没有那个进程,
+	// 连它的 API 只会拿到一句 connection refused —— 而管理员点的是
+	// 「同步流量」,那句话会让他以为节点坏了。
+	var result SyncResult
+	if s.hasSingBox(ctx, nodeID) {
+		var err error
+		result, err = s.syncer.Sync(ctx, nodeID)
+		if err != nil {
+			return result, err
+		}
 	}
 	mieru, err := s.syncer.SyncMieru(ctx, nodeID)
 	if err != nil {
@@ -172,6 +184,25 @@ func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, 
 	return result, nil
 }
 
+// hasSingBox 回答「这台机器上部署过 sing-box 没有」。
+//
+// 判据是 deployed_config_sha256 而不是"有没有 sing-box 入口":
+// 有入口但从没下发过的机器上同样没有那个进程,而"入口配好了"与
+// "进程在跑"是两件事 —— 这一条与巡检的 wantSingBox 一字不差。
+// 查不到时按**有**处理:宁可白连一次拿到一句真实的错误,
+// 也不能因为一次查询失败让一台正常机器的流量整轮不收。
+func (s *Scheduler) hasSingBox(ctx context.Context, nodeID int64) bool {
+	var deployed bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT deployed_config_sha256 != '' FROM nodes WHERE id = ?`, nodeID).Scan(&deployed)
+	if err != nil {
+		s.logger.Warn("查询节点是否部署过 sing-box 失败,按有处理",
+			"node_id", nodeID, "error", err)
+		return true
+	}
+	return deployed
+}
+
 // SyncMieruNodeNow 立即同步一台机器上全部 Mieru 入口的流量。
 //
 // **重启一个 mita 实例之前必须先调它。** 与 sing-box 那条规矩一字不差:
@@ -180,6 +211,18 @@ func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, 
 // 这条退路都没有。
 func (s *Scheduler) SyncMieruNodeNow(ctx context.Context, nodeID int64) (SyncResult, error) {
 	return s.syncer.SyncMieru(ctx, nodeID)
+}
+
+// syncTarget 是一台要同步的机器,以及它有没有 sing-box 那一路。
+type syncTarget struct {
+	ID int64
+	// HasSingBox 为假时跳过 V2Ray Stats 那一半。
+	//
+	// **一台只有 Mieru 入口的机器上没有 sing-box。** 照样去连它的 API 会
+	// 每一轮都拿到一句 "connection refused",而那不是故障 —— 那台机器上
+	// 本来就没有那个进程。日志里每分钟一条 WARN,几轮之后管理员就
+	// 再也不看这个通道了,而真正的同步失败就淹在里面。
+	HasSingBox bool
 }
 
 // activeNodes 返回需要同步的节点。
@@ -191,26 +234,30 @@ func (s *Scheduler) SyncMieruNodeNow(ctx context.Context, nodeID int64) (SyncRes
 // 它不接 V2Ray API,连过去只会白等一次超时。中转主机的流量面板不计,
 // 界面上写明「中转主机,面板不计流量」而不是显示 0 ——
 // 0 与「真的没用过」长得一模一样。
-func (s *Scheduler) activeNodes(ctx context.Context) ([]int64, error) {
+//
+// **只有 Mieru 入口的机器留在列表里,但只跑 Mieru 那一半**(HasSingBox)。
+// 它照样有流量要收,只是收的地方不是 V2Ray API。
+func (s *Scheduler) activeNodes(ctx context.Context) ([]syncTarget, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id FROM nodes
-		 WHERE deleted_at IS NULL AND role != 'RELAY'
-		   AND status IN ('ONLINE','OFFLINE','DEPLOY_FAILED')
-		 ORDER BY id`)
+		SELECT n.id, n.deployed_config_sha256 != ''
+		  FROM nodes n
+		 WHERE n.deleted_at IS NULL AND n.role != 'RELAY'
+		   AND n.status IN ('ONLINE','OFFLINE','DEPLOY_FAILED')
+		 ORDER BY n.id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var ids []int64
+	var out []syncTarget
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var t syncTarget
+		if err := rows.Scan(&t.ID, &t.HasSingBox); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		out = append(out, t)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
 func (s *Scheduler) recordError(nodeID int64, msg string) {

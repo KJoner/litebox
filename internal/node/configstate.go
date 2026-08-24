@@ -20,11 +20,17 @@ const (
 	ConfigDeployFailed ConfigState = "DEPLOY_FAILED"
 	// ConfigUnknown 面板也判定不了 —— 配置渲染不出来时的兜底。
 	ConfigUnknown ConfigState = "UNKNOWN"
-	// ConfigNotApplicable 中转机上没有 sing-box,这个问题在它身上没有主语。
+	// ConfigNotApplicable 这台机器上没有 sing-box,这个问题在它身上没有主语。
+	//
+	// 两种机器落到这一档:中转机(只跑 nginx),以及**只有 Mieru 入口
+	// 且从没下发过 sing-box 的机器**。
 	//
 	// 不复用 UNKNOWN:那一档的意思是"我们本该知道但算不出来",
-	// 会催着管理员去查为什么;而中转机的配置状态本来就不存在。
+	// 会催着管理员去查为什么;而这两种机器的 sing-box 配置状态本来就不存在。
 	// 也不报 IN_SYNC —— 那是在说一件不成立的事。
+	// 更不能报 NEVER_DEPLOYED:那一档带着 needs_deploy,界面上会显示
+	// 「未部署 rev 0」并催着去部署一份**空配置**,而那台机器正靠 mita
+	// 好好地服务用户。
 	ConfigNotApplicable ConfigState = "NOT_APPLICABLE"
 )
 
@@ -45,6 +51,10 @@ func (s *Service) ConfigStatus(ctx context.Context, n *Node) (ConfigState, bool)
 	// 中转机上不跑 sing-box,"库里的配置是否已在节点上生效"在它身上没有主语。
 	// 它的中转配置由「转发」面板下发,与这里说的配置是两件事。
 	if n.Role.IsRelay() {
+		return ConfigNotApplicable, false
+	}
+
+	if hasNoSingBox(n) {
 		return ConfigNotApplicable, false
 	}
 
@@ -74,6 +84,30 @@ func (s *Service) ConfigStatus(ctx context.Context, n *Node) (ConfigState, bool)
 		return ConfigDeployFailed, deployable
 	}
 	return ConfigPending, deployable
+}
+
+// hasNoSingBox 回答「这台机器上 sing-box 那份配置有没有主语」。
+//
+// **只有 Mieru 入口、且从没下发过 sing-box 的机器上没有。** 它上面没有
+// 那个进程,渲染出来的也是一份没有任何入站的空配置 —— 报 NEVER_DEPLOYED
+// 会让详情页显示「未部署 rev 0」并催着去部署那份空配置,
+// 而它正靠 mita 服务着用户。生产上撞到了。
+//
+// 三个条件缺一不可:
+//
+//	没有 sing-box 入口   有的话就该按正常流程催他部署;
+//	从没下发过           下发过就说明机器上有那个进程,而入口被删光了
+//	                     正是**需要**下发一次去撤掉它们的时候 ——
+//	                     这时报 NOT_APPLICABLE 会把一个真实的待办藏起来,
+//	                     而被移出的那些用户凭据还留在节点上;
+//	有 Mieru 入口        两种入口都没有的新机器仍然按 NEVER_DEPLOYED,
+//	                     那时"去装 sing-box"正是管理员要做的下一步。
+//
+// 抽成纯函数是为了能被测试直接盯住:上面那条路径要连库才走得到。
+func hasNoSingBox(n *Node) bool {
+	return len(n.Inbounds) == 0 &&
+		n.DeployedConfigSHA256 == "" &&
+		len(n.MieruInbounds) > 0
 }
 
 // ConfigStatuses 批量计算,供节点列表一次算完。

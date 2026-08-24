@@ -140,6 +140,17 @@ const inbounds = computed(() => node.value?.inbounds ?? [])
 /** Mieru 入口。它们是另一个进程(mita),与上面那些不是一回事。 */
 const mierus = computed(() => node.value?.mieru_inbounds ?? [])
 
+/**
+ * 这台机器上有没有 sing-box。
+ *
+ * 判据与后端的 ConfigStatus 一致:**有入口、或者下发过**。
+ * 只看入口的话,一台入口被删光但服务还在跑的机器会被当成"没有 sing-box",
+ * 而那时恰恰**需要**下发一次去撤掉它们。
+ */
+const hasSingBox = computed(
+  () => inbounds.value.length > 0 || !!node.value?.deployed_config_sha256,
+)
+
 /** 端口段的可读形式。起止相同表示只有一个端口。 */
 function portRangeText(start: number, end: number) {
   if (!start) return '—'
@@ -709,16 +720,23 @@ api
  *
  * 写的是【公网端口】—— 那是用户实际要连的号码。NAT 机器上两者不同,
  * 而那正是排查「连不上」时第一个要看的东西。
+ *
+ * **Mieru 的端口段也要在里面。** 漏掉的话,一台只有 Mieru 入口的机器
+ * 在标题行上写着「端口 无(一个入口都没有)」,而用户正连着它的 31000-31004。
  */
 const portSummary = computed(() =>
-  inbounds.value
-    .map((i) => {
+  [
+    ...inbounds.value.map((i) => {
       const pub = i.public_port || i.listen_port
       // 相同时只写一个号码。写成「公网 443 → 主机 443」是把同一个数字说两遍,
       // 而那正好会让人以为这台机器上配了端口转发。
       return pub === i.listen_port ? `${pub}` : `${pub}→${i.listen_port}`
-    })
-    .join(' '),
+    }),
+    ...mierus.value.map((m) =>
+      portRangeText(m.public_port_start || m.listen_port_start,
+        m.public_port_start ? m.public_port_end : m.listen_port_end),
+    ),
+  ].join(' '),
 )
 
 /** 有没有入口的公网端口与主机监听端口不同 —— 那需要一条自建的端口转发。 */
@@ -741,9 +759,12 @@ const needsPortForward = computed(() =>
           <span class="nd__name">{{ node?.display_name || node?.name || '节点详情' }}</span>
           <template v-if="node">
             <LbStatusTag kind="node" :status="node.status" />
+            <!-- rev 只在这台机器确实有 sing-box 配置时才有意义。
+                 「不适用 rev 0」读起来像"版本号是 0",而真相是
+                 这台机器上根本没有那份配置。 -->
             <LbStatusTag
               :meta="configStatusMeta[configState(node)]"
-              :suffix="`rev ${node.config_revision}`"
+              :suffix="configState(node) === 'NOT_APPLICABLE' ? '' : `rev ${node.config_revision}`"
             />
             <!-- 等级在「入口」里按条设置(迁移 0020),机器上没有这一栏。
                  在标题旁边显示一个机器级的等级,会让人以为它管着整台机器。 -->
@@ -1158,11 +1179,32 @@ const needsPortForward = computed(() =>
                         公网 {{ i.public_port || i.listen_port }} → 主机 {{ i.listen_port }}
                       </b>
                     </div>
-                    <div v-if="!inbounds.length">
+                    <!-- Mieru 的端口是一**段**,与上面那些不是一回事:
+                         客户端会在整段里跳,那是这个协议的主要抗封锁特性。
+                         不并进上面的循环 —— 「公网 X → 主机 Y」那个形状
+                         表达不了一个号码段。 -->
+                    <div v-for="m in mierus" :key="`mp${m.id}`">
+                      <span>{{ m.display_name }}</span>
+                      <b class="lb-mono">
+                        {{ portRangeText(m.listen_port_start, m.listen_port_end) }}
+                        <template v-if="m.public_port_start">
+                          → 公网 {{ portRangeText(m.public_port_start, m.public_port_end) }}
+                        </template>
+                      </b>
+                    </div>
+                    <!-- **判据要把 Mieru 算上。** 只有 Mieru 入口的机器上
+                         用户是连得上的,而「一个都没有」在那种机器上是错的 ——
+                         它会让管理员去加一个他并不需要的 sing-box 入口。 -->
+                    <div v-if="!inbounds.length && !mierus.length">
                       <span>入口</span>
                       <b><a @click="tab = 'entries'">一个都没有 —— 去「入口」加一条</a></b>
                     </div>
-                    <div><span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b></div>
+                    <!-- API 端口是 sing-box 的统计接口。这台机器上没有
+                         sing-box 时它指向一个谁都没在听的号码 ——
+                         显示出来会让排查的人以为该去查为什么连不上。 -->
+                    <div v-if="hasSingBox">
+                      <span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b>
+                    </div>
                     <div>
                       <span>配置存放</span>
                       <b>
@@ -1377,7 +1419,9 @@ const needsPortForward = computed(() =>
                     <b>{{ m.chain_target_kind ? '经本机 sing-box 转一跳到落地' : '本机直连' }}</b>
                   </div>
                 </div>
-                <div class="nd__kv">
+                <!-- sing-box 的配置版本。这台机器上没有 sing-box 时整段不出现 ——
+                     显示「rev 0 / 从未部署」会催着管理员去部署一份空配置。 -->
+                <div v-if="hasSingBox" class="nd__kv">
                   <div><span>配置版本</span><b class="lb-mono">rev {{ node.config_revision }}</b></div>
                   <div>
                     <span>已部署配置</span>
