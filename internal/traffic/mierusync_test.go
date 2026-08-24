@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -138,6 +139,13 @@ func TestManualSyncCoversMieruToo(t *testing.T) {
 		{InboundID: 2, Counters: []MieruCounter{{UserCode: "user_000001", Downlink: 2000}}},
 	}})
 
+	// 这台机器部署过 sing-box —— 手动同步才会去读它的 V2Ray API。
+	// 判据是 deployed_config_sha256,与巡检的 wantSingBox 一字不差。
+	if _, err := env.db.Exec(
+		`UPDATE nodes SET deployed_config_sha256 = 'abc' WHERE id = ?`, env.nodeID); err != nil {
+		t.Fatal(err)
+	}
+
 	sched := NewScheduler(SchedulerOptions{
 		DB:     env.db,
 		Syncer: env.syncer,
@@ -161,5 +169,37 @@ func TestManualSyncCoversMieruToo(t *testing.T) {
 	}
 	if total != result.BytesAdded {
 		t.Errorf("ledger 合计 = %d,与返回的 %d 对不上", total, result.BytesAdded)
+	}
+}
+
+// 只有 Mieru 入口的机器上不去连 sing-box 的 V2Ray API。
+//
+// **生产上撞到了**:那台机器上根本没有 sing-box 进程,而定时同步每一轮
+// 都拿到一句 `connection refused` 并记一条 WARN。那不是故障 ——
+// 日志里每分钟一条,几轮之后管理员就再也不看这个通道了,
+// 而真正的同步失败就淹在里面。
+//
+// 判据是 deployed_config_sha256:有入口但从没下发过的机器上同样没有那个
+// 进程,而"入口配好了"与"进程在跑"是两件事。
+func TestMieruOnlyNodeSkipsSingBoxSync(t *testing.T) {
+	env := newTestEnv(t)
+	// 采样器一被调用就报错 —— 它不该被调用。
+	env.sampler.err = errors.New("不该连 V2Ray API")
+	env.syncer.WithMieru(&stubMieru{samples: []MieruSample{
+		{InboundID: 1, Counters: []MieruCounter{{UserCode: "user_000001", Downlink: 4000}}},
+	}})
+
+	sched := NewScheduler(SchedulerOptions{
+		DB:     env.db,
+		Syncer: env.syncer,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	// newTestEnv 建的节点 deployed_config_sha256 是空的 —— 正是这种机器。
+	result, err := sched.SyncNodeNow(t.Context(), env.nodeID)
+	if err != nil {
+		t.Fatalf("只有 Mieru 入口的机器不该因为读不到 V2Ray API 而失败:%v", err)
+	}
+	if result.BytesAdded != 4000 {
+		t.Errorf("入账字节 = %d,期望 4000(只有 Mieru 那一半)", result.BytesAdded)
 	}
 }
