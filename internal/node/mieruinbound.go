@@ -611,6 +611,25 @@ func mtuLabel(mtu int) string {
 // 只在下发成功之后调。订阅只看这几列 —— 改配置到下发成功之间的窗口里
 // (部署失败的话是永远),按期望值渲染会让用户拉到一份与节点上不符的参数,
 // 而数据库、节点、面板三方都是"对的",只有订阅站在中间说了假话。
+// ClearMieruDeployed 把「节点上已生效」的那几列清空。
+//
+// 卸载之后必须调:节点上已经没有这个实例了,而订阅只看 deployed_*
+// —— 不清的话它会继续留在所有人的订阅里,而客户端连过去无人应答。
+// 与 MarkDeployed 清理离场入站是同一条道理。
+func (s *Store) ClearMieruDeployed(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE node_mieru_inbounds
+		   SET deployed_transport = '',
+		       deployed_multiplexing = '',
+		       deployed_mtu = 0,
+		       deployed_listen_port_start = 0,
+		       deployed_listen_port_end = 0,
+		       updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
 func (s *Store) MarkMieruDeployed(ctx context.Context, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `

@@ -212,6 +212,16 @@ func (s *Server) Handler() http.Handler {
 		// ctx 必须与请求解绑 —— 一次已经开始的节点操作不得因为客户端断开而中止。
 		authed.HandleFunc("POST /api/nodes/{id}/mieru-install",
 			longOperation(s.handleInstallMieru))
+		// 按服务的卸载/安装。整机那一个(node.uninstall)三类一起摘,
+		// 这几个只动一类 —— 后果差得很远,所以分开的接口、分开的审计动作。
+		authed.HandleFunc("POST /api/nodes/{id}/singbox-uninstall",
+			longOperation(s.handleUninstallSingBox))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-uninstall",
+			longOperation(s.handleUninstallMieru))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-install",
+			longOperation(s.handleInstallNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-uninstall",
+			longOperation(s.handleUninstallNginx))
 		authed.HandleFunc("POST /api/mieru-inbounds/{id}/deploy",
 			longOperation(s.handleDeployMieru))
 		authed.HandleFunc("POST /api/mieru-inbounds/{id}/chain", s.handleSetMieruChain)
