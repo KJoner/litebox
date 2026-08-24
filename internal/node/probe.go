@@ -26,6 +26,13 @@ type ProbeResult struct {
 	SingBoxVersion string   `json:"singbox_version"`
 	BuildTags      []string `json:"build_tags"`
 	HasV2RayAPI    bool     `json:"has_v2ray_api"`
+	// MitaVersion 是节点上 mita 的版本,只在这台机器有 Mieru 入口时问。
+	// 空串表示没问或者没装。
+	MitaVersion string `json:"mita_version"`
+	// HasUnshare 是「这台机器能不能跑多个 mita 实例」的判据。
+	// 每个实例要一个私有的挂载命名空间 —— 共用 /var/lib/mita 的那份
+	// metrics.pb 会让实例之间互相覆盖流量计数,而每个实例都"正常运行"。
+	HasUnshare bool `json:"has_unshare"`
 	// InitSystem 是节点的服务管理器:systemd 或 openrc,都没有则为空。
 	InitSystem string `json:"init_system"`
 	// InitVersion 是它的版本串,只用于展示。
@@ -61,8 +68,33 @@ func newProbeResult(singboxPath string) ProbeResult {
 	}
 }
 
-// Probe 采集节点的基础信息并校验 sing-box 是否满足要求。
+// ProbeParams 决定这次探测要对哪几样东西负责。
+//
+// **这台机器上该有什么,只有调用方知道。** 一台只有 Mieru 入口的机器上
+// 没有 sing-box 是完全正常的 —— 而探测本身看不出这一点,它只能看到
+// `sing-box version` 跑不起来。按"跑不起来就是 Problem"处理的话,
+// 那台机器会被判成 OFFLINE,而它好好地在服务用户
+// (Problems 决定 Usable(),Usable() 写 nodes.status)。
+type ProbeParams struct {
+	SingBoxPath string
+	// WantSingBox 为 false 时,「节点上没有 sing-box」降级成 Warning。
+	WantSingBox bool
+	// MieruPath 非空时顺带问一次 mita 的版本与 unshare 是否存在。
+	// 留空则完全不问 —— 没有 Mieru 入口的机器上多跑两条命令换不来任何东西。
+	MieruPath string
+}
+
+// Probe 按默认口径探测:这台机器上应该有 sing-box。
+//
+// 保留它是因为「安装 sing-box」之后那次验证性探测的语义就是这个,
+// 而那条路径上 WantSingBox 永远为真。
 func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeResult, error) {
+	return ProbeWith(ctx, client, ProbeParams{SingBoxPath: singboxPath, WantSingBox: true})
+}
+
+// ProbeWith 采集节点的基础信息并按 params 决定哪些缺失算问题。
+func ProbeWith(ctx context.Context, client *sshx.Client, params ProbeParams) (ProbeResult, error) {
+	singboxPath := params.SingBoxPath
 	result := newProbeResult(singboxPath)
 	result.ResolvedIP = client.DialedIP()
 
@@ -108,13 +140,29 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 				"点一次「安装 sing-box」,面板会自动打开它并 reload sshd")
 	}
 
+	// Mieru 那一侧先问,它与 sing-box 在不在完全无关 ——
+	// 放在 sing-box 那段的后面会让"没装 sing-box"直接 return 掉这一段,
+	// 而一台只有 Mieru 入口的机器恰恰就是那种情况。
+	if params.MieruPath != "" {
+		probeMieru(ctx, client, params.MieruPath, &result)
+	}
+
 	versionOut, err := client.Run(ctx, sshx.NewCommand(singboxPath, "version"))
 	if err != nil {
 		return result, fmt.Errorf("执行 sing-box version: %w", err)
 	}
 	if versionOut.ExitCode != 0 {
-		result.Problems = append(result.Problems,
-			fmt.Sprintf("节点上未找到可执行的 sing-box(%s)", singboxPath))
+		msg := fmt.Sprintf("节点上未找到可执行的 sing-box(%s)", singboxPath)
+		if params.WantSingBox {
+			result.Problems = append(result.Problems, msg)
+		} else {
+			// **不是问题**:这台机器上一个 sing-box 入口都没有。
+			// 归 Problems 会把它判成 OFFLINE(Usable() 写 nodes.status),
+			// 而它正靠 mita 好好地服务用户 —— 管理员会去修一台没坏的机器。
+			result.Warnings = append(result.Warnings,
+				msg+"。这台机器上没有 sing-box 入口,所以这是正常的;"+
+					"要加 sing-box 入口的话,先点一次「安装 sing-box」")
+		}
 		return result, nil
 	}
 
@@ -133,6 +181,33 @@ func Probe(ctx context.Context, client *sshx.Client, singboxPath string) (ProbeR
 			fmt.Sprintf("sing-box 构建标签中缺少 %s,流量统计无法工作", RequiredBuildTag))
 	}
 	return result, nil
+}
+
+// probeMieru 问一次 mita 的版本与 unshare 是否存在。
+//
+// **两样都只记不拦。** mita 没装是"还没点过安装 Mieru",unshare 缺失
+// 会在安装那一步被明确拒绝(带包名)—— 在探测里把它们升级成 Problem
+// 会让一台正常跑着 sing-box 的机器因为"还没装 mita"被判成 OFFLINE。
+func probeMieru(ctx context.Context, client *sshx.Client, mieruPath string, result *ProbeResult) {
+	if res, err := client.Run(ctx, sshx.NewCommand("sh", "-c",
+		"command -v unshare >/dev/null 2>&1")); err == nil && res.ExitCode == 0 {
+		result.HasUnshare = true
+	} else {
+		result.Warnings = append(result.Warnings,
+			"这台机器上没有 unshare(util-linux):Mieru 的多实例要靠它给每个实例"+
+				"一个私有的 /var/lib/mita,共用那一份 metrics.pb 会让实例之间"+
+				"互相覆盖流量计数,而没有任何一层会报错。"+
+				"Debian/Ubuntu:apt-get install -y util-linux;Alpine:apk add util-linux-misc")
+	}
+
+	res, err := client.Run(ctx, sshx.NewCommand(mieruPath, "version"))
+	if err != nil || res.ExitCode != 0 {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("节点上还没有可执行的 mita(%s)——"+
+				"这台机器有 Mieru 入口,下发之前要先点一次「安装 Mieru」", mieruPath))
+		return
+	}
+	result.MitaVersion = firstLine(res.Stdout, 64)
 }
 
 // Usable 表示该节点满足运行要求。
