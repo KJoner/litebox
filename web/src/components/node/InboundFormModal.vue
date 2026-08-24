@@ -7,12 +7,13 @@ import {
   PROTOCOL_LABEL,
   SS_METHOD_LABEL,
   type AccessTier,
+  type DestCheckResult,
   type Node,
   type NodeInbound,
   type NodeProtocol,
   type NodeSSMethod,
 } from '@/api/client'
-import { lbDangerConfirm } from '@/components/lb/lbDangerConfirm'
+import { LbStatusTag, lbDangerConfirm } from '@/components/lb'
 
 /**
  * 新增 / 编辑一个 sing-box 入口。
@@ -56,6 +57,9 @@ const form = ref({
   ipv6_enabled: true,
   ipv6_display_name: '',
   tcp_fast_open: false,
+  // 只在新增时随表单一起提交。**编辑已有入口时它是只读的** ——
+  // 写入必须经 ApplyHandshakeDest 实测通过,而那是一个独立的动作。
+  reality_dest: '',
   access_tier_id: 0,
   sort_order: 0,
   subscription_enabled: true,
@@ -69,6 +73,8 @@ watch(
   () => props.open,
   (open) => {
     if (!open) return
+    dests.value = []
+    destError.value = ''
     const i = props.inbound
     form.value = i
       ? {
@@ -84,6 +90,7 @@ watch(
           // 只是打开看了一眼、连改都没改。
           ipv6_display_name: i.ipv6_display_name,
           tcp_fast_open: i.tcp_fast_open,
+          reality_dest: i.reality_dest,
           access_tier_id: i.access_tier_id,
           sort_order: i.sort_order,
           subscription_enabled: i.subscription_enabled,
@@ -94,6 +101,7 @@ watch(
           display_name: '',
           protocol: 'VLESS_REALITY',
           ss_method: '',
+          reality_dest: '',
           listen_port: 0,
           public_port: 0,
           ipv6_public_port: 0,
@@ -112,6 +120,85 @@ watch(
   },
   { immediate: true },
 )
+
+// ---------------------------------------------------------------- 握手目标
+//
+// **它放在这里而不是节点的只读检查里。** 握手目标是**入口级**的:同机两个
+// REALITY 入站完全可以指向不同的目标,而 8192 字节的记录上限是那个域名的
+// 属性、不是这台机器的属性。放在节点那一层的话,扫完之后还要再挑一次
+// "写到哪个入口上" —— 而那一步正是这类操作最容易出错的地方
+// (悄悄挑一个写进去)。放进入口表单之后,"给谁用"从一开始就是确定的。
+//
+// 两条路差别很大,界面上必须说清楚:
+//
+//	新增   选中的域名只是填进表单,跟着「新增」一起提交,没有实测;
+//	编辑   写入必须经 ApplyHandshakeDest **实测通过**才算数,
+//	       所以点一下就立刻写库了 —— 与这个表单的保存按钮无关。
+//
+// 后者是硬约束:切协议要求 handshake_checked_at 不为 NULL,
+// 而那一列只有 ApplyHandshakeDest 会写。
+
+const dests = ref<DestCheckResult[]>([])
+const destError = ref('')
+
+/** 扫描是只读的:它只是从节点出口去看那几个域名长什么样。 */
+async function scanDests() {
+  running.value = '正在从节点出口实测候选域名'
+  emit('busy', running.value)
+  destError.value = ''
+  try {
+    dests.value = (await api.scanNodeDests(props.node.id)).items
+    if (!dests.value.length) {
+      destError.value = '一个候选都没测出来 —— 这台机器的出口可能连不上外网'
+    }
+  } catch (e) {
+    destError.value = e instanceof ApiError ? e.message : '实测失败'
+  } finally {
+    running.value = ''
+    emit('busy', '')
+  }
+}
+
+/**
+ * 这个候选为什么不能选。返回空串表示可以。
+ *
+ * 判据与后端一致:TLS 1.3 + X25519 + 每个记录 <= 8192 字节。
+ * 超限时握手会**静默**失败 —— 客户端连不上,而节点上一切正常,
+ * 所以这里宁可拦住也不能让它被选中。
+ */
+function destBlocked(d: DestCheckResult): string {
+  if (!d.usable) return '这个目标不满足 REALITY 的要求,选了会让客户端连不上'
+  return ''
+}
+
+async function pickDest(server: string) {
+  if (!props.inbound) {
+    // 新增:只是填进表单。没有 id,也就没有可以写入的对象。
+    form.value.reality_dest = server
+    return
+  }
+  running.value = '正在写入握手目标'
+  emit('busy', running.value)
+  try {
+    const r = await api.applyInboundDest(props.inbound.id, server)
+    if (r.error) {
+      destError.value = r.error
+      return
+    }
+    form.value.reality_dest = server
+    destError.value = ''
+    message.success('已实测通过并写入这个入口。要部署之后才在节点上生效')
+    // **立刻通知外面重新拉数据。** handshake_checked_at 变了,
+    // 而"能不能切到 VLESS"正是按它判的 —— 不刷新的话,管理员刚测完
+    // 就点保存,还会看到那句"还没实测过握手目标"。
+    emit('saved')
+  } catch (e) {
+    destError.value = e instanceof ApiError ? e.message : '写入失败'
+  } finally {
+    running.value = ''
+    emit('busy', '')
+  }
+}
 
 /**
  * 切到 VLESS 之前必须先实测过握手目标。
@@ -225,6 +312,51 @@ async function doSave() {
         </a-radio-group>
         <div v-if="protocolSwitchBlocked" class="ifm__warn">{{ protocolSwitchBlocked }}</div>
       </a-form-item>
+      <!-- 握手目标只在 VLESS 下出现:Shadowsocks 根本不用 REALITY,
+           摆一个用不上的输入框会让人以为它有意义。 -->
+      <a-form-item v-if="form.protocol === 'VLESS_REALITY'" label="REALITY 握手目标">
+        <div class="ifm__dest-cur">
+          <span v-if="form.reality_dest" class="lb-mono">{{ form.reality_dest }}</span>
+          <span v-else class="ifm__dim">尚未选择</span>
+          <LbStatusTag
+            v-if="inbound?.handshake_checked_at && form.reality_dest === inbound.reality_dest"
+            :meta="{ text: '已实测', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }"
+          />
+          <a-button size="small" :loading="!!running" @click="scanDests">扫描握手目标</a-button>
+        </div>
+        <div class="ifm__hint">
+          从<b>这台机器的出口</b>实测 —— CDN 按地域下发不同证书链,在别处测出来的
+          结果对这台机器不成立。
+          <template v-if="inbound">
+            <br />
+            <b>这一栏点一下就立刻写库</b>,与下面的「保存」无关:写入必须先实测通过,
+            那是一个独立的动作。写完仍然要部署这台机器才在节点上生效。
+          </template>
+          <template v-else>
+            <br />
+            新增时选中的域名只是填进表单、跟着「新增」一起提交,<b>没有实测</b>。
+            要切协议或想确认它合格,建好之后再回到这里扫一次。
+          </template>
+        </div>
+        <div v-if="destError" class="ifm__warn">{{ destError }}</div>
+        <div v-if="dests.length" class="ifm__dests">
+          <div class="ifm__dest ifm__dest--head">
+            <span>目标</span><span>握手</span><span>TLS 记录</span><span />
+          </div>
+          <div v-for="d in dests" :key="d.server" class="ifm__dest">
+            <span class="lb-mono lb-ellipsis">{{ d.server }}:{{ d.port }}</span>
+            <span class="lb-mono">{{ d.usable ? 'OK' : '不合格' }}</span>
+            <span class="lb-mono">{{ d.max_record_size || '—' }}</span>
+            <span>
+              <span v-if="d.server === form.reality_dest" class="ifm__dim">当前</span>
+              <a-tooltip v-else-if="destBlocked(d)" :title="destBlocked(d)">
+                <a-button size="small" disabled>选它</a-button>
+              </a-tooltip>
+              <a-button v-else size="small" @click="pickDest(d.server)">选它</a-button>
+            </span>
+          </div>
+        </div>
+      </a-form-item>
       <a-form-item v-if="form.protocol === 'SHADOWSOCKS'" label="加密方法">
         <a-select
           v-model:value="form.ss_method"
@@ -327,5 +459,35 @@ async function doSave() {
   font-size: 12px;
   line-height: 1.6;
   color: #B4291D;
+}
+
+/* 颜色只用 tokens.ts 里已有的:text3 / border / danger。 */
+.ifm__dest-cur {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ifm__dests {
+  margin-top: 8px;
+  border: 1px solid #E5E8EC;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ifm__dest {
+  display: grid;
+  grid-template-columns: 1fr 60px 76px 64px;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-top: 1px solid #E5E8EC;
+}
+.ifm__dest:first-child {
+  border-top: none;
+}
+.ifm__dest--head {
+  color: #6B7480;
+  background: #FAFBFC;
 }
 </style>

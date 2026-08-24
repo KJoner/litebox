@@ -11,7 +11,6 @@ import {
   type DailyPoint,
   type DeployResult,
   type DeploymentRecord,
-  type DestCheckResult,
   type Node,
   type NodeCycleUsage,
   type NodeHealth,
@@ -37,7 +36,7 @@ import {
   type LbPoint,
 } from '@/components/lb'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
-import { confirmDeployNode, confirmRestartNode } from '@/components/node/nodeOps'
+import { confirmDeployNode } from '@/components/node/nodeOps'
 import { useNarrow } from '@/composables/useNarrow'
 import { color, threshold, usageColor } from '@/theme/tokens'
 
@@ -137,9 +136,6 @@ const hostIsDomain = computed(() => {
 /** 这台机器上的入口。中转角色恒为空数组。 */
 const inbounds = computed(() => node.value?.inbounds ?? [])
 
-/** 有没有 VLESS 入口 —— 决定这一屏要不要出现「扫描握手目标」。 */
-const hasVLESS = computed(() => inbounds.value.some((i) => i.protocol === 'VLESS_REALITY'))
-
 /**
  * 中转角色:这台机器上不跑 sing-box。
  *
@@ -156,20 +152,6 @@ const isRelay = computed(() => node.value?.role === 'RELAY')
  */
 const protocolMismatch = computed(() =>
   inbounds.value.some((i) => !!i.deployed_protocol && i.deployed_protocol !== i.protocol),
-)
-
-/**
- * 「应用握手目标」要写到哪一个入口上。
- *
- * 多入站之后这不再有唯一答案:一台机器上可以有两个 REALITY 入口,
- * 各自指向不同的目标。悄悄挑一个写进去,是这类操作最容易出的那种错 ——
- * 所以扫描面板里有一个显式的下拉,默认选第一个 VLESS 入口。
- */
-const destInboundID = ref(0)
-const destInboundOptions = computed(() =>
-  inbounds.value
-    .filter((i) => i.protocol === 'VLESS_REALITY')
-    .map((i) => ({ value: i.id, label: i.display_name })),
 )
 
 async function load(id: number) {
@@ -309,13 +291,12 @@ async function applyConfigRAM(next: boolean) {
 const sshResult = ref<{ ok: boolean; text: string; ip?: string } | null>(null)
 const probe = ref<ProbeResult | null>(null)
 const diff = ref<ConfigDiff | null>(null)
-const destResults = ref<DestCheckResult[]>([])
 const tuning = ref<TuneReport | null>(null)
 /**
  * 当前弹窗里显示哪一种结果。同一时刻只可能有一种 ——
  * 分成四个开关只是把同一份状态抄四遍,而四份状态迟早会有一份忘了清。
  */
-const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'dest' | 'tune'>('')
+const panel = ref<'' | 'ssh' | 'probe' | 'diff' | 'tune'>('')
 
 /** 弹窗标题跟着内容走。缺省值只是为了让关闭动画期间标题不闪成空。 */
 const panelTitle = computed(() => {
@@ -326,8 +307,6 @@ const panelTitle = computed(() => {
       return '节点探测'
     case 'diff':
       return '配置比对'
-    case 'dest':
-      return '扫描握手目标'
     case 'tune':
       return 'TCP 调优'
     default:
@@ -375,11 +354,6 @@ const doDiff = () =>
     diff.value = await api.nodeConfigDiff(nodeId.value!)
   })
 
-const doScanDests = () =>
-  readonlyAction('扫描握手目标', 'dest', async () => {
-    destResults.value = (await api.scanNodeDests(nodeId.value!)).items
-  })
-
 /**
  * TCP 调优。按钮本身是只读的:它只采集这台机器的事实、算出方案、逐项与
  * 当前值对比。要不要写下去在面板里另有一个带影响范围的确认 ——
@@ -422,43 +396,6 @@ function forwardingTone(state: string): string {
   if (state === 'yes') return color.success
   if (state === 'no') return color.danger
   return color.warning
-}
-
-/**
- * TLS 记录超过 8192 的目标不能用于 REALITY,握手超时的同理。
- * 禁用按钮必须说明为什么禁用,否则管理员只会反复点。
- */
-function destBlockReason(d: DestCheckResult): string {
-  // `d.problems?.[0]` 而不是 `d.problems[0]`:后者在 problems 为 null 时抛错,
-  // 而这个函数跑在渲染期 —— 抛出去就是整个抽屉变白、遮罩留在屏幕上。
-  if (!d.usable) return d.problems?.[0] ?? '实测未通过'
-  if (d.max_record_size > 8192) return `TLS 记录 ${d.max_record_size} > 8192,不能用于 REALITY`
-  if (!d.tls13) return '不支持 TLS 1.3'
-  return ''
-}
-
-async function applyDest(dest: string) {
-  if (!destInboundID.value) {
-    message.warning('请先选择要写入哪一个入口')
-    return
-  }
-  running.value = '应用握手目标'
-  try {
-    // 「应用」不是纯保存:它会再实测一次目标、通过后才写库。
-    const r = await api.applyInboundDest(destInboundID.value, dest)
-    if (r.error) {
-      message.error(r.error)
-      return
-    }
-    message.success(`已应用 ${dest},需要部署才在节点上生效`)
-    destResults.value = []
-    panel.value = ''
-    reload()
-  } catch (err) {
-    message.error(err instanceof ApiError ? err.message : '应用失败')
-  } finally {
-    running.value = ''
-  }
 }
 
 // ---------- 部署 ----------
@@ -543,14 +480,9 @@ const doInstall = () =>
     }
   }, '安装完成,接下来执行「部署」')
 
-function confirmRestart() {
-  const n = node.value!
-  confirmRestartNode(n, () => run('重启', () => api.restartNode(nodeId.value!), '已重启'))
-}
-
 // 三个不可逆的动作各自一个输入名称确认。要求输入的是**内部名称** ——
 // 内部名称唯一,展示名称可以重复。
-type NameConfirmKind = 'resetKey' | 'uninstall' | 'delete'
+type NameConfirmKind = 'resetKey' | 'delete'
 const nameConfirm = ref<NameConfirmKind | null>(null)
 const nameConfirmLoading = ref(false)
 
@@ -565,16 +497,6 @@ const nameConfirmMeta = computed(() => {
         '节点的 SSH 主机指纹会变,面板下次连接需重新信任',
         '若你还用其他工具 SSH 这台机器,它们会全部报「主机密钥已变更」',
         '无法撤销',
-      ],
-    },
-    uninstall: {
-      title: `卸载 ${n.display_name || n.name} 的服务`,
-      okText: '卸载',
-      impacts: [
-        '停止并移除节点上的 sing-box、配置与服务单元',
-        '该节点上的用户立即全部断连',
-        '节点记录保留在面板里,历史流量与部署记录不删',
-        '想恢复必须重新执行「安装 sing-box」+「部署」',
       ],
     },
     delete: {
@@ -599,9 +521,6 @@ async function doNameConfirm() {
     if (kind === 'resetKey') {
       await api.resetNodeHostKey(id)
       message.success('主机密钥已重置,下次连接会重新固定')
-    } else if (kind === 'uninstall') {
-      await api.uninstallNode(id)
-      message.success('节点上的服务与配置已移除')
     } else {
       await api.deleteNode(id)
       message.success('节点已删除')
@@ -763,7 +682,6 @@ watch(
   (id) => {
     probe.value = null
     diff.value = null
-    destResults.value = []
     tuning.value = null
     sshResult.value = null
     panel.value = ''
@@ -880,9 +798,15 @@ const needsPortForward = computed(() =>
         </a-button>
         <a-dropdown placement="bottomRight">
           <a-button size="small" :aria-label="`${node.name} 的更多操作`" title="更多操作">⋯</a-button>
+          <!-- **这里只放和「这台机器」有关的操作。**
+               装/卸/下发是**服务**的事,而一台机器上有三类服务
+               (sing-box、每个 Mieru 入口一个 mita、nginx),它们的
+               影响面差得很远 —— 放在这个顶栏里只能写一句放之四海而皆准的
+               确认文案,而管理员恰恰要靠那句话判断这一下要不要挑时机。
+               它们都在「入口」Tab 里,离它们要改的东西最近。 -->
           <template #overlay>
             <a-menu>
-              <a-menu-item-group title="安装与配置">
+              <a-menu-item-group title="这台机器">
                 <a-menu-item @click="editOpen = true">编辑节点</a-menu-item>
                 <a-menu-item
                   @click="
@@ -897,9 +821,7 @@ const needsPortForward = computed(() =>
               </a-menu-item-group>
               <a-menu-divider />
               <a-menu-item-group title="危险操作">
-                <a-menu-item danger @click="confirmRestart">重启服务</a-menu-item>
                 <a-menu-item danger @click="nameConfirm = 'resetKey'">重置主机密钥</a-menu-item>
-                <a-menu-item danger @click="nameConfirm = 'uninstall'">卸载服务</a-menu-item>
                 <a-menu-item danger @click="nameConfirm = 'delete'">删除节点</a-menu-item>
               </a-menu-item-group>
             </a-menu>
@@ -984,18 +906,11 @@ const needsPortForward = computed(() =>
         >
           比对配置
         </a-button>
-        <!-- 一个 VLESS 入口都没有时这一项仍然可点。它是把某个入口切到
-             VLESS 的前置步骤 —— 切协议要求握手目标已经实测通过,
-             而实测只能从这里做。按钮上写清楚它为什么在这里出现。 -->
-        <a-button
-          v-if="!isRelay"
-          size="small"
-          :loading="running === '扫描握手目标'"
-          :title="hasVLESS ? '' : '这台机器上还没有 VLESS 入口。实测通过后才能把某个入口切到 VLESS'"
-          @click="doScanDests"
-        >
-          扫描握手目标<template v-if="!hasVLESS">(切到 VLESS 用)</template>
-        </a-button>
+        <!-- 「扫描握手目标」搬进了 sing-box 入口的新增/编辑弹窗。
+             它是**入口级**的:同机两个 REALITY 入站可以指向不同的目标,
+             而 8192 字节的记录上限是那个域名的属性、不是这台机器的属性。
+             留在这一排的话,扫完还要再挑一次"写到哪个入口上" ——
+             而悄悄挑一个写进去正是这类操作最容易出的错。 -->
         <a-button
           v-if="!isRelay"
           size="small"
@@ -1153,52 +1068,6 @@ const needsPortForward = computed(() =>
             部署 rev {{ node.config_revision + 1 }}
           </a-button>
         </template>
-      </section>
-
-      <section v-else-if="panel === 'dest' && destResults.length" class="nd__panel">
-        <div class="nd__panel-head">
-          <span class="nd__panel-title">扫描握手目标 · 从节点本机实测 {{ destResults.length }} 个候选</span>
-          <!-- 写到哪一个入口上必须显式选。多入站之后这不再有唯一答案 ——
-               悄悄挑一个写进去,是这类操作最容易出的那种错。 -->
-          <a-select
-            v-model:value="destInboundID"
-            size="small"
-            style="min-width: 180px"
-            placeholder="写入哪个入口"
-            :options="destInboundOptions"
-          />
-        </div>
-        <div class="nd__dest">
-          <div class="nd__dest-row nd__dest-row--head">
-            <span>目标</span><span>握手</span><span>TLS 记录</span><span />
-          </div>
-          <div v-for="d in destResults" :key="d.server" class="nd__dest-row">
-            <span class="lb-mono lb-ellipsis">{{ d.server }}:{{ d.port }}</span>
-            <span class="lb-mono">{{ d.usable ? 'OK' : '超时' }}</span>
-            <span class="lb-mono">{{ d.max_record_size || '—' }}</span>
-            <span>
-              <LbStatusTag
-                v-if="inbounds.some((i) => i.reality_dest === d.server)"
-                :meta="{ text: '当前使用', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }"
-              />
-              <a-tooltip v-else-if="destBlockReason(d)" :title="destBlockReason(d)">
-                <a-button size="small" disabled>应用</a-button>
-              </a-tooltip>
-              <a-button
-                v-else
-                size="small"
-                :loading="running === '应用握手目标'"
-                @click="applyDest(d.server)"
-              >
-                应用
-              </a-button>
-            </span>
-          </div>
-        </div>
-        <div class="nd__panel-note">
-          「应用」会再实测一次目标、通过后才写库,成功后需要部署才在节点上生效。
-          这也是编辑表单里不让改握手目标的原因。
-        </div>
       </section>
 
       <NodeTuningPanel
@@ -2045,32 +1914,6 @@ const needsPortForward = computed(() =>
   color: #b4291d;
 }
 
-.nd__dest {
-  border: 1px solid #edeff2;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.nd__dest-row {
-  display: grid;
-  grid-template-columns: 1.6fr 0.6fr 0.7fr 0.9fr;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 11px;
-  font-size: 12px;
-}
-
-.nd__dest-row + .nd__dest-row {
-  border-top: 1px solid #edeff2;
-}
-
-.nd__dest-row--head {
-  background: #f6f7f9;
-  font-size: 11px;
-  font-weight: 600;
-  color: #576070;
-}
-
 .nd__grid {
   display: flex;
   flex-direction: column;
@@ -2275,10 +2118,6 @@ const needsPortForward = computed(() =>
 @media (max-width: 767px) {
   .nd__kv {
     grid-template-columns: 1fr;
-  }
-
-  .nd__dest-row {
-    grid-template-columns: 1fr auto;
   }
 }
 </style>
