@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -190,7 +191,7 @@ func (d *Deployer) runMieruTransaction(
 		// 而旧端口上那个入口还在服务,管理员以为它已经搬走了。
 		client.Run(ctx, mieruCmd(layout, id, "stop"))
 		if _, err := client.RunCheck(ctx, mieruCmd(layout, id, "start")); err != nil {
-			return "", fmt.Errorf("mita start: %w", err)
+			return "", mieruStartError(ctx, client, init, layout, id, err)
 		}
 		return "已重新绑定端口(这个入口的在线连接被断开,同机其他入口不受影响)", nil
 	}); err != nil {
@@ -239,6 +240,48 @@ func (d *Deployer) runMieruTransaction(
 	}
 
 	return nil
+}
+
+// mieruStartError 给一次失败的 `mita start` 补上诊断材料。
+//
+// **这是本项目第一条铁律在 Mieru 这一侧的落实**:光有"退出码 1 加一句
+// mita 的错误"是准确但没有方向的。生产上撞到过一次
+// `ValidateFullServerConfig() failed: server config is empty` ——
+// 那句话说的是"守护进程读到的配置是空的",而**为什么**空全在两个地方:
+// mita 自己的日志(它记了 SetConfig 写到哪个文件、失败没失败),
+// 以及那个文件此刻的大小。少了这两样,排查只能靠猜,
+// 而这条路径上能让它变空的原因至少有三种(守护进程带着旧环境在跑、
+// 配置文件被别的东西截断、apply 打到了另一个实例的 socket 上)。
+//
+// **只带回文件的大小与 mtime,不带回内容。** 那份 .pb 里是全部用户的
+// 口令哈希 —— 部署记录虽然有访问控制,但它还会进推送与浏览器。
+// 判断"是不是空的"只需要一个字节数。
+func mieruStartError(
+	ctx context.Context, client *sshx.Client, init InitSystem,
+	layout Layout, id int64, cause error,
+) error {
+	msg := fmt.Sprintf("mita start: %v", cause)
+
+	// 守护进程**实际**在用的那份配置路径与大小。它与我们以为的那个
+	// 未必是同一个:客户端的 MITA_CONFIG_FILE 只影响客户端,
+	// 而 start 是由守护进程按它自己的环境去读文件的。
+	stat := fmt.Sprintf(
+		`p=%s; if [ -f "$p" ]; then `+
+			`echo "配置文件 $p:$(wc -c < "$p" 2>/dev/null) 字节"; `+
+			`else echo "配置文件 $p:不存在"; fi`,
+		sshx.ShellQuote(layout.MieruConfigPath(id)))
+	if res, err := client.Run(ctx, sshx.NewCommand("sh", "-c", stat)); err == nil {
+		if line := strings.TrimSpace(res.Stdout); line != "" {
+			msg += "\n" + line
+		}
+	}
+
+	if logs := stripANSI(init.MieruLogs(ctx, client, layout, id, 20)); logs != "" {
+		msg += "\nmita 最近日志:\n" + logs
+	} else {
+		msg += "\nmita 最近日志:(取不到)"
+	}
+	return errors.New(msg)
 }
 
 // mieruCmd 拼一条带环境变量的 mita 客户端命令。
@@ -443,7 +486,7 @@ func (d *Deployer) rollbackMieru(
 			return "", waitErr
 		}
 		if _, startErr := client.RunCheck(ctx, mieruCmd(d.layout, id, "start")); startErr != nil {
-			return "", startErr
+			return "", mieruStartError(ctx, client, init, d.layout, id, startErr)
 		}
 		status, statusErr := mieruProxyStatus(ctx, client, d.layout, id)
 		if statusErr != nil {
