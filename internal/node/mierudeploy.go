@@ -252,10 +252,13 @@ func (s *Service) DeployMieru(
 		ListenPorts: m.ListenPorts,
 		Transport:   m.Transport,
 		UsersOnly:   usersOnly,
-		// 拨测 CONNECT 的目标是**这台机器自己的公网 SSH**,取自数据库 ——
-		// NAT 机上问节点自己会拿到私网地址与本机端口。
+		// 拨测 CONNECT 的目标取自数据库 —— NAT 机上问节点自己会拿到
+		// 私网地址与本机端口。但**只有链式入口才用得上它**:
+		// 直连入口的 mita 就在本机,绕公网再拐回自己要 hairpin NAT,
+		// 而很多 NAT 小鸡不支持。见 deployment.MieruRequest.Chained。
 		DialHost: n.Host,
 		DialPort: n.SSHPort,
+		Chained:  m.ChainTargetKind != "",
 	}
 	// 拿这个入口上的第一个用户当探测凭据。**一个都没有时留 nil** ——
 	// 部署那一侧会记 SKIPPED 并写明原因,而不是报成功。

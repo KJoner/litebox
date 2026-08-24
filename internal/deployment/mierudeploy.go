@@ -52,13 +52,30 @@ type MieruRequest struct {
 	// 端口、传输层与出口的变更必须留 false,那些改动 reload 生效不了。
 	UsersOnly bool
 
-	// DialHost / DialPort 是拨测 CONNECT 的目标:**这台机器自己的公网 SSH**。
+	// DialHost / DialPort 是拨测 CONNECT 的目标:**这台机器自己的公网 SSH**,
+	// 取自数据库。机器根本不知道自己的公网地址长什么样 —— NAT 机上
+	// $SSH_CONNECTION 给出的是私网地址与本机端口(实测 lax-1 上是
+	// 10.10.3.111 22,而公网是 154.31.157.27:58739)。
 	//
-	// 取自数据库而不是问节点自己:NAT 机上 $SSH_CONNECTION 给出的是私网地址
-	// 与本机端口(实测 lax-1 上是 10.10.3.111 22,而公网是 154.31.157.27:58739),
-	// 机器根本不知道自己的公网地址长什么样。
+	// **但它只在 Chained 为真时用得上**,见下。
 	DialHost string
 	DialPort int
+	// Chained 决定拨测打向哪里,而这一条是被 NAT 机逼出来的。
+	//
+	//	直连   mita 就在这台机器上,出口也是它自己 —— 拿公网地址当 CONNECT
+	//	       目标等于让这台机器绕出去再拐回自己,而那要服务商支持
+	//	       **hairpin NAT**,很多 NAT 小鸡不支持。所以直连时打
+	//	       127.0.0.1 加 $SSH_CONNECTION 给出的本机 sshd 端口,
+	//	       与 sing-box 那一侧的直连入站一字不差。
+	//	链式   流量从**落地**出去再回到这台机器的公网 SSH,发起方不是本机,
+	//	       不涉及 hairpin —— 而且这时打 127.0.0.1 会被送到落地、
+	//	       打在**落地自己的** sshd 上,拨测碰巧仍然通过,
+	//	       但验证的已经不是这台机器了(V8 在 sing-box 那一侧踩过同一个坑)。
+	//
+	// **生产上撞到过**:一台 NAT 机上的直连 Mieru 入口,端口全在监听、
+	// mita 是 RUNNING、探测客户端也起来了,而拨测一律
+	// 「SOCKS5 CONNECT 响应读取失败: EOF」—— 那是绕出去拐不回来。
+	Chained bool
 	// Probe 为 nil 表示这个入口上一个用户都没有 —— 拨测记 SKIPPED 并写明原因,
 	// **不判失败**(那不是节点的错),也**绝不报成功**(那等于对一份
 	// 没验证过的配置说验证过了)。
@@ -144,8 +161,15 @@ func (d *Deployer) runMieruTransaction(
 	// 而不是像 sing-box 那样 stop+start 就够。那一步慢几秒,值得。
 	backup := layout.MieruConfigPath(id) + ".bak"
 	if err := rec.run("备份当前配置", func() (string, error) {
-		// 第一次部署时 .pb 还不存在,cp 会失败 —— 那不是错误。
-		script := fmt.Sprintf(`[ -f %s ] && cp -f %s %s && echo backed || echo fresh`,
+		// **判据是「有内容」而不是「文件在」。** 上一次下发失败留下的
+		// 0 字节 config.pb 是完全可能的(mita 的 StoreServerConfig 用
+		// os.WriteFile,写到一半失败就是个空文件)。把它当成备份的话,
+		// 回滚会"恢复"一份空配置,然后 mita start 报
+		// 「server config is empty」—— 而那句话与真正的失败原因毫无关系,
+		// 排查的人会顺着它去查配置怎么没的。**生产上撞到过。**
+		//
+		// -s 是「存在且非空」,与 scripts/fetch-mieru.sh 里那一处同理。
+		script := fmt.Sprintf(`[ -s %s ] && cp -f %s %s && echo backed || echo fresh`,
 			sshx.ShellQuote(layout.MieruConfigPath(id)),
 			sshx.ShellQuote(layout.MieruConfigPath(id)),
 			sshx.ShellQuote(backup))
@@ -154,7 +178,10 @@ func (d *Deployer) runMieruTransaction(
 			return "", err
 		}
 		if strings.Contains(res.Stdout, "fresh") {
-			return "这是这个入口的第一次下发,没有可备份的配置", nil
+			// 顺手把那份没用的备份删掉:留着它,下一次回滚又会拿它去"恢复"。
+			client.Run(ctx, sshx.NewCommand("rm", "-f", backup))
+			return "这个入口在节点上还没有可用的配置(第一次下发,或上一次没写成)——" +
+				"这次失败的话没有可回滚的东西", nil
 		}
 		return "已备份到 " + backup, nil
 	}); err != nil {
@@ -480,14 +507,33 @@ func (d *Deployer) dialMieru(
 		return "", fmt.Errorf("%w%s", err, prefixIfSet("\n探测客户端日志:\n", logs))
 	}
 
-	detail, err := dialThroughProxy(ctx, d.pool, req.NodeID, client,
-		probePort, req.DialHost, req.DialPort)
+	host, port, where := mieruDialTarget(ctx, client, req)
+	detail, err := dialThroughProxy(ctx, d.pool, req.NodeID, client, probePort, host, port)
 	if err != nil {
 		logs := mieruProbeLogs(ctx, client, probeDir)
-		return "", fmt.Errorf("经 Mieru 拨测失败: %w%s", err,
+		return "", fmt.Errorf("经 Mieru 拨测失败(目标 %s): %w%s", where, err,
 			prefixIfSet("\n探测客户端日志:\n", logs))
 	}
-	return "经 Mieru 完成 SSH 认证:" + detail, nil
+	return fmt.Sprintf("经 Mieru 完成 SSH 认证(目标 %s):%s", where, detail), nil
+}
+
+// mieruDialTarget 选拨测的 CONNECT 目标,并给出一句可读的说明。
+//
+// 说明要进步骤详情:两种目标验的是**两件不同的事**(这台机器自己能不能出网 /
+// 流量有没有真的绕到落地再回来),而失败时管理员第一个要知道的就是
+// 刚才打的是哪一个。
+func mieruDialTarget(
+	ctx context.Context, client *sshx.Client, req MieruRequest,
+) (host string, port int, where string) {
+	if req.Chained {
+		return req.DialHost, req.DialPort,
+			fmt.Sprintf("%s:%d,这台机器的公网 SSH —— 流量要从落地绕回来",
+				req.DialHost, req.DialPort)
+	}
+	// 直连:mita 就在本机,绕公网再拐回自己要 hairpin NAT。
+	local := probeTargetPort(ctx, client, req.DialPort)
+	return "127.0.0.1", local,
+		fmt.Sprintf("127.0.0.1:%d,本机 sshd —— 直连入口不绕公网(避开 hairpin NAT)", local)
 }
 
 func mieruProbeLogs(ctx context.Context, client *sshx.Client, probeDir string) string {
@@ -519,7 +565,8 @@ func (d *Deployer) rollbackMieru(
 
 	id := req.InboundID
 	err := rec.run("回滚", func() (string, error) {
-		script := fmt.Sprintf(`[ -f %s ] || exit 42; cp -f %s %s`,
+		// -s 而不是 -f:0 字节的备份不是备份,见上面备份那一步的注释。
+		script := fmt.Sprintf(`[ -s %s ] || exit 42; cp -f %s %s`,
 			sshx.ShellQuote(backup), sshx.ShellQuote(backup),
 			sshx.ShellQuote(d.layout.MieruConfigPath(id)))
 		res, runErr := client.Run(ctx, sshx.NewCommand("sh", "-c", script))
@@ -527,13 +574,14 @@ func (d *Deployer) rollbackMieru(
 			return "", runErr
 		}
 		if res.ExitCode == 42 {
-			// 第一次下发就失败:没有可回滚的配置。**把服务停掉** ——
-			// 留一个带着半份配置的实例跑着,比停掉更糟:它可能正用
-			// 一份我们没验证过的用户表在服务。
+			// 没有可回滚的配置(第一次下发,或者上一次留下的是个空文件)。
+			// **把服务停掉** —— 留一个带着半份配置的实例跑着,比停掉更糟:
+			// 它可能正用一份我们没验证过的用户表在服务。
 			if stopErr := init.StopMieru(ctx, client, d.layout, id); stopErr != nil {
 				return "", stopErr
 			}
-			return "这是第一次下发,没有可恢复的配置,已停掉这个入口", nil
+			return "没有可恢复的配置(第一次下发,或上一次没写成),已停掉这个入口 ——" +
+				"修好上面那个失败原因之后重新下发即可", nil
 		}
 		if res.ExitCode != 0 {
 			return "", fmt.Errorf("恢复备份失败: %s", strings.TrimSpace(res.Stderr))
