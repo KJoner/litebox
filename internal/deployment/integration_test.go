@@ -184,6 +184,31 @@ func (e *integrationEnv) ssRequest(t *testing.T, revision int64, users []singbox
 	return req
 }
 
+// snellRequest 把同一台节点改成 Snell 的部署请求。
+//
+// **前置条件比另外两种多一条:节点上装的必须是预览版 sing-box。**
+// 装着正式版时这次部署会在 check 那一步失败,报
+// `unknown inbound type: snell` —— 那正是 node.checkChannelSupportsProtocol
+// 要拦在保存入口时的东西,而这里跑的是它下面那一层。
+func (e *integrationEnv) snellRequest(
+	t *testing.T, revision int64, users []singbox.User, version int, obfs singbox.SnellObfsMode,
+) Request {
+	t.Helper()
+	req := e.request(revision, users)
+	psk, err := singbox.GenerateSnellKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &req.Params.Inbounds[0]
+	in.Protocol = singbox.ProtocolSnell
+	in.SnellVersion = version
+	in.SnellPSK = psk
+	in.SnellObfsMode = obfs
+	// REALITY 那几项留着不清:生产上它们同样留在库里(切协议不清空),
+	// 而渲染必须靠协议二选一 —— 清掉之后这个测试就量不到那件事了。
+	return req
+}
+
 // testUsers 生成带两套凭据的用户 —— 与生产一致:
 // 一份凭据对应一种协议,渲染时按节点协议取用其中一份。
 func testUsers(t *testing.T, n int) []singbox.User {
@@ -194,10 +219,15 @@ func testUsers(t *testing.T, n int) []singbox.User {
 		if err != nil {
 			t.Fatal(err)
 		}
+		snellKey, err := singbox.GenerateSnellKey()
+		if err != nil {
+			t.Fatal(err)
+		}
 		users = append(users, singbox.User{
-			Code:       fmt.Sprintf("user_%06d", i),
-			UUID:       genUUID(t),
-			SSPassword: key,
+			Code:         fmt.Sprintf("user_%06d", i),
+			UUID:         genUUID(t),
+			SSPassword:   key,
+			SnellUserKey: snellKey,
 		})
 	}
 	return users
@@ -482,5 +512,97 @@ func TestIntegrationProtocolSwitchRoundTrip(t *testing.T) {
 		if !ok || dial.Status != StepSuccess {
 			t.Fatalf("%s 的拨测没通过:%+v", step.name, dial)
 		}
+	}
+}
+
+// Snell 入站部署后,四步健康检查都要通过,其中拨测必须真的建立了 Snell 连接
+// 并在隧道里完成一次完整的 SSH 公钥认证。
+//
+// **这一步不可省略。** 与 VLESS 那一条同一个理由,而 Snell 还多一处会
+// 静默出事的地方:版本写错(服务端 5 要对应客户端 4)时,探测客户端会在
+// decode 阶段拒掉整份配置,而报出来的是"探测客户端未能监听端口" ——
+// 那句话完全看不出真正的原因。
+func TestIntegrationDeploySnellPassesDialCheck(t *testing.T) {
+	env := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+
+	result, err := env.deployer.Deploy(ctx, env.snellRequest(t, 610,
+		testUsers(t, 2), singbox.SnellVersion6, ""))
+	logSteps(t, result)
+	if err != nil {
+		t.Fatalf("Snell v6 部署失败: %v(回滚:%s)", err, result.RollbackResult)
+	}
+	if result.Status != StatusSuccess {
+		t.Fatalf("部署状态是 %s", result.Status)
+	}
+	// 步骤名里必须出现 Snell —— 拨测按协议分派,而分派写错的表现是
+	// 用 VLESS 的参数去拨一个 Snell 入站,那会失败并回滚一个健康的节点。
+	var dial Step
+	for _, st := range result.Steps {
+		if strings.Contains(st.Name, "拨测") {
+			dial = st
+		}
+	}
+	if !strings.Contains(dial.Name, "Snell") {
+		t.Fatalf("拨测这一步的名字是 %q,没认出协议", dial.Name)
+	}
+	if dial.Status != StepSuccess {
+		t.Fatalf("Snell 拨测未通过:%s", dial.Detail)
+	}
+	if !strings.Contains(dial.Detail, "拨测成功") {
+		t.Errorf("拨测详情不像真的连上了:%s", dial.Detail)
+	}
+}
+
+// 版本 5 + HTTP 混淆同样要能拨通。
+//
+// 两个版本走的是两条不同的线路协议(v5 用 obfs,v6 用流量整形),
+// 而客户端版本还要经 SnellClientVersion 翻译一次 —— 只验其中一个的话,
+// 另一个的翻译写错了没有人会发现,直到管理员真的建了那种入口。
+func TestIntegrationDeploySnellV5WithObfs(t *testing.T) {
+	env := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+
+	result, err := env.deployer.Deploy(ctx, env.snellRequest(t, 611,
+		testUsers(t, 2), singbox.SnellVersion5, singbox.SnellObfsHTTP))
+	logSteps(t, result)
+	if err != nil {
+		t.Fatalf("Snell v5 + http 混淆部署失败: %v(回滚:%s)", err, result.RollbackResult)
+	}
+	if result.Status != StatusSuccess {
+		t.Fatalf("部署状态是 %s", result.Status)
+	}
+}
+
+// 三种协议来回切都要能落地。
+//
+// 与 TestIntegrationProtocolSwitchRoundTrip 同一件事,只是把 Snell 也串进去:
+// 切协议时库里另外两种的参数都留着(不清空),而渲染必须靠协议二选一 ——
+// 写错的表现是 sing-box 拒绝启动,部署失败并回滚。
+func TestIntegrationSnellProtocolRoundTrip(t *testing.T) {
+	env := setupIntegration(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+
+	users := testUsers(t, 2)
+	steps := []struct {
+		name string
+		req  Request
+	}{
+		{"VLESS", env.request(620, users)},
+		{"Snell v6", env.snellRequest(t, 621, users, singbox.SnellVersion6, "")},
+		{"Shadowsocks", env.ssRequest(t, 622, users)},
+		{"Snell v5", env.snellRequest(t, 623, users, singbox.SnellVersion5, singbox.SnellObfsNone)},
+		{"VLESS", env.request(624, users)},
+	}
+	for _, s := range steps {
+		result, err := env.deployer.Deploy(ctx, s.req)
+		if err != nil {
+			logSteps(t, result)
+			t.Fatalf("切到 %s 失败: %v(回滚:%s)", s.name, err, result.RollbackResult)
+		}
+		t.Logf("切到 %-12s 成功,配置 %s", s.name, result.ConfigSHA256[:12])
 	}
 }

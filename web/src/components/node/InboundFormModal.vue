@@ -5,6 +5,9 @@ import {
   api,
   ApiError,
   PROTOCOL_LABEL,
+  SNELL_OBFS_LABEL,
+  SNELL_V6_MODE_LABEL,
+  SNELL_VERSION_LABEL,
   SS_METHOD_LABEL,
   type AccessTier,
   type DestCheckResult,
@@ -12,6 +15,8 @@ import {
   type NodeInbound,
   type NodeProtocol,
   type NodeSSMethod,
+  type SnellObfsMode,
+  type SnellV6Mode,
 } from '@/api/client'
 import { LbStatusTag, lbDangerConfirm } from '@/components/lb'
 
@@ -51,6 +56,11 @@ const form = ref({
   display_name: '',
   protocol: 'VLESS_REALITY' as NodeProtocol,
   ss_method: '' as NodeSSMethod | '',
+  // Snell 四项。version 留 0 会被后端当成"保持原值",所以表单一律填实值。
+  snell_version: 6,
+  snell_obfs_mode: 'none' as SnellObfsMode,
+  snell_obfs_host: '',
+  snell_v6_mode: 'default' as SnellV6Mode,
   listen_port: 0,
   public_port: 0,
   ipv6_public_port: 0,
@@ -81,6 +91,13 @@ watch(
           display_name: i.display_name,
           protocol: i.protocol,
           ss_method: i.ss_method,
+          // **必须回填,而且 0 要换成默认值** —— 一个 VLESS 入口上
+          // snell_version 是 0,直接填回表单会让下拉框空着,
+          // 而管理员一旦把协议切成 Snell 就会提交一个 0 上去。
+          snell_version: i.snell_version || 6,
+          snell_obfs_mode: i.snell_obfs_mode || 'none',
+          snell_obfs_host: i.snell_obfs_host,
+          snell_v6_mode: i.snell_v6_mode || 'default',
           listen_port: i.listen_port,
           public_port: i.public_port,
           ipv6_public_port: i.ipv6_public_port,
@@ -101,6 +118,10 @@ watch(
           display_name: '',
           protocol: 'VLESS_REALITY',
           ss_method: '',
+          snell_version: 6,
+          snell_obfs_mode: 'none',
+          snell_obfs_host: '',
+          snell_v6_mode: 'default',
           reality_dest: '',
           listen_port: 0,
           public_port: 0,
@@ -199,6 +220,35 @@ async function pickDest(server: string) {
     emit('busy', '')
   }
 }
+
+/**
+ * 这台机器上能选哪几种协议。
+ *
+ * **渲染后端给的列表,不自己按 singbox_channel 判。** 判据只能有一处实现,
+ * 各写一遍的话,某天多一种只在预览版里的协议,这个下拉框会漏掉它,
+ * 而后端明明支持 —— 与「周期重置日只渲染后端给的 next_reset_at」同一条规矩。
+ *
+ * 后端没带这个字段时(比如从别的接口拿到的 Node)回落到两种通用协议:
+ * 少一个选项是能被发现的,多一个不能选的选项会让人白填一遍表单。
+ */
+const protocolChoices = computed(
+  () =>
+    props.node.available_protocols ?? [
+      { value: 'VLESS_REALITY' as NodeProtocol, label: PROTOCOL_LABEL.VLESS_REALITY },
+      { value: 'SHADOWSOCKS' as NodeProtocol, label: PROTOCOL_LABEL.SHADOWSOCKS },
+    ],
+)
+
+/**
+ * 这台机器上装的是正式版,所以 Snell 选不了。
+ *
+ * **不把 Snell 摆出来再置灰** —— 置灰的选项要配一句解释,而那句解释在
+ * 单选按钮里没有地方放;管理员看到一个灰的 Snell,只会去猜是不是自己
+ * 权限不够。真正需要说的是"怎么才能用上它",那句话放在这里。
+ */
+const snellUnavailable = computed(
+  () => !protocolChoices.value.some((p) => p.value === 'SNELL'),
+)
 
 /**
  * 切到 VLESS 之前必须先实测过握手目标。
@@ -307,9 +357,16 @@ async function doSave() {
       </a-form-item>
       <a-form-item label="落地协议">
         <a-radio-group v-model:value="form.protocol" size="small" button-style="solid">
-          <a-radio-button value="VLESS_REALITY">{{ PROTOCOL_LABEL.VLESS_REALITY }}</a-radio-button>
-          <a-radio-button value="SHADOWSOCKS">{{ PROTOCOL_LABEL.SHADOWSOCKS }}</a-radio-button>
+          <a-radio-button v-for="p in protocolChoices" :key="p.value" :value="p.value">
+            {{ p.label }}
+          </a-radio-button>
         </a-radio-group>
+        <div v-if="snellUnavailable" class="ifm__hint">
+          这台机器上装的是<b>正式版 sing-box</b>,所以没有 Snell —— 那个入站要
+          sing-box 1.14,而 1.14 目前只有预览版。要用它:在「入口」Tab 的 sing-box
+          那一行重新安装并选预览版,然后下发一次配置(会重启 sing-box,
+          这台机器上<b>全部入口</b>的在线连接都会断开一次)。
+        </div>
         <div v-if="protocolSwitchBlocked" class="ifm__warn">{{ protocolSwitchBlocked }}</div>
       </a-form-item>
       <!-- 握手目标只在 VLESS 下出现:Shadowsocks 根本不用 REALITY,
@@ -357,6 +414,56 @@ async function doSave() {
           </div>
         </div>
       </a-form-item>
+      <!-- Snell 的参数。版本决定下面出现哪一组 —— 两组在协议里是互斥的,
+           同时摆出来会让人以为可以一起配,而写错版本的那一项 sing-box
+           会直接拒绝启动。 -->
+      <template v-if="form.protocol === 'SNELL'">
+        <a-form-item label="Snell 版本">
+          <a-radio-group v-model:value="form.snell_version" size="small" button-style="solid">
+            <a-radio-button :value="6">{{ SNELL_VERSION_LABEL[6] }}</a-radio-button>
+            <a-radio-button :value="5">{{ SNELL_VERSION_LABEL[5] }}</a-radio-button>
+          </a-radio-group>
+          <div class="ifm__hint">
+            v6 用流量整形取代了 v5 的混淆,是这个协议现在的形态;两者的客户端
+            支持范围一样。改版本要重新部署这台机器。
+          </div>
+        </a-form-item>
+        <a-form-item v-if="form.snell_version === 5" label="混淆">
+          <a-select
+            v-model:value="form.snell_obfs_mode"
+            style="width: 180px"
+            :options="Object.entries(SNELL_OBFS_LABEL).map(([v, l]) => ({ value: v, label: l }))"
+          />
+          <a-input
+            v-if="form.snell_obfs_mode !== 'none'"
+            v-model:value="form.snell_obfs_host"
+            class="ifm__obfs-host"
+            placeholder="伪装 Host,例如 www.bing.com"
+          />
+          <div v-if="form.snell_obfs_mode !== 'none'" class="ifm__hint">
+            伪装 Host <b>只写进用户的客户端配置</b> —— 服务端不校验它,
+            所以改这一栏不用重新部署,下一次生成的订阅就带上了。
+          </div>
+        </a-form-item>
+        <a-form-item v-else label="流量整形">
+          <a-select
+            v-model:value="form.snell_v6_mode"
+            style="width: 260px"
+            :options="
+              Object.entries(SNELL_V6_MODE_LABEL).map(([v, l]) => ({ value: v, label: l }))
+            "
+          />
+        </a-form-item>
+        <a-form-item>
+          <div class="ifm__warn">
+            <b>能用这个入口的客户端只有 sing-box 1.14+ 与 Surge。</b>
+            它<b>不会出现</b>在 base64 / URI 两种订阅里(Snell 没有通用的分享链接),
+            也<b>不会出现</b>在 Clash / mihomo 的订阅里(mihomo 的 snell 只有 psk、
+            没有用户凭据那一栏,连多用户服务端会被直接拒绝)。
+            用其他客户端的用户会发现自己的节点数比别人少,而没有任何一层报错。
+          </div>
+        </a-form-item>
+      </template>
       <a-form-item v-if="form.protocol === 'SHADOWSOCKS'" label="加密方法">
         <a-select
           v-model:value="form.ss_method"
@@ -459,6 +566,12 @@ async function doSave() {
   font-size: 12px;
   line-height: 1.6;
   color: #B4291D;
+}
+
+/* 混淆 Host 跟在下拉框后面同一行。 */
+.ifm__obfs-host {
+  width: 240px;
+  margin-left: 8px;
 }
 
 /* 颜色只用 tokens.ts 里已有的:text3 / border / danger。 */

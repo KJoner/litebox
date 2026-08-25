@@ -86,6 +86,13 @@ type PhysicalNode struct {
 	RealityShortID   string
 	SSMethod         singbox.SSMethod
 	SSServerKey      string
+	// Snell 专有。前三项取【已经生效】的那一份;SnellObfsHost 取期望值,
+	// 它不进节点配置(服务端没有这个字段),只影响客户端怎么伪装。
+	SnellVersion  int
+	SnellPSK      string
+	SnellObfsMode string
+	SnellObfsHost string
+	SnellV6Mode   string
 }
 
 // Expand 把一条物理节点展开成订阅里的一到两个条目。
@@ -111,6 +118,11 @@ func (p PhysicalNode) Expand() []Node {
 		RealityShortID:   p.RealityShortID,
 		SSMethod:         p.SSMethod,
 		SSServerKey:      p.SSServerKey,
+		SnellVersion:     p.SnellVersion,
+		SnellPSK:         p.SnellPSK,
+		SnellObfsMode:    p.SnellObfsMode,
+		SnellObfsHost:    p.SnellObfsHost,
+		SnellV6Mode:      p.SnellV6Mode,
 	}
 	if p.IPv6Address == "" || !p.IPv6Enabled {
 		return []Node{v4}

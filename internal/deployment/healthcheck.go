@@ -110,10 +110,14 @@ func parseListenResult(out string, port int) (string, error) {
 
 // dialLabel 是拨测步骤名里的协议部分。
 func dialLabel(p singbox.Protocol) string {
-	if p == singbox.ProtocolShadowsocks {
+	switch p {
+	case singbox.ProtocolShadowsocks:
 		return "Shadowsocks"
+	case singbox.ProtocolSnell:
+		return "Snell"
+	default:
+		return "VLESS"
 	}
-	return "VLESS"
 }
 
 // checkDial 是健康检查第三步:用真实用户凭据发起一次真实连接。
@@ -410,6 +414,44 @@ func probeOutbound(
 		"tag":         "probe-out",
 		"server":      "127.0.0.1",
 		"server_port": inbound.ListenPort,
+	}
+
+	if inbound.Protocol == singbox.ProtocolSnell {
+		// **版本要经 SnellClientVersion 翻译。** 服务端的 5 对应客户端的 4,
+		// 上游刻意不提供 v5 客户端;照着服务端的数字写 5,探测客户端会在
+		// decode 阶段拒掉整份配置,而报出来的是"探测客户端未能监听端口" ——
+		// 那句话完全看不出真正的原因。翻译只有那一处实现。
+		version, err := singbox.ParseSnellVersion(inbound.SnellVersion)
+		if err != nil {
+			return nil, err
+		}
+		base["type"] = "snell"
+		base["version"] = singbox.SnellClientVersion(version)
+		base["psk"] = inbound.SnellPSK
+		// 用真实用户的 userkey。临时造一个只能证明"新账号能连",
+		// 而且那一份不在刚下发的配置里 —— 服务端会直接判它 bad user key。
+		base["userkey"] = user.SnellUserKey
+		// 混淆模式两端必须一致,否则第一个记录就解不开。
+		// obfs_host 客户端可以不填(服务端不校验它),这里就不填 ——
+		// 拨测要验的是链路能不能通,不是伪装像不像。
+		if version == singbox.SnellVersion5 {
+			mode, err := singbox.ParseSnellObfsMode(string(inbound.SnellObfsMode))
+			if err != nil {
+				return nil, err
+			}
+			if mode != singbox.SnellObfsNone {
+				base["obfs_mode"] = string(mode)
+			}
+		} else {
+			mode, err := singbox.ParseSnellV6Mode(string(inbound.SnellV6Mode))
+			if err != nil {
+				return nil, err
+			}
+			if mode != singbox.SnellV6Default {
+				base["mode"] = string(mode)
+			}
+		}
+		return base, nil
 	}
 
 	if inbound.Protocol == singbox.ProtocolShadowsocks {

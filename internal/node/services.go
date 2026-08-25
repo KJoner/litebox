@@ -80,6 +80,12 @@ func (s *Service) UninstallSingBox(ctx context.Context, nodeID int64) (ServiceOp
 			return err
 		}
 		result.step("已删除二进制、配置与备份")
+		// 通道跟着二进制一起清掉:机器上已经没有 sing-box 了,
+		// 库里还写着"预览版"就是在说一件不成立的事 —— 而下一次
+		// 「安装」不带参数时会沿用它,于是装上一支管理员没有选过的版本。
+		if err := s.store.SaveSingBoxChannel(ctx, nodeID, ChannelStable); err != nil {
+			return err
+		}
 		return nil
 	})
 	result.Detail = strings.Join(result.Steps, ";")

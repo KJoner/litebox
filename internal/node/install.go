@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,6 +18,8 @@ type InstallResult struct {
 	BinaryPath   string `json:"binary_path"`
 	BinarySHA256 string `json:"binary_sha256"`
 	ServiceName  string `json:"service_name"`
+	// Channel 是这次装上去的那一支(V14)。
+	Channel SingBoxChannel `json:"singbox_channel"`
 	// InitSystem 是这台节点上实际使用的服务管理器:systemd 或 openrc。
 	InitSystem string `json:"init_system"`
 	Installed  bool   `json:"installed"`
@@ -27,13 +30,21 @@ type InstallResult struct {
 
 // InstallBinary 上传 sing-box 二进制并写入服务定义。
 //
-// binary 是主控侧准备好的、带 with_v2ray_api 标签的构建产物。
-// 若节点上已有相同哈希的二进制则跳过上传(二进制约 28MB,重复传输代价不小)。
-func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte) (InstallResult, error) {
+// channel 决定装哪一支,**并且这次安装本身就是"这台机器属于哪个通道"的
+// 唯一来源** —— 装成功之后写进 nodes.singbox_channel。二进制由这里按通道
+// 取,不让调用方传进来:两个参数会有对不上的可能,而对不上的表现是
+// 库里写着预览版、机器上跑的是正式版,于是 Snell 入口保存得进去、
+// 部署到一半失败并回滚。
+//
+// 若节点上已有相同哈希的二进制则跳过上传(二进制约 30MB,重复传输代价不小)。
+func (s *Service) InstallBinary(
+	ctx context.Context, nodeID int64, channel SingBoxChannel,
+) (InstallResult, error) {
 	layout := s.layout
 	result := InstallResult{
 		BinaryPath:  layout.BinaryPath,
 		ServiceName: layout.ServiceName,
+		Channel:     channel,
 	}
 
 	// 中转机上**只放二进制,不装服务**。
@@ -56,8 +67,19 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 	if !installService {
 		result.ServiceName = ""
 	}
-	if len(binary) == 0 {
-		return result, fmt.Errorf("sing-box 二进制内容为空")
+
+	// **装回正式版之前先看这台机器上有没有 Snell 入口。**
+	//
+	// 不看的话,装完那一刻起这台机器的整份配置就渲染不出来了 ——
+	// 而渲染不出来是"配置状态未知",管理员看到的第一个现象是下一次部署
+	// 在 sing-box check 那一步失败并回滚,报一句 unknown inbound type: snell。
+	// 那时二进制已经换过去了,而他做的事情是"安装 sing-box"。
+	if err := s.checkChannelDowngrade(ctx, n, channel); err != nil {
+		return result, err
+	}
+	binary, err := s.singBoxBinary(channel, n.Arch)
+	if err != nil {
+		return result, err
 	}
 	for _, path := range []string{layout.BinaryPath, layout.ConfigPath()} {
 		if err := singbox.ValidateRemotePath(path); err != nil {
@@ -142,8 +164,14 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 			result.Detail = strings.TrimSpace(result.Detail + ";" + forwarding.Detail)
 		}
 
-		return s.store.SaveProbe(ctx, nodeID, probe.Arch, probe.SingBoxVersion,
-			strings.Join(probe.BuildTags, ","), probe.MemTotalMB, probe.Usable())
+		if err := s.store.SaveProbe(ctx, nodeID, probe.Arch, probe.SingBoxVersion,
+			strings.Join(probe.BuildTags, ","), probe.MemTotalMB, probe.Usable()); err != nil {
+			return err
+		}
+		// 通道在**探测确认之后**才落库:那时二进制已经在机器上、
+		// 已经跑过一次 version、也确认带着 with_v2ray_api。
+		// 提前写的话,一次上传失败会留下"库里说预览版、机器上还是正式版"。
+		return s.store.SaveSingBoxChannel(ctx, nodeID, channel)
 	})
 
 	// 装完一律丢掉池里这条连接,不看这次有没有真的改过 sshd。
@@ -162,6 +190,54 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64, binary []byte
 	// 必须放在 pool.Do 之外:节点锁不可重入,在事务内部调 Invalidate 会自我死锁。
 	s.pool.Invalidate(nodeID)
 	return result, err
+}
+
+// singBoxBinary 按通道取二进制。**取哪一支只有这一处判断。**
+func (s *Service) singBoxBinary(channel SingBoxChannel, arch string) ([]byte, error) {
+	if arch == "" {
+		return nil, errors.New("还没探测过这台机器的架构,先点一次「探测」")
+	}
+	provider := s.binaries
+	if channel.IsPreview() {
+		provider = s.previewBinaries
+	}
+	if provider == nil {
+		return nil, fmt.Errorf("主控本地没有%s sing-box 二进制", channel.Label())
+	}
+	binary, err := provider.Load(arch)
+	if err != nil {
+		return nil, err
+	}
+	if len(binary) == 0 {
+		return nil, errors.New("sing-box 二进制内容为空")
+	}
+	return binary, nil
+}
+
+// checkChannelDowngrade 拦住"这台机器上有 Snell 入口,却要装正式版"。
+//
+// 判据用**期望协议**而不是 deployed_protocol:后者只说节点上现在跑着什么,
+// 而渲染下一份配置用的是期望值 —— 一个刚建好、还没部署的 Snell 入口
+// 同样会让整份配置渲染不出来。
+func (s *Service) checkChannelDowngrade(ctx context.Context, n *Node, channel SingBoxChannel) error {
+	if channel.IsPreview() {
+		return nil
+	}
+	var names []string
+	for _, in := range n.Inbounds {
+		if in.Protocol.NeedsPreview() {
+			names = append(names, in.DisplayName)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w:这台机器上还有 %d 个 %s 入口(%s)—— "+
+		"装回正式版之后它的整份配置就渲染不出来了,"+
+		"下一次下发会在 sing-box check 那一步失败并回滚。"+
+		"先把这些入口删掉或改成别的协议",
+		ErrChannelMismatch, len(names), singbox.ProtocolSnell.Label(),
+		strings.Join(names, "、"))
 }
 
 func remoteSHA256(ctx context.Context, client *sshx.Client, path string) (string, error) {
@@ -209,8 +285,11 @@ func (s *Service) Uninstall(ctx context.Context, nodeID int64) error {
 		// 机器上,配置与备份都在 /run/litebox 下,而那里面正是全部用户的
 		// 凭据。卸载之后留着它,等于在一台"已经不归面板管"的机器上
 		// 留下一份完整的凭据,直到下次重启才消失。
-		_, err := client.Run(ctx, sshx.NewCommand(
-			"rm", "-rf", layout.BaseDir, layout.RuntimeDir))
-		return err
+		if _, err := client.Run(ctx, sshx.NewCommand(
+			"rm", "-rf", layout.BaseDir, layout.RuntimeDir)); err != nil {
+			return err
+		}
+		// 与按服务卸载同理:机器上已经没有 sing-box 了,通道回到默认值。
+		return s.store.SaveSingBoxChannel(ctx, nodeID, ChannelStable)
 	})
 }

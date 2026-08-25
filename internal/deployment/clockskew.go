@@ -79,9 +79,13 @@ func classifyClockSkew(skew time.Duration, protocol singbox.Protocol) (string, e
 	}
 
 	if protocol != singbox.ProtocolShadowsocks {
+		// 只有 Shadowsocks 2022 对时钟敏感 —— 它的 AEAD 头里带时间戳。
+		// VLESS + REALITY 与 Snell 都不带:前者靠 TLS 握手,后者靠
+		// salt 派生密钥加一个内存里的重放布隆过滤器,与两端的时钟无关。
 		return fmt.Sprintf(
-			"节点时钟比主控%s %s。VLESS + REALITY 不受影响,但若改用 Shadowsocks 会导致"+
-				"全部用户连不上而面板全绿,建议在节点上开启 NTP", direction, rounded), nil
+			"节点时钟比主控%s %s。%s 不受影响,但若改用 Shadowsocks 会导致"+
+				"全部用户连不上而面板全绿,建议在节点上开启 NTP",
+			direction, rounded, protocol.Label()), nil
 	}
 	if abs < clockSkewFatal {
 		return fmt.Sprintf(

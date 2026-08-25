@@ -191,6 +191,11 @@ cat <<EOF
      经 HTTPS 反代时还要把 $CONFIG_FILE 里的 secure_cookie 改成 true
   3. 构建节点用的 sing-box 并放到 $INSTALL_DIR/assets/singbox/
      (见 scripts/build-singbox.sh)
+     要用 Snell 入口的话,再构建一份预览版放同一个目录 ——
+     Snell 是 sing-box 1.14 才有的入站,而 1.14 目前只有预览版:
+     OUTPUT_DIR=$INSTALL_DIR/assets/singbox SINGBOX_CHANNEL=preview bash scripts/build-singbox.sh
+     不构建它也没关系:面板只是不提供「安装预览版」那个选项,
+     VLESS 与 Shadowsocks 一切照旧。
      要用 Mieru 入口的话,再拉一次 mita/mieru:
      OUTPUT_DIR=$INSTALL_DIR/assets/mieru bash scripts/fetch-mieru.sh
   4. 配置 Nginx 反代,示例见 deploy/nginx/litebox.conf

@@ -26,7 +26,8 @@ import (
 // "用户列表"会变成一个依赖入站协议的东西,配置 diff 就没法比了。
 func (s *Store) UsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.user_code, u.uuid_encrypted, u.ss_password_encrypted, u.status, u.quota_bytes,
+		SELECT u.user_code, u.uuid_encrypted, u.ss_password_encrypted,
+		       u.snell_password_encrypted, u.status, u.quota_bytes,
 		       u.used_uplink, u.used_downlink, u.expires_at
 		  FROM proxy_users u
 		  JOIN `+access.EffectiveInboundsView+` ei ON ei.proxy_user_id = u.id
@@ -41,8 +42,9 @@ func (s *Store) UsersForInbound(ctx context.Context, inboundID int64) ([]singbox
 	users := make([]singbox.User, 0)
 	for rows.Next() {
 		var u User
-		var uuidEnc, ssKeyEnc string
-		if err := rows.Scan(&u.UserCode, &uuidEnc, &ssKeyEnc, &u.Status, &u.QuotaBytes,
+		var uuidEnc, ssKeyEnc, snellKeyEnc string
+		if err := rows.Scan(&u.UserCode, &uuidEnc, &ssKeyEnc, &snellKeyEnc,
+			&u.Status, &u.QuotaBytes,
 			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt); err != nil {
 			return nil, err
 		}
@@ -68,7 +70,16 @@ func (s *Store) UsersForInbound(ctx context.Context, inboundID int64) ([]singbox
 				return nil, err
 			}
 		}
-		users = append(users, singbox.User{Code: u.UserCode, UUID: uuid, SSPassword: ssKey})
+		// Snell 的 userkey 同理:存量用户等着 backfill,空的时候不拦 ——
+		// 拿它挡住渲染会让一台与 Snell 完全无关的机器部署不下去。
+		snellKey := ""
+		if snellKeyEnc != "" {
+			if snellKey, err = s.cipher.Decrypt(snellKeyEnc); err != nil {
+				return nil, err
+			}
+		}
+		users = append(users, singbox.User{
+			Code: u.UserCode, UUID: uuid, SSPassword: ssKey, SnellUserKey: snellKey})
 	}
 	return users, rows.Err()
 }

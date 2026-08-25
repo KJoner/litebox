@@ -78,16 +78,50 @@ type nodeView struct {
 	// 地址与用户客户端里那一条对不上,而两边都不报错;而排查"用户连不上"
 	// 的人正是照着面板上这个地址去测的。
 	SubscriptionHost string `json:"subscription_host"`
+
+	// AvailableProtocols 是这台机器【现在】能建的入站协议(V14)。
+	//
+	// 由后端给而不是让前端按 singbox_channel 自己判:判据只能有一处实现。
+	// 前端自己写 `channel === 'PREVIEW' ? [...] : [...]` 的话,某天多一种
+	// 只在预览版里的协议,那个下拉框会漏掉它,而后端明明支持 ——
+	// 与 udp_timeout、subscription_host 是同一条规矩。
+	AvailableProtocols []protocolOption `json:"available_protocols"`
+}
+
+// protocolOption 是入站协议下拉框里的一项。
+type protocolOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// availableProtocols 按这台机器上装的那一支 sing-box 给出可选协议。
+//
+// **不把不可选的那些也列出来再置灰。** 置灰的选项要配一句解释,
+// 而那句解释在下拉框里没有地方放;管理员看到一个灰的 Snell,
+// 只会去猜是不是自己权限不够。真正需要说明的是"怎么才能用上它",
+// 那句话放在协议这一栏的下面(表单里),而不是塞进选项本身。
+func availableProtocols(channel node.SingBoxChannel) []protocolOption {
+	list := []protocolOption{
+		{Value: string(singbox.ProtocolVLESSReality), Label: singbox.ProtocolVLESSReality.Label()},
+		{Value: string(singbox.ProtocolShadowsocks), Label: singbox.ProtocolShadowsocks.Label()},
+	}
+	if channel.IsPreview() {
+		list = append(list, protocolOption{
+			Value: string(singbox.ProtocolSnell), Label: singbox.ProtocolSnell.Label(),
+		})
+	}
+	return list
 }
 
 // newNodeView 是 nodeView 的唯一构造入口 —— 列表与详情各拼一遍的话,
 // 加字段时漏掉一处的表现是「列表里有、点进详情就没了」。
 func newNodeView(n *node.Node, status node.NodeConfigStatus) nodeView {
 	return nodeView{
-		Node:             n,
-		NodeConfigStatus: status,
-		UDPTimeout:       singbox.UDPTimeoutFor(n.MemTotalMB),
-		SubscriptionHost: subscription.SubscriptionIPv4(n.Host, n.SubIPv4Address),
+		Node:               n,
+		NodeConfigStatus:   status,
+		UDPTimeout:         singbox.UDPTimeoutFor(n.MemTotalMB),
+		SubscriptionHost:   subscription.SubscriptionIPv4(n.Host, n.SubIPv4Address),
+		AvailableProtocols: availableProtocols(n.SingBoxChannel),
 	}
 }
 
@@ -587,13 +621,27 @@ func (s *Server) handleInstallNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请先探测节点以确定系统架构")
 		return
 	}
-	binary, err := s.binaries.Load(n.Arch)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+
+	// 通道由请求带上;不带表示"沿用这台机器现在这一支"。
+	//
+	// 不默认成正式版:那会让一台已经在跑预览版的机器,在管理员点了
+	// 一次不带参数的「重新安装」之后被悄悄降回正式版 —— 而它上面的
+	// Snell 入口从那一刻起就渲染不出配置了。
+	var body struct {
+		Channel string `json:"singbox_channel"`
+	}
+	if !decodeOptionalJSON(w, r, &body) {
 		return
 	}
+	channel := n.SingBoxChannel
+	if body.Channel != "" {
+		if channel, err = node.ParseSingBoxChannel(body.Channel); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
-	result, err := s.nodes.InstallBinary(r.Context(), id, binary)
+	result, err := s.nodes.InstallBinary(r.Context(), id, channel)
 	if err != nil {
 		s.audit.Record(r.Context(), audit.Entry{
 			AdminUserID: &admin.ID, Action: actionNodeInstall,

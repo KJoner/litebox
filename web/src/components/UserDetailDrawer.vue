@@ -380,6 +380,20 @@ function confirmRegenerateSSPassword() {
   })
 }
 
+/** 第三把,与上面两把对称。 */
+function confirmRegenerateSnellKey() {
+  lbDangerConfirm({
+    title: `重新生成 ${user.value?.display_name} 的 Snell 凭据?`,
+    okText: '重新生成',
+    impacts: [
+      '该用户在所有 Snell 入口上的凭据在重新部署后立即失效',
+      '需要重新导入订阅才能恢复',
+      'VLESS 与 Shadowsocks 入口不受影响,订阅地址本身也不变',
+    ],
+    onOk: () => act(() => api.regenerateUserSnellKey(props.userId!), 'Snell 凭据已重新生成'),
+  })
+}
+
 function confirmRegenerateToken() {
   lbDangerConfirm({
     title: `重新生成 ${user.value?.display_name} 的订阅地址?`,
@@ -486,6 +500,9 @@ const adjustColumns = [
               <a-menu-item @click="confirmRegenerateUUID">重新生成 UUID(VLESS)</a-menu-item>
               <a-menu-item @click="confirmRegenerateSSPassword">
                 重新生成密钥(Shadowsocks)
+              </a-menu-item>
+              <a-menu-item @click="confirmRegenerateSnellKey">
+                重新生成凭据(Snell)
               </a-menu-item>
               <a-menu-divider />
               <a-menu-item danger @click="deleteOpen = true">删除用户</a-menu-item>

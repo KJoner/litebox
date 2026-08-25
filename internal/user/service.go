@@ -121,6 +121,20 @@ func (s *Service) RegenerateSSPassword(ctx context.Context, id int64) (*User, er
 	return u, nil
 }
 
+// RegenerateSnellKey 重置用户的 Snell 凭据。与上面两个对称(V14)。
+//
+// **重置之后不会出现"一个用户都没有"的入站**:这里换的是一把,不是删掉。
+// 真正会走到 singbox.ErrSnellNoUsers 的是"这个入口的等级下一个够格的
+// 用户都没有",那由渲染层拦住。
+func (s *Service) RegenerateSnellKey(ctx context.Context, id int64) (*User, error) {
+	u, err := s.store.RegenerateSnellKey(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.markProtocolNodes(ctx, id, singbox.ProtocolSnell)
+	return u, nil
+}
+
 // markProtocolNodes 只标脏该用户可用节点中跑指定协议的那些。
 //
 // 查询失败时回落到全部有效节点:宁可多重启几台,也不能漏标 ——

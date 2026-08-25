@@ -6,10 +6,44 @@
 # 完整默认标签 58.1MB / 27MB,对 128MB 节点差异明显。
 set -euo pipefail
 
+# 两支构建:正式版与预览版(V14)。
+#
+#   SINGBOX_CHANNEL=stable   （默认）产出 sing-box-linux-<arch>
+#   SINGBOX_CHANNEL=preview           产出 sing-box-preview-linux-<arch>
+#
+# 预览版存在的唯一理由是 **Snell**:那个入站要 sing-box 1.14,而 1.14
+# 目前只有预览版。面板按节点选装哪一支(nodes.singbox_channel),
+# 一台机器一支 —— 一个 sing-box 进程、一份 config.json、一个 API 端口,
+# 装第二个只会覆盖第一个。
+#
+# 两支的**构建标签完全相同**,这一点是刻意的:预览版不是"另一个东西",
+# 它是同一份配置的另一个版本。真机实测(V14 技术验证 §2):由正式版
+# 渲染出来的配置在预览版上 check 通过、真跑起来、零 deprecation 警告。
+# 所以切通道不需要改配置,也就不会触发一次全站重新部署。
+#
+# 代价要说出来:同一份配置下常驻内存实测 30.4MB(正式版 22.4MB),
+# 对 128MB 的机器是 +8MB。
+#
 # 固定版本,禁止使用 latest。升级前需重新执行 Phase 0 的验证脚本。
-SINGBOX_VERSION="${SINGBOX_VERSION:-v1.13.15}"
+SINGBOX_CHANNEL="${SINGBOX_CHANNEL:-stable}"
+case "$SINGBOX_CHANNEL" in
+    stable)
+        SINGBOX_VERSION="${SINGBOX_VERSION:-v1.13.15}"
+        OUTPUT_NAME="sing-box"
+        ;;
+    preview)
+        SINGBOX_VERSION="${SINGBOX_VERSION:-v1.14.0-rc.1}"
+        OUTPUT_NAME="sing-box-preview"
+        ;;
+    *)
+        echo "SINGBOX_CHANNEL 只能是 stable 或 preview,实际是 $SINGBOX_CHANNEL" >&2
+        exit 1
+        ;;
+esac
 OUTPUT_DIR="${OUTPUT_DIR:-assets/singbox}"
-WORK_DIR="${WORK_DIR:-.build/sing-box}"
+# 两支各自的工作目录:共用一个的话,来回切通道会反复 checkout 两个 tag,
+# 每次都要重新下载依赖。
+WORK_DIR="${WORK_DIR:-.build/sing-box-$SINGBOX_CHANNEL}"
 
 # with_utls    —— REALITY 服务端实现已并入该标签(with_reality_server 在 1.13 已移除)
 # with_v2ray_api —— 用户级流量统计,缺少它整套统计无从谈起
@@ -18,7 +52,7 @@ BUILD_TAGS="with_utls,with_v2ray_api,badlinkname,tfogo_checklinkname0"
 
 VERSION_STRING="${SINGBOX_VERSION}-litebox"
 
-echo "构建 sing-box ${SINGBOX_VERSION}"
+echo "构建 sing-box ${SINGBOX_VERSION}(${SINGBOX_CHANNEL})"
 echo "构建标签: ${BUILD_TAGS}"
 echo
 
@@ -38,7 +72,7 @@ LDFLAGS="-X 'github.com/sagernet/sing-box/constant.Version=${VERSION_STRING}' ${
 mkdir -p "$OUTPUT_DIR"
 
 for arch in amd64 arm64; do
-    out="$OUTPUT_DIR/sing-box-linux-$arch"
+    out="$OUTPUT_DIR/$OUTPUT_NAME-linux-$arch"
     echo "构建 linux/$arch ..."
     (
         cd "$WORK_DIR"
@@ -55,10 +89,10 @@ case "$HOST_ARCH" in
     x86_64) HOST_ARCH=amd64 ;;
     aarch64) HOST_ARCH=arm64 ;;
 esac
-if [ "$(uname -s)" = "Linux" ] && [ -x "$OUTPUT_DIR/sing-box-linux-$HOST_ARCH" ]; then
+if [ "$(uname -s)" = "Linux" ] && [ -x "$OUTPUT_DIR/$OUTPUT_NAME-linux-$HOST_ARCH" ]; then
     echo
     echo "验证构建标签:"
-    tags_line="$("$OUTPUT_DIR/sing-box-linux-$HOST_ARCH" version | grep '^Tags:')"
+    tags_line="$("$OUTPUT_DIR/$OUTPUT_NAME-linux-$HOST_ARCH" version | grep '^Tags:')"
     echo "  $tags_line"
     if ! echo "$tags_line" | grep -q 'with_v2ray_api'; then
         echo "错误:构建标签中缺少 with_v2ray_api" >&2
@@ -66,8 +100,11 @@ if [ "$(uname -s)" = "Linux" ] && [ -x "$OUTPUT_DIR/sing-box-linux-$HOST_ARCH" ]
     fi
 fi
 
-cat > "$OUTPUT_DIR/build-metadata.json" <<EOF
+# 两支各写各的元数据文件:共用一个的话,后构建的那一支会把前一支的
+# 版本号盖掉,而那个文件正是排查"节点上跑的到底是哪一份"的起点。
+cat > "$OUTPUT_DIR/build-metadata-$SINGBOX_CHANNEL.json" <<EOF
 {
+  "channel": "${SINGBOX_CHANNEL}",
   "singbox_version": "${SINGBOX_VERSION}",
   "version_string": "${VERSION_STRING}",
   "build_tags": "${BUILD_TAGS}",

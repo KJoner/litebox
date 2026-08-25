@@ -14,15 +14,16 @@ import (
 )
 
 const (
-	actionUserCreate       = "user.create"
-	actionUserUpdate       = "user.update"
-	actionUserEnable       = "user.enable"
-	actionUserDisable      = "user.disable"
-	actionUserResetTraffic = "user.reset_traffic"
-	actionUserRegenUUID    = "user.regenerate_uuid"
-	actionUserRegenSSKey   = "user.regenerate_ss_password"
-	actionUserRegenToken   = "user.regenerate_sub_token"
-	actionUserDelete       = "user.delete"
+	actionUserCreate        = "user.create"
+	actionUserUpdate        = "user.update"
+	actionUserEnable        = "user.enable"
+	actionUserDisable       = "user.disable"
+	actionUserResetTraffic  = "user.reset_traffic"
+	actionUserRegenUUID     = "user.regenerate_uuid"
+	actionUserRegenSSKey    = "user.regenerate_ss_password"
+	actionUserRegenSnellKey = "user.regenerate_snell_key"
+	actionUserRegenToken    = "user.regenerate_sub_token"
+	actionUserDelete        = "user.delete"
 )
 
 // userResponse 是用户的对外表示。
@@ -435,6 +436,30 @@ func (s *Server) handleRegenerateSSPassword(w http.ResponseWriter, r *http.Reque
 		AdminUserID: &admin.ID, Action: actionUserRegenSSKey,
 		TargetType: "user", TargetID: u.UserCode,
 		Detail:   "旧 Shadowsocks 密钥将在下次部署后失效,只影响跑该协议的节点",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
+}
+
+// handleRegenerateSnellKey 重置用户的 Snell 凭据(V14)。
+//
+// 与另外两个重置是三件独立的事:一份凭据对应一种协议。
+// 只标脏跑 Snell 的机器 —— 一并标脏会把别的机器白白重启一遍。
+func (s *Server) handleRegenerateSnellKey(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.userIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	admin := adminFromContext(r.Context())
+	u, err := s.users.RegenerateSnellKey(r.Context(), id)
+	if err != nil {
+		s.writeUserError(w, err, "重新生成 Snell 凭据失败")
+		return
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionUserRegenSnellKey,
+		TargetType: "user", TargetID: u.UserCode,
+		Detail:   "旧 Snell 凭据将在下次部署后失效,只影响跑该协议的节点",
 		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
 	writeJSON(w, http.StatusOK, s.toDetailResponse(r.Context(), u))
