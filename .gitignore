@@ -19,6 +19,7 @@ web/dist/
 
 # 要分发到节点的 sing-box 二进制(约 28MB,由 scripts/build-singbox.sh 生成)
 assets/singbox/sing-box-linux-*
+assets/singbox/sing-box-preview-linux-*
 
 # mieru / mita 的官方二进制(各约 13MB,由 scripts/fetch-mieru.sh 拉取)
 assets/mieru/mita-linux-*

@@ -18,6 +18,9 @@
 #   GO_MIN / NODE_MIN  依赖的最低主版本
 #   SKIP_SINGBOX=1     跳过节点用 sing-box 的构建(它要拉 sing-box 源码,最慢)
 #   SKIP_MIERU=1       跳过 Mieru 用的 mita/mieru 下载(不打算用 Mieru 入口时)
+#   WITH_SNELL=1       额外构建预览版 sing-box(1.14)。**只有要用 Snell 入口
+#                      才需要** —— 它是上游的 rc,而多编译一次要几分钟。
+#                      不构建的话面板只是不提供「安装预览版」那个选项。
 set -euo pipefail
 
 REPO="${LITEBOX_REPO:-https://github.com/KJoner/litebox.git}"
@@ -183,6 +186,21 @@ else
     ok "sing-box 已构建"
 fi
 
+# 预览版(1.14)只有要用 Snell 入口时才需要。
+#
+# **默认不构建**:它是上游的 rc,而绝大多数机器不会用它 —— 多编译一次
+# 又要几分钟。没有它面板只是不提供「安装预览版」那个选项,
+# VLESS / Shadowsocks / Mieru 一切照旧。
+if [ "${WITH_SNELL:-0}" != "1" ]; then
+    :
+elif ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
+    ok "已有预览版 sing-box,跳过构建"
+else
+    log "构建预览版 sing-box(1.14,Snell 入口需要)"
+    SINGBOX_CHANNEL=preview bash scripts/build-singbox.sh
+    ok "预览版 sing-box 已构建"
+fi
+
 # mita/mieru 不自己构建,拉上游 release 的原样二进制(约 13MB,很快)。
 # 拉不到不中止安装:面板没有 Mieru 入口时用不到它们,而这一步依赖
 # GitHub release 能不能连上 —— 让它挡住整个安装,换来的是一台
@@ -220,6 +238,14 @@ if ls assets/singbox/sing-box-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/singbox"
     cp -f assets/singbox/sing-box-linux-* "$INSTALL_DIR/assets/singbox/"
     ok "节点用 sing-box 已就位"
+fi
+# 预览版单独拷:通配符不能合成一个 —— sing-box-linux-* 匹配不到
+# sing-box-preview-linux-*,而反过来会把两支都算进上面那个判断里,
+# 于是"只有预览版"的机器会被当成"正式版已就位"。
+if ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
+    install -d -m 0755 "$INSTALL_DIR/assets/singbox"
+    cp -f assets/singbox/sing-box-preview-linux-* "$INSTALL_DIR/assets/singbox/"
+    ok "预览版 sing-box 已就位(Snell 入口可用)"
 fi
 if ls assets/mieru/mita-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/mieru"

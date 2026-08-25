@@ -84,6 +84,9 @@ type User struct {
 	UUID string
 	// SSPassword 是库里存的 32 字节 base64 密钥,截取由 SSKeyFor 完成。
 	SSPassword string
+	// SnellUserKey 是这个用户在 Snell 入站上的身份凭据,原样下发 ——
+	// 与 SSPassword 不同,它不参与任何拼接,也不按什么长度截取。
+	SnellUserKey string
 }
 
 // InboundParams 是一个入站的渲染参数。
@@ -117,6 +120,16 @@ type InboundParams struct {
 	// 以下只有 SHADOWSOCKS 用。SSPassword 是入站级 PSK(库里存的 32 字节 base64)。
 	SSMethod   SSMethod
 	SSPassword string
+
+	// 以下只有 SNELL 用。
+	//
+	// SnellObfsHost 刻意【不在这里】—— 服务端根本没有那个字段
+	// (混淆时它不校验客户端伪装的 Host),所以它不进节点配置、
+	// 不改配置哈希、也不需要一次部署。它只走订阅。
+	SnellVersion  int
+	SnellPSK      string
+	SnellObfsMode SnellObfsMode
+	SnellV6Mode   SnellV6Mode
 
 	// Users 是这个入站上的凭据持有者。同一个用户可以同时出现在同一台机器的
 	// 多个入站里 —— V2Ray 的用户计数器没有入站维度,他的流量会合并到
@@ -598,6 +611,56 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 	}
 
 	switch params.Protocol {
+	case ProtocolSnell:
+		version, err := ParseSnellVersion(params.SnellVersion)
+		if err != nil {
+			return Inbound{}, fmt.Errorf("入站 %s:%w", params.Tag, err)
+		}
+		// **一个用户都没有时整份配置渲染失败,绝不渲染成空列表。**
+		//
+		// 空列表会让 sing-box 退回单用户模式,而那个模式的服务端根本
+		// 不读请求里的 client-id —— 于是每一个拿到过这个入站 psk 的人
+		// (psk 就在他的客户端配置里)照常连得上、照常上网,
+		// 计数器一个都不产生,面板上一个字都不说。
+		// 见 ErrSnellNoUsers 的注释与 V14 技术验证 §4。
+		if len(users) == 0 {
+			return Inbound{}, fmt.Errorf("%w(%s):"+
+				"渲染成空列表会让它退回单用户模式,那时 psk 就是唯一凭据,"+
+				"而 psk 在每个用户的客户端配置里",
+				ErrSnellNoUsers, params.Tag)
+		}
+		base.Type = "snell"
+		base.Version = version
+		base.PSK = params.SnellPSK
+		// 两个模式字段按版本二选一渲染,而且只在非默认值时出现。
+		//
+		// 不按"库里存了什么就写什么":一个从 v6 改成 v5 的入站,
+		// 库里那个 v6 模式还留着(与 ss_method 留在 VLESS 入站上同理),
+		// 照写下去 sing-box 会拒绝启动 —— 而错误信息说的是模式名非法,
+		// 不会提"这一项属于另一个版本"。
+		switch version {
+		case SnellVersion5:
+			mode, err := ParseSnellObfsMode(string(params.SnellObfsMode))
+			if err != nil {
+				return Inbound{}, fmt.Errorf("入站 %s:%w", params.Tag, err)
+			}
+			if mode != SnellObfsNone {
+				base.ObfsMode = string(mode)
+			}
+		default:
+			mode, err := ParseSnellV6Mode(string(params.SnellV6Mode))
+			if err != nil {
+				return Inbound{}, fmt.Errorf("入站 %s:%w", params.Tag, err)
+			}
+			if mode != SnellV6Default {
+				base.Mode = string(mode)
+			}
+		}
+		base.Users = make([]InboundUser, 0, len(users))
+		for _, u := range users {
+			base.Users = append(base.Users, InboundUser{Name: u.Code, UserKey: u.SnellUserKey})
+		}
+
 	case ProtocolShadowsocks:
 		base.Type = "shadowsocks"
 		base.Method = string(params.SSMethod)
@@ -735,6 +798,10 @@ func validateInbound(in InboundParams) error {
 	// 协议分派。两边互不校验对方的字段 —— SS 入站上 REALITY 那几列
 	// 本来就是空的,拿 VLESS 的规矩去量它会让一个正常入站保存不了。
 	switch in.Protocol {
+	case ProtocolSnell:
+		if err := validateSnellParams(in); err != nil {
+			return err
+		}
 	case ProtocolShadowsocks:
 		if err := validateShadowsocksParams(in); err != nil {
 			return err
@@ -782,6 +849,48 @@ func validateVLESSParams(in InboundParams) error {
 			return fmt.Errorf("%w:UUID 被多个用户共用", ErrDuplicateUser)
 		}
 		seenUUID[u.UUID] = true
+	}
+	return nil
+}
+
+func validateSnellParams(in InboundParams) error {
+	version, err := ParseSnellVersion(in.SnellVersion)
+	if err != nil {
+		return err
+	}
+	if err := ValidateSnellKey(in.SnellPSK); err != nil {
+		return fmt.Errorf("入站 %w", err)
+	}
+	// 按版本只校验属于这个版本的那一项。另一项留着不管 ——
+	// 它与 VLESS 入站上残留的 ss_method 同类:切版本时不清空是刻意的,
+	// 切回去还能用,而拿另一个版本的规矩去量它会让一个正常入站保存不了。
+	if version == SnellVersion5 {
+		if _, err := ParseSnellObfsMode(string(in.SnellObfsMode)); err != nil {
+			return err
+		}
+	} else if _, err := ParseSnellV6Mode(string(in.SnellV6Mode)); err != nil {
+		return err
+	}
+
+	seenKey := make(map[string]bool, len(in.Users))
+	for _, u := range in.Users {
+		if err := ValidateSnellKey(u.SnellUserKey); err != nil {
+			return fmt.Errorf("用户 %s 的%w", u.Code, err)
+		}
+		// 上游对重复 userkey 是【启动失败】(snell: duplicate user key),
+		// 那算响亮;但仍要在这里拦住 —— 让错误落在保存入站时,
+		// 而不是十几秒后的部署失败回滚里。
+		if seenKey[u.SnellUserKey] {
+			return fmt.Errorf("%w:Snell userkey 被多个用户共用", ErrDuplicateUser)
+		}
+		seenKey[u.SnellUserKey] = true
+	}
+	// psk 与某个 userkey 相同不会让 sing-box 报错(实测通过),
+	// 但那意味着一个用户的身份凭据等于人人都有的那一串 ——
+	// 谁都能冒充他,而他的流量会记在别人的账上。
+	if seenKey[in.SnellPSK] {
+		return fmt.Errorf("%w:某个用户的 Snell userkey 与入站 psk 相同,"+
+			"而 psk 在每个人的客户端配置里", ErrDuplicateUser)
 	}
 	return nil
 }

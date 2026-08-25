@@ -21,6 +21,11 @@ type Protocol string
 const (
 	ProtocolVLESSReality Protocol = "VLESS_REALITY"
 	ProtocolShadowsocks  Protocol = "SHADOWSOCKS"
+	// ProtocolSnell 只在装了预览版二进制的机器上可选(V14)——
+	// sing-box 的 snell 入站要 1.14 才有。这条限制由 node 层把关:
+	// 渲染期发现不了它,只有部署时 sing-box check 会报
+	// "unknown inbound type: snell",而那时错误落在部署记录里。
+	ProtocolSnell Protocol = "SNELL"
 )
 
 // ParseProtocol 解析协议名。空串回落到 VLESS —— 存量节点的列在迁移里
@@ -31,6 +36,8 @@ func ParseProtocol(raw string) (Protocol, error) {
 		return ProtocolVLESSReality, nil
 	case ProtocolShadowsocks:
 		return ProtocolShadowsocks, nil
+	case ProtocolSnell:
+		return ProtocolSnell, nil
 	}
 	return "", fmt.Errorf("未知的落地协议 %q", raw)
 }
@@ -40,10 +47,23 @@ func (p Protocol) Label() string {
 	switch p {
 	case ProtocolShadowsocks:
 		return "Shadowsocks 2022"
+	case ProtocolSnell:
+		return "Snell"
 	default:
 		return "VLESS + REALITY"
 	}
 }
+
+// NeedsPreview 表示这个协议要求节点上装的是预览版 sing-box。
+//
+// 只有 Snell 是 —— VLESS 与 Shadowsocks 在正式版与预览版上渲染出的配置
+// 逐字节相同,实测两边都跑得起来(V14 技术验证 §2)。
+//
+// 判据写在协议上而不是散在各处:切通道、建入口、改协议三个地方都要问
+// 同一个问题,各写一遍的话漏掉其中一个的表现是配置渲染出来了、
+// 部署到一半 sing-box check 失败并回滚,而报错是一句
+// "unknown inbound type: snell" —— 它不会提"这台机器装的是正式版"。
+func (p Protocol) NeedsPreview() bool { return p == ProtocolSnell }
 
 // LegacyInboundTag 返回 V8 之前那一版按协议现算的入站标签。
 //

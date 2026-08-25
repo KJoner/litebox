@@ -191,7 +191,23 @@ export type NodeBillingMode = 'EGRESS' | 'BOTH'
  * SHADOWSOCKS 用 2022 系列的加密方法与两级 PSK,不用 REALITY。
  * 一个节点只跑一种 —— 表单按它决定显示哪一组字段。
  */
-export type NodeProtocol = 'VLESS_REALITY' | 'SHADOWSOCKS'
+export type NodeProtocol = 'VLESS_REALITY' | 'SHADOWSOCKS' | 'SNELL'
+
+/**
+ * 这台机器上装的是哪一支 sing-box(V14)。
+ *
+ * **它描述的是事实,不是期望** —— 由「安装」写入,由「卸载」清回 STABLE,
+ * 没有第三条路径会改它。所以界面上它出现在 sing-box 那一行的状态里,
+ * 而不是节点编辑表单的某一栏:做成可编辑的设置会多出一个
+ * 「想要预览版、装的还是正式版」的状态,而那个状态下 Snell 入口
+ * 保存得进去、部署到一半失败并回滚。
+ */
+export type SingBoxChannel = 'STABLE' | 'PREVIEW'
+
+/** Snell 的服务端版本。5 走 HTTP/TLS 混淆,6 走流量整形。 */
+export type SnellVersion = 5 | 6
+export type SnellObfsMode = '' | 'none' | 'http' | 'tls'
+export type SnellV6Mode = '' | 'default' | 'unshaped' | 'unsafe-raw'
 
 /** Shadowsocks 2022 的加密方法。只有这三种,不收传统 AEAD。 */
 export type NodeSSMethod =
@@ -202,6 +218,25 @@ export type NodeSSMethod =
 export const PROTOCOL_LABEL: Record<NodeProtocol, string> = {
   VLESS_REALITY: 'VLESS + REALITY',
   SHADOWSOCKS: 'Shadowsocks 2022',
+  SNELL: 'Snell',
+}
+
+/** Snell 版本的说明。只在这里写一遍。 */
+export const SNELL_VERSION_LABEL: Record<number, string> = {
+  5: 'v5 —— HTTP/TLS 混淆',
+  6: 'v6 —— 流量整形(推荐)',
+}
+
+export const SNELL_OBFS_LABEL: Record<string, string> = {
+  none: '不混淆',
+  http: 'HTTP 混淆',
+  tls: 'TLS 混淆',
+}
+
+export const SNELL_V6_MODE_LABEL: Record<string, string> = {
+  default: '默认整形',
+  unshaped: '不整形(更快,特征更明显)',
+  'unsafe-raw': '原始(上游标注 unsafe)',
 }
 
 /**
@@ -221,6 +256,7 @@ export const SS_METHOD_LABEL: Record<NodeSSMethod, string> = {
 export const PROTOCOL_SHORT: Record<NodeProtocol, string> = {
   VLESS_REALITY: 'VLESS',
   SHADOWSOCKS: 'SS2022',
+  SNELL: 'Snell',
 }
 
 /**
@@ -387,6 +423,19 @@ export interface NodeInbound {
    */
   deployed_protocol: NodeProtocol | ''
   deployed_ss_method: NodeSSMethod | ''
+  /** 以下五项只在 SNELL 下有值。snell_version 为 0 表示这不是 Snell 入口。 */
+  snell_version: number
+  snell_obfs_mode: SnellObfsMode
+  /**
+   * 混淆时客户端伪装的 Host。**它不进节点配置** —— 服务端没有这个字段,
+   * 所以改它不用重新部署,只影响下一次生成的订阅。
+   */
+  snell_obfs_host: string
+  snell_v6_mode: SnellV6Mode
+  /** 节点上【已经生效】的那两项,订阅只看它们,理由同 deployed_protocol。 */
+  deployed_snell_version: number
+  deployed_snell_obfs_mode: SnellObfsMode
+  deployed_snell_v6_mode: SnellV6Mode
   /** sing-box 真正 bind 的端口 */
   listen_port: number
   /** 客户端连接的公网端口。0 表示跟随 listen_port。 */
@@ -438,6 +487,17 @@ export interface NodeInboundInput {
   display_name: string
   protocol: NodeProtocol
   ss_method?: NodeSSMethod | ''
+  /**
+   * 以下四项只在 SNELL 下提交。
+   *
+   * **snell_version 留 0 表示「保持原值」**,不是「这不再是 Snell 入口」——
+   * 与 access_tier_id 同一个约定。编辑表单必须回填它,漏了的话后端会
+   * 沿用原值(那是兜底),但表单上显示的与提交的就对不上了。
+   */
+  snell_version?: number
+  snell_obfs_mode?: SnellObfsMode
+  snell_obfs_host?: string
+  snell_v6_mode?: SnellV6Mode
   listen_port: number
   public_port: number
   ipv6_public_port?: number
@@ -531,6 +591,8 @@ export interface Node {
   arch: string
   singbox_version: string
   singbox_build_tags: string
+  /** 这台机器上装的是哪一支 sing-box。Snell 入口只在 PREVIEW 上能建。 */
+  singbox_channel: SingBoxChannel
   /**
    * 探测到的节点内存,0 表示还没探测过。
    *
@@ -551,6 +613,17 @@ export interface Node {
    * 各算一遍会在某个内存刚好卡在边界上的节点上分叉,而两边都不报错。
    */
   udp_timeout: string
+  /**
+   * 这台机器【现在】能建的入站协议,后端按 singbox_channel 算好。
+   *
+   * 前端渲染这个列表,**不自己写 `channel === 'PREVIEW' ? ... : ...`** ——
+   * 判据只能有一处实现,各写一遍的话,某天多一种只在预览版里的协议,
+   * 这个下拉框会漏掉它而后端明明支持。与 udp_timeout、subscription_host
+   * 是同一条规矩。
+   *
+   * 只有 GET /api/nodes 与 GET /api/nodes/{id} 会带上它。
+   */
+  available_protocols?: { value: NodeProtocol; label: string }[]
   created_at: string
   updated_at: string
   /**
@@ -1629,6 +1702,14 @@ export const api = {
   /** 只影响跑 Shadowsocks 的节点 —— UUID 不出现在它们的配置里,反之亦然。 */
   regenerateUserSSPassword: (id: number) =>
     request<ProxyUser>(`/api/users/${id}/regenerate-ss-password`, { method: 'POST' }),
+  /**
+   * 只影响跑 Snell 的节点(V14)。
+   *
+   * 与另外两把是三件独立的事 —— 复用一把的话,点"重置 Snell 凭据"
+   * 会连带作废这个人的 VLESS 与 Shadowsocks 访问。
+   */
+  regenerateUserSnellKey: (id: number) =>
+    request<ProxyUser>(`/api/users/${id}/regenerate-snell-key`, { method: 'POST' }),
   regenerateSubToken: (id: number) =>
     request<ProxyUser>(`/api/users/${id}/regenerate-sub-token`, { method: 'POST' }),
   userTraffic: (id: number, days = 30) =>
@@ -1659,7 +1740,14 @@ export const api = {
       { method: 'POST' },
     ),
   probeNode: (id: number) => request<ProbeResult>(`/api/nodes/${id}/probe`, { method: 'POST' }),
-  installNode: (id: number) =>
+  /**
+   * 安装 sing-box。channel 不传表示"沿用这台机器现在那一支"。
+   *
+   * **不默认成正式版**:那会让一台已经在跑预览版的机器,在管理员点了
+   * 一次不带参数的「重新安装」之后被悄悄降回正式版 —— 而它上面的
+   * Snell 入口从那一刻起就渲染不出配置了。
+   */
+  installNode: (id: number, channel?: SingBoxChannel) =>
     request<{
       binary_path: string
       binary_sha256: string
@@ -1674,9 +1762,11 @@ export const api = {
         config_path: string
         detail: string
       }
+      /** 这次装上去的那一支 */
+      singbox_channel: SingBoxChannel
     }>(
       `/api/nodes/${id}/install`,
-      { method: 'POST' },
+      { method: 'POST', body: channel ? { singbox_channel: channel } : undefined },
     ),
   /**
    * 从这台机器的出口实测一个握手目标。**只检测,不写入。**

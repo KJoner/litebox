@@ -403,6 +403,14 @@ func cmdServe(args []string) error {
 	} else if n > 0 {
 		logger.Info("已为存量用户补齐 Mieru 口令", "用户数", n)
 	}
+	// Snell 凭据同理。这一份缺了还多一层后果:入站的用户列表如果因此
+	// 渲染成空,sing-box 会退回单用户模式,而那时 psk 就是唯一凭据 ——
+	// psk 在每个人的客户端配置里(见 singbox.ErrSnellNoUsers)。
+	if n, err := userStore.BackfillSnellKeys(ctx); err != nil {
+		return fmt.Errorf("补齐用户 Snell 凭据: %w", err)
+	} else if n > 0 {
+		logger.Info("已为存量用户补齐 Snell 凭据", "用户数", n)
+	}
 
 	// 外部代理:不属于本面板、不由本面板部署的成品线路。
 	// UA 从设置里取,改了不必重启 —— 部分机场按 UA 返回不同格式。
@@ -435,6 +443,7 @@ func cmdServe(args []string) error {
 		DeployStore:      deployment.NewStore(db),
 		Users:            userStore,
 		Binaries:         node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		PreviewBinaries:  node.NewPreviewBinaryProvider(cfg.Node.BinaryDir),
 		MieruBinaries:    mieruBinaries,
 		MieruClients:     mieruClients,
 		MieruSync:        syncer,

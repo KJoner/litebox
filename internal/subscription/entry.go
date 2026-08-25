@@ -32,6 +32,11 @@ type Credentials struct {
 	// MieruPassword 是用户在 mita 上的口令。它与上面两份不同的地方是
 	// **原样下发** —— mieru 没有服务端 PSK,客户端用的就是这一串本身。
 	MieruPassword string
+	// SnellUserKey 是用户在 Snell 入站上的身份凭据,原样下发。
+	//
+	// 它与节点的 psk 是两样东西:psk 人人相同、只做外层 AEAD 的密钥派生,
+	// userkey 才是身份。两者都要进客户端配置,少一个都连不上。
+	SnellUserKey string
 	// UserCode 是 mieru 的用户名(user_000001)。
 	//
 	// 它同时是 mita 那边的流量计数器名,与 sing-box 侧的 stats 计数器同名 ——
@@ -70,12 +75,30 @@ type Node struct {
 	// Shadowsocks 专有。SSServerKey 是节点级 PSK(32 字节 base64)。
 	SSMethod    singbox.SSMethod
 	SSServerKey string
+
+	// Snell 专有。三项都取节点上【已经生效】的那一份,与 Protocol 同理。
+	// SnellObfsHost 是例外:它不进节点配置(服务端没有这个字段),
+	// 所以取的是期望值,而它本来就只影响客户端。
+	SnellVersion  int
+	SnellPSK      string
+	SnellObfsMode string
+	SnellObfsHost string
+	SnellV6Mode   string
 }
 
 // Entry 是订阅里的一个条目,已经与协议无关。
 type Entry struct {
 	DisplayName string
-	// URI 是这个条目的分享链接,永远非空 —— 它是订阅的兜底格式。
+	// URI 是这个条目的分享链接。
+	//
+	// **空串表示这个条目没有通用的分享链接**,base64 与 uri 两种格式
+	// 跳过它(uriList 负责)。V14 之前它确实"永远非空",Snell 打破了
+	// 这一点:那个协议没有任何客户端认得的 URI 形式,而自己造一个
+	// 只会让用户导入到一条永远连不上的节点 —— 他会以为是自己的客户端
+	// 有问题,而少一条至少是能被发现的。
+	//
+	// 三个字段各自回答"这个条目在这种格式里长什么样",取值范围互不覆盖:
+	// Mieru 是 Outbound 为 nil,Snell 是 URI 与 Proxy 都为空。
 	URI string
 	// Outbound 生成 sing-box 客户端配置里的出站;为 nil 表示这个条目
 	// 无法表达成 sing-box 出站(将来的外部代理可能用不认识的协议),
@@ -108,6 +131,20 @@ type Entry struct {
 // EntryFor 把一个节点连同用户凭据转成订阅条目。
 func EntryFor(cred Credentials, node Node) (Entry, error) {
 	switch node.Protocol {
+	case singbox.ProtocolSnell:
+		// 用户还没有 userkey(存量用户等着 backfill)时整条跳过,
+		// 而不是下发一个空 userkey —— 空的那一份在服务端查不到,
+		// 用户拿到的是一条握手直接被拒的节点。
+		if cred.SnellUserKey == "" {
+			return Entry{}, fmt.Errorf("节点 %s:这个用户还没有 Snell 凭据", node.DisplayName)
+		}
+		return Entry{
+			DisplayName: node.DisplayName,
+			// URI 与 Proxy 都留空,理由见 snell.go 开头。
+			Outbound: func(o OutboundOptions) any {
+				return snellClientOutbound(o, cred.SnellUserKey, node)
+			},
+		}, nil
 	case singbox.ProtocolShadowsocks:
 		// 拼 password 走 singbox.SSClientPassword,与部署拨测同一个实现。
 		password, err := singbox.SSClientPassword(node.SSServerKey, cred.SSPassword, node.SSMethod)

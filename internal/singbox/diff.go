@@ -238,7 +238,49 @@ func compareInboundAttrs(oldIn, newIn Inbound) []string {
 	if oldIn.Password != newIn.Password {
 		changes = append(changes, "Shadowsocks 密钥已更换(所有客户端需重新拉取订阅)")
 	}
+
+	// Snell 的三项。**渲染出来的每一个字段都必须在这里出现** ——
+	// 配置状态按整份配置的哈希算,而配置比对按这份白名单算,
+	// 漏一项的表现是抽屉上写着「待部署」、点开比对却说「配置无变化」,
+	// 两个都是我们自己给的,管理员只能二选一地相信。
+	// TestEveryRenderedChangeShowsUpInDiff 是给以后加字段的人留的。
+	if oldIn.Version != newIn.Version {
+		changes = append(changes, fmt.Sprintf("Snell 版本 %s → %s",
+			snellVersionLabelOrDash(oldIn.Version), snellVersionLabelOrDash(newIn.Version)))
+	}
+	if oldIn.ObfsMode != newIn.ObfsMode {
+		// 空串就是 none —— 渲染时默认值整项不写,所以这里要把它说成 none,
+		// 不然管理员看到的是「混淆 — → http」,而"—"读起来像"这一项不适用"。
+		changes = append(changes, fmt.Sprintf("Snell 混淆 %s → %s",
+			orNamed(oldIn.ObfsMode, string(SnellObfsNone)),
+			orNamed(newIn.ObfsMode, string(SnellObfsNone))))
+	}
+	if oldIn.Mode != newIn.Mode {
+		changes = append(changes, fmt.Sprintf("Snell 整形模式 %s → %s",
+			orNamed(oldIn.Mode, string(SnellV6Default)),
+			orNamed(newIn.Mode, string(SnellV6Default))))
+	}
+	if oldIn.PSK != newIn.PSK {
+		changes = append(changes, "Snell psk 已更换(所有客户端需重新拉取订阅)")
+	}
 	return changes
+}
+
+// snellVersionLabelOrDash 把 0 说成"—" —— 0 的意思是「这不是 Snell 入站」,
+// 出现在协议变更那一行的旁边。
+func snellVersionLabelOrDash(v int) string {
+	if v == 0 {
+		return "—"
+	}
+	return SnellVersionLabel(v)
+}
+
+// orNamed 把空串换成它实际生效的那个默认值名字,而不是"—"。
+func orNamed(s, whenEmpty string) string {
+	if s == "" {
+		return whenEmpty
+	}
+	return s
 }
 
 // compareChainAttrs 比较一个入站的链式出站。
@@ -355,6 +397,8 @@ func protocolLabelOf(in Inbound) string {
 	switch in.Type {
 	case "shadowsocks":
 		return ProtocolShadowsocks.Label()
+	case "snell":
+		return ProtocolSnell.Label()
 	case "vless":
 		return ProtocolVLESSReality.Label()
 	case "":

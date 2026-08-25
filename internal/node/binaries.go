@@ -41,6 +41,18 @@ func NewDirBinaryProvider(dir string) *DirBinaryProvider {
 	}
 }
 
+// NewPreviewBinaryProvider 读同一个目录下的预览版构建(V14)。
+//
+// 文件名是 sing-box-preview-linux-<arch>,由 scripts/build-singbox.sh
+// 带 SINGBOX_CHANNEL=preview 产出。两支放同一个目录而不是两个目录:
+// 它们是同一件东西的两个版本,分开只会多一个要在部署文档里解释的路径。
+func NewPreviewBinaryProvider(dir string) *DirBinaryProvider {
+	return &DirBinaryProvider{
+		dir: dir, name: "sing-box-preview", cache: map[string][]byte{},
+		hint: "请先执行 SINGBOX_CHANNEL=preview scripts/build-singbox.sh 构建",
+	}
+}
+
 // NewNamedBinaryProvider 供 mita / mieru 这类**上游直接发布**的二进制用。
 //
 // 它们与 sing-box 不同:我们不自己构建(没有需要调整的构建标签),

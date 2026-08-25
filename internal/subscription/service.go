@@ -196,7 +196,7 @@ func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, erro
 		return nil, err
 	}
 	cred := Credentials{
-		UUID: u.UUID, SSPassword: u.SSPassword,
+		UUID: u.UUID, SSPassword: u.SSPassword, SnellUserKey: u.SnellPassword,
 		MieruPassword: u.MieruPassword, UserCode: u.UserCode,
 	}
 
@@ -253,9 +253,18 @@ func (s *Service) mieruEntries(cred Credentials, nodes []MieruNode) []Entry {
 	return entries
 }
 
+// uriList 收齐能表达成分享链接的那些条目。
+//
+// **空 URI 要跳过而不是原样拼进去。** 一个空行进了 base64 订阅之后,
+// 客户端的表现各不相同:有的整份解析失败(用户的节点全没了),
+// 有的多出一条空节点。而空串的来源是 Snell —— 那个协议没有任何客户端
+// 认得的 URI 形式,见 snell.go 开头。
 func uriList(entries []Entry) []string {
 	uris := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if entry.URI == "" {
+			continue
+		}
 		uris = append(uris, entry.URI)
 	}
 	return uris
@@ -300,6 +309,8 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		       i.ipv6_enabled, i.ipv6_display_name,
 		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
 		       i.ss_password_encrypted,
+		       i.deployed_snell_version, i.snell_psk_encrypted,
+		       i.deployed_snell_obfs_mode, i.snell_obfs_host, i.deployed_snell_v6_mode,
 		       i.reality_dest, i.reality_pubkey, i.reality_short_id
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id
@@ -321,12 +332,14 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	physical := make([]PhysicalNode, 0)
 	for rows.Next() {
 		var p PhysicalNode
-		var protocol, ssMethod, ssKeyEnc string
+		var protocol, ssMethod, ssKeyEnc, snellPSKEnc string
 		var listenPort int
 		if err := rows.Scan(&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Port, &listenPort, &p.IPv6Port,
 			&p.IPv6Enabled, &p.IPv6Name,
 			&protocol, &ssMethod, &p.TCPFastOpen, &ssKeyEnc,
+			&p.SnellVersion, &snellPSKEnc,
+			&p.SnellObfsMode, &p.SnellObfsHost, &p.SnellV6Mode,
 			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
 		}
@@ -344,6 +357,11 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		if p.Protocol == singbox.ProtocolShadowsocks && ssKeyEnc != "" {
 			if p.SSServerKey, err = s.cipher.Decrypt(ssKeyEnc); err != nil {
 				return nil, fmt.Errorf("解密节点 %s 的 Shadowsocks 密钥: %w", p.DisplayName, err)
+			}
+		}
+		if p.Protocol == singbox.ProtocolSnell && snellPSKEnc != "" {
+			if p.SnellPSK, err = s.cipher.Decrypt(snellPSKEnc); err != nil {
+				return nil, fmt.Errorf("解密节点 %s 的 Snell psk: %w", p.DisplayName, err)
 			}
 		}
 		physical = append(physical, p)

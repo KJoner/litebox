@@ -1259,7 +1259,17 @@ const needsPortForward = computed(() =>
                     </b>
                   </div>
                   <div><span>架构</span><b class="lb-mono">{{ node.arch || '未探测' }}</b></div>
-                  <div><span>sing-box</span><b class="lb-mono">{{ node.singbox_version || '未安装' }}</b></div>
+                  <!-- 版本号后面挂上通道。光有版本号也能推出来,但那要求
+                       看的人记得 1.14 是预览版 —— 而「这台为什么能选 Snell、
+                       那台为什么不能」的答案必须就在眼前。 -->
+                  <div>
+                    <span>sing-box</span>
+                    <b class="lb-mono">
+                      {{ node.singbox_version || '未安装'
+                      }}<template v-if="node.singbox_version && node.singbox_channel === 'PREVIEW'">
+                        · 预览版</template>
+                    </b>
+                  </div>
                   <!-- 内存与它推出来的 UDP 超时挨在一起。分开的话,一台机器
                        探测完突然变成「待部署」而管理员看不出是什么改了。
                        超时值取后端给的,不在前端按内存自己推。 -->
@@ -1332,6 +1342,33 @@ const needsPortForward = computed(() =>
                     <div class="nd__kv-wide">
                       <span>加密方法</span>
                       <b class="lb-mono">{{ i.ss_method || '—' }}</b>
+                    </div>
+                  </template>
+                  <!-- Snell 不用 REALITY,那几行一律不渲染 ——
+                       显示一个"握手目标:未设置"会让人以为还有一步没做,
+                       而这个协议里根本没有那一步。 -->
+                  <template v-else-if="i.protocol === 'SNELL'">
+                    <div>
+                      <span>Snell 版本</span>
+                      <b class="lb-mono">v{{ i.snell_version || '—' }}</b>
+                    </div>
+                    <div>
+                      <span>{{ i.snell_version === 5 ? '混淆' : '流量整形' }}</span>
+                      <b class="lb-mono">
+                        {{
+                          i.snell_version === 5
+                            ? i.snell_obfs_mode || 'none'
+                            : i.snell_v6_mode || 'default'
+                        }}
+                      </b>
+                    </div>
+                    <div v-if="i.snell_version === 5 && i.snell_obfs_mode !== 'none'">
+                      <span>伪装 Host</span>
+                      <b class="lb-mono">{{ i.snell_obfs_host || '—' }}</b>
+                    </div>
+                    <div class="nd__kv-wide">
+                      <span>可用客户端</span>
+                      <b>sing-box 1.14+ / Surge —— 不进 URI 与 Clash 订阅</b>
                     </div>
                   </template>
                   <template v-else>

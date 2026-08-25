@@ -61,6 +61,10 @@ type Service struct {
 	// 让管理员先去点一遍「安装」再回来点「下发」,是把一件必然要做的事
 	// 变成一步他会忘的手工操作 —— 而忘掉的表现是拨测失败。
 	binaries BinaryProvider
+	// previewBinaries 是预览版(V14)。为 nil 表示主控本地没有这份构建 ——
+	// 那时选预览版会被拒,而不是装上一个正式版然后让 Snell 入口
+	// 在部署中途失败。
+	previewBinaries BinaryProvider
 	// mieruBinaries / mieruClients 为 nil 表示面板本地没有 Mieru 二进制。
 	mieruBinaries BinaryProvider
 	mieruClients  BinaryProvider
@@ -91,6 +95,8 @@ type ServiceOptions struct {
 	// Binaries 提供 sing-box 二进制,供带出口的 Mieru 入口自动补装那一跳。
 	// 为 nil 时不自动装,只在缺的时候把话说清楚。
 	Binaries BinaryProvider
+	// PreviewBinaries 提供预览版 sing-box(V14)。
+	PreviewBinaries BinaryProvider
 	// MieruBinaries / MieruClients 分别提供 mita 与 mieru 客户端二进制。
 	// 两者都为 nil 时 Mieru 相关操作会以「面板本地没有 Mieru 二进制」
 	// 拒绝 —— 而不是在下发到一半时才失败。
@@ -112,23 +118,24 @@ type ServiceOptions struct {
 
 func NewService(opts ServiceOptions) *Service {
 	return &Service{
-		store:          opts.Store,
-		pool:           opts.Pool,
-		deployer:       opts.Deployer,
-		deployStore:    opts.DeployStore,
-		users:          opts.Users,
-		binaries:       opts.Binaries,
-		mieruBinaries:  opts.MieruBinaries,
-		mieruClients:   opts.MieruClients,
-		mieruSync:      opts.MieruSync,
-		relays:         opts.Relays,
-		relayHosts:     opts.RelayHosts,
-		trigger:        opts.Trigger,
-		keys:           opts.Keys,
-		layout:         opts.Layout,
-		logger:         opts.Logger,
-		bootstrapDirs:  opts.BootstrapKeyDirs,
-		sshDialTimeout: opts.SSHDialTimeout,
+		store:           opts.Store,
+		pool:            opts.Pool,
+		deployer:        opts.Deployer,
+		deployStore:     opts.DeployStore,
+		users:           opts.Users,
+		binaries:        opts.Binaries,
+		previewBinaries: opts.PreviewBinaries,
+		mieruBinaries:   opts.MieruBinaries,
+		mieruClients:    opts.MieruClients,
+		mieruSync:       opts.MieruSync,
+		relays:          opts.Relays,
+		relayHosts:      opts.RelayHosts,
+		trigger:         opts.Trigger,
+		keys:            opts.Keys,
+		layout:          opts.Layout,
+		logger:          opts.Logger,
+		bootstrapDirs:   opts.BootstrapKeyDirs,
+		sshDialTimeout:  opts.SSHDialTimeout,
 	}
 }
 
@@ -509,6 +516,10 @@ func (s *Service) renderInputs(
 			ShortID:           in.RealityShortID,
 			SSMethod:          singbox.SSMethod(in.SSMethod),
 			SSPassword:        in.SSPassword,
+			SnellVersion:      in.SnellVersion,
+			SnellPSK:          in.SnellPSK,
+			SnellObfsMode:     singbox.SnellObfsMode(in.SnellObfsMode),
+			SnellV6Mode:       singbox.SnellV6Mode(in.SnellV6Mode),
 			Users:             users,
 			Chain:             chain,
 		})
@@ -728,10 +739,13 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	deployed := make([]DeployedInbound, 0, len(inbounds))
 	for _, in := range inbounds {
 		deployed = append(deployed, DeployedInbound{
-			ID:          in.ID,
-			Protocol:    in.Protocol,
-			SSMethod:    string(in.SSMethod),
-			TCPFastOpen: in.TCPFastOpen,
+			ID:            in.ID,
+			Protocol:      in.Protocol,
+			SSMethod:      string(in.SSMethod),
+			TCPFastOpen:   in.TCPFastOpen,
+			SnellVersion:  in.SnellVersion,
+			SnellObfsMode: string(in.SnellObfsMode),
+			SnellV6Mode:   string(in.SnellV6Mode),
 		})
 	}
 	if err := s.store.MarkDeployed(done, nodeID, result.ConfigSHA256, deployed); err != nil {

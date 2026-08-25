@@ -70,6 +70,23 @@ type Inbound struct {
 	DeployedProtocol singbox.Protocol `json:"deployed_protocol"`
 	DeployedSSMethod string           `json:"deployed_ss_method"`
 
+	// Snell 专有(V14)。SnellVersion 为 0 表示这不是 Snell 入站。
+	//
+	// SnellPSK 打 json:"-" 与 SSPassword 同级,但它比那一份更敏感:
+	// **Snell 的 psk 原样出现在每一个用户的客户端配置里**,而 SS 的节点 PSK
+	// 只作为拼接的前半段。它泄漏出去等于把这个入口交出去 —— 见迁移 0030
+	// 里关于空用户列表的那一段。
+	SnellVersion  int    `json:"snell_version"`
+	SnellPSK      string `json:"-"`
+	SnellObfsMode string `json:"snell_obfs_mode"`
+	// SnellObfsHost 只进客户端配置,不进节点配置(服务端根本没有这个字段)。
+	// 所以改它既不用部署,也没有 deployed_ 镜像。
+	SnellObfsHost         string `json:"snell_obfs_host"`
+	SnellV6Mode           string `json:"snell_v6_mode"`
+	DeployedSnellVersion  int    `json:"deployed_snell_version"`
+	DeployedSnellObfsMode string `json:"deployed_snell_obfs_mode"`
+	DeployedSnellV6Mode   string `json:"deployed_snell_v6_mode"`
+
 	// ListenPort 是 sing-box 在这台机器上实际监听的端口;
 	// PublicPort 是客户端连接的公网端口,0 表示跟随 ListenPort;
 	// IPv6PublicPort 是 IPv6 条目用的公网端口,0 表示跟随 PublicPort。
@@ -166,6 +183,9 @@ func (i Inbound) Deployed() bool { return i.DeployedProtocol != "" }
 const inboundColumns = `i.id, i.node_id, n.name, n.display_name,
 	i.tag, i.display_name, i.protocol, i.ss_method, i.ss_password_encrypted,
 	i.deployed_protocol, i.deployed_ss_method,
+	i.snell_version, i.snell_psk_encrypted, i.snell_obfs_mode, i.snell_obfs_host,
+	i.snell_v6_mode, i.deployed_snell_version, i.deployed_snell_obfs_mode,
+	i.deployed_snell_v6_mode,
 	i.listen_port, i.public_port, i.ipv6_public_port,
 	i.ipv6_enabled, i.ipv6_display_name,
 	i.tcp_fast_open, i.deployed_tcp_fast_open,
@@ -185,13 +205,16 @@ const inboundFrom = ` FROM node_inbounds i
 
 func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 	var in Inbound
-	var realityKeyEnc, ssKeyEnc, chainUUIDEnc, chainSSEnc string
+	var realityKeyEnc, ssKeyEnc, chainUUIDEnc, chainSSEnc, snellPSKEnc string
 	// 目标列可空:直连的入站这两列是 NULL,扫进 int64 会报错。
 	var chainInboundID, chainExternalID sql.NullInt64
 	err := scan(
 		&in.ID, &in.NodeID, &in.NodeName, &in.NodeDisplayName,
 		&in.Tag, &in.DisplayName, &in.Protocol, &in.SSMethod, &ssKeyEnc,
 		&in.DeployedProtocol, &in.DeployedSSMethod,
+		&in.SnellVersion, &snellPSKEnc, &in.SnellObfsMode, &in.SnellObfsHost,
+		&in.SnellV6Mode, &in.DeployedSnellVersion, &in.DeployedSnellObfsMode,
+		&in.DeployedSnellV6Mode,
 		&in.ListenPort, &in.PublicPort, &in.IPv6PublicPort,
 		&in.IPv6Enabled, &in.IPv6DisplayName,
 		&in.TCPFastOpen, &in.DeployedTCPFastOpen,
@@ -217,6 +240,7 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 		{ssKeyEnc, &in.SSPassword, "Shadowsocks 密钥"},
 		{chainUUIDEnc, &in.ChainUUID, "链路 UUID"},
 		{chainSSEnc, &in.ChainSSPassword, "链路 Shadowsocks 密钥"},
+		{snellPSKEnc, &in.SnellPSK, "Snell psk"},
 	} {
 		if f.enc == "" {
 			continue
@@ -282,6 +306,14 @@ type InboundParams struct {
 	// Protocol 留空按 VLESS_REALITY;SSMethod 只在 SHADOWSOCKS 下有意义。
 	Protocol string
 	SSMethod string
+	// 以下四项只在 SNELL 下有意义。SnellVersion 留 0 表示用默认版本
+	// (新建时)或保持原值(编辑时)—— 与 AccessTierID 同一个约定,
+	// 而不是 IPv6DisplayName 那个"空串表示改回跟随"。
+	// 版本没有"跟随"这种状态,漏传时保持原值是唯一说得通的解释。
+	SnellVersion  int
+	SnellObfsMode string
+	SnellObfsHost string
+	SnellV6Mode   string
 	// ListenPort 必填;PublicPort 留 0 表示跟随 ListenPort;
 	// IPv6PublicPort 留 0 表示跟随 PublicPort。
 	ListenPort     int
@@ -337,12 +369,12 @@ func (s *Store) CreateInbound(ctx context.Context, nodeID int64, p InboundParams
 func (s *Store) createInboundTx(
 	ctx context.Context, tx *sql.Tx, nodeID int64, p InboundParams,
 ) (int64, error) {
-	var role, nodeName, displayName, ipv6 string
+	var role, nodeName, displayName, ipv6, channel string
 	var apiPort int
 	err := tx.QueryRowContext(ctx,
-		`SELECT role, name, display_name, api_port, ipv6_address
+		`SELECT role, name, display_name, api_port, ipv6_address, singbox_channel
 		   FROM nodes WHERE id = ? AND deleted_at IS NULL`,
-		nodeID).Scan(&role, &nodeName, &displayName, &apiPort, &ipv6)
+		nodeID).Scan(&role, &nodeName, &displayName, &apiPort, &ipv6, &channel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -354,6 +386,9 @@ func (s *Store) createInboundTx(
 	}
 
 	if err := normalizeInboundParams(&p, displayName); err != nil {
+		return 0, err
+	}
+	if err := checkChannelSupportsProtocol(SingBoxChannel(channel), p.Protocol); err != nil {
 		return 0, err
 	}
 	clearIPv6PortWithoutAddress(ipv6, &p.IPv6PublicPort)
@@ -389,19 +424,35 @@ func (s *Store) createInboundTx(
 	if err != nil {
 		return 0, fmt.Errorf("加密 Shadowsocks 密钥: %w", err)
 	}
+	// Snell 的 psk 与 REALITY 密钥对、SS 密钥一样【无条件生成】,
+	// 与本次选的协议无关:三者都是纯本地随机数,零成本,而缺了任何一个
+	// 都会让"切协议"变成一个可能在中途失败的复合操作 —— 失败时入口停在
+	// 半成品状态,而管理员看到的只是一句"生成密钥失败"。
+	snellPSK, err := singbox.GenerateSnellKey()
+	if err != nil {
+		return 0, err
+	}
+	snellPSKEnc, err := s.cipher.Encrypt(snellPSK)
+	if err != nil {
+		return 0, fmt.Errorf("加密 Snell psk: %w", err)
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	// tag 先留空:它由 id 派生,而 id 要插入之后才知道。空串被
 	// idx_node_inbounds_tag 的部分索引放过,是插入过程中唯一合法的中间态。
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
-			ss_password_encrypted, listen_port, public_port, ipv6_public_port,
+			ss_password_encrypted,
+			snell_version, snell_psk_encrypted, snell_obfs_mode, snell_obfs_host,
+			snell_v6_mode,
+			listen_port, public_port, ipv6_public_port,
 			ipv6_enabled, ipv6_display_name, tcp_fast_open,
 			reality_dest, reality_dest_port, reality_privkey_encrypted, reality_pubkey,
 			reality_short_id, access_tier_id, sort_order, subscription_enabled,
 			public_remark, enabled, created_at, updated_at)
-		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		nodeID, p.DisplayName, p.Protocol, p.SSMethod, ssKeyEnc,
+		p.SnellVersion, snellPSKEnc, p.SnellObfsMode, p.SnellObfsHost, p.SnellV6Mode,
 		p.ListenPort, p.PublicPort, p.IPv6PublicPort,
 		boolOr(p.IPv6Enabled, true), p.IPv6DisplayName, p.TCPFastOpen,
 		p.RealityDest, p.RealityDestPort, realityKeyEnc, keys.PublicKey, shortID,
@@ -462,13 +513,21 @@ func (s *Store) UpdateInbound(
 		return nil, InboundEffect{}, err
 	}
 	var apiPort int
-	var ipv6 string
+	var ipv6, channel string
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT api_port, ipv6_address FROM nodes WHERE id = ?`,
-		cur.NodeID).Scan(&apiPort, &ipv6); err != nil {
+		`SELECT api_port, ipv6_address, singbox_channel FROM nodes WHERE id = ?`,
+		cur.NodeID).Scan(&apiPort, &ipv6, &channel); err != nil {
 		return nil, InboundEffect{}, err
 	}
+	// 版本留 0 表示保持原值 —— 编辑表单在非 Snell 协议下根本不渲染这一栏,
+	// 漏传就会把一个 v6 入口变成 0,而 0 的意思是"这不是 Snell 入站"。
+	if p.SnellVersion == 0 {
+		p.SnellVersion = cur.SnellVersion
+	}
 	if err := normalizeInboundParams(&p, cur.DisplayName); err != nil {
+		return nil, InboundEffect{}, err
+	}
+	if err := checkChannelSupportsProtocol(SingBoxChannel(channel), p.Protocol); err != nil {
 		return nil, InboundEffect{}, err
 	}
 	clearIPv6PortWithoutAddress(ipv6, &p.IPv6PublicPort)
@@ -499,6 +558,9 @@ func (s *Store) UpdateInbound(
 		// 为它们重启 sing-box 会把这台机器上全部在线连接踢掉一次,换不来任何东西。
 		NeedsDeploy: p.Protocol != string(cur.Protocol) ||
 			p.SSMethod != cur.SSMethod ||
+			p.SnellVersion != cur.SnellVersion ||
+			p.SnellObfsMode != cur.SnellObfsMode ||
+			p.SnellV6Mode != cur.SnellV6Mode ||
 			p.ListenPort != cur.ListenPort ||
 			p.TCPFastOpen != cur.TCPFastOpen ||
 			p.RealityDest != cur.RealityDest ||
@@ -507,7 +569,11 @@ func (s *Store) UpdateInbound(
 		TierChanged: tierID != cur.AccessTierID,
 		// IPv6 的开关与名称只改订阅内容 —— 它们一个字节都不进节点配置,
 		// 为它们重启 sing-box 会把这台机器上全部在线连接踢掉一次。
-		SubscriptionChanged: p.DisplayName != cur.DisplayName ||
+		// Snell 的混淆 Host 只影响客户端配置(服务端没有这个字段),
+		// 所以它落在这一档而不是 NeedsDeploy —— 为它重启 sing-box
+		// 会把这台机器上全部在线连接踢掉一次,换不来任何配置变化。
+		SubscriptionChanged: p.SnellObfsHost != cur.SnellObfsHost ||
+			p.DisplayName != cur.DisplayName ||
 			p.PublicPort != cur.PublicPort ||
 			p.IPv6PublicPort != cur.IPv6PublicPort ||
 			v6Enabled != cur.IPv6Enabled ||
@@ -530,6 +596,16 @@ func (s *Store) UpdateInbound(
 	// 那不是"管理员改了方法",写进审计只会让人以为动了两处。
 	track("加密方法", singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks &&
 		p.SSMethod != cur.SSMethod, orDash(cur.SSMethod), orDash(p.SSMethod))
+	isSnell := singbox.Protocol(p.Protocol) == singbox.ProtocolSnell
+	// 与加密方法同理:协议切走时这几项被清空,那不是"管理员改了版本"。
+	track("Snell 版本", isSnell && p.SnellVersion != cur.SnellVersion,
+		snellVersionLabel(cur.SnellVersion), snellVersionLabel(p.SnellVersion))
+	track("Snell 混淆", isSnell && p.SnellObfsMode != cur.SnellObfsMode,
+		orDash(cur.SnellObfsMode), orDash(p.SnellObfsMode))
+	track("Snell 混淆 Host", isSnell && p.SnellObfsHost != cur.SnellObfsHost,
+		orDash(cur.SnellObfsHost), orDash(p.SnellObfsHost))
+	track("Snell 整形模式", isSnell && p.SnellV6Mode != cur.SnellV6Mode,
+		orDash(cur.SnellV6Mode), orDash(p.SnellV6Mode))
 	track("主机监听端口", p.ListenPort != cur.ListenPort, cur.ListenPort, p.ListenPort)
 	track("公网端口", p.PublicPort != cur.PublicPort,
 		followLabel(cur.PublicPort, "监听端口"), followLabel(p.PublicPort, "监听端口"))
@@ -554,6 +630,8 @@ func (s *Store) UpdateInbound(
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE node_inbounds SET display_name = ?, protocol = ?, ss_method = ?,
+		       snell_version = ?, snell_obfs_mode = ?, snell_obfs_host = ?,
+		       snell_v6_mode = ?,
 		       listen_port = ?, public_port = ?, ipv6_public_port = ?,
 		       ipv6_enabled = ?, ipv6_display_name = ?, tcp_fast_open = ?,
 		       reality_dest = ?, reality_dest_port = ?,
@@ -561,6 +639,7 @@ func (s *Store) UpdateInbound(
 		       public_remark = ?, enabled = ?, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
 		p.DisplayName, p.Protocol, p.SSMethod,
+		p.SnellVersion, p.SnellObfsMode, p.SnellObfsHost, p.SnellV6Mode,
 		p.ListenPort, p.PublicPort, p.IPv6PublicPort,
 		v6Enabled, p.IPv6DisplayName, p.TCPFastOpen,
 		p.RealityDest, p.RealityDestPort,
@@ -657,11 +736,14 @@ func normalizeInboundParams(p *InboundParams, fallbackName string) error {
 	if err := normalizeProtocol(&p.Protocol, &p.SSMethod); err != nil {
 		return err
 	}
-	// Shadowsocks 不用 REALITY,握手目标一并留空。
+	if err := normalizeSnellParams(p); err != nil {
+		return err
+	}
+	// Shadowsocks 与 Snell 都不用 REALITY,握手目标一并留空。
 	//
-	// 不给它填一个默认候选:那个域名从来没在这台机器上实测过,
+	// 不给它们填一个默认候选:那个域名从来没在这台机器上实测过,
 	// 而详情里显示一个未经检测的握手目标,会让人以为这一步已经做过了。
-	if singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks {
+	if singbox.Protocol(p.Protocol) != singbox.ProtocolVLESSReality {
 		p.RealityDest = ""
 		p.RealityDestPort = 0
 		return nil
@@ -678,6 +760,60 @@ func normalizeInboundParams(p *InboundParams, fallbackName string) error {
 	return singbox.ValidatePort(p.RealityDestPort, "握手目标")
 }
 
+// normalizeSnellParams 归一化 Snell 的四项参数。
+//
+// 协议不是 Snell 时全部清空,与 normalizeProtocol 清 ss_method 一样。
+// 代价是"切走再切回来"会回到默认版本 —— 那与 Shadowsocks 切回来
+// 回到默认加密方法是同一种代价,而反过来(留着旧值)更糟:
+// 库里存着一个 v5 的混淆模式,而这个入口现在是 v6,渲染时要靠版本
+// 二选一才不至于把它写进配置。
+func normalizeSnellParams(p *InboundParams) error {
+	if singbox.Protocol(p.Protocol) != singbox.ProtocolSnell {
+		p.SnellVersion = 0
+		p.SnellObfsMode = ""
+		p.SnellObfsHost = ""
+		p.SnellV6Mode = ""
+		return nil
+	}
+
+	version, err := singbox.ParseSnellVersion(p.SnellVersion)
+	if err != nil {
+		return err
+	}
+	p.SnellVersion = version
+
+	// 两项按版本二选一保留。留着不属于本版本的那一项没有好处:
+	// 它会出现在编辑表单里,而管理员改它一次都不会生效。
+	if version == singbox.SnellVersion5 {
+		mode, err := singbox.ParseSnellObfsMode(p.SnellObfsMode)
+		if err != nil {
+			return err
+		}
+		p.SnellObfsMode = string(mode)
+		p.SnellV6Mode = ""
+		p.SnellObfsHost = strings.TrimSpace(p.SnellObfsHost)
+		if mode == singbox.SnellObfsNone {
+			// 不混淆就没有伪装 Host。留着它只会让客户端配置里多一个
+			// 什么都不做的字段,而读配置的人得先去查它为什么不生效。
+			p.SnellObfsHost = ""
+		} else if p.SnellObfsHost != "" {
+			if err := singbox.ValidateHandshakeServer(p.SnellObfsHost); err != nil {
+				return fmt.Errorf("Snell 混淆 Host: %w", err)
+			}
+		}
+		return nil
+	}
+
+	mode, err := singbox.ParseSnellV6Mode(p.SnellV6Mode)
+	if err != nil {
+		return err
+	}
+	p.SnellV6Mode = string(mode)
+	p.SnellObfsMode = ""
+	p.SnellObfsHost = ""
+	return nil
+}
+
 // clearIPv6PortWithoutAddress 在机器没有 IPv6 地址时把 IPv6 公网端口归零。
 //
 // 留着它,下次给这台机器填上 IPv6 会静默套用一个几个月前的端口,
@@ -691,6 +827,8 @@ func clearIPv6PortWithoutAddress(ipv6Address string, port *int) {
 
 // checkInboundProtocolSwitch 拦住"没实测过握手目标就切到 VLESS"。
 func checkInboundProtocolSwitch(cur *Inbound, next singbox.Protocol, nextDest string) error {
+	// 判据是"切【到】VLESS 而它原来不是 VLESS" —— 从 Snell 切过来
+	// 与从 Shadowsocks 切过来是同一件事,所以这里不列举来源协议。
 	if next != singbox.ProtocolVLESSReality || cur.Protocol == singbox.ProtocolVLESSReality {
 		return nil
 	}

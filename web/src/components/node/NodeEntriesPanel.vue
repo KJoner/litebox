@@ -13,6 +13,7 @@ import {
   type MieruInbound,
   type NodeInbound,
   type NodeRelay,
+  type SingBoxChannel,
 } from '@/api/client'
 import {
   LbNameConfirm,
@@ -118,6 +119,19 @@ const inbounds = computed(() => props.node.inbounds ?? [])
 // 都不一样。合并只发生在下面的 rows 里,也就是【展示】这一层。
 const mierus = computed(() => props.node.mieru_inbounds ?? [])
 const nodeLabel = computed(() => props.node.display_name || props.node.name)
+
+/**
+ * 这台机器上装的是哪一支 sing-box。
+ *
+ * 显示出来而不是只在安装那一刻说一句:管理员半年后回到这个页面时,
+ * 「为什么这台能选 Snell 那台不能」的答案必须就在眼前 ——
+ * 否则他只会得出"面板有 bug"这个结论。
+ */
+const channelTag = computed(() =>
+  props.node.singbox_channel === 'PREVIEW'
+    ? { text: '预览版 1.14', shape: 'dot' as const, fg: '#8A5300', bg: '#FDF3E2', bd: '#F0DCB6' }
+    : { text: '正式版', shape: 'dot' as const, fg: '#4A5568', bg: '#F2F4F7', bd: '#DDE1E8' },
+)
 
 async function loadTargets() {
   try {
@@ -560,11 +574,20 @@ function closeOp(v: boolean) {
 
 // ---------- sing-box ----------
 
-function installSingBox() {
-  void runOp('安装 sing-box', '正在上传二进制并写入服务定义', async () => {
-    const r = await api.installNode(props.node.id)
+/**
+ * 装哪一支。
+ *
+ * **通道由这个动作写入,不是节点表单里的一栏** —— 它描述的是"机器上那个
+ * 文件是哪一版",做成可编辑的设置就会多出一个「想要预览版、装的还是
+ * 正式版」的状态,而那个状态下 Snell 入口保存得进去、部署到一半失败并回滚。
+ */
+function installSingBox(channel: SingBoxChannel) {
+  const preview = channel === 'PREVIEW'
+  const label = preview ? '预览版' : '正式版'
+  void runOp(`安装 sing-box(${label})`, '正在上传二进制并写入服务定义', async () => {
+    const r = await api.installNode(props.node.id, channel)
     opSteps.value = [
-      `二进制已就位:${r.binary_path}`,
+      `二进制已就位:${r.binary_path}(${label})`,
       `服务定义:${r.service_name}(${r.init_system})`,
     ]
     // 改了别人机器上的 sshd 就必须说出来,而且要说清改了什么、
@@ -577,7 +600,39 @@ function installSingBox() {
           '用 reload 而不是 restart,没有断开任何已有连接。',
       )
     }
-    opNote.value = '接下来点「下发配置」把这台机器的入口配置推上去。'
+    opNote.value = preview
+      ? '二进制换了,但**服务还在跑旧的那一个**——要点一次「下发配置」' +
+        '重启 sing-box 才真的切过去。之后新增入口时就能选 Snell 了。'
+      : '接下来点「下发配置」把这台机器的入口配置推上去。'
+  })
+}
+
+/**
+ * 切到预览版之前先把代价说清楚。
+ *
+ * 装正式版不弹这个:那是默认的、也是绝大多数机器该待的地方。
+ * 而"换一个预览版的二进制上去"是管理员要为这台机器单独做的决定。
+ */
+function confirmInstallPreview() {
+  lbDangerConfirm({
+    title: `在 ${nodeLabel.value} 上装预览版 sing-box?`,
+    okType: 'primary',
+    okText: '装预览版',
+    impacts: [
+      '预览版是上游的 **rc / beta**,不是打了 tag 的正式版。',
+      '**Snell 入口只能建在装了预览版的机器上** —— 这是装它的唯一理由。',
+      '同一份配置下实测常驻内存 **30.4MB**(正式版 22.4MB),128MB 的机器要留意。',
+      'VLESS 与 Shadowsocks 入口**照常工作,配置一个字节都不用改** ——' +
+        '实测正式版渲染出来的配置在预览版上跑起来零告警。',
+      '装完之后要再点一次「下发配置」重启 sing-box 才真的换过去,' +
+        '那一下会断开这台机器上**全部入口**的在线连接。',
+    ],
+    footer:
+      '想换回正式版:先把这台机器上的 Snell 入口删掉或改成别的协议,再点「安装(正式版)」。' +
+      '留着 Snell 入口装回去会被拦下 —— 那台机器的整份配置会渲染不出来。',
+    onOk: () => {
+      void installSingBox('PREVIEW')
+    },
   })
 }
 
@@ -921,11 +976,26 @@ onMounted(async () => {
       <a-button size="small" type="primary" :disabled="!!running" @click="openCreateInbound">
         新增入口
       </a-button>
-      <a-button size="small" :disabled="!!running" @click="installSingBox">安装</a-button>
+      <a-dropdown-button
+        size="small"
+        :disabled="!!running"
+        @click="installSingBox('STABLE')"
+      >
+        安装
+        <template #overlay>
+          <a-menu>
+            <a-menu-item @click="installSingBox('STABLE')">安装正式版</a-menu-item>
+            <a-menu-item @click="confirmInstallPreview">
+              安装预览版(1.14,Snell 入口需要)
+            </a-menu-item>
+          </a-menu>
+        </template>
+      </a-dropdown-button>
       <a-button size="small" :disabled="!!running" @click="deploySingBox">下发配置</a-button>
       <a-button size="small" :disabled="!!running" @click="restartSingBox">重启</a-button>
       <a-button size="small" danger :disabled="!!running" @click="uninstallSingBox">卸载</a-button>
       <span class="nr__note">
+        <LbStatusTag :meta="channelTag" />
         下发与重启都会重启服务,这台机器上<b>全部 sing-box 入口</b>的在线连接都会断开。
         「下发配置」会先强制同步流量,「重启」不会。
       </span>
@@ -944,7 +1014,9 @@ onMounted(async () => {
     </div>
     <div v-else class="nr__ops">
       <span class="nr__kind">sing-box</span>
-      <a-button size="small" :disabled="!!running" @click="installSingBox">
+      <!-- 中转机上只放二进制,通道对它没有意义:那台机器上没有配置,
+           这份二进制只在转发拨测时跑几秒。所以不给它那个下拉。 -->
+      <a-button size="small" :disabled="!!running" @click="installSingBox('STABLE')">
         安装(仅二进制)
       </a-button>
       <a-button size="small" danger :disabled="!!running" @click="uninstallSingBox">卸载</a-button>

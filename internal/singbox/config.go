@@ -100,6 +100,24 @@ type Inbound struct {
 	// 校验在 validateParams 里完成。
 	Method   string `json:"method,omitempty"`
 	Password string `json:"password,omitempty"`
+
+	// 以下只有 Snell 用(V14)。四项全部 omitempty,所以 VLESS 与
+	// Shadowsocks 入站渲染出来与加这几项之前【逐字节相同】——
+	// compat_test.go 钉着这一条。
+	//
+	// Version 是【服务端】版本(5 或 6),不是客户端要写的那个数字。
+	// 两者不一样:服务端的 5 对应客户端的 4,翻译只有
+	// SnellClientVersion 一处实现,而这里是服务端配置,不经过它。
+	Version int `json:"version,omitempty"`
+	// PSK 是入站级预共享密钥。**它会原样出现在每个用户的客户端配置里** ——
+	// 与 Shadowsocks 的 Password(节点 PSK,只作为拼接的前半段)不同。
+	PSK string `json:"psk,omitempty"`
+	// ObfsMode 仅版本 5。取默认值(none)时整项不渲染:写一个与默认值
+	// 相同的字段,行为一个字节不变,却会改掉配置哈希 —— 于是那台机器
+	// 凭空变成「待部署」,而部署下去什么也没发生。
+	ObfsMode string `json:"obfs_mode,omitempty"`
+	// Mode 仅版本 6。同上,取 default 时不渲染。
+	Mode string `json:"mode,omitempty"`
 }
 
 // InboundUser 是入站里的一个用户。两种协议共用一个结构体,
@@ -116,6 +134,12 @@ type InboundUser struct {
 
 	// Shadowsocks 专有:该用户的 PSK,已按 method 截取并 base64。
 	Password string `json:"password,omitempty"`
+
+	// Snell 专有:该用户的 userkey。
+	//
+	// 它是这个协议里【唯一】的身份凭据 —— 作为请求里的 client-id 发过去,
+	// 服务端拿它查用户表。psk 只负责外层 AEAD 的密钥派生,人人相同。
+	UserKey string `json:"userkey,omitempty"`
 }
 
 // Credential 返回该用户在当前协议下的凭据原文,供 diff 计算指纹用。
@@ -123,6 +147,9 @@ type InboundUser struct {
 func (u InboundUser) Credential() string {
 	if u.UUID != "" {
 		return u.UUID
+	}
+	if u.UserKey != "" {
+		return u.UserKey
 	}
 	return u.Password
 }

@@ -54,6 +54,19 @@ type inboundRequest struct {
 	// Protocol 留空按 VLESS_REALITY;SSMethod 只在 SHADOWSOCKS 下有意义。
 	Protocol string `json:"protocol"`
 	SSMethod string `json:"ss_method"`
+	// 以下四项只在 SNELL 下有意义(V14)。
+	//
+	// SnellVersion 留 0:新增时用默认版本,编辑时**保持原值** ——
+	// 与 AccessTierID 同一个约定。版本没有"跟随"这种状态,
+	// 而漏传时归零意味着"这不是 Snell 入站",那会把一个正在服务用户的
+	// 入口渲染成另一种东西。
+	SnellVersion int `json:"snell_version"`
+	// SnellObfsMode 仅版本 5,空串按 none。
+	SnellObfsMode string `json:"snell_obfs_mode"`
+	// SnellObfsHost 只进客户端配置 —— 服务端没有这个字段,改它不用部署。
+	SnellObfsHost string `json:"snell_obfs_host"`
+	// SnellV6Mode 仅版本 6,空串按 default。
+	SnellV6Mode string `json:"snell_v6_mode"`
 	// ListenPort 是节点上 sing-box 真正 bind 的端口;
 	// PublicPort 留 0 表示跟随 ListenPort;IPv6PublicPort 留 0 表示跟随 PublicPort。
 	ListenPort     int `json:"listen_port"`
@@ -87,6 +100,10 @@ func (req inboundRequest) params() node.InboundParams {
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		Protocol:            strings.TrimSpace(req.Protocol),
 		SSMethod:            strings.TrimSpace(req.SSMethod),
+		SnellVersion:        req.SnellVersion,
+		SnellObfsMode:       strings.TrimSpace(req.SnellObfsMode),
+		SnellObfsHost:       strings.TrimSpace(req.SnellObfsHost),
+		SnellV6Mode:         strings.TrimSpace(req.SnellV6Mode),
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		IPv6PublicPort:      req.IPv6PublicPort,

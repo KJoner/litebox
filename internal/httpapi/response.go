@@ -3,6 +3,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,6 +36,23 @@ func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	return dec.Decode(dst)
+}
+
+// decodeOptionalJSON 解析一个【可以整个不带】的请求体。
+//
+// 有些节点操作接口原来是"POST 空体"就够了,加参数之后仍然要接受空体 ——
+// 前端老版本、curl、以及页面上那些不需要传参的按钮都会这么发。
+// 拿 decodeJSON 直接量的话,空体会得到 io.EOF 而被判成"请求格式错误",
+// 表现是一个从来没改过的按钮突然报错。
+//
+// 返回 false 表示已经写过错误响应,调用方直接 return。
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	err := decodeJSON(r, dst)
+	if err == nil || errors.Is(err, io.EOF) {
+		return true
+	}
+	badRequest(w, err)
+	return false
 }
 
 // badRequest 把解析失败的原因回给前端。
