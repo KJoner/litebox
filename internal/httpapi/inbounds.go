@@ -67,6 +67,12 @@ type inboundRequest struct {
 	SnellObfsHost string `json:"snell_obfs_host"`
 	// SnellV6Mode 仅版本 6,空串按 default。
 	SnellV6Mode string `json:"snell_v6_mode"`
+	// SnellSharedPSK 为真时这个入口不下发逐用户凭据,所有人共用 psk。
+	//
+	// 唯一的理由是让 Clash / mihomo 能用 —— 它们的 snell proxy 没有
+	// userkey 那一栏。代价:没有分用户流量、撤销一个人要换 psk
+	// (所有人一起断)、用户额度对它不生效。共享模式强制版本 5。
+	SnellSharedPSK bool `json:"snell_shared_psk"`
 	// ListenPort 是节点上 sing-box 真正 bind 的端口;
 	// PublicPort 留 0 表示跟随 ListenPort;IPv6PublicPort 留 0 表示跟随 PublicPort。
 	ListenPort     int `json:"listen_port"`
@@ -104,6 +110,7 @@ func (req inboundRequest) params() node.InboundParams {
 		SnellObfsMode:       strings.TrimSpace(req.SnellObfsMode),
 		SnellObfsHost:       strings.TrimSpace(req.SnellObfsHost),
 		SnellV6Mode:         strings.TrimSpace(req.SnellV6Mode),
+		SnellSharedPSK:      req.SnellSharedPSK,
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		IPv6PublicPort:      req.IPv6PublicPort,

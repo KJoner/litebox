@@ -322,3 +322,164 @@ func TestSnellInboundHasNoHandshakeDest(t *testing.T) {
 		t.Error("没实测过握手目标就切到 VLESS,应当被拒")
 	}
 }
+
+// ---------------- 共享凭据模式(V14.1) ----------------
+
+// 共享模式强制版本 5,而且是【拒绝】而不是悄悄改。
+//
+// 悄悄改的话,管理员在表单里选的是 v6、保存成功、详情里显示 v5 ——
+// 他会以为面板坏了。而这个组合本身没有任何好处:共享模式唯一的理由
+// 是让 mihomo 能用,而 mihomo 对 v6 是整份配置拒绝。
+func TestSharedSnellRejectsVersion6(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setChannel(t, store, n.ID, ChannelPreview)
+
+	p := snellInboundParams(28443)
+	p.SnellVersion = singbox.SnellVersion6
+	p.SnellSharedPSK = true
+	if _, err := store.CreateInbound(t.Context(), n.ID, p); !errors.Is(err, singbox.ErrSnellSharedVersion) {
+		t.Fatalf("共享 + v6 应当被拒,实际:%v", err)
+	}
+
+	p.SnellVersion = singbox.SnellVersion5
+	in, err := store.CreateInbound(t.Context(), n.ID, p)
+	if err != nil {
+		t.Fatalf("共享 + v5 应当能建:%v", err)
+	}
+	if !in.SnellSharedPSK || in.SnellVersion != singbox.SnellVersion5 {
+		t.Errorf("存下来的是 shared=%v version=%d", in.SnellSharedPSK, in.SnellVersion)
+	}
+}
+
+// 切换凭据模式要重新部署,而且审计里要说清后果。
+//
+// 只写 true → false 的话,几个月后翻日志的人看不出那天发生了什么 ——
+// 而这一项决定的是"还能不能把一个人单独踢下线"。
+func TestSwitchingCredentialModeNeedsDeployAndIsAudited(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setChannel(t, store, n.ID, ChannelPreview)
+	p := snellInboundParams(28443)
+	p.SnellVersion = singbox.SnellVersion5
+	in, err := store.CreateInbound(t.Context(), n.ID, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := snellParamsOf(in)
+	next.SnellSharedPSK = true
+	updated, effect, err := store.UpdateInbound(t.Context(), in.ID, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.SnellSharedPSK {
+		t.Fatal("没存进去")
+	}
+	if !effect.NeedsDeploy {
+		t.Error("切凭据模式要重新部署 —— 它改的是节点配置里的用户列表")
+	}
+	joined := strings.Join(effect.Changes, " | ")
+	if !strings.Contains(joined, "共享凭据") {
+		t.Errorf("审计里没说清后果:%s", joined)
+	}
+}
+
+// 切走协议时共享开关一并清掉,与 ss_method 同。
+func TestSwitchingProtocolClearsSharedFlag(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setChannel(t, store, n.ID, ChannelPreview)
+	p := snellInboundParams(28443)
+	p.SnellVersion = singbox.SnellVersion5
+	p.SnellSharedPSK = true
+	in, err := store.CreateInbound(t.Context(), n.ID, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := snellParamsOf(in)
+	next.Protocol = string(singbox.ProtocolShadowsocks)
+	updated, _, err := store.UpdateInbound(t.Context(), in.ID, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SnellSharedPSK {
+		t.Error("切成 Shadowsocks 之后共享开关没清 —— 切回来时它会带着一个没人设过的状态")
+	}
+}
+
+// 流量采集要认出共享入口,而且判据必须是 **deployed_**。
+//
+// 按期望值判的话,管理员刚把一个入口从共享改成多用户、还没下发时,
+// 这里会以为它已经有用户计数器了 —— 那段时间的流量既不在 user>>> 里
+// (节点上还是共享模式)、也不被采走,静默丢失。
+// 反过来更坏:多用户入口被误当成共享,它的 inbound>>> 与各用户的
+// user>>> 会被同时记进去,那台机器的用量凭空翻一倍。
+func TestSharedInboundsForNodeUsesDeployedState(t *testing.T) {
+	store, db := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setChannel(t, store, n.ID, ChannelPreview)
+	p := snellInboundParams(28443)
+	p.SnellVersion = singbox.SnellVersion5
+	p.SnellSharedPSK = true
+	in, err := store.CreateInbound(t.Context(), n.ID, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 还没下发过:采集不该碰它 —— 节点上根本没有这个入口。
+	got, err := store.SharedInboundsForNode(t.Context(), n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("还没下发就被当成共享入口采集了:%v", got)
+	}
+
+	// 下发之后才算数。
+	if err := store.MarkDeployed(t.Context(), n.ID, "sha", []DeployedInbound{{
+		ID: in.ID, Protocol: singbox.ProtocolSnell,
+		SnellVersion: singbox.SnellVersion5, SnellSharedPSK: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.SharedInboundsForNode(t.Context(), n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Tag != in.Tag {
+		t.Fatalf("下发之后没认出共享入口:%v", got)
+	}
+	if want := singbox.SharedInboundCode(in.ID); got[0].Code != want {
+		t.Errorf("代码是 %q,应当是 %q", got[0].Code, want)
+	}
+	if !singbox.IsSharedInboundCode(got[0].Code) {
+		t.Errorf("%q 认不出是共享入口的代码", got[0].Code)
+	}
+
+	// 库里把它改回多用户、但还没下发时,采集仍然按共享处理 ——
+	// 节点上跑的还是共享模式,那段流量只有 inbound>>> 那一族有。
+	next := snellParamsOf(in)
+	next.SnellSharedPSK = false
+	if _, _, err := store.UpdateInbound(t.Context(), in.ID, next); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.SharedInboundsForNode(t.Context(), n.ID)
+	if len(got) != 1 {
+		t.Error("改了还没下发就不采了 —— 那段时间的流量会静默丢失")
+	}
+	_ = db
+}

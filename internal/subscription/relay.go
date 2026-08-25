@@ -29,6 +29,7 @@ import (
 // 与 PhysicalNode 同构:IPv6 是对同一条记录的逻辑展开,不是第二行记录。
 // 展开的是【中转主机】的 IPv6 —— 落地的地址根本不出现在订阅里。
 type PhysicalRelay struct {
+	Order       EntryOrder
 	DisplayName string
 	// Host / SubIPv4Address / IPv6Address / Port 全部来自【中转主机】。
 	// 落地的地址一个字节都不出现在订阅里 —— 用户连的是中转主机。

@@ -60,6 +60,14 @@ const (
 	SnellV6UnsafeRaw SnellV6Mode = "unsafe-raw"
 )
 
+// SharedPSKVersion 是共享凭据模式唯一允许的版本。
+//
+// 共享模式的**唯一理由**是让 mihomo 能用,而 mihomo 只支持 snell v1~v5
+// (v5 内部按 v4 处理),对 version 6 是【整份配置拒绝】——
+// `Parse config error: proxy 1: snell version error: 6`,那个用户订阅里的
+// 全部节点会一起消失。所以"共享 + v6"是一个只有代价没有好处的组合。
+const SharedPSKVersion = SnellVersion5
+
 var (
 	errSnellVersion = errors.New("Snell 版本非法,只支持 5 与 6")
 	errSnellKey     = errors.New("Snell 凭据非法,应为 32 字节的 base64url(无填充,43 个字符)")
@@ -87,6 +95,9 @@ var (
 	// 跳过这一个入站 —— 跳过等于让"这个入口悄悄不见了"成为一种正常结局,
 	// 而它与"权限没收回"只差一个渲染分支。
 	ErrSnellNoUsers = errors.New("Snell 入站上一个用户都没有")
+
+	// ErrSnellSharedVersion 是"共享模式 + 版本 6"。见 SharedPSKVersion。
+	ErrSnellSharedVersion = errors.New("Snell 共享凭据模式只能用版本 5")
 )
 
 // ParseSnellVersion 解析入站版本。0 按默认值处理 ——

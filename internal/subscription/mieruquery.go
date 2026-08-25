@@ -23,7 +23,8 @@ import (
 // 刚加的这个入口仍然还不存在。
 func (s *Service) mieruFor(ctx context.Context, userID int64) ([]MieruNode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
+		SELECT n.sort_order, n.id, m.sort_order, m.id,
+		       m.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
 		       m.public_port_start, m.public_port_end,
 		       m.deployed_listen_port_start, m.deployed_listen_port_end,
 		       m.ipv6_public_port_start, m.ipv6_public_port_end,
@@ -50,7 +51,9 @@ func (s *Service) mieruFor(ctx context.Context, userID int64) ([]MieruNode, erro
 	for rows.Next() {
 		var p PhysicalMieru
 		var deployedListen mieru.PortRange
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
+		p.Order.Kind = OrderMieru
+		if err := rows.Scan(&p.Order.NodeSort, &p.Order.NodeID, &p.Order.Sort, &p.Order.ID,
+			&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Ports.Start, &p.Ports.End,
 			&deployedListen.Start, &deployedListen.End,
 			&p.IPv6Ports.Start, &p.IPv6Ports.End,

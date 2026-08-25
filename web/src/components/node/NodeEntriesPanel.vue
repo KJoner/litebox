@@ -28,6 +28,7 @@ import InboundFormModal from './InboundFormModal.vue'
 import MieruChainModal from './MieruChainModal.vue'
 import NodeOpProgressModal from './NodeOpProgressModal.vue'
 import { confirmDeployNode, confirmRestartNode } from './nodeOps'
+import { sortByEntryOrder } from './entryOrder'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
 import {
   addressFamilyMeta,
@@ -218,11 +219,43 @@ type EntryRow =
 
 // key 的前缀不能省:三张表各自从 1 开始,不加前缀的话 i1 / m1 / r1
 // 会撞成同一个 key,而 Vue 会把三行当成同一行来复用 DOM。
-const rows = computed<EntryRow[]>(() => [
-  ...inbounds.value.map((i) => ({ key: `i${i.id}`, kind: 'singbox' as const, inbound: i })),
-  ...mierus.value.map((m) => ({ key: `m${m.id}`, kind: 'mieru' as const, mieru: m })),
-  ...relays.value.map((r) => ({ key: `r${r.id}`, kind: 'nginx' as const, relay: r })),
-])
+//
+// **三类一起按 sort_order 排**(V14.1)。分三段拼起来的话,那个数字
+// 只在同一类之内有意义 —— 管理员把 Mieru 入口排到 0、VLESS 入口排到 1,
+// 列表里 VLESS 那条仍然在前面,而他改了、保存了、什么都没发生。
+// 判据与后端订阅那一侧(subscription.EntryOrder)完全一致:两边分叉的话,
+// 这里看到的顺序与用户客户端里的对不上。
+//
+// 这一屏只有一台机器,所以机器那两个键取常数 —— 排序结果只由
+// sort_order 与兜底键决定。
+const rows = computed<EntryRow[]>(() =>
+  sortByEntryOrder<EntryRow>(
+    [
+      ...inbounds.value.map((i) => ({ key: `i${i.id}`, kind: 'singbox' as const, inbound: i })),
+      ...mierus.value.map((m) => ({ key: `m${m.id}`, kind: 'mieru' as const, mieru: m })),
+      ...relays.value.map((r) => ({ key: `r${r.id}`, kind: 'nginx' as const, relay: r })),
+    ],
+    (row) => ({
+      nodeSort: 0,
+      nodeId: 0,
+      sort: rowSortOrder(row),
+      kind: row.kind,
+      id: rowID(row),
+    }),
+  ),
+)
+
+function rowSortOrder(row: EntryRow): number {
+  if (row.kind === 'singbox') return row.inbound.sort_order
+  if (row.kind === 'mieru') return row.mieru.sort_order
+  return row.relay.sort_order
+}
+
+function rowID(row: EntryRow): number {
+  if (row.kind === 'singbox') return row.inbound.id
+  if (row.kind === 'mieru') return row.mieru.id
+  return row.relay.id
+}
 
 const kindLabel: Record<EntryRow['kind'], string> = {
   singbox: 'sing-box',

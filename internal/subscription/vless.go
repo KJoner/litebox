@@ -55,6 +55,7 @@ func SubscriptionIPv4(host, override string) string {
 // 两个条目共用同一个 sing-box 入站、同一份用户凭据、同一个流量计数器,
 // 拆成两行会带来第二串部署记录与第二套资源采样,而机器只有一台。
 type PhysicalNode struct {
+	Order       EntryOrder
 	DisplayName string
 	Host        string
 	// SubIPv4Address 为空表示 IPv4 条目跟随 Host,回落由 SubscriptionIPv4 做。
@@ -88,11 +89,12 @@ type PhysicalNode struct {
 	SSServerKey      string
 	// Snell 专有。前三项取【已经生效】的那一份;SnellObfsHost 取期望值,
 	// 它不进节点配置(服务端没有这个字段),只影响客户端怎么伪装。
-	SnellVersion  int
-	SnellPSK      string
-	SnellObfsMode string
-	SnellObfsHost string
-	SnellV6Mode   string
+	SnellVersion   int
+	SnellPSK       string
+	SnellObfsMode  string
+	SnellObfsHost  string
+	SnellV6Mode    string
+	SnellSharedPSK bool
 }
 
 // Expand 把一条物理节点展开成订阅里的一到两个条目。
@@ -108,6 +110,7 @@ type PhysicalNode struct {
 // 写库时就固化成当时的值,改完 IPv4 端口 IPv6 会停在旧端口上,而且不报任何错。
 func (p PhysicalNode) Expand() []Node {
 	v4 := Node{
+		Order:            p.Order,
 		DisplayName:      p.DisplayName,
 		Host:             SubscriptionIPv4(p.Host, p.SubIPv4Address),
 		Port:             p.Port,
@@ -123,6 +126,7 @@ func (p PhysicalNode) Expand() []Node {
 		SnellObfsMode:    p.SnellObfsMode,
 		SnellObfsHost:    p.SnellObfsHost,
 		SnellV6Mode:      p.SnellV6Mode,
+		SnellSharedPSK:   p.SnellSharedPSK,
 	}
 	if p.IPv6Address == "" || !p.IPv6Enabled {
 		return []Node{v4}

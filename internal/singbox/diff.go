@@ -263,7 +263,30 @@ func compareInboundAttrs(oldIn, newIn Inbound) []string {
 	if oldIn.PSK != newIn.PSK {
 		changes = append(changes, "Snell psk 已更换(所有客户端需重新拉取订阅)")
 	}
+	// 共享模式的开关不是一个独立字段,它体现为 users 的有无 ——
+	// 而用户列表的差异走的是 Compare 里那一半(UserDiff)。那一半只比较
+	// 【两边都有】的入站上的凭据,所以"从多用户切成共享"会被报成
+	// N 个用户被移除,而那正是它的后果。这里再单独说一句它的**性质**:
+	// 少了这句,管理员看到的是一串用户名,看不出这个入口从此没有逐用户凭据。
+	if snellSharedOf(oldIn) != snellSharedOf(newIn) {
+		if snellSharedOf(newIn) {
+			changes = append(changes,
+				"Snell 改为共享凭据(此后所有人共用一把 psk:没有分用户流量,"+
+					"撤销任何一个人都要换 psk、所有人一起断)")
+		} else {
+			changes = append(changes, "Snell 改回逐用户凭据(每人一把 userkey)")
+		}
+	}
 	return changes
+}
+
+// snellSharedOf 判断一个已渲染的 snell 入站是不是共享模式。
+//
+// 判据是"是 snell 而且没有用户" —— 配置里没有别的痕迹,共享模式与
+// 多用户模式渲染出来的差别就只有这一处。非 snell 入站一律为假,
+// 否则一个空用户列表的 VLESS 入站(完全合法)会被报成"改为共享凭据"。
+func snellSharedOf(in Inbound) bool {
+	return in.Type == "snell" && len(in.Users) == 0
 }
 
 // snellVersionLabelOrDash 把 0 说成"—" —— 0 的意思是「这不是 Snell 入站」,

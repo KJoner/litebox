@@ -61,6 +61,7 @@ const form = ref({
   snell_obfs_mode: 'none' as SnellObfsMode,
   snell_obfs_host: '',
   snell_v6_mode: 'default' as SnellV6Mode,
+  snell_shared_psk: false,
   listen_port: 0,
   public_port: 0,
   ipv6_public_port: 0,
@@ -98,6 +99,7 @@ watch(
           snell_obfs_mode: i.snell_obfs_mode || 'none',
           snell_obfs_host: i.snell_obfs_host,
           snell_v6_mode: i.snell_v6_mode || 'default',
+          snell_shared_psk: i.snell_shared_psk,
           listen_port: i.listen_port,
           public_port: i.public_port,
           ipv6_public_port: i.ipv6_public_port,
@@ -122,6 +124,7 @@ watch(
           snell_obfs_mode: 'none',
           snell_obfs_host: '',
           snell_v6_mode: 'default',
+          snell_shared_psk: false,
           reality_dest: '',
           listen_port: 0,
           public_port: 0,
@@ -237,6 +240,21 @@ const protocolChoices = computed(
       { value: 'VLESS_REALITY' as NodeProtocol, label: PROTOCOL_LABEL.VLESS_REALITY },
       { value: 'SHADOWSOCKS' as NodeProtocol, label: PROTOCOL_LABEL.SHADOWSOCKS },
     ],
+)
+
+/**
+ * 打开共享凭据时把版本按到 5。
+ *
+ * 后端是**拒绝**而不是悄悄改(悄悄改的话管理员选了 v6、保存成功、
+ * 详情里显示 v5,他会以为面板坏了)。表单这一侧则在他按下开关的那一刻
+ * 就把版本改过去并说明原因 —— 让他在**保存之前**看到这件事,
+ * 而不是保存时收到一句红字。
+ */
+watch(
+  () => form.value.snell_shared_psk,
+  (shared) => {
+    if (shared) form.value.snell_version = 5
+  },
 )
 
 /**
@@ -420,12 +438,40 @@ async function doSave() {
       <template v-if="form.protocol === 'SNELL'">
         <a-form-item label="Snell 版本">
           <a-radio-group v-model:value="form.snell_version" size="small" button-style="solid">
-            <a-radio-button :value="6">{{ SNELL_VERSION_LABEL[6] }}</a-radio-button>
+            <a-radio-button :value="6" :disabled="form.snell_shared_psk">
+              {{ SNELL_VERSION_LABEL[6] }}
+            </a-radio-button>
             <a-radio-button :value="5">{{ SNELL_VERSION_LABEL[5] }}</a-radio-button>
           </a-radio-group>
           <div class="ifm__hint">
-            v6 用流量整形取代了 v5 的混淆,是这个协议现在的形态;两者的客户端
-            支持范围一样。改版本要重新部署这台机器。
+            v6 用流量整形取代了 v5 的混淆,是这个协议现在的形态。改版本要重新部署这台机器。
+            <template v-if="form.snell_shared_psk">
+              <br />
+              <b>共享凭据下只能用 v5</b> —— mihomo 对 v6 是<b>整份配置拒绝</b>,
+              而共享凭据唯一的理由就是让它能用。
+            </template>
+          </div>
+        </a-form-item>
+        <!-- 凭据模式排在版本后面、混淆前面:它决定下面那段"谁能用"的全部内容,
+             而混淆是更细的一档参数。 -->
+        <a-form-item label="凭据模式">
+          <a-radio-group v-model:value="form.snell_shared_psk" size="small" button-style="solid">
+            <a-radio-button :value="false">逐用户凭据</a-radio-button>
+            <a-radio-button :value="true">共享凭据</a-radio-button>
+          </a-radio-group>
+          <div v-if="form.snell_shared_psk" class="ifm__warn">
+            所有人共用这个入口的一把 psk。换来的是 <b>Clash / mihomo 能用它</b>,
+            代价有三条:<br />
+            · <b>没有分用户流量</b> —— 这个入口的流量只记在机器头上,
+            分不到任何一个人;用户额度对它不生效。<br />
+            · <b>撤销一个人 = 换掉这个入口的 psk = 所有人一起断</b>。
+            逐用户凭据下把人从列表里去掉就行,这里做不到。<br />
+            · 停用、过期、超额的用户<b>照样连得上</b>这个入口 ——
+            服务端认的是 psk,它不知道谁是谁。
+          </div>
+          <div v-else class="ifm__hint">
+            每人一把 userkey:分用户计流量、能单独撤销、额度照常生效。
+            代价是 <b>Clash / mihomo 用不了</b> —— 它们的 snell 配置里没有那一栏。
           </div>
         </a-form-item>
         <a-form-item v-if="form.snell_version === 5" label="混淆">
@@ -454,13 +500,21 @@ async function doSave() {
             "
           />
         </a-form-item>
-        <a-form-item>
-          <div class="ifm__warn">
-            <b>能用这个入口的客户端只有 sing-box 1.14+ 与 Surge。</b>
-            它<b>不会出现</b>在 base64 / URI 两种订阅里(Snell 没有通用的分享链接),
-            也<b>不会出现</b>在 Clash / mihomo 的订阅里(mihomo 的 snell 只有 psk、
-            没有用户凭据那一栏,连多用户服务端会被直接拒绝)。
-            用其他客户端的用户会发现自己的节点数比别人少,而没有任何一层报错。
+        <a-form-item label="哪些客户端用得上">
+          <div class="ifm__hint">
+            <template v-if="form.snell_shared_psk">
+              <b>sing-box 1.14+、Surge,以及 Clash / mihomo。</b>
+            </template>
+            <template v-else>
+              <b>只有 sing-box 1.14+ 与 Surge。</b>
+              用 Clash / mihomo 的用户<b>看不到这个入口</b>,而没有任何一层报错 ——
+              他们只会发现自己的节点数比别人少。要让他们也能用,把上面的凭据模式
+              改成「共享凭据」。
+            </template>
+            <br />
+            两种模式下它都<b>不会出现</b>在 base64 / URI 两种订阅里 ——
+            Snell 没有通用的分享链接,而造一个没人认识的出来,
+            只会让用户导入到一条永远连不上的节点。
           </div>
         </a-form-item>
       </template>
