@@ -4,29 +4,33 @@ import "github.com/litebox/litebox/internal/singbox"
 
 // Snell 条目(V14)。
 //
-// **它是第一个 URI 为空的自建协议,也是第一个 Proxy 为 nil 的。**
-// 三种输出格式里它只出现在 sing-box 那一份(以及配置文件订阅的
-// $(singbox_outbounds))。两条缺口各有各的原因,都不是"暂时没做":
+// **URI 恒为空,Proxy 只在共享模式下有。** 两条缺口各有各的原因,
+// 都不是"暂时没做":
 //
-//	base64 / uri   Snell 没有通用的分享链接。**不自己造一个** ——
-//	               造出来的链接没有任何客户端认识,用户导入时要么报错、
-//	               要么导进一条永远连不上的节点,而他会以为是自己的
-//	               客户端有问题。少一条至少是能被发现的。
+//	base64 / uri   Snell 没有通用的分享链接,两种模式都一样。
+//	               **不自己造一个** —— 造出来的链接没有任何客户端认识,
+//	               用户导入时要么报错、要么导进一条永远连不上的节点,
+//	               而他会以为是自己的客户端有问题。少一条至少是能被发现的。
 //
 //	clash          mihomo 的 snell proxy **没有 userkey 字段**
 //	               (adapter/outbound/snell.go 里只有 psk),它写进请求的
-//	               client-id 长度恒为 0。而 LiteBox 的 Snell 入站一律跑
-//	               多用户模式 —— 那是分用户计流量与逐个撤销权限的前提。
-//	               真机实测:一个只有 psk 的客户端连多用户入站,
-//	               服务端回 `snell: bad user key`(V14 技术验证 §5)。
+//	               client-id 长度恒为 0。所以它连**多用户**入口必然拿到
+//	               `snell: bad user key`(真机实测)。
+//	               而共享模式的入口没有逐用户凭据,psk 就是全部 ——
+//	               那正好是 mihomo 能表达的形状,于是它进得了 Clash。
 //
-// 于是能用 Snell 的客户端只有两类:**sing-box 1.14+** 与 **Surge**。
-// 这一条要写在管理端的入口表单上 —— 不写的话,管理员建完一个 Snell 入口,
-// 用 Clash 的那些用户会发现自己的节点数比别人少,而没有任何一层报错。
+// 也就是说客户端覆盖面由**入口的模式**决定,而不是协议:
 //
-// 与 Mieru 恰好互补:那一个是 Outbound 恒为 nil、Proxy 有;这一个反过来。
-// 两者一起把「Entry 的三个字段各自回答一个问题,不能互相近似」这件事
-// 摆到了明面上。
+//	逐用户凭据   sing-box 1.14+ / Surge         有分用户流量、能单独撤销
+//	共享凭据     再加上 Clash / mihomo          没有分用户流量、撤销要换 psk
+//
+// 这张表要写在管理端的入口表单上 —— 不写的话,管理员建完一个多用户
+// Snell 入口,用 Clash 的那些用户会发现自己的节点数比别人少,
+// 而没有任何一层报错。
+//
+// 与 Mieru 恰好互补:那一个是 Outbound 恒为 nil、Proxy 有;这一个的
+// Outbound 永远有、URI 永远没有。两者一起把「Entry 的三个字段各自回答
+// 一个问题,不能互相近似」这件事摆到了明面上。
 
 // snellOutbound 是 sing-box 客户端配置里的一个 snell 出站。
 //
@@ -41,9 +45,11 @@ type snellOutbound struct {
 	// 服务端 5 ⟷ 客户端 4,翻译只有 singbox.SnellClientVersion 一处实现;
 	// 照着服务端写 5 的话,客户端在 decode 阶段就拒掉整份配置 ——
 	// 用户丢的不是一个节点,是全部节点。
-	Version  int    `json:"version"`
-	PSK      string `json:"psk"`
-	UserKey  string `json:"userkey"`
+	Version int    `json:"version"`
+	PSK     string `json:"psk"`
+	// UserKey 在共享模式下整项不写(omitempty)—— 那时它是一个
+	// 不成立的事实,见 snellClientOutbound。
+	UserKey  string `json:"userkey,omitempty"`
 	ObfsMode string `json:"obfs_mode,omitempty"`
 	ObfsHost string `json:"obfs_host,omitempty"`
 	Mode     string `json:"mode,omitempty"`
@@ -59,6 +65,12 @@ type snellOutbound struct {
 // 版本或混淆模式而还没部署时,按期望值下发会让客户端拿到一份与服务端
 // 对不上的参数 —— 第一个记录就解不开,而三方都是"对的"。
 func snellClientOutbound(o OutboundOptions, userKey string, node Node) *snellOutbound {
+	if node.SnellSharedPSK {
+		// 共享模式下服务端在单用户模式,根本不读 client-id。
+		// 写一个 userkey 进去不会让它连不上,但那是一个**不成立的事实** ——
+		// 用户看到自己的配置里有一把"专属凭据",而撤销它对他毫无影响。
+		userKey = ""
+	}
 	out := &snellOutbound{
 		Type:        "snell",
 		Tag:         o.Tag,
@@ -85,4 +97,61 @@ func snellClientOutbound(o OutboundOptions, userKey string, node Node) *snellOut
 		out.Mode = string(mode)
 	}
 	return out
+}
+
+// clashSnellProxy 是 mihomo 配置里的一个 snell proxy。
+//
+// **只有共享模式的入口才生成它**,而且必须是版本 5。两条都不能省:
+//
+//   - 多用户入口生成出来的 proxy 连得上 TCP、握手却必然被拒
+//     (mihomo 发不出 client-id),用户看到的是一条时好时坏的线路;
+//   - 版本 6 更糟 —— mihomo 对它是**整份配置拒绝**
+//     (`Parse config error: proxy N: snell version error: 6`),
+//     那个用户订阅里的**全部**节点会一起消失。
+//
+// 字段名照 mihomo 的写法,写错就是静默忽略或整条 proxy 被拒:
+// obfs 那一组是 `obfs-opts: {mode, host}`(不是 obfs_mode / obfs-mode)。
+type clashSnellProxy struct {
+	Name    string `yaml:"name"`
+	Type    string `yaml:"type"`
+	Server  string `yaml:"server"`
+	Port    int    `yaml:"port"`
+	PSK     string `yaml:"psk"`
+	Version int    `yaml:"version"`
+	// UDP 在 snell v3 及以上可用,而共享模式固定 v4/v5 那一支。
+	UDP      bool              `yaml:"udp"`
+	TFO      bool              `yaml:"tfo,omitempty"`
+	ObfsOpts map[string]string `yaml:"obfs-opts,omitempty"`
+}
+
+// snellClashProxy 生成 mihomo 配置里的 snell proxy。
+//
+// 返回 nil 表示这个条目进不了 Clash —— 调用方(Entry.Proxy 为 nil 或
+// 返回 nil)据此跳过它。宁可让这一条从 Clash 那一份里消失,
+// 也不能产出一条会让 mihomo 拒绝整份配置的 proxy。
+func snellClashProxy(name string, node Node) *clashSnellProxy {
+	if !node.SnellSharedPSK || node.SnellVersion != singbox.SharedPSKVersion {
+		return nil
+	}
+	p := &clashSnellProxy{
+		Name:   name,
+		Type:   "snell",
+		Server: node.Host,
+		Port:   node.Port,
+		PSK:    node.SnellPSK,
+		// 与 sing-box 出站取自同一处映射:服务端 5 ⟷ 客户端 4。
+		// mihomo 自己也会把 5 映射成 4,但写 4 少一层版本相关的行为差异
+		// —— 那一层映射是它某个版本才加的,而用户手上的 mihomo 版本不定。
+		Version: singbox.SnellClientVersion(node.SnellVersion),
+		UDP:     true,
+		TFO:     node.TCPFastOpen,
+	}
+	if mode, err := singbox.ParseSnellObfsMode(node.SnellObfsMode); err == nil &&
+		mode != singbox.SnellObfsNone {
+		p.ObfsOpts = map[string]string{"mode": string(mode)}
+		if node.SnellObfsHost != "" {
+			p.ObfsOpts["host"] = node.SnellObfsHost
+		}
+	}
+	return p
 }

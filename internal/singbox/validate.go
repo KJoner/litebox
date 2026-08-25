@@ -25,6 +25,21 @@ const FlowVision = "xtls-rprx-vision"
 var (
 	// userCodePattern 与数据库中的 user_code 格式一致。
 	userCodePattern = regexp.MustCompile(`^user_\d{6}$`)
+	// sharedCodePattern 是【共享凭据入口】在流量账里的代码(V14.1)。
+	//
+	// 它是 ledger 里的第三种代码,与前两种的区别要一次说清:
+	//
+	//	user_xxxxxx    真实用户。计入他的额度,门户里看得到。
+	//	chain_xxxxxx   中转链路的凭据。它是配置里的一个"用户",
+	//	               但不属于任何人;两台机器各记一份,所以【排除在全站合计外】。
+	//	shared_xxxxxx  共享凭据入口的整体流量。**它压根不在配置里** ——
+	//	               那种入口没有逐用户凭据,sing-box 只提供
+	//	               inbound>>> 那一族计数器。它只有一份,不重复,
+	//	               所以【要计进全站合计】,只是分不到任何一个用户头上。
+	//
+	// 数字是 node_inbounds.id。不用 tag:tag 上有 in- 前缀,拼出来是
+	// shared_in-7 那种不伦不类的东西,而按 \d{6} 校验的地方会拒掉它。
+	sharedCodePattern = regexp.MustCompile(`^shared_\d{6}$`)
 	// chainCodePattern 是链路凭据的代码(见迁移 0018)。
 	//
 	// 它同样是流量统计里的一个计数器名,所以要跟 user_ 一样严格校验;
@@ -67,6 +82,23 @@ func ValidateUserCode(code string) error {
 // 链路那份流量算在【节点】头上是对的(那台 VPS 确实在计),
 // 算到任何一个用户头上都是错的。
 func IsChainCode(code string) bool { return chainCodePattern.MatchString(code) }
+
+// SharedInboundCode 给出一个共享凭据入口在流量账里的代码。
+//
+// **它绝不能进 inbound.users** —— 那种入口的整个意义就是没有用户列表,
+// 塞一个进去会让 sing-box 切回多用户模式,而那时 mihomo 就连不上了
+// (它发不出 client-id)。ValidateUserCode 因此也不认它:
+// 那个函数把关的是"能不能写进配置",而这个代码只进 traffic_ledger。
+func SharedInboundCode(inboundID int64) string {
+	return fmt.Sprintf("shared_%06d", inboundID)
+}
+
+// IsSharedInboundCode 表示这个代码是共享凭据入口的整体流量,不属于任何用户。
+//
+// 与 IsChainCode 的用途不同:那一个用来把链路流量排除在全站合计外
+// (它被记了两遍),这一个只用来回答"这一行不是一个人" ——
+// 它的流量是真实的、只记了一遍,该进全站合计。
+func IsSharedInboundCode(code string) bool { return sharedCodePattern.MatchString(code) }
 
 // ValidateUUID 校验 VLESS UUID。
 // 必须在这里拦住:sing-box 会把任意字符串哈希成可用的 UUID 而不报错。

@@ -30,7 +30,8 @@ import (
 // 与直连的外部代理条目完全一致。
 func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT r.display_name,
+		SELECT a.sort_order, a.id, r.sort_order, r.id,
+		       r.display_name,
 		       a.host, a.sub_ipv4_address, a.ipv6_address,
 		       CASE WHEN r.public_port = 0 THEN r.listen_port ELSE r.public_port END,
 		       -- IPv6 条目跟随这条规则的公网端口,不再读 nodes.ipv6_proxy_port:
@@ -57,7 +58,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		   AND r.subscription_enabled = 1
 		   AND a.deleted_at IS NULL
 		   AND a.status != 'DISABLED'
-		 ORDER BY r.sort_order, r.id`, userID)
+		 ORDER BY a.sort_order, a.id, r.sort_order, r.id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,9 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			extProtocol, extParamsEnc, extURI  string
 			extServer                          string
 		)
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
+		p.Order.Kind = OrderRelay
+		if err := rows.Scan(&p.Order.NodeSort, &p.Order.NodeID, &p.Order.Sort, &p.Order.ID,
+			&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Port, &p.IPv6Port,
 			&kind, &protocol, &ssMethod, &tfo, &ssKeyEnc,
 			&realityDest, &realityPub, &realitySI,
@@ -142,8 +145,8 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 //
 // 与 entriesFor 同样的容错:单条失败时跳过并记日志,不让整份订阅失败 ——
 // 订阅失败会让客户端把已有节点全部清空,而问题可能只出在一条刚加进来的线路上。
-func (s *Service) relayEntries(cred Credentials, relays []PhysicalRelay) []Entry {
-	entries := make([]Entry, 0, len(relays))
+func (s *Service) relayEntries(cred Credentials, relays []PhysicalRelay) []orderedEntry {
+	entries := make([]orderedEntry, 0, len(relays))
 	for _, r := range relays {
 		entry, err := EntryForRelay(cred, r)
 		if err != nil {
@@ -151,7 +154,7 @@ func (s *Service) relayEntries(cred Credentials, relays []PhysicalRelay) []Entry
 				"relay", r.DisplayName, "error", err)
 			continue
 		}
-		entries = append(entries, entry)
+		entries = append(entries, orderedEntry{order: r.Order, entry: entry})
 	}
 	return entries
 }

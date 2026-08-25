@@ -146,10 +146,15 @@ func (d *Deployer) checkDial(
 	ctx context.Context, client *sshx.Client, req Request,
 	inbound singbox.InboundParams, target ProbeTarget, init InitSystem,
 ) (string, error) {
-	if len(inbound.Users) == 0 {
+	if len(inbound.Users) == 0 && !inbound.SharedCredential() {
 		return "", errNoProbeUser
 	}
-	probeUser := inbound.Users[0]
+	// 共享凭据的入站没有"这次用谁的凭据"这个问题 —— 凭据是 psk 本身。
+	// 取一个零值 User 传下去,probeOutbound 在共享模式下不会碰它。
+	var probeUser singbox.User
+	if len(inbound.Users) > 0 {
+		probeUser = inbound.Users[0]
+	}
 
 	probePort, err := d.pickProbePort(ctx, client)
 	if err != nil {
@@ -215,7 +220,13 @@ func (d *Deployer) checkDial(
 		}
 		return "", err
 	}
-	detail := fmt.Sprintf("用户 %s 拨测成功(%s,%s)", probeUser.Code, via, banner)
+	who := "用户 " + probeUser.Code
+	if inbound.SharedCredential() {
+		// 说"共享凭据"而不是某个用户代码:这一次拨测用的确实不是任何人的
+		// 凭据,写一个用户名进去会让部署记录说一件不成立的事。
+		who = "共享凭据"
+	}
+	detail := fmt.Sprintf("%s 拨测成功(%s,%s)", who, via, banner)
 	if retries > 0 {
 		// 重试过就要说出来。第一次就成功与"等了 18 秒才成功"是两种健康度,
 		// 而后者说明这台机器上有东西在拦拨测 —— 不写出来没人会去查。
@@ -428,9 +439,14 @@ func probeOutbound(
 		base["type"] = "snell"
 		base["version"] = singbox.SnellClientVersion(version)
 		base["psk"] = inbound.SnellPSK
-		// 用真实用户的 userkey。临时造一个只能证明"新账号能连",
-		// 而且那一份不在刚下发的配置里 —— 服务端会直接判它 bad user key。
-		base["userkey"] = user.SnellUserKey
+		// 共享模式**不带 userkey** —— 服务端在单用户模式下根本不读它。
+		// 带上去也能连,但那验的就不是真实客户端(mihomo 发不出 userkey)
+		// 走的那条路了,而拨测存在的意义正是"验真实客户端走的那条路"。
+		if !inbound.SharedCredential() {
+			// 用真实用户的 userkey。临时造一个只能证明"新账号能连",
+			// 而且那一份不在刚下发的配置里 —— 服务端会直接判它 bad user key。
+			base["userkey"] = user.SnellUserKey
+		}
 		// 混淆模式两端必须一致,否则第一个记录就解不开。
 		// obfs_host 客户端可以不填(服务端不校验它),这里就不填 ——
 		// 拨测要验的是链路能不能通,不是伪装像不像。

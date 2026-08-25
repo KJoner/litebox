@@ -200,17 +200,21 @@ func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, erro
 		MieruPassword: u.MieruPassword, UserCode: u.UserCode,
 	}
 
-	// 中转线路紧跟自建节点,排在外部代理之前。
+	// **三类入口合成一条列表,按各自的 sort_order 一起排。**
 	//
-	// 它更接近"我们自己的线路"而不是"买来的成品":凭据是我们发的、
-	// 落地多半是我们自己的机器,而且它与某个自建节点是同一条链路的两个入口。
-	// 排到最后会让同一台落地机的两个入口在客户端列表里被外部代理隔开。
-	// Mieru 入口排在 sing-box 入口之后、中转之前:它同样是"我们自己的线路",
-	// 而且与同机的 sing-box 入口是同一台机器上的两个入口 ——
-	// 排到中转后面会把同一台机器的两个入口在客户端列表里隔开。
-	selfHosted := append(s.entriesFor(cred, nodes), s.mieruEntries(cred, mierus)...)
-	selfHosted = append(selfHosted, s.relayEntries(cred, relays)...)
-	return s.mergeEntries(ctx, selfHosted, s.externalEntries(external)), nil
+	// V14.1 之前是按种类拼的(全部 sing-box → 全部 Mieru → 全部中转),
+	// 于是 sort_order 只在同一类之内有意义:管理员把一台机器上的 Mieru
+	// 入口排到 0、VLESS 入口排到 1,客户端里 VLESS 那条仍然在前面 ——
+	// 他改了那个数字、保存成功、什么都没发生,而面板不会说为什么。
+	//
+	// 机器那一层的先后保留(见 EntryOrder):管理员是按机器分配 sort_order
+	// 的,去掉它会让两台机器的 0 号入口交错在一起。
+	//
+	// 外部代理不参与这次排序 —— 它们由 mergeEntries 按来源分组整块插进来,
+	// 那是另一套规则(subscription_external_position)。
+	ordered := append(s.entriesFor(cred, nodes), s.mieruEntries(cred, mierus)...)
+	ordered = append(ordered, s.relayEntries(cred, relays)...)
+	return s.mergeEntries(ctx, sortEntries(ordered), s.externalEntries(external)), nil
 }
 
 // entriesFor 把节点列表转成订阅条目。
@@ -222,8 +226,8 @@ func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, erro
 //
 // 正常路径上转换不会失败 —— 凭据在建用户/建节点时生成,存量行由启动
 // backfill 补齐。真的走到这里说明数据有问题,那需要管理员去看日志。
-func (s *Service) entriesFor(cred Credentials, nodes []Node) []Entry {
-	entries := make([]Entry, 0, len(nodes))
+func (s *Service) entriesFor(cred Credentials, nodes []Node) []orderedEntry {
+	entries := make([]orderedEntry, 0, len(nodes))
 	for _, node := range nodes {
 		entry, err := EntryFor(cred, node)
 		if err != nil {
@@ -231,7 +235,7 @@ func (s *Service) entriesFor(cred Credentials, nodes []Node) []Entry {
 				"node", node.DisplayName, "protocol", node.Protocol, "error", err)
 			continue
 		}
-		entries = append(entries, entry)
+		entries = append(entries, orderedEntry{order: node.Order, entry: entry})
 	}
 	return entries
 }
@@ -239,8 +243,8 @@ func (s *Service) entriesFor(cred Credentials, nodes []Node) []Entry {
 // mieruEntries 与 entriesFor 同构:单条转不出来时跳过并记错误日志,
 // **不让整份订阅失败** —— 订阅失败会让客户端把已有节点全部清空,
 // 而问题可能只出在一个刚加进来的入口上。
-func (s *Service) mieruEntries(cred Credentials, nodes []MieruNode) []Entry {
-	entries := make([]Entry, 0, len(nodes))
+func (s *Service) mieruEntries(cred Credentials, nodes []MieruNode) []orderedEntry {
+	entries := make([]orderedEntry, 0, len(nodes))
 	for _, node := range nodes {
 		entry, err := EntryForMieru(cred, node)
 		if err != nil {
@@ -248,7 +252,7 @@ func (s *Service) mieruEntries(cred Credentials, nodes []MieruNode) []Entry {
 				"entry", node.DisplayName, "error", err)
 			continue
 		}
-		entries = append(entries, entry)
+		entries = append(entries, orderedEntry{order: node.Order, entry: entry})
 	}
 	return entries
 }
@@ -304,13 +308,15 @@ func uriList(entries []Entry) []string {
 // 订阅只描述节点上真实存在的东西。
 func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT i.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
+		SELECT n.sort_order, n.id, i.sort_order, i.id,
+		       i.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
 		       i.public_port, i.listen_port, i.ipv6_public_port,
 		       i.ipv6_enabled, i.ipv6_display_name,
 		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
 		       i.ss_password_encrypted,
 		       i.deployed_snell_version, i.snell_psk_encrypted,
 		       i.deployed_snell_obfs_mode, i.snell_obfs_host, i.deployed_snell_v6_mode,
+		       i.deployed_snell_shared_psk,
 		       i.reality_dest, i.reality_pubkey, i.reality_short_id
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id
@@ -334,12 +340,15 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		var p PhysicalNode
 		var protocol, ssMethod, ssKeyEnc, snellPSKEnc string
 		var listenPort int
-		if err := rows.Scan(&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
+		p.Order.Kind = OrderSingBox
+		if err := rows.Scan(&p.Order.NodeSort, &p.Order.NodeID, &p.Order.Sort, &p.Order.ID,
+			&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Port, &listenPort, &p.IPv6Port,
 			&p.IPv6Enabled, &p.IPv6Name,
 			&protocol, &ssMethod, &p.TCPFastOpen, &ssKeyEnc,
 			&p.SnellVersion, &snellPSKEnc,
 			&p.SnellObfsMode, &p.SnellObfsHost, &p.SnellV6Mode,
+			&p.SnellSharedPSK,
 			&p.RealityDest, &p.RealityPublicKey, &p.RealityShortID); err != nil {
 			return nil, err
 		}

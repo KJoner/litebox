@@ -1367,8 +1367,25 @@ const needsPortForward = computed(() =>
                       <b class="lb-mono">{{ i.snell_obfs_host || '—' }}</b>
                     </div>
                     <div class="nd__kv-wide">
+                      <span>凭据模式</span>
+                      <b :style="{ color: i.snell_shared_psk ? color.warning : undefined }">
+                        {{
+                          i.snell_shared_psk
+                            ? '共享 psk —— 无分用户流量,撤销要换 psk'
+                            : '逐用户 userkey'
+                        }}
+                      </b>
+                    </div>
+                    <div class="nd__kv-wide">
                       <span>可用客户端</span>
-                      <b>sing-box 1.14+ / Surge —— 不进 URI 与 Clash 订阅</b>
+                      <b>
+                        {{
+                          i.snell_shared_psk
+                            ? 'sing-box 1.14+ / Surge / Clash · mihomo'
+                            : 'sing-box 1.14+ / Surge'
+                        }}
+                        —— 两种模式都不进 URI 订阅
+                      </b>
                     </div>
                   </template>
                   <template v-else>

@@ -31,6 +31,7 @@ import (
 // 合并会让两边各多出十几个永远为空的字段,排查的人分不出哪些是
 // "这条线路没有"、哪些是"我们从来不填"。
 type MieruNode struct {
+	Order       EntryOrder
 	DisplayName string
 	Host        string
 	// Ports 是客户端要连的那一段。Single 时渲染成单端口,否则渲染成范围 ——
@@ -50,6 +51,7 @@ type MieruNode struct {
 // 与 PhysicalNode 同构:IPv6 不是第二行记录,而是对同一条记录的逻辑展开 ——
 // 两个条目共用同一批监听端口、同一份用户凭据、同一个流量计数。
 type PhysicalMieru struct {
+	Order       EntryOrder
 	DisplayName string
 	Host        string
 	// SubIPv4Address 为空表示跟随 Host,回落由 SubscriptionIPv4 做。
@@ -73,6 +75,7 @@ type PhysicalMieru struct {
 // Expand 把一条 Mieru 入口展开成订阅里的一到两个条目。
 func (p PhysicalMieru) Expand() []MieruNode {
 	v4 := MieruNode{
+		Order:        p.Order,
 		DisplayName:  p.DisplayName,
 		Host:         SubscriptionIPv4(p.Host, p.SubIPv4Address),
 		Ports:        p.Ports,

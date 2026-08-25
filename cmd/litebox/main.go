@@ -45,6 +45,7 @@ import (
 	"github.com/litebox/litebox/internal/subscription"
 	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
+	"github.com/litebox/litebox/internal/v2rayapi"
 	"github.com/litebox/litebox/web"
 )
 
@@ -368,6 +369,21 @@ func cmdServe(args []string) error {
 		}
 		return fmt.Sprintf("127.0.0.1:%d", n.APIPort), nil
 	})
+	// 共享凭据的入口没有 user 计数器,只能读 inbound 级的那一份。
+	// 不接这一条的话,那种入口的流量对面板完全不可见,而节点用量
+	// 会静默少算 —— 那正是"0 与真的没用过长得一模一样"的那类失败。
+	sampler = sampler.WithSharedInbounds(
+		func(ctx context.Context, nodeID int64) ([]v2rayapi.SharedInbound, error) {
+			list, err := nodeStore.SharedInboundsForNode(ctx, nodeID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]v2rayapi.SharedInbound, 0, len(list))
+			for _, s := range list {
+				out = append(out, v2rayapi.SharedInbound{Tag: s.Tag, Code: s.Code})
+			}
+			return out, nil
+		})
 	syncer := traffic.NewSyncer(db, sampler, logger)
 
 	deployer := deployment.NewDeployer(deployment.Options{

@@ -432,10 +432,19 @@ export interface NodeInbound {
    */
   snell_obfs_host: string
   snell_v6_mode: SnellV6Mode
+  /**
+   * 为真时这个入口**不下发逐用户凭据**,所有人共用 psk。
+   *
+   * 唯一的理由是让 Clash / mihomo 能用 —— 它们的 snell proxy 没有
+   * userkey 那一栏。代价:没有分用户流量、撤销一个人要换 psk
+   * (所有人一起断)、用户额度对它不生效。强制版本 5。
+   */
+  snell_shared_psk: boolean
   /** 节点上【已经生效】的那两项,订阅只看它们,理由同 deployed_protocol。 */
   deployed_snell_version: number
   deployed_snell_obfs_mode: SnellObfsMode
   deployed_snell_v6_mode: SnellV6Mode
+  deployed_snell_shared_psk: boolean
   /** sing-box 真正 bind 的端口 */
   listen_port: number
   /** 客户端连接的公网端口。0 表示跟随 listen_port。 */
@@ -498,6 +507,8 @@ export interface NodeInboundInput {
   snell_obfs_mode?: SnellObfsMode
   snell_obfs_host?: string
   snell_v6_mode?: SnellV6Mode
+  /** 共享凭据。漏传 = 关掉,而关掉是更严的那一档,所以它是普通布尔。 */
+  snell_shared_psk?: boolean
   listen_port: number
   public_port: number
   ipv6_public_port?: number

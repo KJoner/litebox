@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -322,5 +323,149 @@ func TestSnellCoexistsWithOtherProtocols(t *testing.T) {
 	// VLESS 入站的渲染不因为旁边多了一个 Snell 入站而改变形状。
 	if cfg.Inbounds[0].Version != 0 || cfg.Inbounds[0].PSK != "" {
 		t.Error("Snell 的字段漏进了 VLESS 入站")
+	}
+}
+
+// ---------------- 共享凭据模式(V14.1) ----------------
+
+// 共享模式渲染成空用户列表 —— 而那正是多用户模式下被硬拦的那一种配置。
+//
+// **两者渲染出来的字节完全相同**,区别只在"这是不是管理员要的",
+// 而那个区别在库里(snell_shared_psk),不在配置里。
+// 这个测试钉住的就是这一点:同一份输出,两条完全不同的路径。
+func TestSnellSharedModeRendersEmptyUsers(t *testing.T) {
+	p := snellParams()
+	p.Inbounds[0].SnellVersion = SnellVersion5
+	p.Inbounds[0].SnellPSK = testSnellPSKV5
+	p.Inbounds[0].SnellSharedPSK = true
+
+	cfg, err := Render(p)
+	if err != nil {
+		t.Fatalf("共享模式渲染失败:%v", err)
+	}
+	in := cfg.Inbounds[0]
+	if len(in.Users) != 0 {
+		t.Fatalf("共享模式下不该有逐用户凭据:%+v", in.Users)
+	}
+	// psk 照常渲染 —— 它是这个入口唯一的凭据。
+	if in.PSK != testSnellPSKV5 {
+		t.Errorf("psk 是 %q", in.PSK)
+	}
+	// 统计白名单里因此也没有这个入口的用户。断言仍然要过:
+	// 两边集合相等这条不变量对"两边都空"同样成立。
+	if err := AssertStatsConsistent(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Experimental.V2RayAPI.Stats.Users) != 0 {
+		t.Errorf("统计白名单里不该有人:%v", cfg.Experimental.V2RayAPI.Stats.Users)
+	}
+	// 入站级白名单里必须【还有】它 —— 共享入口的流量只能从 inbound>>>
+	// 那一族读回来,漏了它那台机器的用量会静默少算。
+	if got := cfg.Experimental.V2RayAPI.Stats.Inbounds; len(got) != 1 || got[0] != "in-7" {
+		t.Errorf("入站白名单是 %v —— 共享入口的流量就靠它", got)
+	}
+}
+
+// 共享模式 + 版本 6 = 只有代价没有好处,必须拒绝。
+//
+// 共享模式唯一的理由是让 mihomo 能用,而 mihomo 对 version 6 是
+// **整份配置拒绝**(实测 `Parse config error: proxy N: snell version error: 6`)——
+// 那个用户订阅里的全部节点会一起消失。所以这个组合既拿不到分用户流量、
+// 也用不了 mihomo。
+func TestSnellSharedModeRejectsVersion6(t *testing.T) {
+	p := snellParams()
+	p.Inbounds[0].SnellVersion = SnellVersion6
+	p.Inbounds[0].SnellSharedPSK = true
+
+	_, err := Render(p)
+	if !errors.Is(err, ErrSnellSharedVersion) {
+		t.Fatalf("共享 + v6 应当被拒,实际:%v", err)
+	}
+}
+
+// 共享模式下一个用户都没有是完全正常的 —— 凭据是 psk,与用户列表无关。
+//
+// 拿 ErrSnellNoUsers 去拦它的话,一个刚建好、还没有人够格的共享入口
+// 会让整台机器的配置渲染不出来,而那个入口本身完全可用。
+func TestSnellSharedModeWorksWithoutUsers(t *testing.T) {
+	p := snellParams()
+	p.Inbounds[0].SnellVersion = SnellVersion5
+	p.Inbounds[0].SnellPSK = testSnellPSKV5
+	p.Inbounds[0].SnellSharedPSK = true
+	p.Inbounds[0].Users = nil
+
+	if _, err := Render(p); err != nil {
+		t.Fatalf("共享模式下没有用户不该失败:%v", err)
+	}
+}
+
+// 共享模式下用户凭据的格式不参与校验 —— 它们一个都不会进配置。
+//
+// 校验它们的话,一个存量用户还没 backfill 就能让一个与用户凭据完全
+// 无关的共享入口保存不了。
+func TestSnellSharedModeIgnoresUserKeys(t *testing.T) {
+	p := snellParams()
+	p.Inbounds[0].SnellVersion = SnellVersion5
+	p.Inbounds[0].SnellPSK = testSnellPSKV5
+	p.Inbounds[0].SnellSharedPSK = true
+	p.Inbounds[0].Users[0].SnellUserKey = "" // 还没 backfill
+
+	if _, err := Render(p); err != nil {
+		t.Fatalf("共享模式不该校验用户凭据:%v", err)
+	}
+}
+
+// 切换凭据模式必须出现在配置比对里,而且要说清后果。
+//
+// 用户列表的差异走 Compare 的另一半(会报成"N 个用户被移除"),
+// 但那串用户名看不出这个入口从此没有逐用户凭据 ——
+// 而那正是"还能不能把一个人单独踢下线"的答案。
+func TestSwitchingToSharedShowsUpInDiff(t *testing.T) {
+	multi := snellParams()
+	multi.Inbounds[0].SnellVersion = SnellVersion5
+	multi.Inbounds[0].SnellPSK = testSnellPSKV5
+	before, err := Render(multi)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shared := multi
+	shared.Inbounds = append([]InboundParams{}, multi.Inbounds...)
+	shared.Inbounds[0].SnellSharedPSK = true
+	after, err := Render(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := Compare(before, after)
+	if !d.Changed {
+		t.Fatal("切成共享凭据没有被认成变更")
+	}
+	joined := strings.Join(d.NodeAttr, " | ")
+	if !strings.Contains(joined, "共享凭据") {
+		t.Errorf("比对里没说清这次变的是凭据模式:%s", joined)
+	}
+	// 反方向同样要报。
+	back := Compare(after, before)
+	if !strings.Contains(strings.Join(back.NodeAttr, " | "), "逐用户凭据") {
+		t.Errorf("改回逐用户凭据没有被报出来:%v", back.NodeAttr)
+	}
+}
+
+// 空用户列表的 VLESS 入站不能被误报成"改为共享凭据"。
+//
+// snellSharedOf 的判据是"是 snell 而且没有用户" —— 少了前半条,
+// 一个完全合法的空用户 VLESS 入站(存量节点上很常见)每次比对
+// 都会多出一句莫名其妙的话。
+func TestEmptyVLESSInboundIsNotReportedAsShared(t *testing.T) {
+	p := v3Params()
+	p.Inbounds[0].Users = nil
+	empty, err := Render(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Compare(empty, empty)
+	if joined := strings.Join(d.NodeAttr, " | "); strings.Contains(joined, "共享") {
+		t.Errorf("空用户的 VLESS 入站被扯上了共享凭据:%s", joined)
 	}
 }

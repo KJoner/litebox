@@ -367,7 +367,12 @@ func (d *Deployer) runTransaction(
 		// 步骤名带上入站与协议:部署记录是事后排查唯一的现场,
 		// 只写"拨测失败"会让人分不清那次跑的是哪一个入口、哪一种链路。
 		dialStep := fmt.Sprintf("健康检查:%s 拨测(%s)", dialLabel(inbound.Protocol), inbound.Tag)
-		if len(inbound.Users) == 0 {
+		// **共享凭据的入站照样要拨测,哪怕它一个用户都没有。**
+		//
+		// 那种入站的凭据是 psk 本身,与用户列表无关 —— 按"没有用户"跳过的话,
+		// 一个完全可用(而且所有人都连得上)的入口会被记成"没验证过",
+		// 而它恰恰是最需要验的那一种:它对每一个拿到 psk 的人开放。
+		if len(inbound.Users) == 0 && !inbound.SharedCredential() {
 			// 没有用户可拨测。这不是故障,但必须显式记录,
 			// 否则会被误读成"健康检查全过"。
 			rec.skip(dialStep, "这个入站上没有用户,无法拨测")

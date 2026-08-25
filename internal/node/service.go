@@ -520,6 +520,7 @@ func (s *Service) renderInputs(
 			SnellPSK:          in.SnellPSK,
 			SnellObfsMode:     singbox.SnellObfsMode(in.SnellObfsMode),
 			SnellV6Mode:       singbox.SnellV6Mode(in.SnellV6Mode),
+			SnellSharedPSK:    in.SnellSharedPSK,
 			Users:             users,
 			Chain:             chain,
 		})
@@ -739,13 +740,14 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	deployed := make([]DeployedInbound, 0, len(inbounds))
 	for _, in := range inbounds {
 		deployed = append(deployed, DeployedInbound{
-			ID:            in.ID,
-			Protocol:      in.Protocol,
-			SSMethod:      string(in.SSMethod),
-			TCPFastOpen:   in.TCPFastOpen,
-			SnellVersion:  in.SnellVersion,
-			SnellObfsMode: string(in.SnellObfsMode),
-			SnellV6Mode:   string(in.SnellV6Mode),
+			ID:             in.ID,
+			Protocol:       in.Protocol,
+			SSMethod:       string(in.SSMethod),
+			TCPFastOpen:    in.TCPFastOpen,
+			SnellVersion:   in.SnellVersion,
+			SnellObfsMode:  string(in.SnellObfsMode),
+			SnellV6Mode:    string(in.SnellV6Mode),
+			SnellSharedPSK: in.SnellSharedPSK,
 		})
 	}
 	if err := s.store.MarkDeployed(done, nodeID, result.ConfigSHA256, deployed); err != nil {

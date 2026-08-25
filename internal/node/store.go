@@ -984,9 +984,10 @@ type DeployedInbound struct {
 	TCPFastOpen bool
 	// Snell 的两项。psk 没有 deployed_ 镜像 —— 它建入口时生成一次,
 	// 之后没有任何路径会改它,与 ss_password / reality_privkey 同。
-	SnellVersion  int
-	SnellObfsMode string
-	SnellV6Mode   string
+	SnellVersion   int
+	SnellObfsMode  string
+	SnellV6Mode    string
+	SnellSharedPSK bool
 }
 
 // MarkDeployed 记录部署成功后的配置哈希、各入站的生效参数与节点状态。
@@ -1023,10 +1024,12 @@ func (s *Store) MarkDeployed(
 			UPDATE node_inbounds SET deployed_protocol = ?, deployed_ss_method = ?,
 			       deployed_tcp_fast_open = ?,
 			       deployed_snell_version = ?, deployed_snell_obfs_mode = ?,
-			       deployed_snell_v6_mode = ?, updated_at = ?
+			       deployed_snell_v6_mode = ?, deployed_snell_shared_psk = ?,
+			       updated_at = ?
 			 WHERE id = ? AND node_id = ?`,
 			string(in.Protocol), in.SSMethod, in.TCPFastOpen,
-			in.SnellVersion, in.SnellObfsMode, in.SnellV6Mode, now, in.ID, id); err != nil {
+			in.SnellVersion, in.SnellObfsMode, in.SnellV6Mode, in.SnellSharedPSK,
+			now, in.ID, id); err != nil {
 			return err
 		}
 	}
@@ -1057,7 +1060,7 @@ func (s *Store) MarkDeployed(
 			UPDATE node_inbounds SET deployed_protocol = '', deployed_ss_method = '',
 			       deployed_tcp_fast_open = 0, deployed_snell_version = 0,
 			       deployed_snell_obfs_mode = '', deployed_snell_v6_mode = '',
-			       updated_at = ?
+			       deployed_snell_shared_psk = 0, updated_at = ?
 			 WHERE id = ?`, now, inboundID); err != nil {
 			return err
 		}

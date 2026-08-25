@@ -53,6 +53,9 @@ type Credentials struct {
 //
 // Protocol 是节点上【已经生效】的协议,不是数据库里的期望值。
 type Node struct {
+	// Order 是这个条目在订阅里的位置。IPv6 展开出来的第二条与它共用
+	// 同一个值 —— 稳定排序因此让两条挨在一起。
+	Order       EntryOrder
 	DisplayName string
 	Host        string
 	Port        int
@@ -84,6 +87,10 @@ type Node struct {
 	SnellObfsMode string
 	SnellObfsHost string
 	SnellV6Mode   string
+	// SnellSharedPSK 取节点上【已经生效】的那一份。为真时这个入口没有
+	// 逐用户凭据,psk 就是全部 —— 客户端配置里不写 userkey,
+	// 而 Clash / mihomo 也因此终于能用它。
+	SnellSharedPSK bool
 }
 
 // Entry 是订阅里的一个条目,已经与协议无关。
@@ -132,19 +139,36 @@ type Entry struct {
 func EntryFor(cred Credentials, node Node) (Entry, error) {
 	switch node.Protocol {
 	case singbox.ProtocolSnell:
-		// 用户还没有 userkey(存量用户等着 backfill)时整条跳过,
-		// 而不是下发一个空 userkey —— 空的那一份在服务端查不到,
-		// 用户拿到的是一条握手直接被拒的节点。
-		if cred.SnellUserKey == "" {
+		// 共享模式下这个入口根本没有逐用户凭据 —— psk 就是全部。
+		// 那时**不能**拿"这个用户还没有 userkey"去拦它:一个刚建的用户
+		// 会因为一件与这个入口完全无关的事而少一条线路。
+		if !node.SnellSharedPSK && cred.SnellUserKey == "" {
+			// 用户还没有 userkey(存量用户等着 backfill)时整条跳过,
+			// 而不是下发一个空 userkey —— 空的那一份在服务端查不到,
+			// 用户拿到的是一条握手直接被拒的节点。
 			return Entry{}, fmt.Errorf("节点 %s:这个用户还没有 Snell 凭据", node.DisplayName)
 		}
-		return Entry{
+		entry := Entry{
 			DisplayName: node.DisplayName,
-			// URI 与 Proxy 都留空,理由见 snell.go 开头。
+			// URI 始终为空:Snell 没有通用的分享链接,两种模式都一样。
 			Outbound: func(o OutboundOptions) any {
 				return snellClientOutbound(o, cred.SnellUserKey, node)
 			},
-		}, nil
+		}
+		// **两个条件都要在这里判,不能留给 snellClashProxy 返回 nil。**
+		//
+		// AssignClashNames 过滤的是「Proxy 这个**函数**是不是 nil」,
+		// 不是它的返回值 —— 一个返回 typed nil 的函数会让这条条目
+		// 照常进名单,然后在 YAML 里渲染成一个 `null`,而 mihomo 对
+		// 坏 proxy 是**整份配置拒绝**:那个用户订阅里的全部节点一起消失。
+		//
+		// 条件一:共享模式。mihomo 发不出 client-id,连多用户入口必然
+		// 拿到 `snell: bad user key`。
+		// 条件二:版本 5。mihomo 对 version 6 直接拒绝整份配置。
+		if node.SnellSharedPSK && node.SnellVersion == singbox.SharedPSKVersion {
+			entry.Proxy = func(name string) any { return snellClashProxy(name, node) }
+		}
+		return entry, nil
 	case singbox.ProtocolShadowsocks:
 		// 拼 password 走 singbox.SSClientPassword,与部署拨测同一个实现。
 		password, err := singbox.SSClientPassword(node.SSServerKey, cred.SSPassword, node.SSMethod)

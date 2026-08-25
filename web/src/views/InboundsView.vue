@@ -19,6 +19,7 @@ import { configState, needsDeploy } from '@/components/lb/derive'
 import InboundChainModal from '@/components/node/InboundChainModal.vue'
 import InboundDestModal from '@/components/node/InboundDestModal.vue'
 import InboundFormModal from '@/components/node/InboundFormModal.vue'
+import { sortByEntryOrder } from '@/components/node/entryOrder'
 import MieruChainModal from '@/components/node/MieruChainModal.vue'
 import MieruInboundFormModal from '@/components/node/MieruInboundFormModal.vue'
 import {
@@ -79,17 +80,31 @@ type SingBoxRow = { key: string; kind: 'singbox'; inbound: NodeInbound; node: No
 type MieruRow = { key: string; kind: 'mieru'; mieru: MieruInbound; node: Node }
 type Row = SingBoxRow | MieruRow
 
+// **两类入口按 sort_order 一起排**(V14.1),而不是先 sing-box 后 Mieru。
+//
+// 判据与后端订阅那一侧一致:先机器、再入口的 sort_order、平手按种类与 id。
+// 这一屏跨机器,所以机器那两个键必须给真值 —— 只按 sort_order 排的话,
+// 两台机器的 0 号入口会交错在一起,而管理员是按机器分配那个数字的。
 const rows = computed<Row[]>(() =>
-  nodes.value
-    .filter((n) => n.role !== 'RELAY')
-    .flatMap((n) => [
-      ...(n.inbounds ?? []).map(
-        (i): Row => ({ key: `${n.id}-i${i.id}`, kind: 'singbox', inbound: i, node: n }),
-      ),
-      ...(n.mieru_inbounds ?? []).map(
-        (m): Row => ({ key: `${n.id}-m${m.id}`, kind: 'mieru', mieru: m, node: n }),
-      ),
-    ]),
+  sortByEntryOrder<Row>(
+    nodes.value
+      .filter((n) => n.role !== 'RELAY')
+      .flatMap((n) => [
+        ...(n.inbounds ?? []).map(
+          (i): Row => ({ key: `${n.id}-i${i.id}`, kind: 'singbox', inbound: i, node: n }),
+        ),
+        ...(n.mieru_inbounds ?? []).map(
+          (m): Row => ({ key: `${n.id}-m${m.id}`, kind: 'mieru', mieru: m, node: n }),
+        ),
+      ]),
+    (r) => ({
+      nodeSort: r.node.sort_order,
+      nodeId: r.node.id,
+      sort: r.kind === 'singbox' ? r.inbound.sort_order : r.mieru.sort_order,
+      kind: r.kind,
+      id: r.kind === 'singbox' ? r.inbound.id : r.mieru.id,
+    }),
+  ),
 )
 
 // ---------- 两类入口的取值差异都收在这里 ----------

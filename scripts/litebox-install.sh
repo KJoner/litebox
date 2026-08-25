@@ -186,19 +186,28 @@ else
     ok "sing-box 已构建"
 fi
 
-# 预览版(1.14)只有要用 Snell 入口时才需要。
+# 预览版 sing-box(1.14)。**只有要用 Snell 入口才需要。**
 #
-# **默认不构建**:它是上游的 rc,而绝大多数机器不会用它 —— 多编译一次
-# 又要几分钟。没有它面板只是不提供「安装预览版」那个选项,
-# VLESS / Shadowsocks / Mieru 一切照旧。
-if [ "${WITH_SNELL:-0}" != "1" ]; then
-    :
+# 默认不构建:它是上游的 rc,绝大多数机器不会用它,而多编译一次要几分钟。
+# 没有它面板只是不提供「安装预览版」那个选项,VLESS / Shadowsocks / Mieru
+# 一切照旧。
+#
+# **已经装过面板的机器,后来想加 Snell,重跑一次这个脚本并带上
+# WITH_SNELL=1 就行** —— 它会补构建预览版并拷到 $INSTALL_DIR,
+# 主控那一侧不用改任何配置(两支放同一个目录,binary_dir 已经指着它)。
+if [ "${WITH_SNELL:-0}" = "1" ]; then
+    if ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
+        ok "已有预览版 sing-box,跳过构建(要重建请删掉 assets/singbox/sing-box-preview-* 后重跑)"
+    else
+        log "构建预览版 sing-box(1.14,Snell 入口需要,较慢)"
+        bash -c 'SINGBOX_CHANNEL=preview bash scripts/build-singbox.sh'
+        ok "预览版 sing-box 已构建"
+    fi
 elif ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
-    ok "已有预览版 sing-box,跳过构建"
-else
-    log "构建预览版 sing-box(1.14,Snell 入口需要)"
-    SINGBOX_CHANNEL=preview bash scripts/build-singbox.sh
-    ok "预览版 sing-box 已构建"
+    # 上次带 WITH_SNELL=1 装过,这次没带 —— 别把它悄悄扔掉:
+    # 那会让一台正在跑 Snell 入口的机器,在下一次「重新安装」时
+    # 拿不到预览版二进制,而管理员只是重跑了一遍安装脚本。
+    ok "已有预览版 sing-box(上次构建的),保留"
 fi
 
 # mita/mieru 不自己构建,拉上游 release 的原样二进制(约 13MB,很快)。
@@ -245,7 +254,7 @@ fi
 if ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/singbox"
     cp -f assets/singbox/sing-box-preview-linux-* "$INSTALL_DIR/assets/singbox/"
-    ok "预览版 sing-box 已就位(Snell 入口可用)"
+    ok "预览版 sing-box 已就位(节点上可以装它,然后建 Snell 入口)"
 fi
 if ls assets/mieru/mita-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/mieru"
@@ -309,3 +318,13 @@ cat <<EOF
 
   再次执行本脚本即为升级(会先自动备份数据库)。
 EOF
+
+if [ "${WITH_SNELL:-0}" != "1" ] && ! ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
+    cat <<'EOF'
+
+  想用 Snell 入口的话,重跑一次本脚本并带上 WITH_SNELL=1 —— 它会额外构建
+  预览版 sing-box(1.14,Snell 是那一版才有的入站)。装完之后在节点详情的
+  「入口」Tab 里,sing-box 那一行的「安装」按钮会多出「安装预览版」这一项。
+  一台机器只装一支,那台机器上全部 sing-box 入口都跑在它上面。
+EOF
+fi

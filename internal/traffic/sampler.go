@@ -13,6 +13,15 @@ import (
 // NodeAPIResolver 返回节点上 V2Ray API 的回环地址。
 type NodeAPIResolver func(ctx context.Context, nodeID int64) (string, error)
 
+// SharedInboundResolver 返回这台机器上**没有逐用户凭据**的入站。
+//
+// 由 node 那一侧实现:判据来自 node_inbounds(共享模式的 Snell 入口),
+// 而 traffic 包不该知道有 Snell 这回事。
+//
+// 为 nil 时不采集入站级计数器 —— 那时共享入口的流量对面板不可见,
+// 节点用量会少算。所以生产路径上必须接上它。
+type SharedInboundResolver func(ctx context.Context, nodeID int64) ([]v2rayapi.SharedInbound, error)
+
 // TunnelSampler 经 SSH 通道读取节点上仅监听回环的 V2Ray API。
 //
 //	主控 --SSH--> 节点 --127.0.0.1:28080--> sing-box V2Ray API
@@ -23,10 +32,21 @@ type NodeAPIResolver func(ctx context.Context, nodeID int64) (string, error)
 type TunnelSampler struct {
 	pool    *sshx.Pool
 	resolve NodeAPIResolver
+	shared  SharedInboundResolver
 }
 
 func NewTunnelSampler(pool *sshx.Pool, resolve NodeAPIResolver) *TunnelSampler {
 	return &TunnelSampler{pool: pool, resolve: resolve}
+}
+
+// WithSharedInbounds 接上"哪些入站没有逐用户凭据"的来源。
+//
+// 与 Syncer.WithMieru 同一个形状,理由也一样:构造函数已经有两个参数了,
+// 再加一个意味着每一处调用点都要改,而其中一处传了 nil 的表现是
+// "那台机器上共享入口的流量永远是 0" —— 与"真的没人用"长得一模一样。
+func (s *TunnelSampler) WithSharedInbounds(r SharedInboundResolver) *TunnelSampler {
+	s.shared = r
+	return s
 }
 
 // Sample 采集一个节点的流量快照。
@@ -40,6 +60,15 @@ func (s *TunnelSampler) Sample(ctx context.Context, nodeID int64) (v2rayapi.Snap
 		return v2rayapi.Snapshot{}, err
 	}
 
+	// 共享入站的清单在**进 SSH 之前**查好:它是一次纯数据库读,
+	// 放进 pool.Do 里等于在持有节点锁的时候去查库,没有必要。
+	var shared []v2rayapi.SharedInbound
+	if s.shared != nil {
+		if shared, err = s.shared(ctx, nodeID); err != nil {
+			return v2rayapi.Snapshot{}, fmt.Errorf("查询节点 %d 的共享入站: %w", nodeID, err)
+		}
+	}
+
 	var snapshot v2rayapi.Snapshot
 	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		apiClient, err := v2rayapi.NewClient(apiAddr,
@@ -51,7 +80,7 @@ func (s *TunnelSampler) Sample(ctx context.Context, nodeID int64) (v2rayapi.Snap
 		}
 		defer apiClient.Close()
 
-		snapshot, err = apiClient.Sample(ctx)
+		snapshot, err = apiClient.Sample(ctx, shared)
 		if err != nil {
 			return fmt.Errorf("节点 %d 的 V2Ray API 不可用(%s): %w", nodeID, apiAddr, err)
 		}

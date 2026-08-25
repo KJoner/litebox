@@ -130,6 +130,16 @@ type InboundParams struct {
 	SnellPSK      string
 	SnellObfsMode SnellObfsMode
 	SnellV6Mode   SnellV6Mode
+	// SnellSharedPSK 为真时**不下发 users**,所有人共用顶层那一个 psk。
+	//
+	// 它把"空用户列表"从一个静默的事故变成一个显式的选择:同样的渲染结果,
+	// 一种是管理员看着代价按下去的开关,另一种是谁都没注意到的空列表。
+	// 没有它的话,渲染期分辨不出这两者 —— 而后者的后果是
+	// 每个拿到过 psk 的人都还连得上,见 ErrSnellNoUsers。
+	//
+	// 代价:这个入口没有分用户流量、撤销一个人要换 psk(所有人一起断)。
+	// 唯一的理由是让 Clash / mihomo 那一支能用 —— 它们发不出 userkey。
+	SnellSharedPSK bool
 
 	// Users 是这个入站上的凭据持有者。同一个用户可以同时出现在同一台机器的
 	// 多个入站里 —— V2Ray 的用户计数器没有入站维度,他的流量会合并到
@@ -141,6 +151,18 @@ type InboundParams struct {
 	// 它不进订阅:订阅里这个入站还是原来那一条,客户端根本不知道
 	// 它后面还有一跳。
 	Chain *ChainOutbound
+}
+
+// SharedCredential 表示这个入站的凭据是**全体共用**的,与用户列表无关。
+//
+// 只有共享模式的 Snell 是。它影响两件事,而两件事都会被写错:
+//
+//   - 拨测:凭据是 psk 本身,所以"这个入站上一个用户都没有"不再是
+//     "测不了" —— 它照样能测,而且必须测;
+//   - 探测客户端不能带 userkey:服务端在单用户模式下根本不读它,
+//     带上去虽然也能连,但那验的就不是真实客户端走的那条路了。
+func (p InboundParams) SharedCredential() bool {
+	return p.Protocol == ProtocolSnell && p.SnellSharedPSK
 }
 
 // NodeParams 是渲染一份节点配置所需的全部输入。
@@ -616,17 +638,27 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 		if err != nil {
 			return Inbound{}, fmt.Errorf("入站 %s:%w", params.Tag, err)
 		}
-		// **一个用户都没有时整份配置渲染失败,绝不渲染成空列表。**
+		// **共享模式下才允许空用户列表,而且那时它必须是空的。**
 		//
-		// 空列表会让 sing-box 退回单用户模式,而那个模式的服务端根本
-		// 不读请求里的 client-id —— 于是每一个拿到过这个入站 psk 的人
-		// (psk 就在他的客户端配置里)照常连得上、照常上网,
-		// 计数器一个都不产生,面板上一个字都不说。
+		// 多用户模式下渲染成空列表会让 sing-box 静默退回单用户模式,
+		// 而那个模式的服务端根本不读请求里的 client-id —— 于是每一个
+		// 拿到过这个入站 psk 的人(psk 就在他的客户端配置里)照常连得上、
+		// 照常上网,计数器一个都不产生,面板上一个字都不说。
 		// 见 ErrSnellNoUsers 的注释与 V14 技术验证 §4。
-		if len(users) == 0 {
+		//
+		// 共享模式渲染出来的**是同一份配置**,区别只在"这是不是他要的" ——
+		// 那个区别在库里(snell_shared_psk),不在配置里。
+		if params.SnellSharedPSK {
+			if version != SharedPSKVersion {
+				return Inbound{}, fmt.Errorf("%w(%s):实际是 v%d —— "+
+					"共享模式唯一的理由是让 mihomo 能用,而它对 v6 是整份配置拒绝",
+					ErrSnellSharedVersion, params.Tag, version)
+			}
+		} else if len(users) == 0 {
 			return Inbound{}, fmt.Errorf("%w(%s):"+
 				"渲染成空列表会让它退回单用户模式,那时 psk 就是唯一凭据,"+
-				"而 psk 在每个用户的客户端配置里",
+				"而 psk 在每个用户的客户端配置里。"+
+				"确实想让所有人共用一把的话,去入口设置里打开「共享凭据」",
 				ErrSnellNoUsers, params.Tag)
 		}
 		base.Type = "snell"
@@ -656,9 +688,14 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 				base.Mode = string(mode)
 			}
 		}
+		// 共享模式下 users 渲染成空数组而不是整项不写:两种写法 sing-box
+		// 都当单用户处理(实测),而空数组在配置里是**看得见的事实** ——
+		// 读配置的人一眼看到"这个入口没有逐用户凭据",不必去猜是不是漏了。
 		base.Users = make([]InboundUser, 0, len(users))
-		for _, u := range users {
-			base.Users = append(base.Users, InboundUser{Name: u.Code, UserKey: u.SnellUserKey})
+		if !params.SnellSharedPSK {
+			for _, u := range users {
+				base.Users = append(base.Users, InboundUser{Name: u.Code, UserKey: u.SnellUserKey})
+			}
 		}
 
 	case ProtocolShadowsocks:
@@ -870,6 +907,16 @@ func validateSnellParams(in InboundParams) error {
 		}
 	} else if _, err := ParseSnellV6Mode(string(in.SnellV6Mode)); err != nil {
 		return err
+	}
+
+	// 共享模式不校验用户凭据 —— 它们一个都不会进配置。
+	// 拿它们的格式去拦一个共享入口,会让一个与用户凭据完全无关的入口
+	// 因为某个存量用户还没 backfill 而保存不了。
+	if in.SnellSharedPSK {
+		if version != SharedPSKVersion {
+			return fmt.Errorf("%w:实际是 v%d", ErrSnellSharedVersion, version)
+		}
+		return nil
 	}
 
 	seenKey := make(map[string]bool, len(in.Users))
