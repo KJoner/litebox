@@ -191,7 +191,8 @@ func (d *Deployer) checkDial(
 		return "", err
 	}
 
-	host, port := "127.0.0.1", probeTargetPort(ctx, client, req.SSHPort)
+	localSSHPort := probeTargetPort(ctx, client, req.SSHPort)
+	host, port := "127.0.0.1", localSSHPort
 	via := "节点本机"
 	if target.DialHost != "" && target.DialPort > 0 {
 		host, port = target.DialHost, target.DialPort
@@ -210,10 +211,34 @@ func (d *Deployer) checkDial(
 		// 已经踩过一次:一台节点的 DNS 挂了,sing-box 日志里明明白白写着
 		// "REALITY: failed to dial dest: lookup www.fastly.com ... connection refused",
 		// 而面板只报了"VLESS 链路不通",于是排查从节点日志开始绕了一大圈。
+		//
+		// **链式入站还要多一步。** 那条链路有三跳,断在哪一跳报出来都是同一句
+		// EOF,而它们要人做的事在两台不同的机器上 —— 见 chaindial.go。
+		chainNote, blamesSSHD := "", true
+		if target.Chain != nil {
+			// 第一跳就没通时不做二分 —— 那一跳是后两跳的前提,
+			// 诊断只会以同样的方式再失败一次,白等一轮。
+			verdict := chainHopUnknown
+			firstHopOK := firstHopReached(err)
+			if firstHopOK {
+				verdict = d.diagnoseChainHop(ctx, client, req.NodeID, probePort, localSSHPort)
+			}
+			chainNote, blamesSSHD = chainDialNote(
+				inbound, target.Chain, host, port, localSSHPort, verdict, firstHopOK)
+		}
+		// **sshd 的惩罚只解释得了最后一跳。** 断在前两跳时贴上去纯属误导:
+		// 那时本机 sshd 连一个连接都没收到。而 OpenSSH 从 9.8 起默认开着
+		// PerSourcePenalties —— 无条件贴的话,**每一次**拨测失败都会得到这段
+		// 说明,而它只在其中一部分情况下成立,那正是"一句错误的归因比没有
+		// 归因更糟"要防的东西。
+		penalty := ""
+		if blamesSSHD {
+			penalty = sshdPenaltyNote(ctx, client)
+		}
 		hint := dialFailureHint(
-			prefixIfSet("节点上的 sing-box 日志:\n",
-				recentInboundLogs(ctx, client, init, d.layout, inbound.Tag)),
-			sshdPenaltyNote(ctx, client),
+			chainNote,
+			nodeLogNote(ctx, client, init, d.layout, inbound.Tag),
+			penalty,
 		)
 		if hint != "" {
 			return "", fmt.Errorf("%w;%s", err, hint)
@@ -243,18 +268,65 @@ func prefixIfSet(prefix, body string) string {
 	return prefix + body
 }
 
+// nodeLogNote 把节点上与这个入站有关的错误行整理成一段。
+//
+// **一行都没挑到的时候也要说话,而且这一句本身就是结论。** 拨测失败而入站
+// 一条错都没报,说明入站根本没有拒绝这次连接 —— 问题在它后面那一跳
+// (链式出站,或者目标那一侧)。静默省略的话,管理员看到的是"日志那一段
+// 不见了",于是先怀疑日志没取到,然后去查一个根本没坏的地方。
+//
+// 所以「取不到日志」与「取到了但没有相关行」必须分开:前者说明不了任何事,
+// 后者是一条真正的线索。
+func nodeLogNote(
+	ctx context.Context, client *sshx.Client, init InitSystem, layout Layout, tag string,
+) string {
+	lines, ok := recentInboundLogs(ctx, client, init, layout, tag)
+	return logNoteFrom(lines, ok, tag)
+}
+
+// logNoteFrom 决定这一段日志该怎么说。
+//
+// 拆成纯函数才好写测试 —— 这三档的差别不在"多一句少一句",而在它把人
+// 送去查哪里:两种空的形状长得一模一样,而其中一种是结论、另一种什么都
+// 不是。与 penaltyNoteFrom 拆出来是同一条道理。
+func logNoteFrom(lines string, gotLogs bool, tag string) string {
+	if !gotLogs {
+		return ""
+	}
+	if strings.TrimSpace(lines) == "" {
+		return "节点上的 sing-box 日志里没有「" + tag + "」的错误行 —— " +
+			"入站本身没有拒绝这次连接,问题在它之后的那一跳。"
+	}
+	return "节点上的 sing-box 日志:\n" + lines
+}
+
+// firstHopReached 回答「隧道到底建起来了没有」。
+//
+// **这个判断是载重的**:归因里那句"① 这次是通的"直接靠它,而说反了会把
+// 排查送到另一台机器上。所以它只有这一处实现,判据是 errProxyLegFailed
+// 这个哨兵而不是错误文本 —— 那些措辞有一半不在我们手里。
+func firstHopReached(err error) bool {
+	return !errors.Is(err, errProxyLegFailed)
+}
+
 // recentInboundLogs 取最近日志里与这个入站有关的几行。
 //
 // 只挑相关行:一次部署会重启服务,日志里前面全是启动信息,而真正有用的
-// 是拨测那一刻那个入站报的错。取不到就返回空串 —— 它是补充材料,
-// 不该让"取日志失败"盖住真正的故障。
+// 是拨测那一刻那个入站报的错。
+//
+// 第二个返回值是**日志本身取到了没有**,它与"取到了但一行都不相关"是两回事
+// —— 后者说明入站没有拒绝这次连接,而那是一条线索,不是"没材料"。
 func recentInboundLogs(
 	ctx context.Context, client *sshx.Client, init InitSystem, layout Layout, tag string,
-) string {
+) (string, bool) {
 	if init == nil {
-		return ""
+		return "", false
 	}
-	return pickInboundLogLines(stripANSI(init.RecentLogs(ctx, client, layout, 40)), tag)
+	raw := stripANSI(init.RecentLogs(ctx, client, layout, 40))
+	if strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	return pickInboundLogLines(raw, tag), true
 }
 
 // pickInboundLogLines 从日志里挑出与某个入站有关的错误行。
@@ -353,6 +425,26 @@ func probeTargetPort(ctx context.Context, client *sshx.Client, fallback int) int
 }
 
 var errNoProbeUser = errors.New("配置中没有用户,无法进行拨测")
+
+// errProxyLegFailed 标记「失败发生在进入隧道之前」——
+// 也就是探测客户端到目标那一跳(SOCKS 握手 / CONNECT)就没通。
+//
+// 反过来(没有这个标记)说明隧道建起来了:那一跳的握手、TLS/REALITY 与
+// 入站凭据全都成立,因为 sing 的 LazyConn 要等出站真的建立起来才写
+// 成功应答。这句话对刚改过握手目标的人尤其要紧 —— 不说出来的话,
+// 他第一个怀疑的一定是刚动过的那一栏。
+var errProxyLegFailed = errors.New("拨测未能进入隧道")
+
+// proxyLegError 给上面那个标记做载体,而且**一个字都不改错误文本**。
+//
+// dialThroughProxy 同时服务三条链路(自建入站的拨测、nginx 透传、Mieru),
+// 措辞在三处的含义并不一样 —— "入站"在中转那条链路上根本不存在。
+// 用 fmt.Errorf("%w:%w", ...) 会把标记的文本一起拼进去,于是加一个内部判据
+// 顺带改掉了另外两条链路给管理员看的那句话。标记只给 errors.Is 看。
+type proxyLegError struct{ err error }
+
+func (e proxyLegError) Error() string   { return e.err.Error() }
+func (e proxyLegError) Unwrap() []error { return []error{errProxyLegFailed, e.err} }
 
 // pickProbePort 在节点上找一个空闲的回环端口给探测客户端用。
 func (d *Deployer) pickProbePort(ctx context.Context, client *sshx.Client) (int, error) {
@@ -556,7 +648,16 @@ func dialThroughProxy(
 	_ = conn.SetDeadline(deadline)
 
 	if err := socks5Connect(conn, targetHost, targetPort); err != nil {
-		return "", err
+		// **打上标记:失败发生在【进入隧道之前】。**
+		//
+		// 链式入站的归因全靠这一条区分「第一跳就没通」与「隧道通了、
+		// 后面某一跳断了」—— 两者要人做的事在两台不同的机器上。
+		// 用哨兵而不是让上层去匹配错误文本:判断只能有一处,而这些措辞
+		// 有一半不在我们手里(SOCKS 应答码的含义、net 包的错误)。
+		//
+		// 包装**不改文本**:这个函数还服务着 nginx 透传与 Mieru 两条链路,
+		// 加一个内部判据不该顺带改掉它们给管理员看的那句话。
+		return "", proxyLegError{err}
 	}
 
 	res, err := pool.AuthOver(ctx, nodeID, conn)
