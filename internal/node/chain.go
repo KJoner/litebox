@@ -55,6 +55,12 @@ type ChainInboundTarget struct {
 	ID          int64
 	NodeID      int64
 	DisplayName string
+	// NodeName 与 NodeSSHPort 不进配置,只在**链式拨测失败时**用来定位:
+	// 那条链路跨两台机器,而失败的报错落在【这一台】上 —— 不把落地是谁
+	// 写出来的话,管理员手上只有一句"读不到数据",连该去哪台机器看日志
+	// 都答不出来。SSH 端口用于判断二分诊断的结论成不成立。
+	NodeName    string
+	NodeSSHPort int
 	// Host 取自机器,Port 取自入站的【公网端口】——
 	// 写成监听端口在 NAT 机器上是连不上,在直连机器上碰巧一样,
 	// 而后者更糟:它会一直是对的,直到某天落地换成 NAT 小鸡。
@@ -443,14 +449,15 @@ func (s *Store) chainInboundTarget(ctx context.Context, id int64) (*ChainInbound
 	var protocol, ssMethod, ssKeyEnc, subIPv4 string
 	var publicPort, listenPort int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT i.id, i.node_id, i.display_name, n.host, n.sub_ipv4_address,
-		       i.public_port, i.listen_port,
+		SELECT i.id, i.node_id, i.display_name, n.display_name, n.host, n.sub_ipv4_address,
+		       n.ssh_port, i.public_port, i.listen_port,
 		       i.deployed_protocol, i.deployed_ss_method, i.deployed_tcp_fast_open,
 		       i.ss_password_encrypted, i.reality_dest, i.reality_pubkey, i.reality_short_id
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id AND n.deleted_at IS NULL
 		 WHERE i.id = ? AND i.deleted_at IS NULL`, id).Scan(
-		&t.ID, &t.NodeID, &t.DisplayName, &t.Host, &subIPv4, &publicPort, &listenPort,
+		&t.ID, &t.NodeID, &t.DisplayName, &t.NodeName, &t.Host, &subIPv4,
+		&t.NodeSSHPort, &publicPort, &listenPort,
 		&protocol, &ssMethod, &t.TCPFastOpen,
 		&ssKeyEnc, &t.RealityDest, &t.RealityPublicKey, &t.RealityShortID)
 	if errors.Is(err, sql.ErrNoRows) {

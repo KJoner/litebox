@@ -500,7 +500,7 @@ func (s *Service) renderInputs(
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		chain, err := s.chainOutbound(ctx, in)
+		chain, chainTarget, err := s.chainOutbound(ctx, in)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -539,6 +539,11 @@ func (s *Service) renderInputs(
 		// 发起方是落地而不是本机,所以不涉及 hairpin NAT。
 		if chain != nil {
 			probe.DialHost, probe.DialPort = n.Host, n.SSHPort
+			// 落地是谁、这条链路的凭据叫什么,只在拨测失败时用得上 ——
+			// 而那时它是唯一能回答「该去哪台机器、搜什么」的东西:
+			// 链式拨测是三跳,断在哪一跳报出来都是同一句 EOF,
+			// 其中一半的原因在另一台机器上。见 deployment.ChainProbe。
+			probe.Chain = chainProbeFor(chainTarget, in.ChainCode)
 		}
 		probes = append(probes, probe)
 	}
@@ -586,19 +591,64 @@ func (s *Service) inboundUsers(ctx context.Context, in *Inbound) ([]singbox.User
 // 落地改协议到它部署成功之间的窗口里,按期望值渲染会让中转主机
 // 拿一套还没生效的参数去连它,握手直接失败,而数据库、两台节点、
 // 面板四方都是"对的"。
-func (s *Service) chainOutbound(ctx context.Context, in *Inbound) (*singbox.ChainOutbound, error) {
+//
+// 第二个返回值是那个已解析的落地。**它不进配置**,只在拨测失败时用来定位 ——
+// 把 ResolveChainTarget 在调用方再跑一遍是可以的(纯库查询),但那样
+// 「渲染用的落地」与「报错里写的落地」就成了两次独立的解析,
+// 而两者不一致的表现是报错指着一台并没有参与这条链路的机器。
+func (s *Service) chainOutbound(
+	ctx context.Context, in *Inbound,
+) (*singbox.ChainOutbound, *ChainTarget, error) {
 	if !in.ChainTargetKind.Enabled() {
-		return nil, nil
+		return nil, nil, nil
 	}
 	target, err := s.store.ResolveChainTarget(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if target == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	return chainOutboundFor(target, in.ChainCode, in.ChainUUID, in.ChainSSPassword)
+	out, err := chainOutboundFor(target, in.ChainCode, in.ChainUUID, in.ChainSSPassword)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, target, nil
+}
+
+// chainProbeFor 把一个已解析的落地压成"拨测失败时用来定位"的那几项。
+//
+// 它一个字节都不进配置。存在的理由见 deployment.ChainProbe:链式拨测的
+// 失败报错落在【入口机】的部署记录里,而三跳里有两跳的原因在别处 ——
+// 不把落地是谁、链路凭据叫什么写出来的话,管理员手上只有一句
+// 「读不到数据」,连该去哪台机器看日志都答不出来。
+func chainProbeFor(target *ChainTarget, chainCode string) *deployment.ChainProbe {
+	if target == nil {
+		return nil
+	}
+	switch target.Kind {
+	case ChainTargetInbound:
+		t := target.Inbound
+		return &deployment.ChainProbe{
+			Landing:        t.NodeName + " / " + t.DisplayName,
+			Server:         t.Host,
+			Port:           t.Port,
+			Code:           chainCode,
+			LandingSSHPort: t.NodeSSHPort,
+		}
+	case ChainTargetExternal:
+		t := target.External
+		// **外部代理不给 Code。** 那是别人的机器,我们不往上面写任何东西,
+		// chain_xxxxxx 在它那里根本不存在 —— 写出来只会让人去搜一个
+		// 必然搜不到的字符串,然后据此以为链路没到落地。
+		return &deployment.ChainProbe{
+			Landing: t.DisplayName,
+			Server:  t.Server,
+			Port:    t.Port,
+		}
+	}
+	return nil
 }
 
 // chainOutboundFor 把一个已解析的落地连同链路凭据翻成出站参数。
