@@ -16,13 +16,14 @@
  * "第三个节点"的。种类的取值顺序也照抄(sing-box → Mieru → nginx),
  * 所以 sort_order 全是默认值 0 的存量数据,渲染出来的顺序一个字都不变。
  */
-export type EntryOrderKind = 'singbox' | 'mieru' | 'nginx'
+export type EntryOrderKind = 'singbox' | 'mieru' | 'nginx' | 'realm'
 
-/** 与后端 subscription 包里那组常量同序,不能改。 */
+/** 与后端 subscription 包里那组常量同序,不能改。realm(V15)排在 nginx 之后。 */
 const kindRank: Record<EntryOrderKind, number> = {
   singbox: 0,
   mieru: 1,
   nginx: 2,
+  realm: 3,
 }
 
 export interface EntryOrderKey {

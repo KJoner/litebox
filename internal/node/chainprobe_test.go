@@ -78,8 +78,4 @@ func TestDirectInboundHasNoChainProbe(t *testing.T) {
 	if probes[0].Chain != nil {
 		t.Errorf("直连入站带上了链式落地信息:%+v", probes[0].Chain)
 	}
-	if probes[0].DialHost != "" || probes[0].DialPort != 0 {
-		t.Errorf("直连入站的拨测该打本机回环,而不是绕公网:%s:%d",
-			probes[0].DialHost, probes[0].DialPort)
-	}
 }

@@ -18,6 +18,7 @@
 #   GO_MIN / NODE_MIN  依赖的最低主版本
 #   SKIP_SINGBOX=1     跳过节点用 sing-box 的构建(它要拉 sing-box 源码,最慢)
 #   SKIP_MIERU=1       跳过 Mieru 用的 mita/mieru 下载(不打算用 Mieru 入口时)
+#   SKIP_REALM=1       跳过 realm 下载(不打算用 realm 转发时)
 #   WITH_SNELL=1       额外构建预览版 sing-box(1.14)。**只有要用 Snell 入口
 #                      才需要** —— 它是上游的 rc,而多编译一次要几分钟。
 #                      不构建的话面板只是不提供「安装预览版」那个选项。
@@ -227,6 +228,21 @@ else
     fi
 fi
 
+# realm(V15 的第二种转发引擎)同理:上游 release 的 musl 静态二进制(约 6MB),
+# sha256 写死在脚本里。拉不到不中止安装 —— 不用 realm 转发的面板用不到它。
+if [ "${SKIP_REALM:-0}" = "1" ]; then
+    warn "已跳过 realm 二进制下载。要用 realm 转发时执行 bash scripts/fetch-realm.sh"
+elif ls assets/realm/realm-linux-* >/dev/null 2>&1; then
+    ok "已有 realm 二进制,跳过下载(要重拉请删掉 assets/realm/ 后重跑)"
+else
+    log "下载 realm(上游 release,带 sha256 校验)"
+    if bash scripts/fetch-realm.sh; then
+        ok "realm 已就绪"
+    else
+        warn "realm 二进制下载失败,已跳过。要用 realm 转发时重跑 bash scripts/fetch-realm.sh"
+    fi
+fi
+
 # ---------------------------------------------------------------- 安装主控
 
 FIRST_INSTALL=0
@@ -262,6 +278,11 @@ if ls assets/mieru/mita-linux-* >/dev/null 2>&1; then
     # 那是本项目第一条铁律。只拷 mita 的话,部署会卡在拨测那一步。
     cp -f assets/mieru/mita-linux-* assets/mieru/mieru-linux-* "$INSTALL_DIR/assets/mieru/"
     ok "Mieru 用的 mita/mieru 已就位"
+fi
+if ls assets/realm/realm-linux-* >/dev/null 2>&1; then
+    install -d -m 0755 "$INSTALL_DIR/assets/realm"
+    cp -f assets/realm/realm-linux-* "$INSTALL_DIR/assets/realm/"
+    ok "realm 已就位"
 fi
 chown -R litebox:litebox "$INSTALL_DIR/assets" 2>/dev/null || true
 

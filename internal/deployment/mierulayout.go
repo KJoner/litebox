@@ -117,6 +117,10 @@ const MieruWrapperScript = `#!/bin/sh
 set -e
 LIBDIR="$1"
 shift
+# 挂载点得先存在。mita 的包会建这个目录,而面板下发的是裸二进制 ——
+# 一台从没装过 mita 包的机器上它不存在,bind 直接失败,服务反复重启,
+# 日志里只有一句 "No such file or directory"(V15 在 Alpine 上撞到)。
+mkdir -p /var/lib/mita
 mount --bind "$LIBDIR" /var/lib/mita
 exec "$@"
 `

@@ -47,6 +47,9 @@ const (
 	OrderMieru
 	// OrderRelay 是 node_relays 里的 nginx 透传线路。
 	OrderRelay
+	// OrderRealm 是 node_relays 里引擎为 realm 的线路(V15)。
+	// 排在 nginx 之后:存量数据里没有它,顺序一个字节不变。
+	OrderRealm
 )
 
 // Less 给出两个入口的先后。

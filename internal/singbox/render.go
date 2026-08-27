@@ -141,6 +141,12 @@ type InboundParams struct {
 	// 唯一的理由是让 Clash / mihomo 那一支能用 —— 它们发不出 userkey。
 	SnellSharedPSK bool
 
+	// Unmetered 为真时这个入站的用户**不写 name**(V15「不计流量」)。
+	//
+	// 凭据一个不少,只是没有计数器:流量不计入任何用户的额度,也不计入
+	// 这台机器的周期用量。三种协议都走 userName 那一处,见它的注释。
+	Unmetered bool
+
 	// Users 是这个入站上的凭据持有者。同一个用户可以同时出现在同一台机器的
 	// 多个入站里 —— V2Ray 的用户计数器没有入站维度,他的流量会合并到
 	// 同一个计数器上,而那正是 traffic_ledger 需要的口径(某用户在某节点上用了多少)。
@@ -284,8 +290,10 @@ func Render(params NodeParams) (Config, error) {
 		// 同一个用户出现在多个入站上时,统计白名单里只能有一份 ——
 		// 计数器是按用户名建的,重复写进白名单不会翻倍统计,
 		// 但会让这份配置看起来像是有两个同名用户。
+		// 不计流量入口上的用户没有名字,自然也不进白名单 —— 同一个人
+		// 在别的计量入口上有名字的话,由那一份把他带进去。
 		for _, u := range built.Users {
-			if seenUser[u.Name] {
+			if u.Name == "" || seenUser[u.Name] {
 				continue
 			}
 			seenUser[u.Name] = true
@@ -694,7 +702,9 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 		base.Users = make([]InboundUser, 0, len(users))
 		if !params.SnellSharedPSK {
 			for _, u := range users {
-				base.Users = append(base.Users, InboundUser{Name: u.Code, UserKey: u.SnellUserKey})
+				base.Users = append(base.Users, InboundUser{
+					Name: params.userName(u), UserKey: u.SnellUserKey,
+				})
 			}
 		}
 
@@ -712,7 +722,7 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 			if err != nil {
 				return Inbound{}, fmt.Errorf("用户 %s 的密钥: %w", u.Code, err)
 			}
-			base.Users = append(base.Users, InboundUser{Name: u.Code, Password: userKey})
+			base.Users = append(base.Users, InboundUser{Name: params.userName(u), Password: userKey})
 		}
 
 	default:
@@ -733,13 +743,45 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 		base.Users = make([]InboundUser, 0, len(users))
 		for _, u := range users {
 			base.Users = append(base.Users, InboundUser{
-				Name: u.Code,
+				Name: params.userName(u),
 				UUID: u.UUID,
 				Flow: FlowVision,
 			})
 		}
 	}
 	return base, nil
+}
+
+// userName 是渲染进 users[].name 的值:不计流量的入口一律留空。
+//
+// **不计流量 = 不写 name,而不是去掉用户。** VLESS 没有"无 UUID"的模式,
+// Shadowsocks 2022 的客户端密码是 serverPSK:userPSK 拼的 —— 退成单用户
+// 之后用户手上那份全部连不上。留着凭据、只去掉名字,认证、撤销
+// (把人从列表里去掉)、订阅全部照旧,变的只有"没有计数器"这一件事。
+// 三种协议统一走这一处:漏掉其中一种的表现是那种入口"不计流量"开了没用,
+// 而管理员看到的是一个打开的开关。
+func (p InboundParams) userName(u User) string {
+	if p.Unmetered {
+		return ""
+	}
+	return u.Code
+}
+
+// UnmeteredOf 判断一个已渲染的入站是不是不计流量的。
+//
+// 判据是"有用户而且每一个都没有名字" —— 配置里没有别的痕迹。
+// 空用户列表不算(那是共享 Snell 或者没有用户,两者都另有判据),
+// 一个有名字的都算计量:不计流量的入口不会渲染出任何名字。
+func UnmeteredOf(in Inbound) bool {
+	if len(in.Users) == 0 {
+		return false
+	}
+	for _, u := range in.Users {
+		if u.Name != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // AssertStatsConsistent 断言统计白名单与入站用户列表完全一致。
@@ -763,6 +805,11 @@ func AssertStatsConsistent(cfg Config) error {
 				ErrStatsMismatch, i+1, statsInbounds[i], in.Tag)
 		}
 		for _, u := range in.Users {
+			// 没有名字的用户(不计流量的入口)本来就没有计数器,
+			// 白名单里不该有它 —— 有的话反而说明两边不是同一处生成的。
+			if u.Name == "" {
+				continue
+			}
 			inbound[u.Name] = true
 		}
 	}

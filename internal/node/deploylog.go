@@ -31,8 +31,12 @@ func logDeployResult(
 		return
 	}
 	what := "部署"
-	if result.Kind == deployment.KindRelay {
+	switch result.Kind {
+	case deployment.KindRelay:
 		what = "中转转发下发"
+	case deployment.KindRealm:
+		// 单独一个词:它 restart、断开在途连接,与只 reload 的 nginx 不是一回事。
+		what = "realm 转发下发"
 	}
 	took := result.FinishedAt.Sub(result.StartedAt).Round(time.Millisecond)
 	// FinishedAt 是零值说明结果没走完 finish(渲染阶段就失败了),

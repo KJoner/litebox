@@ -101,3 +101,11 @@ func snellVersionLabel(v int) string {
 	}
 	return singbox.SnellVersionLabel(v)
 }
+
+// meteredLabel 是审计里「流量计量」那一栏的写法。
+func meteredLabel(unmetered bool) string {
+	if unmetered {
+		return "不计流量"
+	}
+	return "按用户计量"
+}

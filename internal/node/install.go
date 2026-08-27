@@ -277,6 +277,11 @@ func (s *Service) Uninstall(ctx context.Context, nodeID int64) error {
 				relayInit.StopRelay(ctx, client, layout)
 				relayInit.RemoveRelayUnit(ctx, client, layout)
 			}
+			// realm 同理:它的服务定义也在 /etc 下,rm -rf /opt/litebox 删不到。
+			if realmInit, ok := init.(deployment.RealmInit); ok {
+				realmInit.StopRealm(ctx, client, layout)
+				realmInit.RemoveRealmUnit(ctx, client, layout)
+			}
 			for _, m := range mierus {
 				init.RemoveMieruUnit(ctx, client, layout, m.ID)
 			}

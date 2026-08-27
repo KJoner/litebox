@@ -192,3 +192,74 @@ func (q *Querier) NodeTodayBytes(ctx context.Context) (map[int64]int64, error) {
 func (q *Querier) MonthBytes(ctx context.Context) (int64, error) {
 	return q.TotalBytesSince(ctx, time.Now().UTC().Format("2006-01")+"-01")
 }
+
+// SeriesPoint 是代理流量按某一档粒度聚合出的一个桶。
+//
+// At 是桶起点(UTC RFC3339):小时档 "2026-08-27T13:00:00Z",日档
+// "2026-08-27T00:00:00Z",月档 "2026-08-01T00:00:00Z"。与主机流量的桶
+// 用同一种写法,前端一套标签格式化就够。
+type SeriesPoint struct {
+	At       string `json:"at"`
+	Uplink   int64  `json:"uplink"`
+	Downlink int64  `json:"downlink"`
+	Total    int64  `json:"total"`
+}
+
+// NodeSeries 返回某节点最近 limit 个桶的代理流量(V15,流量 Tab 的粒度切换)。
+//
+// 三档三个来源:小时档从 traffic_ledger 现算(每条 ledger 行带同步时刻,
+// 按小时截断即可);日档就是 traffic_daily;月档从 traffic_daily 按月聚合。
+// 小时档**不从 traffic_daily 来**,那张表表达不了小时;月档不从 ledger 来,
+// 那是全站写入量最大的表,扫 12 个月只为画 12 根柱子不值。
+// 与 NodeDaily 一样只返回真正有记录的桶,缺的由前端画成缺口而不是 0。
+func (q *Querier) NodeSeries(ctx context.Context, nodeID int64, granularity string, limit int) ([]SeriesPoint, error) {
+	now := time.Now().UTC()
+	var query, since string
+	switch granularity {
+	case "HOUR":
+		if limit <= 0 || limit > 24*14 {
+			limit = 48
+		}
+		since = now.Add(-time.Duration(limit) * time.Hour).Format(time.RFC3339)
+		query = `SELECT substr(created_at, 1, 13) || ':00:00Z',
+		                COALESCE(SUM(CASE WHEN direction = 'uplink' THEN delta_bytes ELSE 0 END), 0),
+		                COALESCE(SUM(CASE WHEN direction = 'downlink' THEN delta_bytes ELSE 0 END), 0)
+		           FROM traffic_ledger
+		          WHERE node_id = ? AND created_at >= ?
+		          GROUP BY substr(created_at, 1, 13) ORDER BY 1`
+	case "MONTH":
+		if limit <= 0 || limit > 60 {
+			limit = 12
+		}
+		since = now.AddDate(0, -limit, 0).Format("2006-01")
+		query = `SELECT substr(day, 1, 7) || '-01T00:00:00Z',
+		                COALESCE(SUM(uplink), 0), COALESCE(SUM(downlink), 0)
+		           FROM traffic_daily
+		          WHERE node_id = ? AND substr(day, 1, 7) >= ?
+		          GROUP BY substr(day, 1, 7) ORDER BY 1`
+	default:
+		if limit <= 0 || limit > 365 {
+			limit = 30
+		}
+		since = now.AddDate(0, 0, -limit).Format("2006-01-02")
+		query = `SELECT day || 'T00:00:00Z', COALESCE(SUM(uplink), 0), COALESCE(SUM(downlink), 0)
+		           FROM traffic_daily
+		          WHERE node_id = ? AND day >= ?
+		          GROUP BY day ORDER BY day`
+	}
+	rows, err := q.db.QueryContext(ctx, query, nodeID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SeriesPoint, 0)
+	for rows.Next() {
+		var p SeriesPoint
+		if err := rows.Scan(&p.At, &p.Uplink, &p.Downlink); err != nil {
+			return nil, err
+		}
+		p.Total = p.Uplink + p.Downlink
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

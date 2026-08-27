@@ -46,6 +46,13 @@ type Layout struct {
 	NginxPIDPath     string
 	NginxErrorLog    string
 	RelayServiceName string
+
+	// realm(V15)是第二种转发引擎:面板下发的单个静态二进制、一份 JSON、
+	// 一个服务。配置与 nginx.conf 一样刻意留在磁盘上 —— 它里面只有拓扑,
+	// 而它在不在正是巡检判断"这台机器下发过 realm 没有"的依据。
+	RealmBinaryPath  string
+	RealmConfigPath  string
+	RealmServiceName string
 }
 
 // DefaultLayout 返回默认布局。
@@ -61,6 +68,10 @@ func DefaultLayout() Layout {
 		NginxPIDPath:     "/opt/litebox/nginx.pid",
 		NginxErrorLog:    "/opt/litebox/nginx-error.log",
 		RelayServiceName: "litebox-nginx",
+
+		RealmBinaryPath:  "/opt/litebox/realm",
+		RealmConfigPath:  "/opt/litebox/realm.json",
+		RealmServiceName: "litebox-realm",
 	}
 }
 
@@ -139,6 +150,16 @@ func (l Layout) nginxBackupPath(revision int64) string {
 	return fmt.Sprintf("%s/nginx-%d.conf", l.BackupDir, revision)
 }
 
+// tempRealmConfigPath / realmBackupPath 与 nginx 那两个同一条规矩:
+// 临时文件同目录才能原子 mv,备份按引擎命名才不会互相覆盖。
+func (l Layout) tempRealmConfigPath() string {
+	return l.RealmConfigPath + ".tmp"
+}
+
+func (l Layout) realmBackupPath(revision int64) string {
+	return fmt.Sprintf("%s/realm-%d.json", l.BackupDir, revision)
+}
+
 // StepStatus 是单个部署步骤的状态。
 type StepStatus string
 
@@ -179,6 +200,10 @@ const (
 	// sing-box 与 nginx 一个字都不改。部署记录里必须分得出是哪一种 ——
 	// 混在一起会让「部署失败」被读成整台机器出了问题。
 	KindMieru Kind = "MIERU"
+	// KindRealm 是 realm 转发配置下发。与 RELAY 分开:那一种只 reload,
+	// 这一种 restart、断开全部 realm 线路的在途连接 —— 部署记录里
+	// 混在一起会让「下发成功」被读成没有人断线。
+	KindRealm Kind = "REALM"
 )
 
 // Result 是一次部署事务的完整结果。

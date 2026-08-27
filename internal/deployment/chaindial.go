@@ -16,14 +16,14 @@ import (
 // 链式入站拨测失败时的定位。
 //
 // **这一整个文件存在的理由是一句话:链式入站的拨测是三跳,而三跳里任何
-// 一跳断了都长成同一句 `ssh: handshake failed: EOF`。**
+// 一跳断了都长成同一句「经代理未取到 HTTP 响应: EOF」。**
 //
-// 生产上撞到过:一台机器上两个 VLESS 入口(一个直连、一个出口指向另一台的
-// Shadowsocks 入口),改完握手目标下发,直连那个拨测通过、链式那个报
-// 「经代理完成 SSH 认证失败: ssh: handshake failed: EOF」,而面板给出的
-// 唯一归因是目标 sshd 的 PerSourcePenalties —— OpenSSH ≥ 9.8 默认就开着它,
-// 于是**每一次**拨测失败都会贴上那一大段。管理员照着它去查 sshd,
-// 而真正的原因完全可能在另一台机器上。
+// 生产上撞到过(那时拨测的终点还是 sshd):一台机器上两个 VLESS 入口
+// (一个直连、一个出口指向另一台的 Shadowsocks 入口),改完握手目标下发,
+// 直连那个拨测通过、链式那个报「经代理完成 SSH 认证失败: ssh: handshake
+// failed: EOF」,而面板给出的唯一归因是目标 sshd 的 PerSourcePenalties ——
+// 管理员照着它去查 sshd,而真正的原因完全可能在另一台机器上。
+// 终点换成 HTTP 之后 sshd 那一段归因整个消失了,但三跳仍然是三跳。
 //
 // 这正是 socksReplyMeaning 那条规矩说的事:**一句错误的归因比没有归因更糟**,
 // 它会把排查引向另一个方向。V7 给 nginx 透传定的规矩是"失败必须带回落地
@@ -114,18 +114,17 @@ func (d *Deployer) diagnoseChainHop(
 	return chainHopUnknown
 }
 
-// chainDialNote 按链路形态给出归因,替代那句写死的"是 sshd 在罚你"。
+// chainDialNote 按链路形态给出归因。
 //
-// 返回值第二项表示 sshd 惩罚那一段还该不该贴:只有当问题**可能**落在第三跳
-// (落地 → 本机公网 SSH)上时它才成立。断在前两跳时贴上去纯属误导 ——
-// 那时本机 sshd 连一个连接都没收到。
+// target 是这次拨测的目标 URL,localSSHPort 是二分诊断打的本机 sshd 端口
+// (没跑诊断时为 0)。
 func chainDialNote(
 	in singbox.InboundParams, chain *ChainProbe,
-	dialHost string, dialPort, localSSHPort int,
+	target string, localSSHPort int,
 	verdict chainHopVerdict, firstHopOK bool,
-) (string, bool) {
+) string {
 	if chain == nil {
-		return "", true
+		return ""
 	}
 	var b strings.Builder
 	b.WriteString("这个入口配了出口,所以这次拨测走的是三跳 —— " +
@@ -134,8 +133,7 @@ func chainDialNote(
 		in.Tag, dialLabel(in.Protocol), in.ListenPort)
 	fmt.Fprintf(&b, "  ② 「%s」→ 出口 → 落地「%s」(%s)\n",
 		in.Tag, chain.Landing, net.JoinHostPort(chain.Server, strconv.Itoa(chain.Port)))
-	fmt.Fprintf(&b, "  ③ 落地出网 → 这台机器的公网 SSH(%s)\n",
-		net.JoinHostPort(dialHost, strconv.Itoa(dialPort)))
+	fmt.Fprintf(&b, "  ③ 落地出网 → 拨测目标(%s)\n", target)
 	// **这一句必须写,而且必须是真的。** 刚改过握手目标的人第一个怀疑的
 	// 就是它,而"隧道到底建起来了没有"这个事实恰好把那一跳彻底排除或者
 	// 彻底坐实 —— 判据是 errProxyLegFailed 那个哨兵,不是猜。
@@ -143,29 +141,24 @@ func chainDialNote(
 		b.WriteString("**这次断在 ①**:探测客户端连不到本机这个入站," +
 			"后两跳一次都没走到。先查握手目标 / REALITY 参数 / 入站凭据 / 监听端口," +
 			"下面那几行日志说的就是它 —— 落地那台机器与这次失败无关。")
-		// 后两跳一次都没走到,本机 sshd 自然也没收到任何连接,
-		// 惩罚那一段贴上去只会把人引到一台完全无关的机器上。
-		return strings.TrimRight(b.String(), "\n"), false
+		return strings.TrimRight(b.String(), "\n")
 	}
 	b.WriteString("① 这次是通的:那一跳握手失败的话,探测客户端回的是" +
-		"「SOCKS5 CONNECT 被拒绝」而不是 EOF(sing 的 LazyConn 要等出站真的" +
+		"「SOCKS5 CONNECT 被拒绝」而不是隧道里的读取失败(sing 的 LazyConn 要等出站真的" +
 		"建立起来才写成功应答)—— 握手目标、REALITY 参数与入站凭据" +
 		"都不是这次的原因。\n")
 
-	blamesThirdHop := true
 	switch verdict {
 	case chainHopLandingReached:
 		b.WriteString("二分诊断(经同一条链路改打落地的回环 sshd):**到了落地** —— " +
 			"对端出示的主机密钥不是这台机器的。所以 ② 也是通的,问题在 ③:" +
-			"落地出网连不到这台机器的公网 SSH,或者本机 sshd 把它掐了。\n")
+			"落地出不了网,或者落地解析不了 / 连不上拨测目标。\n")
 	case chainHopNotChained:
-		blamesThirdHop = false
 		b.WriteString("二分诊断:**流量根本没出这台机器** —— 改打 127.0.0.1 时" +
 			"落在了本机 sshd 上,主机密钥与库里固定的一致。也就是说节点上跑的" +
 			"这份配置里,这个入口的流量走的是 direct:出口 IP 一个字节都没变," +
 			"而入口有网、谁都不报错。先去比对一下配置里的 route 规则与链式出站。\n")
 	case chainHopBlocked:
-		blamesThirdHop = false
 		b.WriteString("二分诊断:经同一条链路改打 127.0.0.1 也不通,而 ① 上面已经排除," +
 			"所以断在 ②。最常见的一种是**落地上没有这条链路的凭据** —— " +
 			"它由面板分配,但要落地重新部署一次才会出现在它的用户列表里;" +
@@ -180,7 +173,7 @@ func chainDialNote(
 	default:
 		b.WriteString("② 与 ③ 都会长成这一句,而它们要人做的事在两台不同的机器上:" +
 			"② 是落地不认这条链路(凭据要落地重新部署一次才会进它的用户列表)," +
-			"③ 是落地出网回不到这台机器的公网 SSH。\n")
+			"③ 是落地出不了网、或者连不上拨测目标。\n")
 	}
 
 	// **指路。** 面板自己取不到落地的日志(节点锁不可重入,见文件头),
@@ -195,5 +188,5 @@ func chainDialNote(
 		fmt.Fprintf(&b, "落地「%s」是外部代理,面板没有它的日志 —— "+
 			"只能从这一侧判断:先确认那条线路本身还连得通。\n", chain.Landing)
 	}
-	return strings.TrimRight(b.String(), "\n"), blamesThirdHop
+	return strings.TrimRight(b.String(), "\n")
 }

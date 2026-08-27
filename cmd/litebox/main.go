@@ -35,6 +35,7 @@ import (
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/externalproxy"
+	"github.com/litebox/litebox/internal/hosttraffic"
 	"github.com/litebox/litebox/internal/httpapi"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/notify"
@@ -385,6 +386,9 @@ func cmdServe(args []string) error {
 			return out, nil
 		})
 	syncer := traffic.NewSyncer(db, sampler, logger)
+	// 主机流量(vnStat)那一路(V15)。与代理流量分开:它读的是节点上
+	// vnstatd 的数据库,与 sing-box / mita 的计数器完全无关。
+	hostTraffic := hosttraffic.NewSyncer(pool, hosttraffic.NewStore(db), logger)
 
 	deployer := deployment.NewDeployer(deployment.Options{
 		Pool:   pool,
@@ -394,6 +398,10 @@ func cmdServe(args []string) error {
 		Syncer:      syncer,
 		Logger:      logger,
 		KeepBackups: 5,
+		// 拨测目标是运行期可改的设置,每次拨测现读。
+		ProbeURL: func(ctx context.Context) (string, error) {
+			return settingsStore.Get(ctx, settings.KeyProbeURL)
+		},
 	})
 	userStore := user.NewStore(db, cipher)
 
@@ -453,15 +461,19 @@ func cmdServe(args []string) error {
 		"请先执行 scripts/fetch-mieru.sh 拉取")
 
 	nodeService := node.NewService(node.ServiceOptions{
-		Store:            nodeStore,
-		Pool:             pool,
-		Deployer:         deployer,
-		DeployStore:      deployment.NewStore(db),
-		Users:            userStore,
-		Binaries:         node.NewDirBinaryProvider(cfg.Node.BinaryDir),
-		PreviewBinaries:  node.NewPreviewBinaryProvider(cfg.Node.BinaryDir),
-		MieruBinaries:    mieruBinaries,
-		MieruClients:     mieruClients,
+		Store:           nodeStore,
+		Pool:            pool,
+		Deployer:        deployer,
+		DeployStore:     deployment.NewStore(db),
+		Users:           userStore,
+		Binaries:        node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		PreviewBinaries: node.NewPreviewBinaryProvider(cfg.Node.BinaryDir),
+		MieruBinaries:   mieruBinaries,
+		MieruClients:    mieruClients,
+		RealmBinaries: node.NewNamedBinaryProvider(cfg.Node.RealmBinaryDir, "realm",
+			"请先执行 scripts/fetch-realm.sh 拉取"),
+		// 引导成功后顺带装 vnStat:失败只记进引导结果,不让创建节点失败。
+		HostTraffic:      hostTraffic,
 		MieruSync:        syncer,
 		Relays:           relayStore,
 		RelayHosts:       relayStore,
@@ -520,6 +532,7 @@ func cmdServe(args []string) error {
 		Trigger:  coordinator,
 		Logger:   logger,
 		Interval: cfg.Traffic.SyncInterval,
+		Host:     hostTraffic,
 	})
 	go scheduler.Run(ctx)
 
@@ -578,14 +591,15 @@ func cmdServe(args []string) error {
 		Subs: subscription.NewService(
 			db, userStore, cipher, cfg.Subscription.ClientMixedPort,
 			settingsStore, profileStore, logger),
-		Traffic:   traffic.NewQuerier(db),
-		Scheduler: scheduler,
-		Metrics:   metricsStore,
-		Monitor:   monitor,
-		Watchdog:  watchdog,
-		Notifier:  notifier,
-		Settings:  settingsStore,
-		Tiers:     access.NewStore(db),
+		Traffic:     traffic.NewQuerier(db),
+		Scheduler:   scheduler,
+		Metrics:     metricsStore,
+		HostTraffic: hostTraffic,
+		Monitor:     monitor,
+		Watchdog:    watchdog,
+		Notifier:    notifier,
+		Settings:    settingsStore,
+		Tiers:       access.NewStore(db),
 
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),

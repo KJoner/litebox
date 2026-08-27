@@ -32,6 +32,9 @@ const (
 	// KeySubscriptionUserAgent 是拉取机场订阅时用的 UA。
 	// 部分机场按 UA 返回不同格式,留空用 externalproxy.DefaultUserAgent。
 	KeySubscriptionUserAgent = "subscription_fetch_user_agent"
+	// KeyProbeURL 是部署健康检查里真实拨测的目标(经代理去取一次的 URL)。
+	// 留空用 deployment.DefaultProbeURL(gstatic 的 generate_204)。
+	KeyProbeURL = "probe_url"
 
 	// 消息推送。三个带 Secret 后缀的**必须**走 GetSecret/SetSecret ——
 	// Bark 的设备 key 与 Telegram 的 bot token 都在地址的路径里,

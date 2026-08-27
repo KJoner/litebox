@@ -40,6 +40,12 @@ const (
 	// 那个入口(协议、端口、等级都不同),没有任何一层会报错。
 	TargetInbound  TargetKind = "INBOUND"
 	TargetExternal TargetKind = "EXTERNAL"
+	// TargetAddress 的落地是管理员直接填的 host:port(V15)。
+	//
+	// 面板不知道它背后跑的是什么,所以这种规则**不进订阅、不进门户**
+	// (视图里没有它那一段),拨测也测不了 —— 它的用途是把这台机器当
+	// 纯端口转发器,用户拿到的地址由管理员另行分发。
+	TargetAddress TargetKind = "ADDRESS"
 )
 
 func ParseTargetKind(raw string) (TargetKind, error) {
@@ -48,9 +54,65 @@ func ParseTargetKind(raw string) (TargetKind, error) {
 		return TargetInbound, nil
 	case TargetExternal:
 		return TargetExternal, nil
+	case TargetAddress:
+		return TargetAddress, nil
 	default:
 		return "", fmt.Errorf("未知的落地去向 %q", raw)
 	}
+}
+
+// Engine 是搬字节的那个程序(V15)。
+//
+// 两种引擎回答同一个问题,所以在同一张表里;但它们在管理员做决定时要看的
+// 那几点上不同 —— nginx 改规则 reload、在途连接不断,realm 改规则 restart、
+// 在途连接全断 —— 所以每一条规则明确属于其中一种,而且建好之后不能改。
+type Engine string
+
+const (
+	EngineNginx Engine = "NGINX"
+	EngineRealm Engine = "REALM"
+)
+
+func ParseEngine(raw string) (Engine, error) {
+	switch Engine(raw) {
+	case "", EngineNginx:
+		return EngineNginx, nil
+	case EngineRealm:
+		return EngineRealm, nil
+	default:
+		return "", fmt.Errorf("未知的转发引擎 %q", raw)
+	}
+}
+
+// Label 是界面上的写法。
+func (e Engine) Label() string {
+	if e == EngineRealm {
+		return "realm"
+	}
+	return "nginx"
+}
+
+// ByEngine 从一批规则里挑出某个引擎的。
+//
+// 下发是按引擎各走各的:改一条 nginx 规则不该顺带把 realm 重启一遍。
+func ByEngine(rules []*Relay, engine Engine) []*Relay {
+	out := make([]*Relay, 0, len(rules))
+	for _, r := range rules {
+		if r.Engine == engine {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// HostRef 是"哪台中转主机上、哪个引擎"的规则指向了某个落地。
+//
+// 跨节点脏标记要按引擎标:落地的地址变了,指向它的 nginx 规则要 reload,
+// realm 规则要 restart —— 两者标脏的种类不同,合成一个节点 id 会让
+// 只有 nginx 规则的机器也被重启一次 realm(那台机器上可能根本没有 realm)。
+type HostRef struct {
+	NodeID int64
+	Engine Engine
 }
 
 // Relay 是一条转发规则。
@@ -63,6 +125,8 @@ type Relay struct {
 	NodeID int64 `json:"node_id"`
 	// NodeName 与 NodeDisplayName 供管理页面展示,不进订阅。
 	NodeName string `json:"node_name"`
+	// Engine 是搬字节的程序,一经创建不可改。
+	Engine Engine `json:"engine"`
 
 	DisplayName string `json:"display_name"`
 
@@ -78,6 +142,9 @@ type Relay struct {
 	TargetKind       TargetKind `json:"target_kind"`
 	TargetInboundID  int64      `json:"target_inbound_id"`
 	TargetExternalID int64      `json:"target_external_id"`
+	// TargetHost / TargetPort 只在 ADDRESS 下有值。
+	TargetHost string `json:"target_host"`
+	TargetPort int    `json:"target_port"`
 	// TargetName 是落地的展示名,只给管理页面看。
 	TargetName string `json:"target_name"`
 	// TargetReady 表示落地当前确实能给出可用的协议参数。

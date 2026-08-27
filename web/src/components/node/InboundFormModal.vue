@@ -68,6 +68,7 @@ const form = ref({
   ipv6_enabled: true,
   ipv6_display_name: '',
   tcp_fast_open: false,
+  unmetered: false,
   // 只在新增时随表单一起提交。**编辑已有入口时它是只读的** ——
   // 写入必须经 ApplyHandshakeDest 实测通过,而那是一个独立的动作。
   reality_dest: '',
@@ -109,6 +110,7 @@ watch(
           // 只是打开看了一眼、连改都没改。
           ipv6_display_name: i.ipv6_display_name,
           tcp_fast_open: i.tcp_fast_open,
+          unmetered: i.unmetered,
           reality_dest: i.reality_dest,
           access_tier_id: i.access_tier_id,
           sort_order: i.sort_order,
@@ -133,6 +135,7 @@ watch(
           ipv6_enabled: true,
           ipv6_display_name: '',
           tcp_fast_open: false,
+          unmetered: false,
           // 默认普通组。不从别处继承 —— 机器已经没有等级了(迁移 0020),
           // 而"跟着上一个入口走"会让新入口悄悄带上一个限制。
           access_tier_id: props.tiers[0]?.id ?? 1,
@@ -568,6 +571,28 @@ async function doSave() {
         </a-checkbox>
         <div class="ifm__hint">
           默认关。成败取决于用户到这台机器这一段路径上的中间设备,而那条路面板看不到。
+        </div>
+      </a-form-item>
+      <!-- 不计流量:三种协议都适用,所以放在协议专属那几块之后、等级之前。
+           它的代价不止"不扣额度"一条,每一条都要摆出来 —— 尤其是最后那条:
+           透传到它的线路没有任何一台机器在计量。 -->
+      <a-form-item label="流量计量">
+        <a-radio-group v-model:value="form.unmetered" size="small" button-style="solid">
+          <a-radio-button :value="false">按用户计量</a-radio-button>
+          <a-radio-button :value="true">不计流量</a-radio-button>
+        </a-radio-group>
+        <div v-if="form.unmetered" class="ifm__warn">
+          用户凭据照旧下发(仍然是每人一份,能单独撤销),只是配置里不再写 name ——
+          sing-box 没有 name 就不建计数器。后果有四条:<br />
+          · 这个入口的流量<b>不计入任何用户的额度</b>,停用、过期、超额的判断也就不受它影响
+          —— 这是它存在的理由(福利入口、或者让计量发生在前面的中转上)。<br />
+          · <b>也不计入这台机器的周期用量与全站合计</b>。机器视角的真相看「流量」Tab 里的主机流量(vnStat)。<br />
+          · 「某个用户在这个入口用了多少」永远答不了,配置比对里也看不到这个入口上的凭据变化。<br />
+          · <b>经 nginx / realm 透传到这个入口的线路,没有任何一台机器在计量</b>;
+          经 sing-box 链式出口过来的,由入口机按用户计。
+        </div>
+        <div v-else class="ifm__hint">
+          按 user_code 建计数器:扣用户额度、进机器周期用量。改这一项要重新部署这台机器。
         </div>
       </a-form-item>
       <a-form-item label="访问等级">

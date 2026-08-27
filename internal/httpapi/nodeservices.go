@@ -22,6 +22,10 @@ const (
 	actionMieruUninstall   = "node.mieru_uninstall"
 	actionNginxInstall     = "node.nginx_install"
 	actionNginxUninstall   = "node.nginx_uninstall"
+	actionRealmInstall     = "node.realm_install"
+	actionRealmUninstall   = "node.realm_uninstall"
+	actionRealmRestart     = "node.realm_restart"
+	actionRealmStop        = "node.realm_stop"
 )
 
 // serviceOp 把四个处理器共有的那一套收在一处:取 id、跑、写审计、回结果。
@@ -82,5 +86,35 @@ func (s *Server) handleUninstallNginx(w http.ResponseWriter, r *http.Request) {
 	s.serviceOp(w, r, actionNginxUninstall, "卸载 nginx 失败",
 		func(id int64) (node.ServiceOpResult, error) {
 			return s.nodes.UninstallNginx(r.Context(), id)
+		})
+}
+
+func (s *Server) handleInstallRealm(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionRealmInstall, "安装 realm 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.InstallRealm(r.Context(), id)
+		})
+}
+
+func (s *Server) handleUninstallRealm(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionRealmUninstall, "卸载 realm 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.UninstallRealm(r.Context(), id)
+		})
+}
+
+// 重启与停止是运维用的直接动作,不经过下发事务。realm 没有 reload,
+// 重启一定断开全部 realm 线路的在途连接 —— 前端按 lbDangerConfirm 档确认。
+func (s *Server) handleRestartRealm(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionRealmRestart, "重启 realm 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.RestartRealm(r.Context(), id)
+		})
+}
+
+func (s *Server) handleStopRealm(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionRealmStop, "停止 realm 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.StopRealm(r.Context(), id)
 		})
 }

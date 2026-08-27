@@ -9,6 +9,7 @@ import {
   type AccessTier,
   type ExternalProxy,
   type NginxFacts,
+  type RealmFacts,
   type Node,
   type MieruInbound,
   type NodeInbound,
@@ -106,6 +107,8 @@ const loadError = ref('')
 const running = ref('')
 const nginx = ref<NginxFacts | null>(null)
 const nginxError = ref('')
+const realm = ref<RealmFacts | null>(null)
+const realmError = ref('')
 const lastChain = ref<ChainApplyResult | null>(null)
 
 /**
@@ -176,6 +179,14 @@ const enabledMeta: Record<'on' | 'off', LbStatusMeta> = {
   on: { text: '启用', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
   off: { text: '已停用', shape: 'minus', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
 }
+/**
+ * 不计流量的入口(V15)要在列表里一眼看得出来:它的流量既不扣用户额度,
+ * 也不进机器周期用量 —— 那张图上少的那一截,只有这个标记能解释。
+ * 用警告色:它不是坏了,但它改变了"停用即断线、超额即断线"这两条全站规矩。
+ */
+const unmeteredMeta: LbStatusMeta = {
+  text: '不计流量', shape: 'triangle', fg: color.warning, bg: color.warningBg, bd: color.warningBorder,
+}
 
 /**
  * Mieru 入口的传输层标记,与 inboundProtocolMeta 同构。
@@ -216,6 +227,9 @@ type EntryRow =
   | { key: string; kind: 'singbox'; inbound: NodeInbound }
   | { key: string; kind: 'mieru'; mieru: MieruInbound }
   | { key: string; kind: 'nginx'; relay: NodeRelay }
+  // realm 与 nginx 共用 NodeRelay(同一张表),但在列表里是两种行:
+  // 它们的下发摩擦不同档,而「去向」那一列的判据也要分得出是谁在搬字节。
+  | { key: string; kind: 'realm'; relay: NodeRelay }
 
 // key 的前缀不能省:三张表各自从 1 开始,不加前缀的话 i1 / m1 / r1
 // 会撞成同一个 key,而 Vue 会把三行当成同一行来复用 DOM。
@@ -233,7 +247,11 @@ const rows = computed<EntryRow[]>(() =>
     [
       ...inbounds.value.map((i) => ({ key: `i${i.id}`, kind: 'singbox' as const, inbound: i })),
       ...mierus.value.map((m) => ({ key: `m${m.id}`, kind: 'mieru' as const, mieru: m })),
-      ...relays.value.map((r) => ({ key: `r${r.id}`, kind: 'nginx' as const, relay: r })),
+      ...relays.value.map((r) =>
+        r.engine === 'REALM'
+          ? { key: `r${r.id}`, kind: 'realm' as const, relay: r }
+          : { key: `r${r.id}`, kind: 'nginx' as const, relay: r },
+      ),
     ],
     (row) => ({
       nodeSort: 0,
@@ -261,6 +279,7 @@ const kindLabel: Record<EntryRow['kind'], string> = {
   singbox: 'sing-box',
   mieru: 'Mieru',
   nginx: 'nginx 转发',
+  realm: 'realm 转发',
 }
 
 function kindText(row: EntryRow): string {
@@ -327,7 +346,12 @@ function rowSubText(row: EntryRow): string {
  * 就能看出这台机器上哪些入口是本机出网、哪些绕到了别处。
  */
 function destinationText(row: EntryRow): string {
-  if (row.kind === 'nginx') {
+  if (row.kind === 'nginx' || row.kind === 'realm') {
+    if (row.relay.target_kind === 'ADDRESS') {
+      // 指定地址不进订阅:面板不知道它背后的协议,造不出条目。这一列要说出来,
+      // 否则管理员会对着一条"配好了却不在订阅里"的线路找半天。
+      return `转发到 ${row.relay.target_name}(指定地址,不进订阅)`
+    }
     return `透传到 ${row.relay.target_name || '(落地已删除)'}`
   }
   if (row.kind === 'mieru') {
@@ -484,7 +508,7 @@ function removeMieru(m: MieruInbound) {
 // **不给它降档成 lbDangerConfirm**:给可撤回的操作也加打字摩擦,
 // 管理员很快会变成无脑复制粘贴,真正不可逆的那几个反而失去警示作用 ——
 // 反过来把不可逆的降档,是把唯一一道刹车拿掉。
-type UninstallKind = 'singbox' | 'mieru' | 'nginx'
+type UninstallKind = 'singbox' | 'mieru' | 'nginx' | 'realm'
 const uninstallKind = ref<UninstallKind | null>(null)
 
 const uninstallMeta = computed(() => {
@@ -524,6 +548,16 @@ const uninstallMeta = computed(() => {
         '转发规则都留在面板里,重新「下发转发配置」就能回来。',
       ],
     },
+    realm: {
+      title: `卸载 ${nodeLabel.value} 上的 realm 转发`,
+      okText: '卸载 realm',
+      impacts: [
+        '停止并删除面板托管的 realm 服务(litebox-realm)、二进制、配置与备份。',
+        `这台机器上全部 ${relays.value.filter((r) => r.engine === 'REALM').length} 条 realm 线路立刻中断。`,
+        'sing-box、Mieru 入口与 nginx 转发不受影响。',
+        '转发规则都留在面板里,重新「安装 realm」+「下发 realm 配置」就能回来。',
+      ],
+    },
   }[uninstallKind.value]
 })
 
@@ -548,6 +582,13 @@ function doUninstall() {
       opSteps.value = r.result.steps
       opError.value = r.error ?? ''
       await checkNginx()
+    })
+  } else if (kind === 'realm') {
+    void runOp('卸载 realm 转发', '正在停止服务并清理文件', async () => {
+      const r = await api.uninstallRealm(props.node.id)
+      opSteps.value = r.result.steps
+      opError.value = r.error ?? ''
+      await checkRealm()
     })
   }
 }
@@ -734,6 +775,104 @@ function uninstallNginx() {
   uninstallKind.value = 'nginx'
 }
 
+// ---------- realm(V15) ----------
+//
+// 与 nginx 那一组平行,但**下发与重启都是 restart**:realm 没有 reload,
+// 这台机器上全部 realm 线路的在途连接都会断 —— 所以它们走 lbDangerConfirm,
+// 而 nginx 的下发停在普通确认档。
+
+/** 与 checkNginx 同理:手工触发的只读探测,不在打开面板时自动跑。 */
+async function checkRealm() {
+  running.value = '正在探测 realm'
+  emit('busy', running.value)
+  realmError.value = ''
+  try {
+    realm.value = await api.nodeRealm(props.node.id)
+  } catch (e) {
+    realm.value = null
+    realmError.value = e instanceof ApiError ? e.message : '探测失败'
+  } finally {
+    running.value = ''
+    emit('busy', '')
+  }
+}
+
+function installRealm() {
+  void runOp('安装 realm', '正在上传 realm 二进制', async () => {
+    const r = await api.installRealm(props.node.id)
+    opSteps.value = r.result.steps
+    opError.value = r.error ?? ''
+    if (!r.error) {
+      opNote.value = '接下来点「下发 realm 配置」。注意它是 restart,会断开这台机器上全部 realm 线路的在途连接。'
+    }
+    await checkRealm()
+  })
+}
+
+function uninstallRealm() {
+  uninstallKind.value = 'realm'
+}
+
+const realmRuleCount = computed(() => relays.value.filter((r) => r.engine === 'REALM').length)
+
+function deployRealmNow() {
+  lbDangerConfirm({
+    title: `下发 ${nodeLabel.value} 上的 realm 配置?`,
+    impacts: [
+      'realm 没有 reload:这一步会 restart 它,' +
+        `这台机器上全部 ${realmRuleCount.value} 条 realm 线路的在途连接都会断开。`,
+      '下发后做三步健康检查(服务状态、端口监听、经转发的真实拨测),失败自动回滚到上一版。',
+      'nginx 转发、sing-box 与 Mieru 入口不受影响。',
+    ],
+    okText: '下发并重启 realm',
+    onOk: () => {
+      void runOp('下发 realm 配置', '正在下发并做健康检查', async () => {
+        const r = await api.deployRealm(props.node.id)
+        opDeploy.value = r.result
+        opError.value = r.error ?? ''
+      })
+    },
+  })
+}
+
+function restartRealm() {
+  lbDangerConfirm({
+    title: `重启 ${nodeLabel.value} 上的 realm?`,
+    impacts: [
+      `这台机器上全部 ${realmRuleCount.value} 条 realm 线路的在途连接都会断开。`,
+      '不重新渲染配置:节点上跑的仍是上一次下发的那份。改了规则要用「下发 realm 配置」。',
+    ],
+    okText: '重启 realm',
+    onOk: () => {
+      void runOp('重启 realm', '正在重启并确认状态', async () => {
+        const r = await api.restartRealm(props.node.id)
+        opSteps.value = r.result.steps
+        opError.value = r.error ?? ''
+        await checkRealm()
+      })
+    },
+  })
+}
+
+function stopRealm() {
+  lbDangerConfirm({
+    title: `停止 ${nodeLabel.value} 上的 realm?`,
+    impacts: [
+      `这台机器上全部 ${realmRuleCount.value} 条 realm 线路立刻中断,直到再次「下发」或「重启」。`,
+      '规则、二进制与配置都留着 —— 巡检看到它没在跑会把它拉起来,想长期停掉请把规则停用或卸载 realm。',
+    ],
+    okText: '停止 realm',
+    onOk: () => {
+      void runOp('停止 realm', '正在停止服务', async () => {
+        const r = await api.stopRealm(props.node.id)
+        opSteps.value = r.result.steps
+        opError.value = r.error ?? ''
+        await checkRealm()
+      })
+    },
+  })
+}
+
 const mieruChainOpen = ref(false)
 const mieruChainTarget = ref<MieruInbound | null>(null)
 
@@ -837,6 +976,11 @@ function openChain(i: NodeInbound) {
  * 混成一个的话,不能拨的会出现在转发的下拉里,而部署要到十几秒后才失败。
  */
 const relayableProxies = computed(() => externalProxies.value.filter((p) => p.relayable))
+/** realm 同时搬 UDP,Hysteria2 / TUIC 也能当落地 —— 但拨测测不了它们,部署记录里会记 SKIPPED。 */
+const realmTargetProxies = computed(() => externalProxies.value)
+const targetProxies = computed(() =>
+  form.value.engine === 'REALM' ? realmTargetProxies.value : relayableProxies.value,
+)
 const hiddenRelayTargets = computed(
   () => externalProxies.value.length - relayableProxies.value.length,
 )
@@ -844,12 +988,15 @@ const hiddenRelayTargets = computed(
 const editing = ref<NodeRelay | null>(null)
 const formOpen = ref(false)
 const form = ref({
+  engine: 'NGINX' as 'NGINX' | 'REALM',
   display_name: '',
   listen_port: 0,
   public_port: 0,
-  target_kind: 'INBOUND' as 'INBOUND' | 'EXTERNAL',
+  target_kind: 'INBOUND' as 'INBOUND' | 'EXTERNAL' | 'ADDRESS',
   target_inbound_id: 0,
   target_external_id: 0,
+  target_host: '',
+  target_port: 0,
   access_tier_id: 0,
   sort_order: 0,
   subscription_enabled: true,
@@ -878,15 +1025,18 @@ async function checkNginx() {
   }
 }
 
-function openCreate() {
+function openCreate(engine: 'NGINX' | 'REALM' = 'NGINX') {
   editing.value = null
   form.value = {
+    engine,
     display_name: '',
     listen_port: 0,
     public_port: 0,
     target_kind: 'INBOUND',
     target_inbound_id: landingInbounds.value[0]?.value ?? 0,
     target_external_id: relayableProxies.value[0]?.id ?? 0,
+    target_host: '',
+    target_port: 0,
     access_tier_id: props.tiers[0]?.id ?? 1,
     sort_order: 0,
     subscription_enabled: true,
@@ -899,12 +1049,15 @@ function openCreate() {
 function openEdit(r: NodeRelay) {
   editing.value = r
   form.value = {
+    engine: r.engine,
     display_name: r.display_name,
     listen_port: r.listen_port,
     public_port: r.public_port,
     target_kind: r.target_kind,
     target_inbound_id: r.target_inbound_id,
     target_external_id: r.target_external_id,
+    target_host: r.target_host,
+    target_port: r.target_port,
     access_tier_id: r.access_tier_id,
     sort_order: r.sort_order,
     subscription_enabled: r.subscription_enabled,
@@ -931,7 +1084,11 @@ async function submitForm() {
     await load()
     // 说明「已排队」而不是「已生效」:标脏之后由协调器合并下发,
     // 中间有几秒的静默期。说成已生效会让管理员立刻去客户端上试。
-    message.success('已保存,中转配置将在数秒内下发(只 reload,不断开在途连接)')
+    message.success(
+      form.value.engine === 'REALM'
+        ? '已保存,realm 配置将在数秒内下发(restart,这台机器上全部 realm 线路的在途连接会断开)'
+        : '已保存,中转配置将在数秒内下发(只 reload,不断开在途连接)',
+    )
   } catch (e) {
     message.error(e instanceof ApiError ? e.message : '保存失败')
   } finally {
@@ -1060,13 +1217,30 @@ onMounted(async () => {
     </div>
     <div class="nr__ops">
       <span class="nr__kind">nginx 转发</span>
-      <a-button size="small" :disabled="!!running" @click="openCreate">新增转发入口</a-button>
+      <a-button size="small" :disabled="!!running" @click="openCreate('NGINX')">新增转发入口</a-button>
       <a-button size="small" :disabled="!!running" @click="installNginx">安装</a-button>
       <a-button size="small" :loading="!!running" @click="checkNginx">检查</a-button>
       <a-button size="small" :loading="!!running" @click="deployNow">下发转发配置</a-button>
       <a-button size="small" danger :disabled="!!running" @click="uninstallNginx">卸载</a-button>
       <span class="nr__note">
         下发只 reload,在途连接一条不断 —— 不需要挑时机。「卸载」会中断全部转发线路。
+      </span>
+    </div>
+    <!-- realm(V15)单独一行:它是面板下发的单个二进制、独立的服务,
+         而且**没有 reload** —— 下发与重启都会断开在途连接,与 nginx 那一行
+         的摩擦不同档,合在一起会让管理员对「这一下要不要挑时机」失去判断。 -->
+    <div class="nr__ops">
+      <span class="nr__kind">realm 转发</span>
+      <a-button size="small" :disabled="!!running" @click="openCreate('REALM')">新增 realm 转发</a-button>
+      <a-button size="small" :disabled="!!running" @click="installRealm">安装</a-button>
+      <a-button size="small" :loading="!!running" @click="checkRealm">检查</a-button>
+      <a-button size="small" :disabled="!!running" @click="deployRealmNow">下发 realm 配置</a-button>
+      <a-button size="small" :disabled="!!running" @click="restartRealm">重启</a-button>
+      <a-button size="small" :disabled="!!running" @click="stopRealm">停止</a-button>
+      <a-button size="small" danger :disabled="!!running" @click="uninstallRealm">卸载</a-button>
+      <span class="nr__note">
+        realm 没有 reload:<b>下发与重启都会断开这台机器上全部 realm 线路的在途连接</b>,要挑时机。
+        与 nginx 的区别:二进制由面板下发(不依赖发行版的包)、同时搬 UDP。
       </span>
     </div>
 
@@ -1094,6 +1268,20 @@ onMounted(async () => {
       </template>
     </div>
 
+    <div v-if="realmError" class="nr__warn">探测 realm 失败:{{ realmError }}</div>
+    <div v-else-if="realm" class="nr__nginx">
+      <template v-if="!realm.installed">
+        这台机器上还没有 realm。点「安装」由面板上传二进制(约 6MB),
+        下发时不会自动装 —— 传一个二进制该由你显式决定。
+      </template>
+      <template v-else>
+        {{ realm.version }} ·
+        {{ realm.config_present ? '已下发过配置' : '还没下发过配置' }} ·
+        {{ realm.running ? '在跑' : '没在跑' }}
+        <span class="lb-mono">{{ realm.state }}</span>
+      </template>
+    </div>
+
     <div v-if="loadError" class="nr__warn">{{ loadError }}</div>
     <!-- 判据要把 Mieru 一起算上:只有 Mieru 入口的机器上,用户是连得上的,
          而原来那句「谁都连不上」在那种机器上是错的 —— 一句错误的告警
@@ -1113,6 +1301,7 @@ onMounted(async () => {
           <span class="nr__kind">{{ kindText(row) }}</span>
           <span class="nr__sb-name">{{ rowName(row) }}</span>
           <LbStatusTag :meta="familyOf(row)" />
+          <LbStatusTag v-if="row.kind === 'singbox' && row.inbound.unmetered" :meta="unmeteredMeta" />
           <LbStatusTag v-if="row.kind === 'singbox'" :meta="protocolMeta(row.inbound)" />
           <LbStatusTag v-else-if="row.kind === 'mieru'" :meta="mieruMeta(row.mieru)" />
           <LbStatusTag v-else :meta="readyMeta[row.relay.target_ready ? 'yes' : 'no']" />
@@ -1170,6 +1359,10 @@ onMounted(async () => {
           <div class="nr__sb-name">
             {{ rowName(record) }}
             <LbStatusTag :meta="familyOf(record)" />
+            <LbStatusTag
+              v-if="record.kind === 'singbox' && record.inbound.unmetered"
+              :meta="unmeteredMeta"
+            />
           </div>
           <span v-if="record.kind === 'singbox'" class="nr__tag lb-mono">
             {{ record.inbound.tag }}
@@ -1395,7 +1588,9 @@ onMounted(async () => {
     <!-- ---------------- nginx 转发表单 ---------------- -->
     <a-modal
       v-model:open="formOpen"
-      :title="editing ? '编辑转发线路' : '新增转发线路'"
+      :title="
+        (editing ? '编辑' : '新增') + (form.engine === 'REALM' ? ' realm ' : ' nginx ') + '转发线路'
+      "
       :confirm-loading="!!running"
       @ok="submitForm"
     >
@@ -1403,7 +1598,7 @@ onMounted(async () => {
         <a-form-item label="线路名称(会发给用户)">
           <a-input v-model:value="form.display_name" placeholder="例如:香港中转-东京" />
         </a-form-item>
-        <a-form-item label="监听端口(nginx 在这台机器上真正监听的号码)">
+        <a-form-item :label="`监听端口(${form.engine === 'REALM' ? 'realm' : 'nginx'} 在这台机器上真正监听的号码)`">
           <a-input-number v-model:value="form.listen_port" :min="1" :max="65535" />
         </a-form-item>
         <a-form-item label="公网端口(留 0 表示与监听端口相同)">
@@ -1413,14 +1608,34 @@ onMounted(async () => {
             443。填反了 nginx 会监听在转发链路另一端的号码上,而各项检查都会通过。
           </div>
         </a-form-item>
+        <a-form-item v-if="!editing" label="转发引擎">
+          <a-radio-group v-model:value="form.engine" size="small" button-style="solid">
+            <a-radio-button value="NGINX">nginx</a-radio-button>
+            <a-radio-button value="REALM">realm</a-radio-button>
+          </a-radio-group>
+          <div class="nr__hint">
+            引擎建好之后不能改。nginx 改规则 reload、在途连接不断;realm 改规则 restart、在途连接全断,
+            但它由面板下发二进制、同时搬 UDP(Hysteria2 / TUIC 也能当落地)。
+          </div>
+        </a-form-item>
         <a-form-item v-if="!editing" label="落地去向">
           <a-radio-group v-model:value="form.target_kind" size="small" button-style="solid">
             <a-radio-button value="INBOUND">自建节点的入口</a-radio-button>
             <a-radio-button value="EXTERNAL">外部代理</a-radio-button>
+            <a-radio-button value="ADDRESS">指定地址</a-radio-button>
           </a-radio-group>
           <div class="nr__hint">落地种类建好之后不能改 —— 换种类等于换成另一条线路。</div>
         </a-form-item>
-        <a-form-item label="落地">
+        <a-form-item v-if="form.target_kind === 'ADDRESS'" label="落地地址(IP 或域名)与端口">
+          <a-input v-model:value="form.target_host" placeholder="例如:203.0.113.9 或 landing.example.com" style="width: 60%" />
+          <a-input-number v-model:value="form.target_port" :min="1" :max="65535" style="margin-left: 8px" />
+          <div class="nr__hint">
+            <b>这种线路不进订阅、不进门户,也不做拨测</b> —— 面板不知道那个地址背后跑的是什么协议、凭据是什么,
+            造不出条目。它的用途是把这台机器当纯端口转发器,用户拿到的地址由你另行分发。
+            域名原样写进配置、由转发程序自己解析,面板不解析它。
+          </div>
+        </a-form-item>
+        <a-form-item v-else label="落地">
           <a-select
             v-if="form.target_kind === 'INBOUND'"
             v-model:value="form.target_inbound_id"
@@ -1429,13 +1644,13 @@ onMounted(async () => {
           <a-select
             v-else
             v-model:value="form.target_external_id"
-            :disabled="!relayableProxies.length"
-            :options="relayableProxies.map((p) => ({ value: p.id, label: p.display_name }))"
+            :disabled="!targetProxies.length"
+            :options="targetProxies.map((p) => ({ value: p.id, label: p.display_name }))"
           />
           <div class="nr__hint">
             落地是一个<b>入口</b>而不是一台机器 —— 一台机器上有两个入口时,
             「转发到它」是有歧义的,而流量进错入口不会有任何报错。
-            <template v-if="form.target_kind === 'EXTERNAL' && hiddenRelayTargets">
+            <template v-if="form.target_kind === 'EXTERNAL' && form.engine === 'NGINX' && hiddenRelayTargets">
               <br />
               另有 {{ hiddenRelayTargets }} 条外部代理走 QUIC(Hysteria2 / TUIC),
               是纯 UDP,而 nginx 透传只搬 TCP 字节 —— 没有列出来。
@@ -1443,7 +1658,7 @@ onMounted(async () => {
             </template>
           </div>
         </a-form-item>
-        <a-form-item label="访问等级">
+        <a-form-item v-if="form.target_kind !== 'ADDRESS'" label="访问等级">
           <a-select
             v-model:value="form.access_tier_id"
             :options="tiers.map((t) => ({ value: t.id, label: t.name }))"
@@ -1461,8 +1676,10 @@ onMounted(async () => {
           <a-input v-model:value="form.public_remark" />
         </a-form-item>
         <a-form-item>
-          <a-checkbox v-model:checked="form.enabled">启用(关掉后 nginx 上不再监听)</a-checkbox>
-          <a-checkbox v-model:checked="form.subscription_enabled">下发到订阅</a-checkbox>
+          <a-checkbox v-model:checked="form.enabled">启用(关掉后不再监听这个端口)</a-checkbox>
+          <a-checkbox v-if="form.target_kind !== 'ADDRESS'" v-model:checked="form.subscription_enabled">
+            下发到订阅
+          </a-checkbox>
         </a-form-item>
       </a-form>
     </a-modal>

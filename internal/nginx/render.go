@@ -16,6 +16,8 @@ import (
 	"net"
 	"sort"
 	"strings"
+
+	"github.com/litebox/litebox/internal/relayaddr"
 )
 
 // Server 是一条转发规则渲染成的 stream server 块。
@@ -308,29 +310,7 @@ func validateDuration(d, what string) error {
 // 落地的 IP 一变,转发就指向一台已经不是它的机器,而面板这边看起来一切正常。
 // nginx 自己会在需要时解析(stream 的 proxy_pass 在启动时解析一次)。
 func normalizeTargetHost(host string) (string, error) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return "", errors.New("落地地址不能为空")
-	}
-	// 方括号是 URI 语法的一部分,不是地址的一部分。
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	if ip := net.ParseIP(host); ip != nil {
-		return host, nil
-	}
-	if len(host) > 253 {
-		return "", fmt.Errorf("落地地址过长: %q", host)
-	}
-	for _, label := range strings.Split(host, ".") {
-		if label == "" {
-			return "", fmt.Errorf("落地地址不合法: %q", host)
-		}
-		for _, r := range label {
-			ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-				(r >= '0' && r <= '9') || r == '-' || r == '_'
-			if !ok {
-				return "", fmt.Errorf("落地地址不合法: %q", host)
-			}
-		}
-	}
-	return host, nil
+	// 实现在 relayaddr:realm 与「指定地址」的规则校验的是同一种东西,
+	// 三处各写一遍迟早有一处宽一点。
+	return relayaddr.NormalizeHost(host)
 }

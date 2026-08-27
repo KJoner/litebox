@@ -369,6 +369,10 @@ GET  /api/traffic/nodes-today          今日各节点流量,一次取回
 GET  /api/traffic/nodes-cycle          各节点当前额度周期用量,一次取回
 GET  /api/traffic/daily?days=30        全站每日流量,供仪表盘趋势图
 GET  /api/nodes/{id}/traffic?days=30   周期汇总 + 每日趋势
+GET  /api/nodes/{id}/traffic/series?granularity=hour|day|month
+                                       V15:代理流量与主机流量两条序列,同一档粒度
+GET  /api/nodes/{id}/host-traffic/live V15:网卡累计字节的一次即时读数(速率由前端算)
+POST /api/nodes/{id}/host-traffic/install  V15:装 vnStat(以及 iftop、nload)并同步一次
 GET  /api/metrics/nodes-latest
 GET  /api/nodes/{id}/metrics?hours=6      6 / 24 / 72 / 168
 POST /api/nodes/{id}/collect-metrics
@@ -415,6 +419,39 @@ GET  /api/metrics/status
 * 统计包含该节点下**全部**用户的上下行,含已停用与已删除用户留下的历史流量,
   也不区分 IPv4 与 IPv6 —— 两个订阅条目指向同一个 sing-box 入站与同一个计数器;
 * **超额只预警**:不会停 sing-box、不禁用节点、不关订阅开关,也不删用户凭据。
+
+### 主机流量与实时曲线(V15)
+
+`/traffic/series` 同时给 `proxy`(sing-box + Mieru 的用户计数器,按 UTC 小时 /
+日 / 月聚合)与 `host`(节点上 vnstatd 的桶,`at` 是桶起点)两条序列,以及
+`host_state`(装没装、网卡、上次同步、上次的错)。**两者对不上是正常的**:
+主机流量还包括 SSH、系统更新、面板自己的同步,以及「不计流量」入口的流量。
+`POST /api/nodes/{id}/sync-traffic` 从 V15 起三路一起(sing-box、Mieru、主机),
+主机那一路没装 vnStat 就先装;响应里多一个 `host` 字段。
+
+`/host-traffic/live` 每次都真的 SSH 一次(占节点锁约 150ms),给的是**累计值**;
+前端每 2 秒读一次、按两次读数之差算速率,而且只在流量 Tab 打开时读、
+2 分钟没有页面操作就停 —— 这两条规矩在前端,接口本身不限流。
+
+### 转发引擎与指定地址(V15)
+
+```
+POST /api/nodes/{id}/relays           body 多了 engine(NGINX / REALM,建好不能改)
+                                       与 target_kind = ADDRESS 时的 target_host / target_port
+POST /api/nodes/{id}/realm/deploy     下发 realm 配置(restart,断开全部 realm 线路的在途连接)
+GET  /api/nodes/{id}/realm            只读探测:装没装、版本、下发过没有、在不在跑
+POST /api/nodes/{id}/realm-install    上传面板本地的 realm 二进制(先传 .new 再 rename)
+POST /api/nodes/{id}/realm-uninstall
+POST /api/nodes/{id}/realm-restart
+POST /api/nodes/{id}/realm-stop
+```
+
+* `ADDRESS` 落地**不进订阅、不进门户、不拨测**(记 SKIPPED 并写明原因)——
+  面板不知道那个地址背后的协议;
+* realm 与 nginx 同一张表,`GET /api/nodes/{id}/relays` 里每条带 `engine`;
+  巡检结果多了 `realm` / `realm_detail`;部署记录的 `kind` 多了 `REALM`;
+* 设置接口 `/api/settings` 多了 `probe_url`(留空 = 默认 gstatic 的 generate_204)
+  与只读的 `default_probe_url`:部署拨测的终点从 V15 起是它,不再是节点的 sshd。
 
 ## 巡检与推送接口
 
