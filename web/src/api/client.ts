@@ -445,6 +445,12 @@ export interface NodeInbound {
   deployed_snell_obfs_mode: SnellObfsMode
   deployed_snell_v6_mode: SnellV6Mode
   deployed_snell_shared_psk: boolean
+  /**
+   * 不计流量(V15):用户凭据照旧下发,只是不写 name,于是没有计数器 ——
+   * 不计入用户额度,也不计入这台机器的周期用量。三种协议都适用。
+   */
+  unmetered: boolean
+  deployed_unmetered: boolean
   /** sing-box 真正 bind 的端口 */
   listen_port: number
   /** 客户端连接的公网端口。0 表示跟随 listen_port。 */
@@ -509,6 +515,8 @@ export interface NodeInboundInput {
   snell_v6_mode?: SnellV6Mode
   /** 共享凭据。漏传 = 关掉,而关掉是更严的那一档,所以它是普通布尔。 */
   snell_shared_psk?: boolean
+  /** 不计流量。同一种约定:漏传 = 关掉(计量)。 */
+  unmetered?: boolean
   listen_port: number
   public_port: number
   ipv6_public_port?: number
@@ -660,8 +668,13 @@ export interface NodeRelay {
   node_id: number
   /** 中转主机的内部名称,只在后台出现 */
   node_name: string
+  /**
+   * 搬字节的程序(V15)。一经创建不可改:nginx 改规则 reload、在途连接不断;
+   * realm 改规则 restart、在途连接全断 —— 两者的操作摩擦不同档。
+   */
+  engine: 'NGINX' | 'REALM'
   display_name: string
-  /** nginx 在中转主机上实际监听的端口 */
+  /** nginx / realm 在中转主机上实际监听的端口 */
   listen_port: number
   /**
    * 客户端连接的公网端口。0 表示跟随 listen_port。
@@ -670,10 +683,17 @@ export interface NodeRelay {
    * 订阅条目会停在旧端口上,而管理员当初看到的是一个空输入框。
    */
   public_port: number
-  target_kind: 'INBOUND' | 'EXTERNAL'
+  /**
+   * ADDRESS(V15)是管理员直接填的 host:port —— 面板不知道它背后的协议,
+   * 所以这种规则不进订阅、不进门户,拨测也测不了。
+   */
+  target_kind: 'INBOUND' | 'EXTERNAL' | 'ADDRESS'
   /** 落地是自建节点【某一个入口】的 id,不是机器的 id */
   target_inbound_id: number
   target_external_id: number
+  /** 只在 ADDRESS 下有值 */
+  target_host: string
+  target_port: number
   /** 落地的展示名(机器 / 入口),只给后台看 */
   target_name: string
   /**
@@ -714,6 +734,17 @@ export interface NginxFacts {
    */
   missing_package: string
   package_manager: string
+}
+
+/** 中转主机上 realm 的现状(V15),只读探测。 */
+export interface RealmFacts {
+  installed: boolean
+  binary_path: string
+  version: string
+  /** 这台机器下发过 realm 配置没有 —— 与 nginx.conf 一样,配置在不在磁盘上是唯一可靠的判据 */
+  config_present: boolean
+  running: boolean
+  state: string
 }
 
 /** 链式变更的编排结果:两台机器各一次部署 */
@@ -781,6 +812,10 @@ export interface PanelSettings {
   subscription_base_url: string
   config_base_url: string
   panel_public_key: string
+  /** 拨测目标的设置值,空串表示跟随默认 */
+  probe_url: string
+  /** 留空时实际打的那个地址 */
+  default_probe_url: string
 }
 
 export interface NodeUpdateEffect {
@@ -1038,6 +1073,63 @@ export interface SyncResult {
   entries_added: number
   bytes_added: number
   synced_at: string
+  /** 主机流量(vnStat)那一路的结果,只有手工「同步流量」会带上它 */
+  host?: HostTrafficSyncResult
+}
+
+/** 主机流量(vnStat)一次同步 / 安装的结果(V15) */
+export interface HostTrafficSyncResult {
+  installed: boolean
+  iface: string
+  version: string
+  rows_upserted: number
+  install_steps: string[]
+  total_rx: number
+  total_tx: number
+}
+
+export interface HostTrafficState {
+  node_id: number
+  installed: boolean
+  iface: string
+  vnstat_version: string
+  /** 空串表示从没同步过 */
+  synced_at: string
+  last_error: string
+}
+
+/** 代理流量按粒度聚合的一个桶。at 是桶起点(UTC RFC3339)。 */
+export interface TrafficSeriesPoint {
+  at: string
+  uplink: number
+  downlink: number
+  total: number
+}
+
+/** 主机流量的一个桶(网卡视角) */
+export interface HostTrafficPoint {
+  at: string
+  rx: number
+  tx: number
+  total: number
+}
+
+export interface NodeTrafficSeries {
+  node_id: number
+  granularity: 'HOUR' | 'DAY' | 'MONTH'
+  limit: number
+  metered: boolean
+  proxy: TrafficSeriesPoint[]
+  host: HostTrafficPoint[]
+  host_state: HostTrafficState | null
+}
+
+/** /proc/net/dev 的一次即时读数:累计值,速率由前端按两次读数之差算 */
+export interface HostLiveSample {
+  iface: string
+  rx_bytes: number
+  tx_bytes: number
+  at: string
 }
 
 export interface TrafficStatus {
@@ -1168,6 +1260,8 @@ export interface PortalNode {
   in_subscription: boolean
   /** 这个入口在订阅里会多出一条 IPv6 条目;地址本身不下发给用户 */
   supports_ipv6: boolean
+  /** 不计流量的入口:用它的流量不扣额度(按节点上已生效的配置判断) */
+  unmetered: boolean
   today_bytes: number
   month_bytes: number
   total_bytes: number
@@ -1497,6 +1591,9 @@ export interface NodeHealth {
   singbox_detail: string
   nginx: ServiceState
   nginx_detail: string
+  /** realm 转发(V15),与 nginx 平行。 */
+  realm: ServiceState
+  realm_detail: string
   /**
    * 每个 Mieru 入口(= 一个 mita 实例)的状态。
    *
@@ -1951,6 +2048,34 @@ export const api = {
   /** 只读探测,不会在节点上安装任何东西 */
   nodeNginx: (nodeID: number) => request<NginxFacts>(`/api/nodes/${nodeID}/nginx`),
 
+  // realm(V15):第二种转发引擎。**下发与重启都是 restart**,断开这台机器上
+  // 全部 realm 线路的在途连接 —— 这一组的摩擦比 nginx 那一组高一档。
+  nodeRealm: (nodeID: number) => request<RealmFacts>(`/api/nodes/${nodeID}/realm`),
+  installRealm: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(`/api/nodes/${nodeID}/realm-install`, {
+      method: 'POST',
+      body: {},
+    }),
+  uninstallRealm: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(`/api/nodes/${nodeID}/realm-uninstall`, {
+      method: 'POST',
+      body: {},
+    }),
+  restartRealm: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(`/api/nodes/${nodeID}/realm-restart`, {
+      method: 'POST',
+      body: {},
+    }),
+  stopRealm: (nodeID: number) =>
+    request<{ result: ServiceOpResult; error?: string }>(`/api/nodes/${nodeID}/realm-stop`, {
+      method: 'POST',
+      body: {},
+    }),
+  deployRealm: (nodeID: number) =>
+    request<{ result: DeployResult; error?: string }>(`/api/nodes/${nodeID}/realm/deploy`, {
+      method: 'POST',
+    }),
+
   // 链式出站是两台机器的复合操作:启用时先部署落地再部署中转主机,
   // 解除时顺序相反。顺序由后端保证,前端只负责把两次部署的结果都显示出来。
   applyChain: (inboundID: number, body: Record<string, unknown>) =>
@@ -1976,6 +2101,16 @@ export const api = {
     request<{ items: DeploymentRecord[] }>('/api/deployments', { query: { limit } }),
   syncNodeTraffic: (id: number) =>
     request<SyncResult>(`/api/nodes/${id}/sync-traffic`, { method: 'POST' }),
+  // V15:流量 Tab 的粒度切换(代理 + 主机两条序列)、实时网卡读数、vnStat 安装。
+  nodeTrafficSeries: (id: number, granularity: 'hour' | 'day' | 'month') =>
+    request<NodeTrafficSeries>(`/api/nodes/${id}/traffic/series`, { query: { granularity } }),
+  nodeHostTrafficLive: (id: number) =>
+    request<HostLiveSample>(`/api/nodes/${id}/host-traffic/live`),
+  installHostTraffic: (id: number) =>
+    request<{ result: HostTrafficSyncResult; summary?: string; error?: string }>(
+      `/api/nodes/${id}/host-traffic/install`,
+      { method: 'POST', body: {} },
+    ),
   trafficStatus: () => request<TrafficStatus>('/api/traffic/status'),
 
   // 节点资源监控

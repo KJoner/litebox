@@ -36,21 +36,16 @@ func (s *Service) DeployRelays(ctx context.Context, nodeID int64) (deployment.Re
 		return deployment.Result{}, errors.New("未配置转发规则来源")
 	}
 
-	rules, err := s.relays.EnabledForNode(ctx, nodeID)
+	all, err := s.relays.EnabledForNode(ctx, nodeID)
 	if err != nil {
 		return deployment.Result{}, err
 	}
+	// 只渲染 nginx 引擎的规则:realm 的那些由 DeployRealm 各下各的。
+	rules := relay.ByEngine(all, relay.EngineNginx)
 
 	req := deployment.RelayRequest{
 		NodeID:   nodeID,
 		Revision: time.Now().UTC().Unix(),
-		// 拨测的 CONNECT 目标是**这台机器自己的公网 SSH**,取自数据库。
-		//
-		// 不能问节点自己:NAT 机上 $SSH_CONNECTION 给出的是私网地址与本机端口
-		// (实测 lax-1 上是 10.10.3.111 22,而公网是 154.31.157.27:58739),
-		// 机器根本不知道自己的公网地址长什么样。
-		DialHost: n.Host,
-		DialPort: n.SSHPort,
 	}
 
 	// 一条启用的规则都没有:直接进事务,由它去停服务。
@@ -146,24 +141,38 @@ func (s *Service) relayServer(
 		Comment:    fmt.Sprintf("%s -> %s", r.DisplayName, r.TargetName),
 		ListenPort: r.ListenPort,
 		UDPTimeout: nginx.UDPTimeoutFor(host.MemTotalMB),
+		// 两种协议都要转发 UDP:VLESS 与 SS2022 的 UDP 都走同一个端口,
+		// 不开的话 QUIC 与游戏流量静默走不通,而网页一切正常。
+		UDP: true,
 	}
+	targetHost, targetPort, probe, err := s.relayTarget(ctx, r)
+	if err != nil {
+		return server, probe, err
+	}
+	server.TargetHost, server.TargetPort = targetHost, targetPort
+	return server, probe, nil
+}
+
+// relayTarget 解析一条规则的落地地址、公网端口与拨测参数。
+//
+// nginx 与 realm 共用:落地是什么、拨测怎么构造,与搬字节的程序无关。
+// 各写一遍的话,加一种落地要改两处,而漏掉一处的表现是
+// 「nginx 那条能用、realm 那条渲染失败」。
+func (s *Service) relayTarget(
+	ctx context.Context, r *relay.Relay,
+) (string, int, deployment.RelayProbe, error) {
 	probe := deployment.RelayProbe{Name: r.DisplayName, ListenPort: r.ListenPort}
 
 	switch r.TargetKind {
 	case relay.TargetInbound:
 		target, deployed, err := s.store.chainInboundTarget(ctx, r.TargetInboundID)
 		if err != nil {
-			return server, probe, err
+			return "", 0, probe, err
 		}
-		server.TargetHost = target.Host
 		// **落地的公网端口,不是它 sing-box 的监听端口。**
 		// 中转机是从公网连落地的,与客户端直连落地走的是同一个号码。
 		// 写成监听端口的后果在 NAT 机器上是连不上,在直连机器上碰巧一样 ——
 		// 后者更糟,它会一直是对的,直到某天落地换成 NAT 小鸡。
-		server.TargetPort = target.Port
-		// 两种协议都要转发 UDP:VLESS 与 SS2022 的 UDP 都走同一个端口,
-		// 不开的话 QUIC 与游戏流量静默走不通,而网页一切正常。
-		server.UDP = true
 
 		// 落地还没部署过:转发照常渲染(它只需要地址与公网端口),
 		// 但拨测做不了 —— 那台机器上还没有 sing-box 在听。
@@ -172,28 +181,32 @@ func (s *Service) relayServer(
 		if !deployed {
 			probe.SkipReason = fmt.Sprintf("落地「%s」尚未成功部署过,无法拨测",
 				target.DisplayName)
-			return server, probe, nil
+			return target.Host, target.Port, probe, nil
 		}
-
 		out, reason, err := s.probeOutboundForNode(ctx, target, r.ListenPort)
 		if err != nil {
-			return server, probe, err
+			return "", 0, probe, err
 		}
 		probe.Outbound, probe.SkipReason = out, reason
-		return server, probe, nil
+		return target.Host, target.Port, probe, nil
 
 	case relay.TargetExternal:
 		target, err := s.externalRelayTarget(ctx, r.TargetExternalID)
 		if err != nil {
-			return server, probe, err
+			return "", 0, probe, err
 		}
-		server.TargetHost = target.Server
-		server.TargetPort = target.Port
-		server.UDP = true
 		probe.Outbound, probe.SkipReason = externalProbeOutbound(target, r.ListenPort)
-		return server, probe, nil
+		return target.Server, target.Port, probe, nil
+
+	case relay.TargetAddress:
+		// 面板不知道那个地址背后跑的是什么协议,拨测结构性地做不了。
+		// 记 SKIPPED 并写明:报成功等于对一份没验证过的配置说验证过了,
+		// 判失败又会把一条完全正确的转发回滚掉。
+		probe.SkipReason = fmt.Sprintf("落地是指定地址 %s:%d,面板不知道它背后的协议,无法拨测",
+			r.TargetHost, r.TargetPort)
+		return r.TargetHost, r.TargetPort, probe, nil
 	}
-	return server, probe, fmt.Errorf("未知的落地去向 %q", r.TargetKind)
+	return "", 0, probe, fmt.Errorf("未知的落地去向 %q", r.TargetKind)
 }
 
 // probeOutboundForNode 用落地节点上的一个真实用户凭据构造探测出站。

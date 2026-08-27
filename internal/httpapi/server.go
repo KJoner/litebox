@@ -17,6 +17,7 @@ import (
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/externalproxy"
+	"github.com/litebox/litebox/internal/hosttraffic"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/notify"
 	"github.com/litebox/litebox/internal/portal"
@@ -41,6 +42,7 @@ type Server struct {
 	traffic      *traffic.Querier
 	scheduler    *traffic.Scheduler
 	metrics      *node.MetricsStore
+	hostTraffic  *hosttraffic.Syncer
 	monitor      *node.Monitor
 	watchdog     *node.Watchdog
 	notifier     *notify.Notifier
@@ -77,11 +79,13 @@ type Options struct {
 	Traffic   *traffic.Querier
 	Scheduler *traffic.Scheduler
 	Metrics   *node.MetricsStore
-	Monitor   *node.Monitor
-	Watchdog  *node.Watchdog
-	Notifier  *notify.Notifier
-	Settings  *settings.Store
-	Tiers     *access.Store
+	// HostTraffic 是主机流量(vnStat)那一路(V15),nil 表示没启用。
+	HostTraffic *hosttraffic.Syncer
+	Monitor     *node.Monitor
+	Watchdog    *node.Watchdog
+	Notifier    *notify.Notifier
+	Settings    *settings.Store
+	Tiers       *access.Store
 	// External 为 nil 时外部代理相关路由整体不注册。
 	External *externalproxy.Service
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
@@ -117,6 +121,7 @@ func NewServer(opts Options) *Server {
 		traffic:      opts.Traffic,
 		scheduler:    opts.Scheduler,
 		metrics:      opts.Metrics,
+		hostTraffic:  opts.HostTraffic,
 		monitor:      opts.Monitor,
 		watchdog:     opts.Watchdog,
 		notifier:     opts.Notifier,
@@ -166,7 +171,11 @@ func (s *Server) Handler() http.Handler {
 
 	if s.nodes != nil {
 		authed.HandleFunc("GET /api/nodes", s.handleListNodes)
-		authed.HandleFunc("POST /api/nodes", s.handleCreateNode)
+		// 创建节点会顺带引导(装公钥、验证登录、装 vnStat),要连 SSH 跑好几轮命令 ——
+		// V15 加了装包这一步之后,Debian 上一次 apt-get update + install 就可能超过
+		// 60 秒的写超时,真机上撞到过:面板那一侧节点建好了、vnStat 装到一半,
+		// 浏览器拿到的是一句「Empty reply」。
+		authed.HandleFunc("POST /api/nodes", longOperation(s.handleCreateNode))
 		authed.HandleFunc("GET /api/nodes/{id}", s.handleGetNode)
 		authed.HandleFunc("PUT /api/nodes/{id}", s.handleUpdateNode)
 		authed.HandleFunc("DELETE /api/nodes/{id}", s.handleDeleteNode)
@@ -195,6 +204,14 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("DELETE /api/relays/{id}", s.handleDeleteRelay)
 		authed.HandleFunc("POST /api/nodes/{id}/relays/deploy", longOperation(s.handleDeployRelays))
 		authed.HandleFunc("GET /api/nodes/{id}/nginx", longOperation(s.handleNodeNginxFacts))
+		// realm(V15):第二种转发引擎。下发是 restart,断开在途连接,
+		// 与 nginx 那一个分开的接口、分开的审计动作。
+		authed.HandleFunc("POST /api/nodes/{id}/realm/deploy", longOperation(s.handleDeployRealm))
+		authed.HandleFunc("GET /api/nodes/{id}/realm", longOperation(s.handleNodeRealmFacts))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-install", longOperation(s.handleInstallRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-uninstall", longOperation(s.handleUninstallRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-restart", longOperation(s.handleRestartRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-stop", longOperation(s.handleStopRealm))
 		// sing-box 入站(V8 多入站)。一台落地机器可以有多个入口,
 		// 各自的协议、端口、访问等级与出口去向互不相干。
 		authed.HandleFunc("GET /api/nodes/{id}/inbounds", s.handleListNodeInbounds)
@@ -321,6 +338,10 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.scheduler != nil {
 		authed.HandleFunc("POST /api/nodes/{id}/sync-traffic", longOperation(s.handleSyncNodeTraffic))
+		// V15:流量 Tab 的粒度切换、实时网卡读数与 vnStat 安装。
+		authed.HandleFunc("GET /api/nodes/{id}/traffic/series", s.handleNodeTrafficSeries)
+		authed.HandleFunc("GET /api/nodes/{id}/host-traffic/live", s.handleNodeHostTrafficLive)
+		authed.HandleFunc("POST /api/nodes/{id}/host-traffic/install", longOperation(s.handleNodeHostTrafficInstall))
 		authed.HandleFunc("GET /api/traffic/status", s.handleTrafficStatus)
 	}
 	if s.metrics != nil {

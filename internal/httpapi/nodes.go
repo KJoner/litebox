@@ -465,9 +465,9 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 
 	// 被解除链式的中转主机要改回本机直连;
 	// 曾被这台机器链到的落地要撤掉那份链路凭据;
-	// 指向它的转发规则所在的机器要重新下发 nginx(那条线路已经没有落地了)。
+	// 指向它的转发规则所在的机器要重新下发 nginx / realm(那条线路已经没有落地了)。
 	s.nodes.MarkDirty(append(orphanedHosts, chainTargets...)...)
-	s.nodes.MarkRelaysDirty(relayHosts...)
+	s.nodes.MarkRelayHostsDirty(relayHosts)
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeDelete,
 		TargetType: "node", TargetID: strconv.FormatInt(id, 10),

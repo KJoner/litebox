@@ -14,6 +14,8 @@ type NodeDeployer interface {
 	Deploy(ctx context.Context, nodeID int64) (Result, error)
 	// DeployRelays 下发 nginx 转发配置(reload,不打断在途连接)。
 	DeployRelays(ctx context.Context, nodeID int64) (Result, error)
+	// DeployRealm 下发 realm 转发配置(restart,断开全部 realm 线路的在途连接)。
+	DeployRealm(ctx context.Context, nodeID int64) (Result, error)
 }
 
 // DirtyKind 区分同一台机器上两种互不相干的下发。
@@ -29,6 +31,12 @@ const (
 	DirtySingBox DirtyKind = 1 << iota
 	// DirtyRelays 这台机器上的 nginx 转发规则。
 	DirtyRelays
+	// DirtyRealm 这台机器上的 realm 转发规则(V15)。
+	//
+	// 与 DirtyRelays 分开而不是合成"转发":realm 没有 reload,每次下发都
+	// restart、断开全部 realm 线路的在途连接 —— 改一条 nginx 规则不该
+	// 顺带把 realm 上的人踢一遍。
+	DirtyRealm
 )
 
 // Coordinator 把密集的用户变更合并成较少的部署。
@@ -120,6 +128,11 @@ func (c *Coordinator) MarkDirty(nodeIDs ...int64) {
 // MarkRelaysDirty 把节点上的 nginx 转发配置标记为待下发。
 func (c *Coordinator) MarkRelaysDirty(nodeIDs ...int64) {
 	c.mark(DirtyRelays, nodeIDs...)
+}
+
+// MarkRealmDirty 把节点上的 realm 转发配置标记为待下发。
+func (c *Coordinator) MarkRealmDirty(nodeIDs ...int64) {
+	c.mark(DirtyRealm, nodeIDs...)
 }
 
 func (c *Coordinator) mark(kind DirtyKind, nodeIDs ...int64) {
@@ -252,9 +265,25 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 				"node_id", nodeID, "status", result.Status, "error", err,
 				"rollback", result.RollbackResult)
 			c.notifyFailure(nodeID, "nginx 转发配置", result, err)
+		} else {
+			c.logger.Info("中转配置下发成功",
+				"node_id", nodeID, "revision", result.Revision,
+				"config_sha256", shortHash(result.ConfigSHA256))
+		}
+	}
+
+	// realm 排在最后:它是三种里唯一会打断在途连接的转发下发,
+	// 让它在 nginx reload 之后跑,不会有"刚 reload 好又被重启"的错觉。
+	if kinds&DirtyRealm != 0 {
+		result, err := c.deployer.DeployRealm(deployCtx, nodeID)
+		if err != nil {
+			c.logger.Error("realm 配置下发失败",
+				"node_id", nodeID, "status", result.Status, "error", err,
+				"rollback", result.RollbackResult)
+			c.notifyFailure(nodeID, "realm 转发配置", result, err)
 			return
 		}
-		c.logger.Info("中转配置下发成功",
+		c.logger.Info("realm 配置下发成功",
 			"node_id", nodeID, "revision", result.Revision,
 			"config_sha256", shortHash(result.ConfigSHA256))
 	}

@@ -52,33 +52,15 @@ type MieruRequest struct {
 	// 端口、传输层与出口的变更必须留 false,那些改动 reload 生效不了。
 	UsersOnly bool
 
-	// DialHost / DialPort 是拨测 CONNECT 的目标:**这台机器自己的公网 SSH**,
-	// 取自数据库。机器根本不知道自己的公网地址长什么样 —— NAT 机上
-	// $SSH_CONNECTION 给出的是私网地址与本机端口(实测 lax-1 上是
-	// 10.10.3.111 22,而公网是 154.31.157.27:58739)。
-	//
-	// **但它只在 Chained 为真时用得上**,见下。
-	DialHost string
-	DialPort int
 	// EgressSocksPort 是 mita 与本机 sing-box 之间那一跳的回环端口。
 	// 0 表示直连。非 0 时健康检查会**先单独验这一跳**,见 dialEgressHop。
+	//
+	// 拨测的 CONNECT 目标是设置里那个 URL,直连与链式打的是同一个东西。
+	// 在此之前它按"有没有出口"分成两种(直连打本机 sshd 避开 hairpin NAT,
+	// 链式打公网 SSH 免得落到落地的 sshd 上),那两条理由都随 sshd 这个终点
+	// 一起消失了 —— 生产上那次「端口全在监听、mita 是 RUNNING、拨测一律 EOF」
+	// 正是 NAT 机绕出去拐不回来,而外面的目标不需要拐回来。
 	EgressSocksPort int
-	// Chained 决定拨测打向哪里,而这一条是被 NAT 机逼出来的。
-	//
-	//	直连   mita 就在这台机器上,出口也是它自己 —— 拿公网地址当 CONNECT
-	//	       目标等于让这台机器绕出去再拐回自己,而那要服务商支持
-	//	       **hairpin NAT**,很多 NAT 小鸡不支持。所以直连时打
-	//	       127.0.0.1 加 $SSH_CONNECTION 给出的本机 sshd 端口,
-	//	       与 sing-box 那一侧的直连入站一字不差。
-	//	链式   流量从**落地**出去再回到这台机器的公网 SSH,发起方不是本机,
-	//	       不涉及 hairpin —— 而且这时打 127.0.0.1 会被送到落地、
-	//	       打在**落地自己的** sshd 上,拨测碰巧仍然通过,
-	//	       但验证的已经不是这台机器了(V8 在 sing-box 那一侧踩过同一个坑)。
-	//
-	// **生产上撞到过**:一台 NAT 机上的直连 Mieru 入口,端口全在监听、
-	// mita 是 RUNNING、探测客户端也起来了,而拨测一律
-	// 「SOCKS5 CONNECT 响应读取失败: EOF」—— 那是绕出去拐不回来。
-	Chained bool
 	// Probe 为 nil 表示这个入口上一个用户都没有 —— 拨测记 SKIPPED 并写明原因,
 	// **不判失败**(那不是节点的错),也**绝不报成功**(那等于对一份
 	// 没验证过的配置说验证过了)。
@@ -448,12 +430,8 @@ func mieruProxyStatus(
 
 // dialMieru 用 mieru 客户端做一次真实拨测。
 //
-// 与 sing-box 那一侧同构,连判据都一样:**在隧道里完成一次完整的 SSH
-// 公钥认证**,而不是读一行横幅。理由见 sshx.AuthOverConn ——
-// 读横幅会被 OpenSSH 的 PerSourcePenalties 当成"连上但没认证就断开"
-// 而累积惩罚,反复部署之后拨测开始间歇性失败,失败的样子与"链路不通"
-// 一模一样。顺带把验证强度也提上去了:对端的主机密钥必须与库里一致,
-// 那一条直接回答了"这条隧道到底有没有到那台机器"。
+// 与 sing-box 那一侧同构,连判据都一样:经 mita 在隧道里真的取一次
+// 设置里那个拨测目标(见 httpprobe.go)。
 func (d *Deployer) dialMieru(
 	ctx context.Context, client *sshx.Client, req MieruRequest,
 ) (string, error) {
@@ -539,25 +517,25 @@ func (d *Deployer) dialMieru(
 		return "", fmt.Errorf("%w%s", err, prefixIfSet("\n探测客户端日志:\n", logs))
 	}
 
-	host, port, where := mieruDialTarget(ctx, client, req)
-	detail, err := dialThroughProxy(ctx, d.pool, req.NodeID, client, probePort, host, port)
+	target, err := d.probeURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	detail, _, err := dialWithRetry(ctx, client, probePort, target)
 	if err != nil {
 		logs := mieruProbeLogs(ctx, client, probeDir)
-		return "", fmt.Errorf("经 Mieru 拨测失败(目标 %s): %w%s", where, err,
+		return "", fmt.Errorf("经 Mieru 拨测失败(目标 %s): %w%s", target.Raw, err,
 			prefixIfSet("\n探测客户端日志:\n", logs))
 	}
-	return fmt.Sprintf("经 Mieru 完成 SSH 认证(目标 %s):%s", where, detail), nil
+	return fmt.Sprintf("经 Mieru 拨测成功(目标 %s,%s)", target.Raw, detail), nil
 }
 
 // dialEgressHop 只验 mita 之外的那一段:本机 sing-box 的回环 socks → 落地。
 //
-// 先确认端口在听,再从那个 socks 走一次真实的 SSH 认证。两件事都要:
+// 先确认端口在听,再从那个 socks 真的走一次到拨测目标。两件事都要:
 // 端口在听只说明 sing-box 起来了,而 route 规则指错、落地没有这条链路的
 // 凭据,都要到真的走一遍才看得出来 —— 与「部署不得只看 systemd 状态」
 // 是同一条道理。
-//
-// CONNECT 目标与链式拨测同一个(这台机器的公网 SSH):流量要从落地绕回来,
-// 而那正是这一跳该验的事。
 func (d *Deployer) dialEgressHop(
 	ctx context.Context, client *sshx.Client, req MieruRequest,
 ) (string, error) {
@@ -567,34 +545,18 @@ func (d *Deployer) dialEgressHop(
 			"确认 sing-box 已安装并下发过配置",
 			req.EgressSocksPort, err)
 	}
-	detail, err := dialThroughProxy(ctx, d.pool, req.NodeID, client,
-		req.EgressSocksPort, req.DialHost, req.DialPort)
+	target, err := d.probeURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	detail, _, err := dialWithRetry(ctx, client, req.EgressSocksPort, target)
 	if err != nil {
 		return "", fmt.Errorf("从本机 socks(127.0.0.1:%d)到落地这一段不通:%w\n"+
 			"mita 还没参与,所以问题在 sing-box 那一侧 —— 可能是 route 规则没把"+
 			"这个入站指到落地,也可能是落地上还没有这条链路的凭据(要落地重新下发一次)",
 			req.EgressSocksPort, err)
 	}
-	return "本机 socks → 落地 → 回到这台机器的公网 SSH,认证通过:" + detail, nil
-}
-
-// mieruDialTarget 选拨测的 CONNECT 目标,并给出一句可读的说明。
-//
-// 说明要进步骤详情:两种目标验的是**两件不同的事**(这台机器自己能不能出网 /
-// 流量有没有真的绕到落地再回来),而失败时管理员第一个要知道的就是
-// 刚才打的是哪一个。
-func mieruDialTarget(
-	ctx context.Context, client *sshx.Client, req MieruRequest,
-) (host string, port int, where string) {
-	if req.Chained {
-		return req.DialHost, req.DialPort,
-			fmt.Sprintf("%s:%d,这台机器的公网 SSH —— 流量要从落地绕回来",
-				req.DialHost, req.DialPort)
-	}
-	// 直连:mita 就在本机,绕公网再拐回自己要 hairpin NAT。
-	local := probeTargetPort(ctx, client, req.DialPort)
-	return "127.0.0.1", local,
-		fmt.Sprintf("127.0.0.1:%d,本机 sshd —— 直连入口不绕公网(避开 hairpin NAT)", local)
+	return fmt.Sprintf("本机 socks → 落地 → 拨测目标 %s:%s", target.Raw, detail), nil
 }
 
 func mieruProbeLogs(ctx context.Context, client *sshx.Client, probeDir string) string {

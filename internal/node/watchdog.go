@@ -11,6 +11,7 @@ import (
 
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/notify"
+	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/sshx"
 )
 
@@ -67,6 +68,9 @@ type HealthReport struct {
 	SingBoxDetail string       `json:"singbox_detail"`
 	Nginx         ServiceState `json:"nginx"`
 	NginxDetail   string       `json:"nginx_detail"`
+	// Realm 是 realm 转发(V15)的状态,与 nginx 平行:两种引擎各自独立地跑与崩。
+	Realm       ServiceState `json:"realm"`
+	RealmDetail string       `json:"realm_detail"`
 	// Mieru 是这台机器上每个 Mieru 入口的实例状态。
 	//
 	// **必须逐实例给,不能合成一个状态。** 一个入口一个 mita 实例,
@@ -92,7 +96,7 @@ type MieruServiceReport struct {
 
 // Healthy 表示这台机器该跑的都在跑。
 func (r HealthReport) Healthy() bool {
-	if r.SingBox.Down() || r.Nginx.Down() {
+	if r.SingBox.Down() || r.Nginx.Down() || r.Realm.Down() {
 		return false
 	}
 	for _, m := range r.Mieru {
@@ -247,11 +251,11 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 	prev, hadPrev := w.Report(n.ID)
 	report := HealthReport{
 		NodeID: n.ID, NodeName: n.Name, CheckedAt: time.Now(),
-		SingBox: ServiceNotApplicable, Nginx: ServiceNotApplicable,
+		SingBox: ServiceNotApplicable, Nginx: ServiceNotApplicable, Realm: ServiceNotApplicable,
 	}
 
 	wantSingBox := n.Role != RoleRelay && n.DeployedConfigSHA256 != ""
-	wantNginx, err := w.hasRelayRules(ctx, n.ID)
+	wantNginx, wantRealm, err := w.relayEnginesWanted(ctx, n.ID)
 	if err != nil {
 		w.logger.Error("查询转发规则失败", "node_id", n.ID, "error", err)
 	}
@@ -262,14 +266,14 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 	if err != nil {
 		w.logger.Error("查询 Mieru 入口失败", "node_id", n.ID, "error", err)
 	}
-	if !wantSingBox && !wantNginx && len(wantMieru) == 0 {
+	if !wantSingBox && !wantNginx && !wantRealm && len(wantMieru) == 0 {
 		// 一台还没部署过、也没有转发规则与 Mieru 入口的机器上什么服务都不该有。
 		// 这不是"正常",是"不适用" —— 显示成正常会让人以为它在服务用户。
 		w.save(&report)
 		return
 	}
 
-	probeErr := w.probe(ctx, n, wantSingBox, wantNginx, wantMieru, &report)
+	probeErr := w.probe(ctx, n, wantSingBox, wantNginx, wantRealm, wantMieru, &report)
 	if probeErr != nil {
 		// SSH 不通:**不知道**服务是死是活,所以不恢复,也不说"服务停了"。
 		if wantSingBox {
@@ -278,8 +282,12 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 		if wantNginx {
 			report.Nginx = ServiceUnreachable
 		}
+		if wantRealm {
+			report.Realm = ServiceUnreachable
+		}
 		report.SingBoxDetail = truncateDetail(probeErr.Error())
 		report.NginxDetail = report.SingBoxDetail
+		report.RealmDetail = report.SingBoxDetail
 		report.Mieru = make([]MieruServiceReport, 0, len(wantMieru))
 		for _, m := range wantMieru {
 			report.Mieru = append(report.Mieru, MieruServiceReport{
@@ -305,7 +313,7 @@ func (w *Watchdog) checkNode(ctx context.Context, n *Node, auto bool) {
 // 合在一条连接里:节点级互斥锁不可重入,而且每建一次连接约 1.3 秒 ——
 // 分两次问等于把巡检的开销翻倍,换不来任何东西。
 func (w *Watchdog) probe(
-	ctx context.Context, n *Node, wantSingBox, wantNginx bool,
+	ctx context.Context, n *Node, wantSingBox, wantNginx, wantRealm bool,
 	wantMieru []*MieruInbound, report *HealthReport,
 ) error {
 	return w.service.pool.Do(ctx, n.ID, func(client *sshx.Client) error {
@@ -349,6 +357,28 @@ func (w *Watchdog) probe(
 			}
 			report.Nginx = stateOf(active)
 			report.NginxDetail = truncateDetail(detail)
+		}
+		if wantRealm {
+			// 与 nginx 同一条判据:配置在不在磁盘上是"下发过没有"唯一可靠的依据。
+			deployed, err := fileExists(ctx, client, layout.RealmConfigPath)
+			if err != nil {
+				return err
+			}
+			if !deployed {
+				report.Realm = ServiceNotApplicable
+				report.RealmDetail = "有 realm 转发规则,但这台机器还没有下发过 realm 配置"
+			} else {
+				realmInit, err := deployment.AsRealmInit(init)
+				if err != nil {
+					return err
+				}
+				active, detail, err := realmInit.IsRealmActive(ctx, client, layout)
+				if err != nil {
+					return err
+				}
+				report.Realm = stateOf(active)
+				report.RealmDetail = truncateDetail(detail)
+			}
 		}
 		if len(wantMieru) > 0 {
 			// InitSystem 本身就内嵌了 MieruInit,不用断言。
@@ -415,6 +445,11 @@ func (w *Watchdog) recover(ctx context.Context, n *Node, report *HealthReport) {
 			errs = append(errs, "nginx:"+err.Error())
 		}
 	}
+	if report.Realm == ServiceStopped {
+		if err := w.recoverRealm(ctx, n, report); err != nil {
+			errs = append(errs, "realm:"+err.Error())
+		}
+	}
 	// **逐实例救,一个失败不影响另一个。** 它们是各自独立的进程,
 	// 合成一次"救 Mieru"会让第一个救不回来时后面几个连试都不试。
 	for i := range report.Mieru {
@@ -458,6 +493,56 @@ func (w *Watchdog) recoverSingBox(ctx context.Context, n *Node, report *HealthRe
 	report.SingBox = ServiceRunning
 	report.SingBoxDetail = "已重新下发配置并拉起"
 	return nil
+}
+
+// recoverRealm 与 recoverNginx 同构:先直接拉起,拉不起来再重新下发。
+//
+// 服务没跑的那一刻没有任何在线连接会被踢掉,所以这里的 restart 是零代价的 ——
+// 那条"realm 没有 reload"的代价只在它正在服务用户时才存在。
+func (w *Watchdog) recoverRealm(ctx context.Context, n *Node, report *HealthReport) error {
+	started, err := w.startRealmAndVerify(ctx, n.ID)
+	if err == nil && started {
+		report.Realm = ServiceRunning
+		report.RealmDetail = "已自动拉起"
+		return nil
+	}
+	result, derr := w.service.DeployRealm(ctx, n.ID)
+	if derr != nil {
+		return fmt.Errorf("拉起失败,重新下发也失败:%v", derr)
+	}
+	if result.Status != deployment.StatusSuccess {
+		return fmt.Errorf("重新下发未成功:%s", result.ErrorMessage)
+	}
+	report.Realm = ServiceRunning
+	report.RealmDetail = "已重新下发 realm 配置并拉起"
+	return nil
+}
+
+func (w *Watchdog) startRealmAndVerify(ctx context.Context, nodeID int64) (bool, error) {
+	var ok bool
+	err := w.service.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		init, err := deployment.DetectInit(ctx, client)
+		if err != nil {
+			return err
+		}
+		realmInit, err := deployment.AsRealmInit(init)
+		if err != nil {
+			return err
+		}
+		layout := w.service.deployer.Layout()
+		if err := realmInit.StartRealm(ctx, client, layout); err != nil {
+			return err
+		}
+		// 与 startAndVerify 同一条道理:给它一点时间把自己弄死。
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		ok, _, err = realmInit.IsRealmActive(ctx, client, layout)
+		return err
+	})
+	return ok, err
 }
 
 func (w *Watchdog) recoverNginx(ctx context.Context, n *Node, report *HealthReport) error {
@@ -634,7 +719,7 @@ func decideAnnounce(prev HealthReport, hadPrev bool, cur HealthReport, unreachab
 	// SSH 不通时**连续两轮才报**。一次失败多半是机器在重启,
 	// 而重启是管理员自己干的事 —— 为它推一条告警只会训练他忽略这个通道。
 	if unreachable && !(hadPrev && (prev.SingBox == ServiceUnreachable ||
-		prev.Nginx == ServiceUnreachable)) {
+		prev.Nginx == ServiceUnreachable || prev.Realm == ServiceUnreachable)) {
 		return announceDecision{}
 	}
 
@@ -682,7 +767,8 @@ func (w *Watchdog) announce(
 
 func downTitle(r HealthReport) string {
 	down := r.mieruDown()
-	unreachable := r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable
+	unreachable := r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable ||
+		r.Realm == ServiceUnreachable
 	for _, m := range down {
 		if m.State == ServiceUnreachable {
 			unreachable = true
@@ -699,6 +785,9 @@ func downTitle(r HealthReport) string {
 	}
 	if r.Nginx.Down() {
 		parts = append(parts, "nginx 转发")
+	}
+	if r.Realm.Down() {
+		parts = append(parts, "realm 转发")
 	}
 	if len(down) == 1 {
 		parts = append(parts, "Mieru 入口「"+down[0].DisplayName+"」")
@@ -719,6 +808,9 @@ func downSummary(r HealthReport) string {
 	if r.Nginx.Down() {
 		fmt.Fprintf(&b, "nginx:%s %s\n", r.Nginx, r.NginxDetail)
 	}
+	if r.Realm.Down() {
+		fmt.Fprintf(&b, "realm:%s %s\n", r.Realm, r.RealmDetail)
+	}
 	// **逐个点名。** 一台机器上可以有好几个 Mieru 入口,只说"Mieru 挂了"
 	// 会让管理员连该看哪一个都不知道 —— 而它们是各自独立的进程。
 	for _, m := range r.mieruDown() {
@@ -731,7 +823,7 @@ func downSummary(r HealthReport) string {
 	case r.RecoverError != "":
 		fmt.Fprintf(&b, "自动恢复失败:%s", r.RecoverError)
 	case r.SingBox == ServiceUnreachable || r.Nginx == ServiceUnreachable ||
-		r.anyMieruUnreachable():
+		r.Realm == ServiceUnreachable || r.anyMieruUnreachable():
 		b.WriteString("SSH 连不上,面板做不了任何事 —— 服务是死是活也无从判断。" +
 			"机器可能在重启,也可能真的没了")
 	default:
@@ -747,6 +839,9 @@ func recoverSummary(r HealthReport) string {
 	}
 	if r.NginxDetail != "" && r.Nginx == ServiceRunning {
 		parts = append(parts, "nginx:"+r.NginxDetail)
+	}
+	if r.RealmDetail != "" && r.Realm == ServiceRunning {
+		parts = append(parts, "realm:"+r.RealmDetail)
 	}
 	if len(parts) == 0 {
 		return "服务恢复正常"
@@ -791,12 +886,18 @@ func (w *Watchdog) clearSkip(nodeID int64) {
 	w.mu.Unlock()
 }
 
-func (w *Watchdog) hasRelayRules(ctx context.Context, nodeID int64) (bool, error) {
+// relayEnginesWanted 回答这台机器上该有 nginx 转发、该有 realm 转发吗 ——
+// 两种引擎各看各的规则,一台机器上可以只有其中一种。
+func (w *Watchdog) relayEnginesWanted(ctx context.Context, nodeID int64) (nginx, realmOn bool, err error) {
 	if w.service.relays == nil {
-		return false, nil
+		return false, false, nil
 	}
 	rules, err := w.service.relays.EnabledForNode(ctx, nodeID)
-	return len(rules) > 0, err
+	if err != nil {
+		return false, false, err
+	}
+	return len(relay.ByEngine(rules, relay.EngineNginx)) > 0,
+		len(relay.ByEngine(rules, relay.EngineRealm)) > 0, nil
 }
 
 // deployedMieruInbounds 返回**下发过的**那些 Mieru 入口。

@@ -47,6 +47,12 @@ type PanelKeyProvider interface {
 	Ensure(ctx context.Context) (settings.PanelKey, error)
 }
 
+// HostTrafficInstaller 在引导成功后把 vnStat 装上并同步一次(V15)。
+// 由 hosttraffic.Syncer 实现。返回一句可读的摘要,附在引导结果后面。
+type HostTrafficInstaller interface {
+	InstallSummary(ctx context.Context, nodeID int64) (summary string, err error)
+}
+
 // Service 组合节点存储、SSH 连接池与部署器,对外提供节点操作。
 type Service struct {
 	store       *Store
@@ -68,7 +74,10 @@ type Service struct {
 	// mieruBinaries / mieruClients 为 nil 表示面板本地没有 Mieru 二进制。
 	mieruBinaries BinaryProvider
 	mieruClients  BinaryProvider
+	realmBinaries BinaryProvider
 	mieruSync     MieruSyncer
+	// hostTraffic 为 nil 时引导不装 vnStat。
+	hostTraffic HostTrafficInstaller
 	// relays 是中转主机上的 nginx 转发规则来源。为 nil 时 DeployRelays 直接报错,
 	// 而不是当成"没有规则"去停服务 —— 后者会在装配漏了的时候
 	// 悄悄把一台机器上全部转发停掉。
@@ -102,6 +111,11 @@ type ServiceOptions struct {
 	// 拒绝 —— 而不是在下发到一半时才失败。
 	MieruBinaries BinaryProvider
 	MieruClients  BinaryProvider
+	// RealmBinaries 提供 realm 二进制(V15)。为 nil 时「安装 realm」
+	// 以「面板本地没有 realm 二进制」拒绝,而不是在传到一半时才失败。
+	RealmBinaries BinaryProvider
+	// HostTraffic 在引导成功后顺带装 vnStat(V15)。为 nil 时不装。
+	HostTraffic HostTrafficInstaller
 	// MieruSync 为 nil 时下发会拒绝走「重启」那一档 —— 见 DeployMieru。
 	MieruSync  MieruSyncer
 	Relays     RelayProvider
@@ -127,6 +141,8 @@ func NewService(opts ServiceOptions) *Service {
 		previewBinaries: opts.PreviewBinaries,
 		mieruBinaries:   opts.MieruBinaries,
 		mieruClients:    opts.MieruClients,
+		realmBinaries:   opts.RealmBinaries,
+		hostTraffic:     opts.HostTraffic,
 		mieruSync:       opts.MieruSync,
 		relays:          opts.Relays,
 		relayHosts:      opts.RelayHosts,
@@ -521,24 +537,13 @@ func (s *Service) renderInputs(
 			SnellObfsMode:     singbox.SnellObfsMode(in.SnellObfsMode),
 			SnellV6Mode:       singbox.SnellV6Mode(in.SnellV6Mode),
 			SnellSharedPSK:    in.SnellSharedPSK,
+			Unmetered:         in.Unmetered,
 			Users:             users,
 			Chain:             chain,
 		})
 
 		probe := deployment.ProbeTarget{Tag: in.Tag, RealityPublicKey: in.RealityPublicKey}
-		// 链式入站的拨测目标必须改成【这台机器自己的公网 SSH】。
-		//
-		// 默认目标是 127.0.0.1 + $SSH_CONNECTION 给出的本机端口 —— 链式之后
-		// 那个包会被送到落地,而落地上的 127.0.0.1:22 是【落地自己的】sshd,
-		// 于是拨测碰巧仍然通过,但它验证的东西已经不是原来那个了。
-		// 落地是机场时更直接:私网地址要么被上游拒绝,要么打到机场自己的回环上,
-		// 拨测必然失败而链路其实是好的。
-		//
-		// 改成公网地址之后,数据路径是 入站 → 链式出站 → 落地 → 公网 → 本机 sshd,
-		// 完整验证了整条链与落地的出网能力,终点一定会吐出 SSH 横幅。
-		// 发起方是落地而不是本机,所以不涉及 hairpin NAT。
 		if chain != nil {
-			probe.DialHost, probe.DialPort = n.Host, n.SSHPort
 			// 落地是谁、这条链路的凭据叫什么,只在拨测失败时用得上 ——
 			// 而那时它是唯一能回答「该去哪台机器、搜什么」的东西:
 			// 链式拨测是三跳,断在哪一跳报出来都是同一句 EOF,
@@ -798,6 +803,7 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 			SnellObfsMode:  string(in.SnellObfsMode),
 			SnellV6Mode:    string(in.SnellV6Mode),
 			SnellSharedPSK: in.SnellSharedPSK,
+			Unmetered:      in.Unmetered,
 		})
 	}
 	if err := s.store.MarkDeployed(done, nodeID, result.ConfigSHA256, deployed); err != nil {

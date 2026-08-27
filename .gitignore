@@ -41,3 +41,6 @@ litebox.local.yaml
 .vscode/
 /docs/开发计划/
 /docs/配置模板/
+
+# realm 的官方 musl 静态二进制(各约 5-7MB,由 scripts/fetch-realm.sh 拉取)
+assets/realm/realm-linux-*

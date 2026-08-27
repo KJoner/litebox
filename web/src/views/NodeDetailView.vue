@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
@@ -14,6 +14,7 @@ import {
   type DeploymentRecord,
   type Node,
   type NodeCycleUsage,
+  type NodeTrafficSeries,
   type NodeHealth,
   type NodeMetrics,
   type ProbeResult,
@@ -115,6 +116,188 @@ const trafficError = ref(false)
  */
 const metered = ref(true)
 const notMeteredReason = ref('')
+
+// ---------- 流量 Tab:粒度切换 + 主机流量 + 实时曲线(V15) ----------
+
+type Granularity = 'hour' | 'day' | 'month'
+const granularity = ref<Granularity>('day')
+const series = ref<NodeTrafficSeries | null>(null)
+const seriesError = ref(false)
+
+async function loadSeries(id: number) {
+  seriesError.value = false
+  try {
+    series.value = await api.nodeTrafficSeries(id, granularity.value)
+  } catch {
+    series.value = null
+    seriesError.value = true
+  }
+}
+watch(granularity, () => {
+  if (nodeId.value !== null) void loadSeries(nodeId.value)
+})
+
+/** 桶的窗口:小时 48 个、日 30 个、月 12 个,与后端默认 limit 一致。缺的桶传 null。 */
+const bucketCount: Record<Granularity, number> = { hour: 48, day: 30, month: 12 }
+const isoNoMs = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')
+function bucketKeys(g: Granularity): string[] {
+  const now = new Date()
+  const out: string[] = []
+  for (let i = bucketCount[g] - 1; i >= 0; i--) {
+    let d: Date
+    if (g === 'hour') {
+      d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() - i))
+    } else if (g === 'day') {
+      d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i))
+    } else {
+      d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
+    }
+    out.push(isoNoMs(d))
+  }
+  return out
+}
+/**
+ * 主机流量的桶按节点本机时区切(vnstat 的日桶是本地午夜),而这里的键是 UTC 边界。
+ * 取最近的边界对齐:UTC+8 的午夜是前一天 16:00Z,四舍五入到下一个 UTC 午夜,
+ * 正好是同一个日历日。不对齐的话,时区不是 UTC 的机器整列都是空心柱。
+ */
+function normalizeAt(at: string, g: Granularity): string {
+  const t = new Date(at).getTime()
+  if (g === 'hour') return isoNoMs(new Date(Math.round(t / 3600000) * 3600000))
+  if (g === 'day') return isoNoMs(new Date(Math.round(t / 86400000) * 86400000))
+  const d = new Date(t + 12 * 3600000)
+  return isoNoMs(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)))
+}
+const proxyPoints = computed<LbPoint[]>(() => {
+  const byKey = new Map((series.value?.proxy ?? []).map((p) => [p.at, p.total]))
+  return bucketKeys(granularity.value).map((k) => ({
+    at: k,
+    value: byKey.has(k) ? (byKey.get(k) as number) : null,
+  }))
+})
+const hostPoints = computed<LbPoint[]>(() => {
+  const g = granularity.value
+  const byKey = new Map((series.value?.host ?? []).map((p) => [normalizeAt(p.at, g), p.total]))
+  return bucketKeys(g).map((k) => ({ at: k, value: byKey.has(k) ? (byKey.get(k) as number) : null }))
+})
+function bucketLabel(at: string): string {
+  const d = new Date(at)
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  const hh = String(d.getUTCHours()).padStart(2, '0')
+  if (granularity.value === 'hour') return `${mm}-${dd} ${hh}:00 UTC`
+  if (granularity.value === 'day') return `${d.getUTCFullYear()}-${mm}-${dd}`
+  return `${d.getUTCFullYear()}-${mm}`
+}
+const granularityNote = computed(
+  () =>
+    ({
+      hour: '近 48 小时 · 按 UTC 小时聚合',
+      day: '近 30 天 · 按 UTC 日聚合',
+      month: '近 12 个月 · 按 UTC 月聚合',
+    })[granularity.value],
+)
+
+/**
+ * 实时曲线。**只在流量 Tab 打开时读,2 分钟没有页面操作就停。**
+ *
+ * 每次读都是一次 SSH 往返(占节点锁约 150ms)。不停的话,一个忘了关的标签页
+ * 会让这台机器的连接锁每 2 秒被占一次,而 128MB 的小鸡上部署与同步都在抢它。
+ * 速率按两次读数之差算:后端只给累计值,它不必为每个页面各记一份"上一次"。
+ */
+const liveSamples = ref<{ at: number; rx: number; tx: number }[]>([])
+const livePaused = ref(false)
+const liveError = ref('')
+const liveIface = ref('')
+let liveTimer: ReturnType<typeof setTimeout> | null = null
+let liveInFlight = false
+let lastActivity = Date.now()
+const LIVE_INTERVAL_MS = 2000
+const LIVE_IDLE_MS = 120000
+const LIVE_WINDOW = 60
+const activityEvents = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'] as const
+function noteActivity() {
+  lastActivity = Date.now()
+}
+async function livePoll() {
+  liveTimer = null
+  if (tab.value !== 'traffic' || nodeId.value === null) return
+  if (Date.now() - lastActivity > LIVE_IDLE_MS) {
+    livePaused.value = true
+    return
+  }
+  if (!liveInFlight) {
+    liveInFlight = true
+    try {
+      const s = await api.nodeHostTrafficLive(nodeId.value)
+      liveIface.value = s.iface
+      liveError.value = ''
+      liveSamples.value = [
+        ...liveSamples.value,
+        { at: new Date(s.at).getTime(), rx: s.rx_bytes, tx: s.tx_bytes },
+      ].slice(-(LIVE_WINDOW + 1))
+    } catch (e) {
+      liveError.value = e instanceof ApiError ? e.message : '读取失败'
+    } finally {
+      liveInFlight = false
+    }
+  }
+  liveTimer = setTimeout(livePoll, LIVE_INTERVAL_MS)
+}
+function startLive() {
+  if (liveTimer) return
+  livePaused.value = false
+  lastActivity = Date.now()
+  void livePoll()
+}
+function stopLive() {
+  if (liveTimer) {
+    clearTimeout(liveTimer)
+    liveTimer = null
+  }
+}
+function resumeLive() {
+  liveSamples.value = []
+  startLive()
+}
+// 只在流量 Tab 打开时读;切走就停。换节点时把上一台的读数清掉 ——
+// 两台机器的累计值相减会算出一个荒唐的速率。
+watch(
+  [tab, nodeId],
+  ([t, id], old) => {
+    if (old && id !== old[1]) liveSamples.value = []
+    if (t === 'traffic' && id !== null) startLive()
+    else stopLive()
+  },
+  { immediate: true },
+)
+onMounted(() => {
+  activityEvents.forEach((e) => document.addEventListener(e, noteActivity, { passive: true }))
+})
+onBeforeUnmount(() => {
+  stopLive()
+  activityEvents.forEach((e) => document.removeEventListener(e, noteActivity))
+})
+
+const liveLabels = computed(() => liveSamples.value.slice(1).map((s) => new Date(s.at).toISOString()))
+const liveSeries = computed(() => {
+  const rates = (pick: 'rx' | 'tx') =>
+    liveSamples.value.slice(1).map((s, i) => {
+      const prev = liveSamples.value[i]
+      const dt = (s.at - prev.at) / 1000
+      const delta = s[pick] - prev[pick]
+      // 计数器归零(网卡重置、机器重启)时给 0 而不是一个巨大的负数。
+      return dt > 0 && delta >= 0 ? delta / dt : 0
+    })
+  return [
+    { name: '下行(收)', color: color.brand, values: rates('rx') },
+    { name: '上行(发)', color: color.warning, values: rates('tx') },
+  ]
+})
+const liveNow = computed(() => {
+  const n = liveSeries.value[0].values.length
+  return n ? { rx: liveSeries.value[0].values[n - 1], tx: liveSeries.value[1].values[n - 1] } : null
+})
 
 /** 工具条上正在跑的动作名。同一时刻只允许一个。 */
 const running = ref('')
@@ -222,6 +405,7 @@ async function load(id: number) {
       trafficError.value = true
     })
   loadMetrics(id)
+  void loadSeries(id)
 }
 
 function reload() {
@@ -399,9 +583,25 @@ const doSyncTraffic = () =>
   readonlyAction('同步流量', '', async () => {
     const r = await api.syncNodeTraffic(nodeId.value!)
     // 这个只更新数字,结果就在页面上 —— 吐司 + 就地刷新即可,不用开面板。
-    message.success(`流量已同步 · 新增 ${formatBytes(r.bytes_added)}`)
+    // 主机流量那一路顺带装了东西时要说出来:在别人机器上装包不该静默。
+    const host = r.host
+      ? ` · 主机流量(vnStat,${r.host.iface})已同步` +
+        (r.host.install_steps.length ? `,${r.host.install_steps.join(';')}` : '')
+      : ''
+    message.success(`流量已同步 · 新增 ${formatBytes(r.bytes_added)}${host}`, 6)
     panel.value = ''
     reload()
+  })
+
+const doInstallHostTraffic = () =>
+  readonlyAction('安装 vnStat', '', async () => {
+    const r = await api.installHostTraffic(nodeId.value!)
+    if (r.error) {
+      message.error(r.error, 8)
+      return
+    }
+    message.success(r.summary ?? 'vnStat 已就绪', 6)
+    if (nodeId.value !== null) void loadSeries(nodeId.value)
   })
 
 const doCollectMetrics = () =>
@@ -628,17 +828,6 @@ const formatRate = (v: number) => `${formatBytes(v)}/s`
 // ---------- 派生展示 ----------
 
 const runMeta = computed(() => (node.value ? nodeBadges(node.value, latest.value?.collected_at) : []))
-
-/** 缺的日子传 null,不补 0。 */
-const dailyPoints = computed<LbPoint[]>(() => {
-  const byDay = new Map(daily.value.map((d) => [d.day, d.total]))
-  const out: LbPoint[] = []
-  for (let i = 29; i >= 0; i--) {
-    const key = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10)
-    out.push({ at: key, value: byDay.has(key) ? (byDay.get(key) as number) : null })
-  }
-  return out
-})
 
 /** 最近一次部署失败时的顶部横幅。失败原因要提到第一屏,不能埋在 Tab 里。 */
 const failureBanner = computed(() => {
@@ -889,6 +1078,14 @@ const needsPortForward = computed(() =>
         <span class="nd__health-item" :title="health.nginx_detail">
           nginx 转发
           <LbStatusTag kind="service" :status="health.nginx" small />
+        </span>
+        <span
+          v-if="health.realm && health.realm !== 'NOT_APPLICABLE'"
+          class="nd__health-item"
+          :title="health.realm_detail"
+        >
+          realm 转发
+          <LbStatusTag kind="service" :status="health.realm" small />
         </span>
         <!-- **每个 Mieru 入口一行,点名。** 一个入口一个 mita 实例,
              它们各自独立地跑与崩 —— 合成一个状态的话,挂了哪一个看不出来,
@@ -1338,6 +1535,21 @@ const needsPortForward = computed(() =>
                       {{ i.deployed_protocol ? PROTOCOL_LABEL[i.deployed_protocol] : '从未部署' }}
                     </b>
                   </div>
+                  <!-- 不计流量要在这里说出来:这个入口的流量既不进用户额度,
+                       也不进上面「流量」Tab 的代理流量 —— 不写的话,那张图上
+                       少的那一截没有任何解释。 -->
+                  <div v-if="i.unmetered || i.deployed_unmetered" class="nd__kv-wide">
+                    <span>流量计量</span>
+                    <b :style="{ color: color.warning }">
+                      {{
+                        i.unmetered && i.deployed_unmetered
+                          ? '不计流量 —— 不计入任何用户额度,也不计入这台机器的周期用量'
+                          : i.unmetered
+                            ? '不计流量(待部署,节点上仍在计量)'
+                            : '按用户计量(待部署,节点上仍是不计流量)'
+                      }}
+                    </b>
+                  </div>
                   <template v-if="i.protocol === 'SHADOWSOCKS'">
                     <div class="nd__kv-wide">
                       <span>加密方法</span>
@@ -1713,19 +1925,111 @@ const needsPortForward = computed(() =>
         </a-tab-pane>
 
         <a-tab-pane key="traffic" tab="流量">
-          <div v-if="!metered" class="nd__card-note">
-            {{ notMeteredReason || '中转主机,面板不计流量' }}
+          <!-- 实时曲线在最上面。只在这个 Tab 打开时读,2 分钟没操作就停 ——
+               一个忘了关的标签页不该每 2 秒占一次节点锁。 -->
+          <div class="nd__chart">
+            <div class="nd__chart-title">
+              实时网卡速率<template v-if="liveIface">({{ liveIface }})</template>
+              <span v-if="liveNow && !livePaused" class="nd__card-note">
+                · 下行 {{ formatRate(liveNow.rx) }} · 上行 {{ formatRate(liveNow.tx) }}
+              </span>
+            </div>
+            <div v-if="livePaused" class="nd__live-paused">
+              实时流量获取已暂停 —— 2 分钟没有页面操作,已停止读取,不再占用这台机器的连接。
+              <a-button size="small" type="primary" @click="resumeLive">刷新</a-button>
+            </div>
+            <template v-else>
+              <div v-if="liveError" class="nd__card-note">读不到网卡计数:{{ liveError }}</div>
+              <LbEmptyState
+                v-else-if="liveLabels.length < 2"
+                variant="empty"
+                title="正在读第一组数据…"
+                description="每 2 秒经 SSH 读一次 /proc/net/dev,速率按两次读数之差算。"
+              />
+              <MetricsChart
+                v-else
+                :labels="liveLabels"
+                :series="liveSeries"
+                :format="formatRate"
+                :height="160"
+              />
+            </template>
+            <div class="nd__card-note">
+              每 2 秒经 SSH 读一次网卡累计字节(不用 iftop:它是给人排查用的交互式工具),只在这个
+              Tab 打开时读;2 分钟没有操作自动停。
+            </div>
+          </div>
+
+          <!-- 粒度切换在图的左上角,两张柱状图共用。 -->
+          <div class="nd__range">
+            <a-segmented
+              v-model:value="granularity"
+              :options="[
+                { label: '小时流量', value: 'hour' },
+                { label: '日流量', value: 'day' },
+                { label: '月流量', value: 'month' },
+              ]"
+              size="small"
+            />
+            <span class="nd__card-note">
+              {{ granularityNote }} · 悬停查看用量 · 空心柱表示没有记录(不补 0、不插值)
+            </span>
           </div>
           <LbEmptyState
-            v-else-if="trafficError"
+            v-if="seriesError || trafficError"
             variant="error"
             title="流量数据暂时读不到"
             @retry="reload"
           />
           <template v-else>
-            <LbSparkline :points="dailyPoints" type="bar" :height="140" />
-            <div class="nd__card-note nd__spark-cap">
-              近 30 天 · 按 UTC 日聚合 · 悬停查看当日用量 · 空心柱表示当天没有记录(不补 0、不插值)
+            <div class="nd__chart">
+              <div class="nd__chart-title">代理流量(面板按用户计量:sing-box + Mieru)</div>
+              <template v-if="metered">
+                <LbSparkline
+                  :points="proxyPoints"
+                  type="bar"
+                  :height="140"
+                  :label-format="bucketLabel"
+                />
+              </template>
+              <div v-else class="nd__card-note">
+                {{ notMeteredReason || '中转主机,面板不计代理流量' }}
+              </div>
+            </div>
+            <div class="nd__chart">
+              <div class="nd__chart-title">主机流量(vnStat,网卡视角)</div>
+              <template v-if="series?.host_state?.installed">
+                <LbSparkline
+                  :points="hostPoints"
+                  type="bar"
+                  :height="140"
+                  :label-format="bucketLabel"
+                />
+                <div class="nd__card-note">
+                  vnStat {{ series.host_state.vnstat_version }} · 网卡
+                  {{ series.host_state.iface }} · 上次同步
+                  {{ series.host_state.synced_at ? formatUTCTime(series.host_state.synced_at) : '—' }}
+                  <template v-if="series.host_state.last_error">
+                    · 上次出错:{{ series.host_state.last_error }}
+                  </template>
+                  <br />
+                  机器视角与用户视角对不上是正常的:这里还包括 SSH、系统更新、面板自己的同步,
+                  以及「不计流量」入口的流量。桶按节点本机时区切,标签按 UTC;vnstat 自己每 5
+                  分钟落一次库,面板每 5 分钟拉一次,「同步流量」会立刻拉。
+                </div>
+              </template>
+              <div v-else class="nd__card-note">
+                这台机器上还没有 vnStat(或者面板还没确认过)。装上之后从那一刻开始记;
+                「同步流量」也会顺带装。
+                <a-button
+                  size="small"
+                  :loading="running === '安装 vnStat'"
+                  :disabled="!!running"
+                  @click="doInstallHostTraffic"
+                >
+                  安装 vnStat
+                </a-button>
+              </div>
             </div>
           </template>
         </a-tab-pane>
@@ -2215,6 +2519,17 @@ const needsPortForward = computed(() =>
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+/* 实时曲线暂停时的占位:颜色只用 tokens 里已有的那几个。 */
+.nd__live-paused {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px dashed #E3E6EA;
+  border-radius: 8px;
+  color: #6B7480;
+  font-size: 12px;
 }
 
 .nd__spark-cap {

@@ -92,6 +92,14 @@ func userMap(cfg Config, tags map[string]bool) map[string]string {
 			continue
 		}
 		for _, u := range in.Users {
+			// 不计流量入口上的用户没有名字,分不出是谁 —— 跳过而不是把
+			// 一整个入口的凭据合到一个 "" 键上:后者会让任何一个人的凭据
+			// 轮换都被报成「一个叫 "" 的用户更换了凭据」。这一类入口上的
+			// 凭据变化因此不在 UserDiff 里出现,由 compareInboundAttrs
+			// 那一行「不计流量」提醒管理员这个入口的用户差异看不到。
+			if u.Name == "" {
+				continue
+			}
 			parts[u.Name] = append(parts[u.Name], in.Tag+"="+u.Credential())
 		}
 	}
@@ -275,6 +283,18 @@ func compareInboundAttrs(oldIn, newIn Inbound) []string {
 					"撤销任何一个人都要换 psk、所有人一起断)")
 		} else {
 			changes = append(changes, "Snell 改回逐用户凭据(每人一把 userkey)")
+		}
+	}
+	// 不计流量同样不是一个独立字段,它体现为 users[].name 的有无。
+	// 这一行要说清后果:从此这个入口的用户凭据变化在比对里看不到
+	// (没有名字就分不出是谁),而流量不记到任何人、也不记到这台机器头上。
+	if UnmeteredOf(oldIn) != UnmeteredOf(newIn) {
+		if UnmeteredOf(newIn) {
+			changes = append(changes,
+				"改为不计流量(用户凭据照旧下发,但不再写 name:流量不计入任何用户额度、"+
+					"也不计入这台机器的周期用量;此后这个入口的用户凭据差异在比对里看不到)")
+		} else {
+			changes = append(changes, "改回计量(用户重新带上 name,流量按用户记)")
 		}
 	}
 	return changes

@@ -46,7 +46,7 @@ func TestEveryDeployKindCanBeSaved(t *testing.T) {
 	db := kindTestDB(t)
 	store := NewStore(db)
 
-	for _, kind := range []Kind{KindSingBox, KindRelay, KindMieru} {
+	for _, kind := range []Kind{KindSingBox, KindRelay, KindMieru, KindRealm} {
 		id, err := store.Save(t.Context(), Result{
 			NodeID:       1,
 			Kind:         kind,

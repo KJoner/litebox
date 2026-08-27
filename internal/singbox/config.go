@@ -126,7 +126,13 @@ type Inbound struct {
 type InboundUser struct {
 	// Name 是用户代码(user_000001),同时也是流量统计的计数器名。
 	// 两种协议都靠它把流量归属到用户,这是唯一与协议无关的字段。
-	Name string `json:"name"`
+	//
+	// **空串是刻意的:不计流量的入口(V15)渲染用户时不写 name。**
+	// sing-box 只在 name 非空时才设 metadata.User,而那正是 v2ray_api
+	// 建计数器的依据 —— 没有它,凭据照常认证、流量不记到任何人头上。
+	// omitempty 让它整项消失而不是写一个 "name": "":两种写法 sing-box
+	// 都当没有名字,但前者在配置里一眼看得出"这个入口不计量"。
+	Name string `json:"name,omitempty"`
 
 	// VLESS 专有。
 	UUID string `json:"uuid,omitempty"`

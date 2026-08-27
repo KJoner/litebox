@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/litebox/litebox/internal/hosttraffic"
 	"log/slog"
 	"sync"
 	"time"
@@ -22,6 +23,8 @@ type Scheduler struct {
 	trigger  DeployTrigger
 	logger   *slog.Logger
 	interval time.Duration
+	// host 是主机流量(vnStat)那一路,nil 表示没启用。
+	host *hosttraffic.Syncer
 
 	mu       sync.Mutex
 	lastRun  time.Time
@@ -34,6 +37,9 @@ type SchedulerOptions struct {
 	Enforcer *Enforcer
 	Trigger  DeployTrigger
 	Logger   *slog.Logger
+	// Host 是主机流量(vnStat)同步器(V15)。定时那一路只同步已装好的机器,
+	// 每台最多每 5 分钟一次;「同步流量」按钮那一路没装就先装。
+	Host *hosttraffic.Syncer
 	// Interval 是同步周期,默认 60 秒。
 	// 它同时决定了意外重启(OOM、宿主机重启、崩溃)的最大流量损失窗口:
 	// sing-box 的计数器是纯内存的,未同步部分随进程退出永久丢失。
@@ -52,6 +58,7 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 		trigger:  opts.Trigger,
 		logger:   opts.Logger,
 		interval: interval,
+		host:     opts.Host,
 		lastErrs: make(map[int64]string),
 	}
 }
@@ -120,6 +127,13 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 		totalEntries += result.EntriesAdded
 	}
 
+	// 主机流量走自己的节奏(每台最多 5 分钟一次),而且**包括中转主机**——
+	// 上面那个循环刻意排除了它们(那台机器上没有代理计数器),
+	// 而机器视角的流量恰恰是中转主机第一次有的流量数字。
+	if s.host != nil {
+		s.host.RunDue(ctx)
+	}
+
 	enforced, err := s.enforcer.Enforce(ctx, time.Now())
 	if err != nil {
 		s.logger.Error("额度与到期检查失败", "error", err)
@@ -181,6 +195,19 @@ func (s *Scheduler) SyncNodeNow(ctx context.Context, nodeID int64) (SyncResult, 
 	result.CountersRead += mieru.CountersRead
 	result.EntriesAdded += mieru.EntriesAdded
 	result.BytesAdded += mieru.BytesAdded
+
+	// 第三路:主机流量。没装 vnStat 就先装再同步 —— 这是「同步流量」按钮
+	// 与定时同步唯一的差别。它失败时前两路**已经落库了**,与 Mieru 那一句
+	// 同一条道理:不说出来管理员会以为这次点击什么都没发生。
+	if s.host != nil {
+		host, err := s.host.SyncNode(ctx, nodeID, true)
+		if err != nil {
+			return result, fmt.Errorf(
+				"sing-box 与 Mieru 两路已同步(入账 %d 条),主机流量(vnStat)那一路失败: %w",
+				result.EntriesAdded, err)
+		}
+		result.Host = &host
+	}
 	return result, nil
 }
 

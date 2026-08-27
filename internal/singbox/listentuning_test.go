@@ -113,6 +113,7 @@ func TestEveryRenderedChangeShowsUpInDiff(t *testing.T) {
 		"改 API 端口":         func(p *NodeParams) { p.APIPort = 28081 },
 		"改握手目标":            func(p *NodeParams) { p.Inbounds[0].RealityDest = "www.cloudflare.com" },
 		"改 short_id":       func(p *NodeParams) { p.Inbounds[0].ShortID = "0123abcd" },
+		"改成不计流量":           func(p *NodeParams) { p.Inbounds[0].Unmetered = true },
 	}
 
 	for name, mutate := range mutations {

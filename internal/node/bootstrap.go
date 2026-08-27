@@ -188,6 +188,19 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 	} else {
 		result.Detail = strings.TrimSpace(result.Detail + " 面板公钥已写入并验证通过。")
 	}
+
+	// 顺带装 vnStat(V15):创建节点是"这台机器归面板管了"的那一刻,
+	// 主机流量从这一刻开始记才完整。**失败只记进结果,不让引导失败**——
+	// 引导要回答的是"面板连不连得上",装不上一个统计包不该改变那个答案。
+	// 走连接池(面板密钥)而不是上面那条一次性连接:那条可能是口令登录的。
+	if s.hostTraffic != nil {
+		if summary, err := s.hostTraffic.InstallSummary(ctx, nodeID); err != nil {
+			result.Detail = strings.TrimSpace(result.Detail + " vnStat 没装上(不影响接入,可在「流量」Tab 里重试):" +
+				firstLine(err.Error(), 200))
+		} else {
+			result.Detail = strings.TrimSpace(result.Detail + " " + summary + "。")
+		}
+	}
 	return result, nil
 }
 

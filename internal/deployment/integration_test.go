@@ -271,8 +271,8 @@ func TestIntegrationDeployWithUsersPassesDialCheck(t *testing.T) {
 	if dial.Status != StepSuccess {
 		t.Fatalf("拨测未通过:%s", dial.Detail)
 	}
-	if !strings.Contains(dial.Detail, "SSH-") {
-		t.Errorf("拨测详情应包含经代理读到的 SSH 横幅:%s", dial.Detail)
+	if !strings.Contains(dial.Detail, "HTTP 2") {
+		t.Errorf("拨测详情应包含经代理取到的 HTTP 状态:%s", dial.Detail)
 	}
 }
 
@@ -464,8 +464,8 @@ func TestIntegrationDeployShadowsocksPassesDialCheck(t *testing.T) {
 	if dial.Status != StepSuccess {
 		t.Fatalf("拨测未通过:%s", dial.Detail)
 	}
-	if !strings.Contains(dial.Detail, "SSH-") {
-		t.Errorf("拨测详情应包含经代理读到的 SSH 横幅:%s", dial.Detail)
+	if !strings.Contains(dial.Detail, "HTTP 2") {
+		t.Errorf("拨测详情应包含经代理取到的 HTTP 状态:%s", dial.Detail)
 	}
 
 	// 时钟检查必须真的跑过。它是 Shadowsocks 独有的失效模式,

@@ -9,8 +9,7 @@ import (
 )
 
 // 生产上那一次的形状:一台机器上两个 VLESS 入口,in-27 的出口指向另一台的
-// Shadowsocks 入口。改完握手目标下发,直连那个通过、in-27 报
-// 「经代理完成 SSH 认证失败: ssh: handshake failed: EOF」。
+// Shadowsocks 入口。改完握手目标下发,直连那个通过、in-27 在隧道里读到 EOF。
 func chainCase() (singbox.InboundParams, *ChainProbe) {
 	in := singbox.InboundParams{
 		Tag:        "in-27",
@@ -29,23 +28,18 @@ func chainCase() (singbox.InboundParams, *ChainProbe) {
 
 // 报错必须把三跳摊开,并且指出**该去哪台机器搜什么**。
 //
-// 在此之前这里只有一句 sshd 的 PerSourcePenalties —— 而 OpenSSH ≥ 9.8
-// 默认就开着它,于是每一次拨测失败都会得到那一段,管理员照着它去查一台
-// 完全正常的 sshd。三跳里有两跳的原因根本不在这台机器上。
+// 在此之前这里只有一句 sshd 的 PerSourcePenalties,而三跳里有两跳的原因
+// 根本不在这台机器上。终点换成 HTTP 之后 sshd 那一段没了,三跳仍然要摊开。
 func TestChainDialNoteSplitsTheThreeHops(t *testing.T) {
 	in, chain := chainCase()
-	note, blamesSSHD := chainDialNote(in, chain, "23.169.169.110", 22, 22,
+	note := chainDialNote(in, chain, "https://www.gstatic.com/generate_204", 22,
 		chainHopUnknown, true)
 
 	for _, want := range []string{"①", "②", "③", "in-27", "lax-1 / 香港SS入口",
-		"154.31.157.27:28443", "23.169.169.110:22", "chain_000003"} {
+		"154.31.157.27:28443", "generate_204", "chain_000003"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("归因里缺了 %q —— 少了它管理员答不出该去哪台机器:\n%s", want, note)
 		}
-	}
-	// 结论没定下来时,sshd 惩罚仍然是候选之一,不能提前排除。
-	if !blamesSSHD {
-		t.Error("诊断没有结论时不该把 sshd 惩罚这一档排除掉")
 	}
 }
 
@@ -55,7 +49,7 @@ func TestChainDialNoteSplitsTheThreeHops(t *testing.T) {
 // 而不是"EOF 这个词出现在哪一层"。
 func TestChainDialNoteBlamesFirstHopWhenTunnelNeverOpened(t *testing.T) {
 	in, chain := chainCase()
-	note, blamesSSHD := chainDialNote(in, chain, "23.169.169.110", 22, 22,
+	note := chainDialNote(in, chain, "https://www.gstatic.com/generate_204", 22,
 		chainHopUnknown, false)
 
 	if !strings.Contains(note, "断在 ①") {
@@ -67,17 +61,13 @@ func TestChainDialNoteBlamesFirstHopWhenTunnelNeverOpened(t *testing.T) {
 	if !strings.Contains(note, "落地那台机器与这次失败无关") {
 		t.Errorf("要明确把落地摘出去,否则排查会跨到另一台机器上:\n%s", note)
 	}
-	// 后两跳没走到,本机 sshd 一个连接都没收到。
-	if blamesSSHD {
-		t.Error("第一跳就断了,sshd 惩罚那一段贴上去是把人引到无关的地方")
-	}
 }
 
 // 链式出站没生效是**静默的错误路由**:入口有网、谁都不报错,
 // 只有出口不是管理员配的那个。二分诊断能看见它,就必须说出来。
 func TestChainDialNoteCallsOutSilentDirectRoute(t *testing.T) {
 	in, chain := chainCase()
-	note, blamesSSHD := chainDialNote(in, chain, "23.169.169.110", 22, 22,
+	note := chainDialNote(in, chain, "https://www.gstatic.com/generate_204", 22,
 		chainHopNotChained, true)
 
 	if !strings.Contains(note, "没出这台机器") {
@@ -86,23 +76,17 @@ func TestChainDialNoteCallsOutSilentDirectRoute(t *testing.T) {
 	if !strings.Contains(note, "direct") {
 		t.Errorf("要说清它实际走了哪条出站:\n%s", note)
 	}
-	if blamesSSHD {
-		t.Error("流量没出这台机器,sshd 惩罚与它无关")
-	}
 }
 
 // 断在第二跳时,最该被想到的是"落地上还没有这条链路的凭据" ——
 // 那是跨机器部署顺序造成的,而报错落在这一台上。
 func TestChainDialNotePointsAtLandingCredentialsOnSecondHop(t *testing.T) {
 	in, chain := chainCase()
-	note, blamesSSHD := chainDialNote(in, chain, "23.169.169.110", 22, 22,
+	note := chainDialNote(in, chain, "https://www.gstatic.com/generate_204", 22,
 		chainHopBlocked, true)
 
 	if !strings.Contains(note, "凭据") || !strings.Contains(note, "重新部署") {
 		t.Errorf("第二跳断了要指向落地的用户列表,现在是:\n%s", note)
-	}
-	if blamesSSHD {
-		t.Error("第二跳断了,本机 sshd 没收到任何连接")
 	}
 }
 
@@ -113,7 +97,7 @@ func TestChainDialNoteRetractsDiagnosisOnDifferentSSHPort(t *testing.T) {
 	in, chain := chainCase()
 	chain.LandingSSHPort = 2222
 
-	note, _ := chainDialNote(in, chain, "23.169.169.110", 22, 22, chainHopBlocked, true)
+	note := chainDialNote(in, chain, "https://www.gstatic.com/generate_204", 22, chainHopBlocked, true)
 	if !strings.Contains(note, "不作数") {
 		t.Errorf("两台机器 sshd 端口不同时这一条说明不了什么,必须收回:\n%s", note)
 	}
@@ -123,7 +107,7 @@ func TestChainDialNoteRetractsDiagnosisOnDifferentSSHPort(t *testing.T) {
 
 	// 端口一样时不该多这一句 —— 那会把一个成立的结论说成不成立。
 	chain.LandingSSHPort = 22
-	same, _ := chainDialNote(in, chain, "23.169.169.110", 22, 22, chainHopBlocked, true)
+	same := chainDialNote(in, chain, "https://www.gstatic.com/generate_204", 22, chainHopBlocked, true)
 	if strings.Contains(same, "不作数") {
 		t.Errorf("端口相同时结论是成立的,不该自我否定:\n%s", same)
 	}
@@ -138,7 +122,7 @@ func TestChainDialNoteDoesNotSendPeopleAfterExternalLogs(t *testing.T) {
 		Server:  "hk1.example.com",
 		Port:    443,
 	}
-	note, _ := chainDialNote(in, external, "23.169.169.110", 22, 22, chainHopBlocked, true)
+	note := chainDialNote(in, external, "https://www.gstatic.com/generate_204", 22, chainHopBlocked, true)
 
 	if strings.Contains(note, "chain_") {
 		t.Errorf("外部代理上没有我们的链路代码,不能让人去搜它:\n%s", note)
@@ -148,16 +132,12 @@ func TestChainDialNoteDoesNotSendPeopleAfterExternalLogs(t *testing.T) {
 	}
 }
 
-// 直连入站一个字都不加,而且 sshd 惩罚照旧 —— 那时目标就是本机 sshd,
-// 惩罚确实是一种可能。这一版只收窄链式那一支。
+// 直连入站一个字都不加。
 func TestChainDialNoteSaysNothingForDirectInbound(t *testing.T) {
 	in, _ := chainCase()
-	note, blamesSSHD := chainDialNote(in, nil, "23.169.169.110", 22, 22, chainHopUnknown, true)
+	note := chainDialNote(in, nil, "https://www.gstatic.com/generate_204", 22, chainHopUnknown, true)
 	if note != "" {
 		t.Errorf("直连入站不该多出链式说明:%s", note)
-	}
-	if !blamesSSHD {
-		t.Error("直连拨测打的就是本机 sshd,惩罚提示必须保留")
 	}
 }
 
@@ -181,9 +161,9 @@ func TestFirstHopVerdictComesFromSentinelNotText(t *testing.T) {
 		t.Errorf("包了一层之后原始错误认不出来了:%v", beforeTunnel)
 	}
 
-	inTunnel := errors.New("经代理完成 SSH 认证失败: ssh: handshake failed: EOF")
+	inTunnel := errors.New("经代理未取到 HTTP 响应: EOF")
 	if !firstHopReached(inTunnel) {
-		t.Error("错误发生在 SSH 握手阶段,说明隧道已经建起来了")
+		t.Error("错误发生在隧道里的数据阶段,说明隧道已经建起来了")
 	}
 }
 

@@ -73,6 +73,10 @@ type inboundRequest struct {
 	// userkey 那一栏。代价:没有分用户流量、撤销一个人要换 psk
 	// (所有人一起断)、用户额度对它不生效。共享模式强制版本 5。
 	SnellSharedPSK bool `json:"snell_shared_psk"`
+	// Unmetered 为真时这个入口的流量不计(V15):用户凭据照旧下发,只是不写
+	// name,于是没有计数器 —— 不计入用户额度,也不计入这台机器的周期用量。
+	// 与 SnellSharedPSK 同一种约定:漏传 = 关掉,而关掉(计量)是更严的那一档。
+	Unmetered bool `json:"unmetered"`
 	// ListenPort 是节点上 sing-box 真正 bind 的端口;
 	// PublicPort 留 0 表示跟随 ListenPort;IPv6PublicPort 留 0 表示跟随 PublicPort。
 	ListenPort     int `json:"listen_port"`
@@ -111,6 +115,7 @@ func (req inboundRequest) params() node.InboundParams {
 		SnellObfsHost:       strings.TrimSpace(req.SnellObfsHost),
 		SnellV6Mode:         strings.TrimSpace(req.SnellV6Mode),
 		SnellSharedPSK:      req.SnellSharedPSK,
+		Unmetered:           req.Unmetered,
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		IPv6PublicPort:      req.IPv6PublicPort,

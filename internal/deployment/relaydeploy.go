@@ -54,22 +54,10 @@ type RelayRequest struct {
 	NginxBinary string
 	Revision    int64
 
+	// Probes 是每条线路的拨测参数。数据路径是
+	// 探测客户端 → 转发 → 落地 → 出网 → 拨测目标(设置里那个 URL),
+	// 一次拨测同时验证了转发、落地的凭据与落地的出网能力。
 	Probes []RelayProbe
-
-	// DialHost / DialPort 是拨测的 CONNECT 目标:**中转主机自己的公网 SSH**。
-	//
-	// 数据路径是 探测客户端 → nginx → 落地 → 公网 → 回到本机的 sshd,
-	// 因此这一次拨测同时验证了转发、落地的凭据与落地的出网能力。
-	// 终点用面板自己的密钥完成一次真正的 SSH 认证(不是读一行横幅就断开)——
-	// 后者会命中 OpenSSH 的 noauth 惩罚,让拨测把后续的拨测挡下来。
-	//
-	// **必须来自数据库**(nodes.host / nodes.ssh_port),不能问节点自己:
-	// NAT 机上 $SSH_CONNECTION 给出的是私网地址与本机端口,
-	// 机器根本不知道自己的公网地址长什么样。
-	//
-	// 发起方是落地而不是中转机自己,所以不涉及 hairpin NAT。
-	DialHost string
-	DialPort int
 }
 
 // DeployRelays 执行中转配置的下发事务。
@@ -295,74 +283,31 @@ func (d *Deployer) relayHealthChecks(
 	// Shadowsocks)。两种都不是这台中转机的错,判失败会让一次完全正确的
 	// 下发被回滚。但也绝不能报成功 —— 那等于对一份没验证过的配置
 	// 说验证过了。所以记 SKIPPED 并逐条写明原因,让部署记录自己说实话。
-	start := time.Now()
-	var verified, skipped []string
-	for _, probe := range req.Probes {
-		if probe.Outbound == nil {
-			reason := probe.SkipReason
-			if reason == "" {
-				reason = "落地无法构造探测出站"
-			}
-			skipped = append(skipped, fmt.Sprintf("「%s」%s", probe.Name, reason))
-			continue
-		}
-		banner, err := d.dialThroughRelay(ctx, client, req, probe)
-		if err != nil {
-			// **把 nginx 的错误日志带上。**
-			//
-			// 这条链路上 nginx 只负责搬字节,它自己几乎不会出错;拨测读不到
-			// 数据,原因几乎总在落地那一端。而 nginx 恰好把那一端的表现
-			// 一行行记了下来(哪个上游、来回各多少字节、对面是 RST 还是超时),
-			// 那正是判断"是中转坏了还是落地坏了"唯一需要的材料。
-			//
-			// 已经踩过一次:机场换了地址,新旧两个都不接受连接,而面板只报
-			// 「经代理未读到任何数据: EOF」—— 与此同时 nginx 日志里写着
-			// upstream 收到 517 字节后 Connection reset by peer,
-			// 一眼就能看出该去找机场而不是查中转机。
-			detail := fmt.Sprintf("线路「%s」:%v", probe.Name, err)
-			detail += dialFailureHint(
-				prefixIfSet("中转机上 nginx 的记录"+
-					"(它只搬字节,所以这几行说的是落地那一端的表现):\n",
-					recentNginxErrors(ctx, client, d.layout, probe.ListenPort)),
-				// 拨测的 CONNECT 目标就是这台中转机自己的 sshd,
-				// 所以要查的惩罚设置也在这台机器上。
-				sshdPenaltyNote(ctx, client),
-			)
-			rec.steps = append(rec.steps, Step{
-				Name:       "健康检查三:经中转真实拨测",
-				Status:     StepFailed,
-				DurationMS: time.Since(start).Milliseconds(),
-				Detail:     detail,
-			})
-			return fmt.Errorf("线路「%s」拨测失败:%w", probe.Name, err)
-		}
-		verified = append(verified, fmt.Sprintf("「%s」%s", probe.Name, banner))
-	}
-
-	if len(verified) == 0 {
-		rec.skip("健康检查三:经中转真实拨测",
-			"没有任何一条线路能被拨测 —— "+strings.Join(skipped, ";"))
-		return nil
-	}
-	detail := strings.Join(verified, ";")
-	if len(skipped) > 0 {
-		detail += ";未验证:" + strings.Join(skipped, ";")
-	}
-	rec.steps = append(rec.steps, Step{
-		Name:       "健康检查三:经中转真实拨测",
-		Status:     StepSuccess,
-		DurationMS: time.Since(start).Milliseconds(),
-		Detail:     detail,
-	})
-	return nil
+	// **失败时把 nginx 的错误日志带上。**
+	//
+	// 这条链路上 nginx 只负责搬字节,它自己几乎不会出错;拨测读不到
+	// 数据,原因几乎总在落地那一端。而 nginx 恰好把那一端的表现
+	// 一行行记了下来(哪个上游、来回各多少字节、对面是 RST 还是超时),
+	// 那正是判断"是中转坏了还是落地坏了"唯一需要的材料。
+	//
+	// 已经踩过一次:机场换了地址,新旧两个都不接受连接,而面板只报
+	// 「经代理未读到任何数据: EOF」—— 与此同时 nginx 日志里写着
+	// upstream 收到 517 字节后 Connection reset by peer,
+	// 一眼就能看出该去找机场而不是查中转机。
+	return d.probeRelayLines(ctx, client, req.Probes, rec, "健康检查三:经中转真实拨测",
+		func(listenPort int) string {
+			return prefixIfSet("中转机上 nginx 的记录"+
+				"(它只搬字节,所以这几行说的是落地那一端的表现):\n",
+				recentNginxErrors(ctx, client, d.layout, listenPort))
+		})
 }
 
-// dialThroughRelay 在中转机上临时起一个 sing-box 客户端,经 nginx 的监听端口
-// 连到落地,再 CONNECT 回中转主机自己的公网 SSH。
+// dialThroughRelay 在中转机上临时起一个 sing-box 客户端,经转发的监听端口
+// 连到落地,再 CONNECT 到设置里的拨测目标取一次响应。
 //
 // 探测客户端跑完就杀掉,配置立刻删除 —— 那份配置里有落地的明文凭据。
 func (d *Deployer) dialThroughRelay(
-	ctx context.Context, client *sshx.Client, req RelayRequest, probe RelayProbe,
+	ctx context.Context, client *sshx.Client, probe RelayProbe,
 ) (string, error) {
 	probePort, err := d.pickProbePort(ctx, client)
 	if err != nil {
@@ -407,10 +352,12 @@ func (d *Deployer) dialThroughRelay(
 	if err := waitPortReady(ctx, client, probePort); err != nil {
 		return "", err
 	}
-	// 中转拨测同样要重试:它的目标也是 sshd(中转主机自己的公网 SSH),
-	// 同样会被 PerSourcePenalties 封 —— 而这一条线路上一次误判就会
-	// 把一份好配置回滚掉。
-	banner, _, err := dialWithRetry(ctx, d.pool, req.NodeID, client, probePort, req.DialHost, req.DialPort)
+	target, err := d.probeURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	// 中转拨测同样要重试 —— 这一条线路上一次误判就会把一份好配置回滚掉。
+	banner, _, err := dialWithRetry(ctx, client, probePort, target)
 	return banner, err
 }
 

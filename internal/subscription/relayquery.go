@@ -39,7 +39,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		       -- 而中转主机上根本没有入站。转发规则本身没有 IPv6 端口字段 ——
 		       -- nginx 的 listen 是同一个,两个协议栈到达的是同一个 server 块。
 		       0,
-		       r.target_kind,
+		       r.engine, r.target_kind,
 		       COALESCE(b.deployed_protocol, ''), COALESCE(b.deployed_ss_method, ''),
 		       COALESCE(b.deployed_tcp_fast_open, 0),
 		       COALESCE(b.ss_password_encrypted, ''),
@@ -68,7 +68,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 	for rows.Next() {
 		var (
 			p                                  PhysicalRelay
-			kind                               string
+			engine, kind                       string
 			protocol, ssMethod, ssKeyEnc       string
 			tfo                                bool
 			realityDest, realityPub, realitySI string
@@ -76,10 +76,13 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			extServer                          string
 		)
 		p.Order.Kind = OrderRelay
+		if engine == "REALM" {
+			p.Order.Kind = OrderRealm
+		}
 		if err := rows.Scan(&p.Order.NodeSort, &p.Order.NodeID, &p.Order.Sort, &p.Order.ID,
 			&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Port, &p.IPv6Port,
-			&kind, &protocol, &ssMethod, &tfo, &ssKeyEnc,
+			&engine, &kind, &protocol, &ssMethod, &tfo, &ssKeyEnc,
 			&realityDest, &realityPub, &realitySI,
 			&extProtocol, &extParamsEnc, &extURI, &extServer); err != nil {
 			return nil, err

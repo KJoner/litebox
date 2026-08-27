@@ -38,6 +38,7 @@ const loadError = ref<string>('')
 
 const sections = [
   { id: 'sub', label: '订阅地址' },
+  { id: 'probe', label: '拨测目标' },
   { id: 'notify', label: '监控与推送' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
@@ -69,6 +70,28 @@ async function saveBaseURL() {
     message.error(err instanceof ApiError ? err.message : '保存失败')
   } finally {
     savingBaseURL.value = false
+  }
+}
+
+// ---------- 拨测目标 ----------
+
+const probeURL = ref('')
+const savedProbeURL = ref('')
+const savingProbeURL = ref(false)
+const probeURLDirty = computed(() => probeURL.value !== savedProbeURL.value)
+
+async function saveProbeURL() {
+  savingProbeURL.value = true
+  try {
+    const s = await api.updateSettings({ probe_url: probeURL.value })
+    settings.value = { ...(settings.value as PanelSettings), ...s }
+    probeURL.value = s.probe_url
+    savedProbeURL.value = s.probe_url
+    message.success('已保存,下一次部署起生效')
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '保存失败')
+  } finally {
+    savingProbeURL.value = false
   }
 }
 
@@ -274,6 +297,8 @@ async function loadAll() {
     settings.value = s
     baseURL.value = s.subscription_base_url
     savedBaseURL.value = s.subscription_base_url
+    probeURL.value = s.probe_url ?? ''
+    savedProbeURL.value = s.probe_url ?? ''
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '加载设置失败'
   }
@@ -360,6 +385,48 @@ onMounted(loadAll)
         </div>
       </section>
 
+      <!-- 拨测目标 -->
+      <section id="set-probe" class="st__card">
+        <div class="st__card-head">
+          <span>拨测目标</span>
+          <span class="st__badge st__badge--ok">下一次部署起生效</span>
+        </div>
+        <div class="st__card-body">
+          <div class="st__field">
+            <label class="st__label">部署健康检查里真实拨测要取的地址</label>
+            <a-input
+              v-model:value="probeURL"
+              :placeholder="settings?.default_probe_url || 'https://www.gstatic.com/generate_204'"
+            />
+            <div class="st__help">
+              每次下发配置,面板都会从节点上经【被测的那个入口】真的去取一次这个地址,
+              回 2xx / 3xx 才算通。留空用默认的
+              <code>{{ settings?.default_probe_url || 'https://www.gstatic.com/generate_204' }}</code>。
+            </div>
+          </div>
+
+          <div class="st__note st__note--info">
+            <strong>直连、链式、nginx / realm 转发、Mieru 打的都是同一个地址。</strong>
+            它验的是「用户连上之后能不能上网」这件事本身,而且不再碰节点的 sshd ——
+            OpenSSH 的 PerSourcePenalties、NAT 机的 hairpin、链式入站打回环会落到落地这三个坑一起消失。
+            代价是节点要解析并连得上它:节点所在地区连不上 Google 的话,换成任何一个返回 204 的地址。
+            https 会校验证书,链路上有东西劫持 TLS 时会被报出来。
+          </div>
+
+          <div class="st__actions">
+            <span v-if="probeURLDirty" class="st__dirty">已改动</span>
+            <a-button v-if="probeURLDirty" size="small" @click="probeURL = savedProbeURL">还原</a-button>
+            <a-button
+              type="primary"
+              :disabled="!probeURLDirty"
+              :loading="savingProbeURL"
+              @click="saveProbeURL"
+            >
+              保存拨测目标
+            </a-button>
+          </div>
+        </div>
+      </section>
 
       <!-- ② 监控与推送 -->
       <section id="set-notify" class="st__card">

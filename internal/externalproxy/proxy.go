@@ -102,6 +102,15 @@ func (p Protocol) RelayableByNginx() bool {
 	return p.Supported()
 }
 
+// RelayableByRealm 表示能不能用 realm 转发到它。
+//
+// realm 同时搬 TCP 与 UDP,所以 Hysteria2 / TUIC 也在 —— 这正是两种引擎
+// 在落地范围上唯一的差别。但**拨测仍然测不了它们**(探测客户端是节点上
+// 不含 QUIC 的 sing-box),那条规则会下发,只是记 SKIPPED 并写明原因。
+func (p Protocol) RelayableByRealm() bool {
+	return p.Supported()
+}
+
 // ssMethods 是外部代理允许的 Shadowsocks 加密方法。
 //
 // **不在这里另列一份。** 这个问题只有一个正确答案 ——「sing-box 作为客户端

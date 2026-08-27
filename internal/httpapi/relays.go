@@ -17,6 +17,7 @@ const (
 	actionRelayUpdate = "relay.update"
 	actionRelayDelete = "relay.delete"
 	actionRelayDeploy = "relay.deploy"
+	actionRealmDeploy = "realm.deploy"
 	actionChainApply  = "node.chain_apply"
 	actionConfigInRAM = "node.config_in_ram"
 	actionChainClear  = "node.chain_clear"
@@ -67,14 +68,19 @@ func (s *Server) handleListRelays(w http.ResponseWriter, r *http.Request) {
 }
 
 type relayRequest struct {
+	// Engine 只在新增时有意义(NGINX / REALM,留空按 NGINX),建好之后不能改。
+	Engine           string `json:"engine"`
 	DisplayName      string `json:"display_name"`
 	ListenPort       int    `json:"listen_port"`
 	PublicPort       int    `json:"public_port"`
 	TargetKind       string `json:"target_kind"`
 	TargetInboundID  int64  `json:"target_inbound_id"`
 	TargetExternalID int64  `json:"target_external_id"`
-	AccessTierID     int64  `json:"access_tier_id"`
-	SortOrder        int    `json:"sort_order"`
+	// TargetHost / TargetPort 只在 ADDRESS 下用(V15)。
+	TargetHost   string `json:"target_host"`
+	TargetPort   int    `json:"target_port"`
+	AccessTierID int64  `json:"access_tier_id"`
+	SortOrder    int    `json:"sort_order"`
 	// 指针表示"没传就保持原值"。回落到零值的后果是静默的:
 	// 把一条 VIP 线路降成普通组等于给全体用户开门,把订阅开关关掉
 	// 等于把它从所有人的订阅里摘掉,两者都不报错。
@@ -97,12 +103,15 @@ func (s *Server) handleCreateRelay(w http.ResponseWriter, r *http.Request) {
 
 	item, err := s.relays.Create(r.Context(), relay.CreateParams{
 		NodeID:              nodeID,
+		Engine:              strings.TrimSpace(req.Engine),
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		TargetKind:          strings.TrimSpace(req.TargetKind),
 		TargetInboundID:     req.TargetInboundID,
 		TargetExternalID:    req.TargetExternalID,
+		TargetHost:          strings.TrimSpace(req.TargetHost),
+		TargetPort:          req.TargetPort,
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,
@@ -118,9 +127,9 @@ func (s *Server) handleCreateRelay(w http.ResponseWriter, r *http.Request) {
 		s.writeRelayError(w, err, "新增转发规则失败")
 		return
 	}
-	// nginx 配置变了,标脏等协调器合并下发。
+	// 转发配置变了,按这条规则的引擎标脏等协调器合并下发。
 	// **不标 sing-box** —— 转发规则一个字都不进它的配置。
-	s.nodes.MarkRelaysDirty(nodeID)
+	s.nodes.MarkEngineDirty(item.Engine, nodeID)
 	writeJSON(w, http.StatusCreated, map[string]any{"relay": item})
 }
 
@@ -142,6 +151,8 @@ func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request) {
 		PublicPort:          req.PublicPort,
 		TargetInboundID:     req.TargetInboundID,
 		TargetExternalID:    req.TargetExternalID,
+		TargetHost:          strings.TrimSpace(req.TargetHost),
+		TargetPort:          req.TargetPort,
 		AccessTierID:        req.AccessTierID,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,
@@ -157,7 +168,7 @@ func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request) {
 		s.writeRelayError(w, err, "修改转发规则失败")
 		return
 	}
-	s.nodes.MarkRelaysDirty(item.NodeID)
+	s.nodes.MarkEngineDirty(item.Engine, item.NodeID)
 	writeJSON(w, http.StatusOK, map[string]any{"relay": item})
 }
 
@@ -189,7 +200,7 @@ func (s *Server) handleDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		s.writeRelayError(w, err, "删除转发规则失败")
 		return
 	}
-	s.nodes.MarkRelaysDirty(item.NodeID)
+	s.nodes.MarkEngineDirty(item.Engine, item.NodeID)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
@@ -329,13 +340,61 @@ func auditRelayDetail(req relayRequest) string {
 	if req.PublicPort != 0 && req.PublicPort != req.ListenPort {
 		b.WriteString("(公网 " + strconv.Itoa(req.PublicPort) + ")")
 	}
+	if req.Engine != "" {
+		b.WriteString("(" + req.Engine + ")")
+	}
 	b.WriteString(" → " + req.TargetKind)
-	if req.TargetKind == string(relay.TargetInbound) {
+	switch req.TargetKind {
+	case string(relay.TargetInbound):
 		b.WriteString("#" + strconv.FormatInt(req.TargetInboundID, 10))
-	} else {
+	case string(relay.TargetAddress):
+		b.WriteString(" " + req.TargetHost + ":" + strconv.Itoa(req.TargetPort))
+	default:
 		b.WriteString("#" + strconv.FormatInt(req.TargetExternalID, 10))
 	}
 	return b.String()
+}
+
+// handleDeployRealm 立刻下发这台机器上的 realm 配置。
+//
+// 与 nginx 那一个分开一个接口:这一个 restart realm、断开全部 realm 线路的
+// 在途连接,摩擦档次不同。
+func (s *Server) handleDeployRealm(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	admin := adminFromContext(r.Context())
+
+	result, err := s.nodes.DeployRealm(r.Context(), id)
+	detail := string(result.Status)
+	if err != nil {
+		detail = err.Error()
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionRealmDeploy,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"result": result, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+// handleNodeRealmFacts 只读探测 realm 现状,不记审计。
+func (s *Server) handleNodeRealmFacts(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	facts, err := s.nodes.ProbeRealm(r.Context(), id)
+	if err != nil {
+		s.writeNodeError(w, err, "探测节点 realm 失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, facts)
 }
 
 // handleSetConfigInRAM 切换「配置不落盘」。

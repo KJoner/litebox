@@ -30,29 +30,22 @@ type ProbeTarget struct {
 	// RealityPublicKey 是这个入站的 REALITY 公钥,探测客户端要用。
 	// 它不在 NodeParams 里 —— 节点配置只写私钥。
 	RealityPublicKey string
-	// DialHost / DialPort 非空时,这个入站的拨测 CONNECT 到这个地址
-	// 而不是节点本机回环。
-	//
-	// 只有链式入站会用:直连入站走回环是对的(不引入任何外部网络依赖),
-	// 而链式入站的回环包会被送到落地那边,打在【落地自己的】sshd 上 ——
-	// 拨测碰巧还会通过,可它验证的已经不是这台机器了。
-	//
-	// 值必须来自数据库(nodes.host / nodes.ssh_port),不能问节点自己:
-	// NAT 机上 $SSH_CONNECTION 给出的是私网地址与本机端口。
-	DialHost string
-	DialPort int
 	// Chain 非 nil 表示这个入站配了出口。它不进配置,只在拨测失败时用来定位。
+	//
+	// 拨测的 CONNECT 目标不在这里:所有入站(直连、链式)、nginx 透传与
+	// Mieru 打的都是设置里那一个 URL(见 httpprobe.go),按入站区分目标的
+	// 理由(链式打回环会落到落地的 sshd 上)随 sshd 这个终点一起消失了。
 	Chain *ChainProbe
 }
 
 // ChainProbe 描述一个链式入站的出口去向。
 //
 // **它存在的理由只有一条:链式入站的拨测是三跳,而三跳里任何一跳断了,
-// 都长成同一句 `ssh: handshake failed: EOF`。**
+// 都长成同一句「经代理未取到 HTTP 响应: EOF」。**
 //
 //	① 探测客户端 → 本机这个入站(127.0.0.1:<listen_port>)
 //	② 这个入站 → 链式出站 → 落地
-//	③ 落地出网 → 这台机器自己的公网 SSH
+//	③ 落地出网 → 拨测目标
 //
 // 三者要人做的事在**两台不同的机器**上,所以失败时必须分开说。给一句
 // "连不上"等于让管理员从两台机器里挑一台开始查,而挑错的代价是几个小时。
@@ -60,8 +53,8 @@ type ProbeTarget struct {
 // ① 其实是可以当场排除的:REALITY / SS / Snell 那一跳握手失败时,
 // 探测客户端的 socks 入站会回一个**失败的应答码**(sing 的 LazyConn 要等
 // 出站真的建立起来才写成功应答),那时报出来的是「SOCKS5 CONNECT 被拒绝」
-// 而不是 EOF。读到 EOF 说明这一跳是通的 —— 这句话必须写进报错里,
-// 否则刚改过握手目标的人第一个怀疑的就是它。
+// 而不是隧道里的读取失败。走到了隧道里说明这一跳是通的 —— 这句话必须
+// 写进报错里,否则刚改过握手目标的人第一个怀疑的就是它。
 type ChainProbe struct {
 	// Landing 是落地的可读描述,进错误信息:「lax-1 / 香港SS入口」。
 	Landing string
@@ -89,7 +82,9 @@ type Request struct {
 	Params singbox.NodeParams
 	// Probes 按入站 tag 给出拨测所需的补充信息。
 	Probes []ProbeTarget
-	// SSHPort 是节点的 SSH 端口,拨测时作为代理目标。
+	// SSHPort 是节点的 SSH 端口。拨测本身不再打它;只有链式入站拨测失败后的
+	// 二分诊断(chaindial.go)还要在节点本机找 sshd,而 $SSH_CONNECTION
+	// 读不到时回落到这个值。
 	SSHPort int
 	// Revision 是本次配置版本号,通常取自数据库自增或时间戳。
 	Revision int64
@@ -109,11 +104,12 @@ func (r Request) probeFor(tag string) (ProbeTarget, bool) {
 
 // Deployer 执行部署事务。
 type Deployer struct {
-	pool     *sshx.Pool
-	layout   Layout
-	syncer   TrafficSyncer
-	logger   *slog.Logger
-	keepLast int
+	pool       *sshx.Pool
+	layout     Layout
+	syncer     TrafficSyncer
+	logger     *slog.Logger
+	keepLast   int
+	probeURLFn func(ctx context.Context) (string, error)
 }
 
 type Options struct {
@@ -123,6 +119,10 @@ type Options struct {
 	Logger *slog.Logger
 	// KeepBackups 是保留的历史配置版本数,至少 5。
 	KeepBackups int
+	// ProbeURL 给出拨测目标(设置项 probe_url 的当前值,空串 = 默认)。
+	// 每次拨测时现读而不是构造时读一次:它是运行期可改的设置,
+	// 管理员改完不该要重启面板才生效。nil 表示一直用默认目标。
+	ProbeURL func(ctx context.Context) (string, error)
 }
 
 func NewDeployer(opts Options) *Deployer {
@@ -131,12 +131,34 @@ func NewDeployer(opts Options) *Deployer {
 		keep = 5
 	}
 	return &Deployer{
-		pool:     opts.Pool,
-		layout:   opts.Layout,
-		syncer:   opts.Syncer,
-		logger:   opts.Logger,
-		keepLast: keep,
+		pool:       opts.Pool,
+		layout:     opts.Layout,
+		syncer:     opts.Syncer,
+		logger:     opts.Logger,
+		keepLast:   keep,
+		probeURLFn: opts.ProbeURL,
 	}
+}
+
+// probeURL 取当前的拨测目标。
+//
+// 设置里的值不可用时直接报错让这一步失败 —— 那时节点上的配置已经换过,
+// 但错误信息指向设置页,管理员改一下设置再部署就好;
+// 静默回落到默认目标反而会让"我明明改了设置"变成一个没有答案的谜。
+func (d *Deployer) probeURL(ctx context.Context) (ProbeURL, error) {
+	raw := ""
+	if d.probeURLFn != nil {
+		v, err := d.probeURLFn(ctx)
+		if err != nil {
+			return ProbeURL{}, fmt.Errorf("读取拨测目标设置: %w", err)
+		}
+		raw = v
+	}
+	t, err := ParseProbeURL(raw)
+	if err != nil {
+		return ProbeURL{}, fmt.Errorf("设置里的拨测目标不可用(去「设置 → 拨测目标」修正): %w", err)
+	}
+	return t, nil
 }
 
 // Layout 返回这台部署器用的路径布局。
@@ -454,8 +476,7 @@ func (d *Deployer) rollback(
 	// 返回值一律经 sshx.RemoteFailure 打标:走到这里说明配置已经换过、
 	// 服务已经重启过,而 pool.Do 在传输层错误上会重连并【重跑整个事务】。
 	// 拨测失败的错误几乎一定带 "EOF",正好命中它那张特征串表 ——
-	// 真机上因此跑过两轮、重启两次,而第二轮的拨测撞上第一轮攒下的
-	// PerSourcePenalties,失败得更快也更没道理。
+	// 真机上因此跑过两轮、重启两次。
 	// 写配置【之前】的失败不打标:那时节点一个字节都没动过,
 	// 而连接陈旧正是 pool.Do 那次重连要救的场景。
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)

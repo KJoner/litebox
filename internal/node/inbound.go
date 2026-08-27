@@ -95,6 +95,13 @@ type Inbound struct {
 	// DeployedSnellSharedPSK 是节点上【当前正在生效】的那一份。
 	// 订阅只看它 —— 改了模式还没下发时,节点上跑的仍是旧的那一种。
 	DeployedSnellSharedPSK bool `json:"deployed_snell_shared_psk"`
+	// Unmetered 为真时这个入口的流量**不计**:渲染用户时不写 name,
+	// 于是没有任何计数器 —— 不计入用户额度,也不计入这台机器的周期用量。
+	// 凭据、撤销、订阅全部照旧,三种协议都适用。
+	Unmetered bool `json:"unmetered"`
+	// DeployedUnmetered 是节点上【当前正在生效】的那一份。采集按它判
+	// (共享 psk 的 Snell 入口同时不计流量时,inbound>>> 那份也不采)。
+	DeployedUnmetered bool `json:"deployed_unmetered"`
 
 	// ListenPort 是 sing-box 在这台机器上实际监听的端口;
 	// PublicPort 是客户端连接的公网端口,0 表示跟随 ListenPort;
@@ -196,6 +203,7 @@ const inboundColumns = `i.id, i.node_id, n.name, n.display_name,
 	i.snell_v6_mode, i.snell_shared_psk,
 	i.deployed_snell_version, i.deployed_snell_obfs_mode,
 	i.deployed_snell_v6_mode, i.deployed_snell_shared_psk,
+	i.unmetered, i.deployed_unmetered,
 	i.listen_port, i.public_port, i.ipv6_public_port,
 	i.ipv6_enabled, i.ipv6_display_name,
 	i.tcp_fast_open, i.deployed_tcp_fast_open,
@@ -226,6 +234,7 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 		&in.SnellV6Mode, &in.SnellSharedPSK,
 		&in.DeployedSnellVersion, &in.DeployedSnellObfsMode,
 		&in.DeployedSnellV6Mode, &in.DeployedSnellSharedPSK,
+		&in.Unmetered, &in.DeployedUnmetered,
 		&in.ListenPort, &in.PublicPort, &in.IPv6PublicPort,
 		&in.IPv6Enabled, &in.IPv6DisplayName,
 		&in.TCPFastOpen, &in.DeployedTCPFastOpen,
@@ -330,6 +339,9 @@ type InboundParams struct {
 	// 而"漏传 = 关掉"在这里恰好是安全的方向 —— 关掉只会让入口
 	// 回到逐用户凭据,那是更严的那一档。
 	SnellSharedPSK bool
+	// Unmetered 与 SnellSharedPSK 同一种约定:普通布尔,漏传 = 关掉,
+	// 而关掉(计量)是更严的那一档。三种协议都适用。
+	Unmetered bool
 	// ListenPort 必填;PublicPort 留 0 表示跟随 ListenPort;
 	// IPv6PublicPort 留 0 表示跟随 PublicPort。
 	ListenPort     int
@@ -460,16 +472,16 @@ func (s *Store) createInboundTx(
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
 			ss_password_encrypted,
 			snell_version, snell_psk_encrypted, snell_obfs_mode, snell_obfs_host,
-			snell_v6_mode, snell_shared_psk,
+			snell_v6_mode, snell_shared_psk, unmetered,
 			listen_port, public_port, ipv6_public_port,
 			ipv6_enabled, ipv6_display_name, tcp_fast_open,
 			reality_dest, reality_dest_port, reality_privkey_encrypted, reality_pubkey,
 			reality_short_id, access_tier_id, sort_order, subscription_enabled,
 			public_remark, enabled, created_at, updated_at)
-		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,'',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		nodeID, p.DisplayName, p.Protocol, p.SSMethod, ssKeyEnc,
 		p.SnellVersion, snellPSKEnc, p.SnellObfsMode, p.SnellObfsHost, p.SnellV6Mode,
-		p.SnellSharedPSK,
+		p.SnellSharedPSK, p.Unmetered,
 		p.ListenPort, p.PublicPort, p.IPv6PublicPort,
 		boolOr(p.IPv6Enabled, true), p.IPv6DisplayName, p.TCPFastOpen,
 		p.RealityDest, p.RealityDestPort, realityKeyEnc, keys.PublicKey, shortID,
@@ -579,6 +591,7 @@ func (s *Store) UpdateInbound(
 			p.SnellObfsMode != cur.SnellObfsMode ||
 			p.SnellV6Mode != cur.SnellV6Mode ||
 			p.SnellSharedPSK != cur.SnellSharedPSK ||
+			p.Unmetered != cur.Unmetered ||
 			p.ListenPort != cur.ListenPort ||
 			p.TCPFastOpen != cur.TCPFastOpen ||
 			p.RealityDest != cur.RealityDest ||
@@ -629,6 +642,10 @@ func (s *Store) UpdateInbound(
 	// 的话,几个月后翻日志的人看不出那天发生了什么。
 	track("Snell 凭据模式", isSnell && p.SnellSharedPSK != cur.SnellSharedPSK,
 		sharedPSKLabel(cur.SnellSharedPSK), sharedPSKLabel(p.SnellSharedPSK))
+	// 与凭据模式同理:它决定这个入口的流量还记不记到人头上,
+	// 审计里只写 true → false 的话,几个月后翻日志的人看不出那天发生了什么。
+	track("流量计量", p.Unmetered != cur.Unmetered,
+		meteredLabel(cur.Unmetered), meteredLabel(p.Unmetered))
 	track("主机监听端口", p.ListenPort != cur.ListenPort, cur.ListenPort, p.ListenPort)
 	track("公网端口", p.PublicPort != cur.PublicPort,
 		followLabel(cur.PublicPort, "监听端口"), followLabel(p.PublicPort, "监听端口"))
@@ -654,7 +671,7 @@ func (s *Store) UpdateInbound(
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE node_inbounds SET display_name = ?, protocol = ?, ss_method = ?,
 		       snell_version = ?, snell_obfs_mode = ?, snell_obfs_host = ?,
-		       snell_v6_mode = ?, snell_shared_psk = ?,
+		       snell_v6_mode = ?, snell_shared_psk = ?, unmetered = ?,
 		       listen_port = ?, public_port = ?, ipv6_public_port = ?,
 		       ipv6_enabled = ?, ipv6_display_name = ?, tcp_fast_open = ?,
 		       reality_dest = ?, reality_dest_port = ?,
@@ -663,7 +680,7 @@ func (s *Store) UpdateInbound(
 		 WHERE id = ? AND deleted_at IS NULL`,
 		p.DisplayName, p.Protocol, p.SSMethod,
 		p.SnellVersion, p.SnellObfsMode, p.SnellObfsHost, p.SnellV6Mode,
-		p.SnellSharedPSK,
+		p.SnellSharedPSK, p.Unmetered,
 		p.ListenPort, p.PublicPort, p.IPv6PublicPort,
 		v6Enabled, p.IPv6DisplayName, p.TCPFastOpen,
 		p.RealityDest, p.RealityDestPort,
@@ -973,10 +990,13 @@ type SharedInbound struct {
 // 被误当成共享,它的 inbound>>> 与各用户的 user>>> 会被同时记进去,
 // 那台机器的用量凭空翻一倍。
 func (s *Store) SharedInboundsForNode(ctx context.Context, nodeID int64) ([]SharedInbound, error) {
+	// 同时勾了不计流量的共享入口一个字节都不采:不计流量的意思是
+	// "不进任何账",inbound>>> 那一份也是账。判据同样按 deployed_。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tag FROM node_inbounds
 		 WHERE node_id = ? AND deleted_at IS NULL AND enabled = 1
-		   AND deployed_protocol = ? AND deployed_snell_shared_psk = 1`,
+		   AND deployed_protocol = ? AND deployed_snell_shared_psk = 1
+		   AND deployed_unmetered = 0`,
 		nodeID, string(singbox.ProtocolSnell))
 	if err != nil {
 		return nil, err

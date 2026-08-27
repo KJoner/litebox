@@ -34,6 +34,10 @@ node:
   # 存放要分发到节点的 sing-box 二进制,文件名形如 sing-box-linux-amd64。
   # 由 scripts/build-singbox.sh 构建,必须带 with_v2ray_api 标签。
   binary_dir: "/opt/litebox/assets/singbox"
+  # Mieru 用的 mita/mieru 官方二进制,由 scripts/fetch-mieru.sh 拉取。
+  mieru_binary_dir: "/opt/litebox/assets/mieru"
+  # realm(V15,第二种转发引擎)的官方 musl 静态二进制,由 scripts/fetch-realm.sh 拉取。
+  realm_binary_dir: "/opt/litebox/assets/realm"
   ssh_dial_timeout: 20s
   deploy_timeout: 5m
   # 用户变更后的合并窗口:连续编辑多个用户时,同一节点只在最后一次变更

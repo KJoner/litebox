@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/litebox/litebox/internal/hosttraffic"
 	"github.com/litebox/litebox/internal/v2rayapi"
 )
 
@@ -41,6 +42,9 @@ type SyncResult struct {
 	EntriesAdded int    `json:"entries_added"`
 	BytesAdded   int64  `json:"bytes_added"`
 	SyncedAt     string `json:"synced_at"`
+	// Host 是主机流量(vnStat)那一路的结果,只有手工「同步流量」会带上它;
+	// nil 表示这次没跑那一路(定时同步走的是另一个节奏)。
+	Host *hosttraffic.SyncResult `json:"host,omitempty"`
 }
 
 // Sampler 采集一个节点的流量快照。由 Syncer 的调用方注入,

@@ -97,6 +97,7 @@ const summary = computed(() => {
           <span class="pn__node-tier">{{ n.tier_name }}</span>
           <!-- 地址本身不下发给用户,只说「你的订阅里这个节点有两条」。 -->
           <span v-if="n.supports_ipv6" class="pn__node-v6">IPv6</span>
+          <span v-if="n.unmetered" class="pn__node-v6">不计流量</span>
         </div>
 
         <div class="pn__node-meta lb-mono">
@@ -105,6 +106,9 @@ const summary = computed(() => {
 
         <div v-if="n.supports_ipv6" class="pn__node-hint">
           你的订阅里这个节点有两条:IPv4 和 IPv6,指向同一台机器,任选其一。
+        </div>
+        <div v-if="n.unmetered" class="pn__node-hint">
+          经这个节点的流量不计入你的额度。
         </div>
 
         <!-- 维护是人为暂停(紫),公开备注是中性信息(灰)。两者语义不同,不能同色。 -->

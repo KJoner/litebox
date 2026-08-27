@@ -40,6 +40,16 @@ func (f *fakeDeployer) DeployRelays(ctx context.Context, nodeID int64) (Result, 
 	return Result{NodeID: nodeID, Status: StatusSuccess}, f.err
 }
 
+func (f *fakeDeployer) DeployRealm(ctx context.Context, nodeID int64) (Result, error) {
+	if f.blockCh != nil {
+		<-f.blockCh
+	}
+	f.mu.Lock()
+	f.relayCalls = append(f.relayCalls, nodeID)
+	f.mu.Unlock()
+	return Result{NodeID: nodeID, Status: StatusSuccess}, f.err
+}
+
 func (f *fakeDeployer) relayCountFor(nodeID int64) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS = -s -w -X 'main.Version=$(VERSION)'
 GOFLAGS = -trimpath
 
-.PHONY: all build build-linux web test lint clean run dev tidy singbox singbox-preview mieru
+.PHONY: realm all build build-linux web test lint clean run dev tidy singbox singbox-preview mieru
 
 all: web build
 
@@ -47,6 +47,10 @@ singbox-preview:
 ## mieru: 下载并校验 mita/mieru 二进制到 assets/mieru(Mieru 入口才需要)
 mieru:
 	bash scripts/fetch-mieru.sh
+
+# realm(V15 的第二种转发引擎)的官方二进制
+realm:
+	bash scripts/fetch-realm.sh
 
 ## run: 本地启动后端(前端用 make dev 另开)
 run:

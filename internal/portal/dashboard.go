@@ -90,6 +90,10 @@ type Node struct {
 	// 缺一不可。只看前者的话,管理员关掉某个入口的 IPv6 之后,门户仍然写着
 	// 「支持 IPv6」,而用户拉到的订阅里根本没有那一条 —— 他会去查自己的网络。
 	SupportsIPv6 bool `json:"supports_ipv6"`
+	// Unmetered 为真表示这个入口不计流量(V15):用它的流量不扣用户额度。
+	// 取的是节点上【已经生效】的那一份 —— 管理员刚打开开关还没下发时,
+	// 节点上仍在计量,门户上说"不计"会让用户按不计去用。
+	Unmetered bool `json:"unmetered"`
 
 	TodayBytes int64   `json:"today_bytes"`
 	MonthBytes int64   `json:"month_bytes"`
@@ -283,7 +287,8 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		       n.maintenance_message,
 		       n.subscription_enabled AND i.subscription_enabled AND i.enabled,
 		       n.deployed_config_sha256,
-		       n.ipv6_address != '' AND i.ipv6_enabled, i.deployed_protocol
+		       n.ipv6_address != '' AND i.ipv6_enabled, i.deployed_protocol,
+		       i.deployed_unmetered
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id
 		  JOIN access_tiers t ON t.id = i.access_tier_id
@@ -302,7 +307,8 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		var subEnabled bool
 		if err := rows.Scan(&n.ID, &n.nodeID, &n.DisplayName, &n.TierName, &n.TierCode, &status,
 			&n.PublicPort, &n.PublicRemark, &n.MaintenanceMessage,
-			&subEnabled, &deployedSHA, &n.SupportsIPv6, &deployedProtocol); err != nil {
+			&subEnabled, &deployedSHA, &n.SupportsIPv6, &deployedProtocol,
+			&n.Unmetered); err != nil {
 			return nil, err
 		}
 		// 这个入口自己有没有上过节点。机器级的 deployed_config_sha256

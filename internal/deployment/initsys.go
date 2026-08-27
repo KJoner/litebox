@@ -51,6 +51,7 @@ type InitSystem interface {
 	// 两种 init 都必须实现全部三套,少一套就编译不过。
 	RelayInit
 	MieruInit
+	RealmInit
 }
 
 // ErrNoInitSystem 表示节点上既没有 systemd 也没有 OpenRC。

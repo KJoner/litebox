@@ -127,14 +127,9 @@ func dialLabel(p singbox.Protocol) string {
 // 一个完全不可用的节点判定为健康。
 //
 // 做法:在节点上临时起一个 sing-box 客户端进程,主控经 SSH 通道连它的 SOCKS 端口,
-// 通过代理 CONNECT 到节点自己的 SSH 端口,**并用面板自己的密钥完成一次真正的
-// SSH 认证**。选 SSH 作为目标是因为它必然可达、不引入外部网络依赖;
-// 而"完成认证"而不是"读一行横幅"有两个原因,都不是可选的:
-//
-//   - 只读横幅就断开会命中 OpenSSH ≥ 9.8 的 noauth 惩罚,**拨测自己会把
-//     后续的拨测挡下来**(见 sshx.AuthOverConn);
-//   - 认证顺带验证了对端的主机密钥与库里固定的那把一致 —— 这一条回答了
-//     「这条隧道到底有没有到那台机器」,而读横幅永远回答不了。
+// 通过代理 CONNECT 到设置里的拨测目标,**在隧道里真的取一次 HTTP 响应**
+// (默认 gstatic 的 generate_204,见 httpprobe.go)。终点在外面而不是本机 sshd,
+// 于是它验的是「用户连上之后能不能上网」,而且四种链路形态打的是同一个东西。
 //
 // 协议只影响探测配置里的那一个出站 —— 客户端是节点上已有的 sing-box 二进制,
 // 主控侧不需要实现任何协议。
@@ -191,14 +186,11 @@ func (d *Deployer) checkDial(
 		return "", err
 	}
 
-	localSSHPort := probeTargetPort(ctx, client, req.SSHPort)
-	host, port := "127.0.0.1", localSSHPort
-	via := "节点本机"
-	if target.DialHost != "" && target.DialPort > 0 {
-		host, port = target.DialHost, target.DialPort
-		via = "经落地绕回本机公网 SSH"
+	probeURL, err := d.probeURL(ctx)
+	if err != nil {
+		return "", err
 	}
-	banner, retries, err := dialWithRetry(ctx, d.pool, req.NodeID, client, probePort, host, port)
+	banner, retries, err := dialWithRetry(ctx, client, probePort, probeURL)
 	if err != nil {
 		// **拨测失败时把服务端日志带上。**
 		//
@@ -213,32 +205,25 @@ func (d *Deployer) checkDial(
 		// 而面板只报了"VLESS 链路不通",于是排查从节点日志开始绕了一大圈。
 		//
 		// **链式入站还要多一步。** 那条链路有三跳,断在哪一跳报出来都是同一句
-		// EOF,而它们要人做的事在两台不同的机器上 —— 见 chaindial.go。
-		chainNote, blamesSSHD := "", true
+		// 「未取到 HTTP 响应: EOF」,而它们要人做的事在两台不同的机器上 ——
+		// 见 chaindial.go。二分诊断打的仍然是本机 sshd(靠主机密钥分辨
+		// "到没到落地"),所以只有这一处还需要本机 sshd 的端口。
+		chainNote := ""
 		if target.Chain != nil {
 			// 第一跳就没通时不做二分 —— 那一跳是后两跳的前提,
 			// 诊断只会以同样的方式再失败一次,白等一轮。
 			verdict := chainHopUnknown
+			localSSHPort := 0
 			firstHopOK := firstHopReached(err)
 			if firstHopOK {
+				localSSHPort = probeTargetPort(ctx, client, req.SSHPort)
 				verdict = d.diagnoseChainHop(ctx, client, req.NodeID, probePort, localSSHPort)
 			}
-			chainNote, blamesSSHD = chainDialNote(
-				inbound, target.Chain, host, port, localSSHPort, verdict, firstHopOK)
-		}
-		// **sshd 的惩罚只解释得了最后一跳。** 断在前两跳时贴上去纯属误导:
-		// 那时本机 sshd 连一个连接都没收到。而 OpenSSH 从 9.8 起默认开着
-		// PerSourcePenalties —— 无条件贴的话,**每一次**拨测失败都会得到这段
-		// 说明,而它只在其中一部分情况下成立,那正是"一句错误的归因比没有
-		// 归因更糟"要防的东西。
-		penalty := ""
-		if blamesSSHD {
-			penalty = sshdPenaltyNote(ctx, client)
+			chainNote = chainDialNote(inbound, target.Chain, probeURL.Raw, localSSHPort, verdict, firstHopOK)
 		}
 		hint := dialFailureHint(
 			chainNote,
 			nodeLogNote(ctx, client, init, d.layout, inbound.Tag),
-			penalty,
 		)
 		if hint != "" {
 			return "", fmt.Errorf("%w;%s", err, hint)
@@ -251,7 +236,7 @@ func (d *Deployer) checkDial(
 		// 凭据,写一个用户名进去会让部署记录说一件不成立的事。
 		who = "共享凭据"
 	}
-	detail := fmt.Sprintf("%s 拨测成功(%s,%s)", who, via, banner)
+	detail := fmt.Sprintf("%s 拨测成功(目标 %s,%s)", who, probeURL.Raw, banner)
 	if retries > 0 {
 		// 重试过就要说出来。第一次就成功与"等了 18 秒才成功"是两种健康度,
 		// 而后者说明这台机器上有东西在拦拨测 —— 不写出来没人会去查。
@@ -620,20 +605,14 @@ func socksReplyMeaning(code byte) string {
 	return "未知原因"
 }
 
-// dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,CONNECT 到目标后
-// **完成一次真正的 SSH 认证**。
+// dialThroughProxy 经 SSH 通道连到节点上的 SOCKS5 端口,CONNECT 到拨测目标后
+// **在隧道里取一次 HTTP 响应**(见 httpprobe.go)。
 //
-// 原来是读 8 字节版本横幅就算通过,而那会被目标 sshd 罚:
-// OpenSSH ≥ 9.8 默认的 PerSourcePenalties 里,noauth 惩罚的正是
-// "连上但没尝试认证就断开",一次就足以封住来源 IP 至少 15 秒。
-// 于是拨测自己把后续的拨测挡了下来 —— 详见 sshx.AuthOverConn 的注释。
-//
-// 认证之后验证强度反而更高:隧道要能承载一个完整的双向协议,而且对端的
-// 主机密钥必须与库里固定的那把一致 —— 后者直接回答了「这条隧道到底
-// 有没有到那台机器」,而读横幅永远回答不了。
+// 连接是这样叠起来的:面板 → SSH direct-tcpip → 节点上探测客户端的 socks
+// 入站 → 被测的那个入站 / 转发 → 出口 → 拨测目标。TLS 与 HTTP 都在面板
+// 这一侧做,节点上跑的只是一个普通的 sing-box 客户端。
 func dialThroughProxy(
-	ctx context.Context, pool *sshx.Pool, nodeID int64,
-	client *sshx.Client, socksPort int, targetHost string, targetPort int,
+	ctx context.Context, client *sshx.Client, socksPort int, target ProbeURL,
 ) (string, error) {
 	conn, err := client.DialThrough("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort)))
 	if err != nil {
@@ -647,7 +626,7 @@ func dialThroughProxy(
 	}
 	_ = conn.SetDeadline(deadline)
 
-	if err := socks5Connect(conn, targetHost, targetPort); err != nil {
+	if err := socks5Connect(conn, target.Host, target.Port); err != nil {
 		// **打上标记:失败发生在【进入隧道之前】。**
 		//
 		// 链式入站的归因全靠这一条区分「第一跳就没通」与「隧道通了、
@@ -660,25 +639,15 @@ func dialThroughProxy(
 		return "", proxyLegError{err}
 	}
 
-	res, err := pool.AuthOver(ctx, nodeID, conn)
-	if err != nil {
-		return "", err
-	}
-	detail := res.ServerVersion
-	if res.HostKeyMatched {
-		// 说出来:这一句是"确实是那台机器"的唯一证据,
-		// 而它正是读横幅那一版做不到的事。
-		detail += "、主机密钥与库中一致"
-	}
-	return detail, nil
+	return fetchOverConn(ctx, conn, target)
 }
 
 // socks5Connect 执行 SOCKS5 的无认证握手与 CONNECT 请求。
 //
-// 目标既收 IPv4 字面量也收域名:中转与链式的拨测要 CONNECT 到中转主机
-// **自己的公网地址**,而那一栏允许填域名(动态 DNS)。
-// 域名走 ATYP=3 交给探测客户端去解析 —— 主控这边解析再发 IP 的话,
-// 解析结果与节点看到的可能不是同一个,而那正是这次拨测要验证的东西。
+// 目标既收 IPv4 字面量也收域名:拨测目标是一个 URL,而链式入站的二分诊断
+// 打的是 127.0.0.1。域名走 ATYP=3 交给探测客户端去解析 —— 主控这边解析
+// 再发 IP 的话,解析结果与节点看到的可能不是同一个,而"节点自己解析得了"
+// 正是这次拨测要验证的一部分。
 func socks5Connect(conn net.Conn, host string, port int) error {
 	// 参数校验必须先于任何 I/O:握手一旦开始就无法干净地中止。
 	if host == "" {

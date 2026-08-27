@@ -988,6 +988,8 @@ type DeployedInbound struct {
 	SnellObfsMode  string
 	SnellV6Mode    string
 	SnellSharedPSK bool
+	// Unmetered 是这次下发时这个入口有没有计量(V15),采集按它判。
+	Unmetered bool
 }
 
 // MarkDeployed 记录部署成功后的配置哈希、各入站的生效参数与节点状态。
@@ -1025,10 +1027,12 @@ func (s *Store) MarkDeployed(
 			       deployed_tcp_fast_open = ?,
 			       deployed_snell_version = ?, deployed_snell_obfs_mode = ?,
 			       deployed_snell_v6_mode = ?, deployed_snell_shared_psk = ?,
+			       deployed_unmetered = ?,
 			       updated_at = ?
 			 WHERE id = ? AND node_id = ?`,
 			string(in.Protocol), in.SSMethod, in.TCPFastOpen,
 			in.SnellVersion, in.SnellObfsMode, in.SnellV6Mode, in.SnellSharedPSK,
+			in.Unmetered,
 			now, in.ID, id); err != nil {
 			return err
 		}
@@ -1060,7 +1064,7 @@ func (s *Store) MarkDeployed(
 			UPDATE node_inbounds SET deployed_protocol = '', deployed_ss_method = '',
 			       deployed_tcp_fast_open = 0, deployed_snell_version = 0,
 			       deployed_snell_obfs_mode = '', deployed_snell_v6_mode = '',
-			       deployed_snell_shared_psk = 0, updated_at = ?
+			       deployed_snell_shared_psk = 0, deployed_unmetered = 0, updated_at = ?
 			 WHERE id = ?`, now, inboundID); err != nil {
 			return err
 		}

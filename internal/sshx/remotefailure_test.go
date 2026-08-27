@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// 拨测失败的错误几乎一定带 "EOF" —— 隧道通了、对端在 SSH 握手时直接断开。
+// 拨测失败的错误几乎一定带 "EOF" —— 隧道通了、对端在数据阶段直接断开。
 // 它与「面板到节点这条连接坏了」长得一模一样,而后果天差地别:
 // pool.Do 会重连并重跑整个 fn,而部署走到那一步时配置已经换过、
 // 服务已经重启过。真机上因此跑过两轮、重启两次。
 func TestRemoteFailureIsNotAConnectionError(t *testing.T) {
-	raw := errors.New("经代理完成 SSH 认证失败: ssh: handshake failed: EOF")
+	raw := errors.New("经代理未取到 HTTP 响应: EOF")
 
 	if !isConnectionError(raw) {
 		t.Fatal("前提变了:这条错误本来就不该被当成连接错误,那这个测试没有意义了")
