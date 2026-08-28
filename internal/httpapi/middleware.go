@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -56,6 +57,22 @@ type statusRecorder struct {
 func (sr *statusRecorder) WriteHeader(code int) {
 	sr.status = code
 	sr.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap 让 http.NewResponseController 能穿过这一层拿到底层连接。
+//
+// **少了它是一个会静默吃掉长操作的坑。** longOperation 靠
+// NewResponseController.SetWriteDeadline 把响应写入期限放宽到 10 分钟,
+// 覆盖 http.Server 全局那个 60s 的 WriteTimeout。而 NewResponseController
+// 是顺着 Unwrap 往下找底层 *http.response 的 —— statusRecorder 只嵌了
+// http.ResponseWriter 接口(它不暴露 SetWriteDeadline),又没有 Unwrap,
+// 于是 SetWriteDeadline 返回 ErrNotSupported、被 longOperation 的 `_ =` 吞掉,
+// 60s 的 WriteTimeout 原样生效。表现是:任何超过 60s 的操作(装 27MB 二进制、
+// 慢速 NAT 机、两台机器的链式部署)在 60s 被掐断连接,浏览器收到
+// 「Empty reply / 操作失败」,而操作本身(ctx 是解绑的 10 分钟)在服务端
+// 继续跑到成功 —— 一次成功的部署被显示成失败。TestStatusRecorderUnwrap 钉着。
+func (sr *statusRecorder) Unwrap() http.ResponseWriter {
+	return sr.ResponseWriter
 }
 
 func (s *Server) logRequests(next http.Handler) http.Handler {
@@ -112,7 +129,13 @@ func longOperation(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rc := http.NewResponseController(w)
 		deadline := time.Now().Add(LongOperationTimeout)
-		_ = rc.SetWriteDeadline(deadline)
+		// SetWriteDeadline 失败不再静默:它一旦失败,60s 的 WriteTimeout
+		// 会把长操作的响应掐断(见 statusRecorder.Unwrap 的注释)。这是那种
+		// "功能正常、只在慢的时候骗人"的 bug —— 出问题时要在日志里看得见,
+		// 而不是等哪台慢机器上又冒出一个"部署成功却显示失败"。
+		if err := rc.SetWriteDeadline(deadline); err != nil {
+			longOpDeadlineFailed(w, err)
+		}
 		_ = rc.SetReadDeadline(deadline)
 
 		// WithoutCancel 只丢弃取消与期限,ctx 里的管理员身份照常带下去 ——
@@ -122,6 +145,16 @@ func longOperation(next http.HandlerFunc) http.HandlerFunc {
 		defer cancel()
 		next(w, r.WithContext(ctx))
 	}
+}
+
+// longOpDeadlineFailed 在写入期限设不上时留一行日志。
+//
+// 独立成函数只为在测试里替换掉(不然它会往 stderr 写)。生产上这一行
+// 意味着有人在 logRequests 之外又包了一层不带 Unwrap 的 ResponseWriter,
+// 长操作会重新回到 60s 上限。
+var longOpDeadlineFailed = func(_ http.ResponseWriter, err error) {
+	log.Printf("警告:长操作无法放宽响应写入期限(%v)—— 超过 %s 的操作会被 WriteTimeout 掐断",
+		err, LongOperationTimeout)
 }
 
 // requireAuth 校验会话 Cookie,并把管理员身份注入请求上下文。

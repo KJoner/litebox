@@ -49,7 +49,16 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     init.body = JSON.stringify(body)
   }
 
-  const response = await fetch(url, init)
+  let response: Response
+  try {
+    response = await fetch(url, init)
+  } catch (e) {
+    // fetch 只在【根本没拿到响应】时 reject:网络断了、连接被重置、
+    // 反向代理在响应到达之前超时。status 用 0 表示"从未收到响应",
+    // 调用方(尤其是节点长操作的进度弹窗)据此把话说清楚 —— 那些操作
+    // 在后端与请求 ctx 解绑,这一侧断开并不会中止它们。
+    throw new ApiError(0, `无法连接到面板(${e instanceof Error ? e.message : '网络错误'})`)
+  }
   if (response.status === 204) return undefined as T
 
   let payload: unknown
