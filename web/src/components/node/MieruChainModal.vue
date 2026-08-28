@@ -77,7 +77,12 @@ watch(
       landingNodes.value = (ns.items ?? []).filter(
         (n) => n.role !== 'RELAY' && n.id !== props.node.id,
       )
-      externalProxies.value = (ps.items ?? []).filter((p) => p.subscription_enabled)
+      // **不按 `subscription_enabled` 过滤。** 它只管这条线路进不进用户的订阅,
+      // 与能不能当出口无关 —— 把一条线路的订阅关掉、只让用户经这台机器
+      // 访问它,正是配出口最典型的用法。按它过滤过的话,那条线路在这里
+      // 静默消失,而管理员在外部代理页上明明看得到它;sing-box 入口的
+      // 出口弹窗与后端 SetMieruChain 都不看这个开关,这里不能是第三种判据。
+      externalProxies.value = ps.items ?? []
     } catch {
       // 拉不到候选不影响"解除出口"那条路 —— 它不需要任何候选。
       landingNodes.value = []
@@ -108,9 +113,26 @@ const inboundOptions = computed(() =>
   ),
 )
 
+/**
+ * 走 QUIC 的外部代理(Hysteria2 / TUIC)不能当出口:节点上的 sing-box 是
+ * 精简构建,不含 with_quic,拨不动它们。在这里就滤掉并说明少了几条 ——
+ * 与 InboundChainModal 同一套判据;等到下发才发现的话,错误是十几秒后
+ * 部署记录里的一句 "QUIC is not included in this build"。
+ */
+const chainableProxies = computed(() => externalProxies.value.filter((p) => p.dialable_by_node))
+const hiddenCount = computed(() => externalProxies.value.length - chainableProxies.value.length)
+
 const externalOptions = computed(() =>
-  externalProxies.value.map((p) => ({ value: p.id, label: p.display_name })),
+  chainableProxies.value.map((p) => ({ value: p.id, label: p.display_name })),
 )
+
+/** 外部代理那一栏空着时,说清楚是一条都没有,还是有但都拨不动。 */
+const externalReason = computed(() => {
+  if (chainableProxies.value.length) return ''
+  return hiddenCount.value > 0
+    ? `${hiddenCount.value} 条外部代理都走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们。它们照常发给用户直连,只是不能当出口。`
+    : '还没有可用的外部代理 —— 去「外部代理」页添加一条(订阅开关关着的也能当出口)。'
+})
 
 const hasChain = computed(() => !!props.inbound?.chain_target_kind)
 
@@ -256,13 +278,20 @@ function clearChain() {
         <a-select
           v-model:value="form.target_external_id"
           :options="externalOptions"
+          :disabled="!chainableProxies.length"
           placeholder="选择外部代理"
           show-search
           option-filter-prop="label"
         />
+        <p v-if="externalReason" class="mcm__warn">{{ externalReason }}</p>
         <div class="mcm__hint">
-          走 QUIC 的线路(Hysteria2 / TUIC)选了会被拦下:节点上的 sing-box
-          是精简构建,拨不动它们。
+          订阅开关关着的线路也在列表里 —— 那个开关只管它进不进用户的订阅,
+          与能不能当出口无关。
+          <template v-if="hiddenCount > 0">
+            <br />
+            另有 {{ hiddenCount }} 条走 QUIC 的线路(Hysteria2 / TUIC)没列出来:
+            节点上的 sing-box 是精简构建,拨不动它们。
+          </template>
         </div>
       </a-form-item>
 
@@ -305,6 +334,13 @@ function clearChain() {
   font-size: 12px;
   line-height: 1.6;
   color: #6B7480;
+}
+/* danger —— 与 InboundChainModal 的 icm__warn 同一档。 */
+.mcm__warn {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #B4291D;
 }
 .mcm__footer {
   display: flex;
