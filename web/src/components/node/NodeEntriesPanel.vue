@@ -625,7 +625,19 @@ async function runOp(title: string, running: string, fn: () => Promise<void>) {
   try {
     await fn()
   } catch (e) {
-    opError.value = e instanceof ApiError ? e.message : '操作失败'
+    // status 0 = 请求根本没拿到响应(连接中断,或反向代理在操作完成前超时)。
+    // 节点操作在后端与这次请求是解绑的,断开不会中止它 —— 它很可能已经在
+    // 后台跑完了。所以不能只说"操作失败",那会让管理员去重试一件已经做完的事
+    // (再重启一次服务、再踢一次在线连接)。
+    if (e instanceof ApiError && e.status === 0) {
+      opError.value =
+        '与面板的连接中断了 —— 网络波动,或反向代理在操作完成前超时' +
+        '(反代的 proxy_read_timeout 要 ≥ 面板的 10 分钟长操作上限)。\n' +
+        '这类节点操作在后端与本次请求解绑,断开【不会】中止它,它很可能已经跑完了。\n' +
+        '关掉本窗口刷新页面,看节点状态与「部署记录」的最新一条再决定要不要重试。'
+    } else {
+      opError.value = e instanceof ApiError ? e.message : '操作失败'
+    }
   } finally {
     opRunning.value = ''
     emit('busy', '')
