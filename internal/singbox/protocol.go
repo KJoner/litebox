@@ -267,3 +267,32 @@ func SSClientPassword(serverKey, userKey string, method SSMethod) (string, error
 	}
 	return server + ":" + user, nil
 }
+
+// CheckOutboundSSPassword 按 method 校验一条【别人的】Shadowsocks 线路的 password。
+//
+// 只管 SS2022 三种:它们的 password 是一把或两把(serverPSK:userPSK)标准
+// base64 的密钥,长度必须正好是 method 要的字节数。sing-box 在【启动】时才
+// 查这一条(`bad key length, required 32, got 16`),而那已经是部署里
+// `sing-box check` 那一步 —— 报错落在部署记录里,而这条线路在外部代理页上
+// 一直是绿的。机场链接里方法名与密钥对不上并不少见(标成 aes-256 却给了
+// 16 字节)。传统 AEAD 的 password 是任意字符串,不查。
+func CheckOutboundSSPassword(method SSMethod, password string) error {
+	want := method.KeyLen()
+	if want == 0 {
+		return nil
+	}
+	if password == "" {
+		return fmt.Errorf("Shadowsocks 2022(%s)的 password 为空", method)
+	}
+	for i, part := range strings.Split(password, ":") {
+		raw, err := base64.StdEncoding.DecodeString(part)
+		if err != nil {
+			return fmt.Errorf("Shadowsocks 2022(%s)的第 %d 把密钥不是标准 base64:%v", method, i+1, err)
+		}
+		if len(raw) != want {
+			return fmt.Errorf("Shadowsocks 2022 密钥长度不对:%s 需要 %d 字节,第 %d 把实际 %d 字节"+
+				"(sing-box 启动时会报 bad key length)", method, want, i+1, len(raw))
+		}
+	}
+	return nil
+}

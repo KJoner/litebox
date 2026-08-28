@@ -489,7 +489,11 @@ const columns = [
             {{ record.source_id ? `来自 ${record.source_name}` : '手工添加' }}
             <!-- 「不能当出口」要在列表里就看得见。等管理员在节点详情里选到一半
                  才发现列表里没有这一条,他会先怀疑是权限或者页面坏了。 -->
-            <span v-if="!record.dialable_by_node" class="xp__warn" :title="quicNote">
+            <span
+              v-if="!record.dialable_by_node"
+              class="xp__warn"
+              :title="record.dialable_reason || quicNote"
+            >
               · 只能直连
             </span>
           </div>
