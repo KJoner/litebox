@@ -141,7 +141,11 @@ async function parseURI() {
     // 「能不能当出口」在这里就说清楚。等他配到入口的出口那一步才被拒的话,
     // 他早忘了这条线路是什么协议,而报错出现在另一个页面上。
     if (!r.dialable_by_node) {
-      bits.push('走 QUIC,节点拨不了它 —— 只能直连给用户用,不能当入口的出口,也不能被 nginx 透传')
+      bits.push(
+        (r.dialable_reason || '走 QUIC,节点拨不了它') +
+          ' —— 只能直连给用户用,不能当入口的出口' +
+          (r.relayable ? '' : ',也不能被 nginx 透传'),
+      )
     }
     parsedNote.value = bits.join(' · ')
     message.success(`已解析:${r.protocol_label} ${r.server}:${r.port}`)

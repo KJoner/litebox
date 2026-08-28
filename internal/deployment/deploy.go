@@ -346,9 +346,10 @@ func (d *Deployer) runTransaction(
 		}
 		if out.ExitCode != 0 {
 			client.Run(ctx, sshx.NewCommand("rm", "-f", tempPath))
-			detail := strings.TrimSpace(out.Stderr)
+			// sing-box 的 FATAL 行带颜色码,这句话要进部署记录、推送与浏览器。
+			detail := stripANSI(strings.TrimSpace(out.Stderr))
 			if detail == "" {
-				detail = strings.TrimSpace(out.Stdout)
+				detail = stripANSI(strings.TrimSpace(out.Stdout))
 			}
 			return "", fmt.Errorf("配置校验未通过,未重启服务:%s", detail)
 		}

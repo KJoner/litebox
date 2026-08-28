@@ -74,13 +74,18 @@ const landingInbounds = computed(() =>
 )
 
 /**
- * 走 QUIC 的外部代理(Hysteria2 / TUIC)不能当出口:节点上的 sing-box 是
- * 精简构建,不含 with_quic,拨不动它们。在这里就滤掉并说明少了几条 ——
- * 等到部署才发现的话,错误是十几秒后部署记录里的一句
- * "QUIC is not included in this build",而管理员不会想到那是构建选项。
+ * 节点上的 sing-box 拼不出出站的外部代理不能当出口:走 QUIC 的
+ * (Hysteria2 / TUIC,节点二进制不含 with_quic)、插件名它不认的、
+ * SS2022 密钥长度不对的。判据由后端按渲染出站的同一条路算(dialable_reason),
+ * 在这里就滤掉并逐条说明 —— 等到部署才发现的话,错误是十几秒后部署记录里
+ * 的一句 FATAL,而管理员不会想到那是这条线路的参数。
  */
 const chainableProxies = computed(() => externalProxies.value.filter((p) => p.dialable_by_node))
-const hiddenCount = computed(() => externalProxies.value.length - chainableProxies.value.length)
+const hiddenProxies = computed(() => externalProxies.value.filter((p) => !p.dialable_by_node))
+const hiddenCount = computed(() => hiddenProxies.value.length)
+const hiddenNote = computed(() =>
+  hiddenProxies.value.map((p) => `「${p.display_name}」${p.dialable_reason}`).join(';'),
+)
 
 const chainReason = computed(() => {
   if (form.value.target_kind === 'INBOUND') {
@@ -89,7 +94,7 @@ const chainReason = computed(() => {
   }
   if (chainableProxies.value.length) return ''
   return hiddenCount.value > 0
-    ? `${hiddenCount.value} 条外部代理都走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们。它们照常发给用户直连,只是不能当出口。`
+    ? `${hiddenCount.value} 条外部代理都不能当出口:${hiddenNote.value}。它们照常发给用户直连。`
     : '还没有可用的外部代理。'
 })
 
@@ -278,6 +283,9 @@ async function runClear(i: NodeInbound) {
     <!-- 按钮变灰时必须说出为什么。只变灰的话,管理员会以为是权限问题
          或者页面坏了,而真实原因是「面板上还没有第二台机器」。 -->
     <p v-if="chainReason" class="icm__warn">{{ chainReason }}</p>
+    <p v-else-if="form.target_kind === 'EXTERNAL' && hiddenCount > 0" class="icm__hint">
+      另有 {{ hiddenCount }} 条没列出来(节点上的 sing-box 拼不出它的出站):{{ hiddenNote }}
+    </p>
     <div v-if="inbound?.chain_target_kind" class="icm__now">
       当前经 <b>{{ targetName(inbound) }}</b> 出网,链路凭据
       <span class="lb-mono">{{ inbound.chain_code || '—' }}</span>

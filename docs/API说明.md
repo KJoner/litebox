@@ -509,7 +509,8 @@ Bark 的整条地址与 Telegram 的 API 地址、代理密钥都打了 `json:"-
 支持的协议:`SHADOWSOCKS`(SS2022 与传统 AEAD 都收)、`VMESS`、`VLESS`、
 `TROJAN`、`HYSTERIA2`、`TUIC`。
 
-三种能力不是一回事,接口上分别由 `dialable_by_node` 与 `relayable` 回答:
+三种能力不是一回事,接口上分别由 `dialable_by_node` 与 `relayable` 回答
+(`dialable_by_node` 为假时 `dialable_reason` 给出原因):
 
 | | 进订阅给用户直连 | 当某个入口的出口(链式) | 被 nginx 透传 |
 |---|---|---|---|
@@ -521,6 +522,14 @@ Bark 的整条地址与 Telegram 的 API 地址、代理密钥都打了 `json:"-
 不含 `with_quic`),拨不动 QUIC;nginx stream 那边只渲染 TCP 的 server 块,
 而 Hysteria2 与 TUIC 是纯 UDP。用户自己的客户端是完整构建,所以这两种线路
 照常进订阅、照常能用。
+
+`dialable_by_node` 不只按协议判:判据是节点上的 sing-box 拼不拼得出这条线路的
+出站(与渲染期同一条路)。所以一条 Shadowsocks 线路也可能是假 —— 插件名 sing-box
+不认(它只认 `obfs-local` 与 `v2ray-plugin`;`simple-obfs` / `obfs` 会被翻成
+`obfs-local`),或 SS2022 的密钥长度与方法对不上。这类线路照常进订阅,只是
+`POST /api/inbounds/{id}/chain` 与 `POST /api/mieru-inbounds/{id}/chain` 会在
+保存时拒绝并带上 `dialable_reason` 里那句原因,而不是让下一次部署在
+`sing-box check` 那一步失败。
 
 **Shadowsocks 之外的协议必须带 `uri`。** 面板不按字段拼这类分享链接:
 VMess 的 base64(JSON) 与 VLESS/Trojan 的查询串各家写法都不一样,自己拼一条

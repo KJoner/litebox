@@ -1505,6 +1505,12 @@ export interface ExternalProxy {
    * 由后端算:构建选项前端没有办法知道。
    */
   dialable_by_node: boolean
+  /**
+   * dialable_by_node 为假时的原因,一句话。不只按协议判:一条 SS 线路的
+   * 插件名 sing-box 不认、或 SS2022 密钥长度不对,协议本身"能拨",
+   * 而部署会在 check 那一步 FATAL —— 后端按渲染出站的同一条路算出来。
+   */
+  dialable_reason: string
   /** 能不能用 nginx 透传到它。QUIC 系是纯 UDP,而 stream 这边只搬 TCP 字节 */
   relayable: boolean
   created_at: string
@@ -2226,6 +2232,7 @@ export const api = {
       transport: string
       tls: boolean
       dialable_by_node: boolean
+      dialable_reason: string
       relayable: boolean
       display_name: string
       server: string

@@ -438,6 +438,18 @@ V4 起节点可以跑 `VLESS + REALITY` 或 `Shadowsocks 2022`。
   这条线路是绿的。`externalproxy/ssmethod_test.go` 钉着「门口收下的每一种,
   渲染器都必须拨得出去」;
 
+* **「能不能当出口」的答案只有 `externalproxy.SingBoxOutbound` 拼不拼得出来这一个,
+  而且要在保存出口时就问**(`node.Store.externalEgressPreflight`,`SetChain` 与
+  `SetMieruChain` 都走它;接口上的 `dialable_by_node` / `dialable_reason` 也由它算)。
+  只按协议判(`DialableByNode`)是上面那条分叉的又一次重演:一条带 `simple-obfs`
+  插件的机场 SS 线路登记、连通性检查、订阅三处全绿,被设成 Mieru 入口的出口后,
+  **本机 sing-box** 的下发在 `check` 那一步 FATAL(`plugin not found: simple-obfs`),
+  而管理员做的事情是"给 Mieru 入口设出口"。sing-box 只认 `obfs-local` 与
+  `v2ray-plugin`,同一个混淆插件在各家客户端里有三个名字(`obfs-local` / `simple-obfs`
+  / `obfs`),翻译表 `ssObfsPluginNames` 与 Clash 那一侧共用;认不出的插件名直接拒绝,
+  不猜。SS2022 的密钥长度(`singbox.CheckOutboundSSPassword`)同理 —— sing-box 要到
+  启动时才报 `bad key length`,而机场链接里方法名与密钥对不上并不少见;
+
 * **绝不复用 `nodes` 表**,用独立的 `external_proxies`。`nodes` 的几乎每一列
   都假设「我们有 SSH 和 root」;混进去之后每一处查询都要判断「这行是不是真节点」,
   而判断写漏的表现是面板试图 SSH 到一个机场的服务器上去部署 ——

@@ -173,26 +173,13 @@ func (s *Store) SetChain(
 	}
 
 	if kind == ChainTargetExternal {
-		var name, protocol string
-		err := tx.QueryRowContext(ctx,
-			`SELECT display_name, protocol FROM external_proxies
-			  WHERE id = ? AND deleted_at IS NULL`, targetID).Scan(&name, &protocol)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: 外部代理 id=%d", ErrNotFound, targetID)
-		}
-		if err != nil {
+		// **在写库这一步就拦住**,不等到渲染或部署。放它过去的话,数据库改了、
+		// 界面显示"出口已改",而失败要到下一次部署才出现,报错落在部署记录里
+		// —— 走 QUIC 的是渲染期一句 "QUIC is not included in this build",
+		// 插件名或密钥长度不对的是 check 那一步的 FATAL,两者管理员都不会
+		// 想到是这条线路的参数。
+		if err := s.externalEgressPreflight(ctx, tx, targetID); err != nil {
 			return err
-		}
-		// **在写库这一步就拦住**,不等到渲染。放它过去的话,数据库改了、
-		// 界面显示"出口已改",而下一次部署会在渲染那一步失败并回滚 ——
-		// 报错落在部署记录里,写着一句 sing-box 的
-		// "QUIC is not included in this build",而管理员不会想到
-		// 那是节点二进制的构建选项。
-		if p := externalproxy.Protocol(protocol); !p.DialableByNode() {
-			return fmt.Errorf(
-				"外部代理「%s」是 %s,走 QUIC,而节点上的 sing-box 是精简构建(不含 with_quic),"+
-					"拨不动它;这条线路可以照常进订阅给用户直连,只是不能当入口的出口",
-				name, p.Label())
 		}
 	}
 
@@ -426,7 +413,7 @@ func (s *Store) ResolveChainTarget(ctx context.Context, in *Inbound) (*ChainTarg
 		}
 		return &ChainTarget{Kind: ChainTargetInbound, Inbound: t}, nil
 	case ChainTargetExternal:
-		t, err := s.chainExternalTarget(ctx, in.ChainTargetExternalID)
+		t, err := s.chainExternalTarget(ctx, s.db, in.ChainTargetExternalID)
 		if err != nil {
 			return nil, err
 		}
@@ -498,10 +485,32 @@ func (s *Store) chainInboundTarget(ctx context.Context, id int64) (*ChainInbound
 	return &t, true, nil
 }
 
-func (s *Store) chainExternalTarget(ctx context.Context, id int64) (*ChainExternalTarget, error) {
+// externalEgressPreflight 在把一条外部代理写成某个出口之前,先按渲染期的
+// 同一条路把它拼成 sing-box 出站。
+//
+// 判据就是渲染本身(chainOutboundFor → externalproxy.SingBoxOutbound),
+// 不另写一份:另写的那份迟早比渲染器宽,而宽出来的那一截正是「保存成功、
+// 部署失败」的来源 —— 一条带 simple-obfs 插件的机场 SS 线路就是这样在被设成
+// Mieru 出口之后,让本机 sing-box 的下发在 check 那一步 FATAL 的。
+// SetChain 与 SetMieruChain 都走它。
+func (s *Store) externalEgressPreflight(ctx context.Context, q queryer, id int64) error {
+	t, err := s.chainExternalTarget(ctx, q, id)
+	if err != nil {
+		return err
+	}
+	if _, err := chainOutboundFor(&ChainTarget{Kind: ChainTargetExternal, External: t}, "", "", ""); err != nil {
+		return fmt.Errorf("%w —— 这条线路可以照常进订阅给用户直连,"+
+			"只是节点上的 sing-box 拼不出它的出站,不能当出口;先在「外部代理」页把参数改对", err)
+	}
+	return nil
+}
+
+func (s *Store) chainExternalTarget(
+	ctx context.Context, q queryer, id int64,
+) (*ChainExternalTarget, error) {
 	var t ChainExternalTarget
 	var paramsEnc, protocol string
-	err := s.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 		SELECT id, display_name, protocol, server, port, params_encrypted
 		  FROM external_proxies WHERE id = ? AND deleted_at IS NULL`, id).Scan(
 		&t.ID, &t.DisplayName, &protocol, &t.Server, &t.Port, &paramsEnc)

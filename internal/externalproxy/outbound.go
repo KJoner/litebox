@@ -32,13 +32,24 @@ func SingBoxOutbound(
 	}
 	switch protocol {
 	case ProtocolShadowsocks:
-		if _, err := singbox.ParseOutboundSSMethod(p.Method); err != nil {
+		method, err := singbox.ParseOutboundSSMethod(p.Method)
+		if err != nil {
+			return singbox.Outbound{}, err
+		}
+		// 密钥长度与插件名都在这里拦。这两条 sing-box 要到【启动】时才报
+		// (check 那一步 FATAL),而那已经是部署中途,报错落在另一个页面的
+		// 部署记录里;这条线路在外部代理页上从头到尾都是绿的。
+		if err := singbox.CheckOutboundSSPassword(method, p.Password); err != nil {
+			return singbox.Outbound{}, err
+		}
+		plugin, err := singBoxSSPlugin(p.Plugin)
+		if err != nil {
 			return singbox.Outbound{}, err
 		}
 		out.Type = "shadowsocks"
-		out.Method = p.Method
+		out.Method = string(method)
 		out.Password = p.Password
-		out.Plugin = p.Plugin
+		out.Plugin = plugin
 		out.PluginOpts = p.PluginOpts
 		if p.UDPOverTCP {
 			out.UDPOverTCP = &singbox.UDPOverTCP{Enabled: true}
@@ -88,6 +99,50 @@ func SingBoxOutbound(
 	out.TLS = tlsSection(p, server)
 	out.Transport = transportSection(p)
 	return out, nil
+}
+
+// ssObfsPluginNames 是同一个插件(simple-obfs)在各家客户端里的三个名字:
+// SIP002 链接里写 obfs-local(sing-box 也只认这一个),Clash 里叫 obfs,
+// 不少工具导出时写 simple-obfs。sing-box 与 Clash 两边的翻译共用这一张表 ——
+// 各认各的会出现「Clash 订阅里有这条、被设成出口时却部署失败」。
+var ssObfsPluginNames = map[string]bool{"obfs-local": true, "simple-obfs": true, "obfs": true}
+
+// singBoxSSPlugin 把链接里的插件名翻成 sing-box 认识的那一个。
+//
+// sing-box 只认 obfs-local 与 v2ray-plugin,别的名字在 check 那一步就是一句
+// `plugin not found: simple-obfs` —— 而这条线路在登记、连通性检查、订阅三处
+// 都是绿的,只有被设成某个入口的出口时才炸,报错落在另一个页面的部署记录里。
+// 认不出的直接报错,不猜:猜错了是一条看起来正常、握不了手的线路,
+// 少一条至少看得见。
+func singBoxSSPlugin(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "":
+		return "", nil
+	case ssObfsPluginNames[name]:
+		return "obfs-local", nil
+	case name == "v2ray-plugin":
+		return "v2ray-plugin", nil
+	}
+	return "", fmt.Errorf("%w:sing-box 没有 Shadowsocks 插件 %q(它只认 obfs-local / simple-obfs 与 v2ray-plugin)",
+		ErrUnsupported, name)
+}
+
+// DialableReason 回答「节点上的 sing-box 能不能拿这条线路当出站」,能则返回空串。
+//
+// 判据就是 SingBoxOutbound 本身,不另写一份。曾经这个问题只按协议答
+// (DialableByNode),于是一条带 simple-obfs 插件、或密钥长度不对的 SS 线路
+// 在列表里显示"能当出口",保存出口也成功,而部署在 check 那一步 FATAL ——
+// 报错落在另一个页面上,管理员刚刚才看到这条线路是绿的。
+// 外部代理列表、粘贴链接的解析预览与保存出口三处都问它,答案只有一份。
+func DialableReason(protocol Protocol, server string, port int, p Params) string {
+	if !protocol.DialableByNode() {
+		return protocol.Label() + " 走 QUIC,而节点上的 sing-box 是精简构建(不含 with_quic),拨不动它"
+	}
+	if _, err := SingBoxOutbound("", "", protocol, server, port, p); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // tlsSection 拼 TLS 段。

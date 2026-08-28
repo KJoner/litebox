@@ -114,23 +114,28 @@ const inboundOptions = computed(() =>
 )
 
 /**
- * 走 QUIC 的外部代理(Hysteria2 / TUIC)不能当出口:节点上的 sing-box 是
- * 精简构建,不含 with_quic,拨不动它们。在这里就滤掉并说明少了几条 ——
- * 与 InboundChainModal 同一套判据;等到下发才发现的话,错误是十几秒后
- * 部署记录里的一句 "QUIC is not included in this build"。
+ * 节点上的 sing-box 拼不出出站的外部代理不能当出口:走 QUIC 的
+ * (Hysteria2 / TUIC)、插件名它不认的、SS2022 密钥长度不对的。判据由后端
+ * 按渲染出站的同一条路算(dialable_reason),与 InboundChainModal 同一套;
+ * 在这里就滤掉并逐条说明 —— 等到下发才发现的话,错误是十几秒后【本机
+ * sing-box】部署记录里的一句 FATAL,而管理员做的事情是"给 Mieru 入口设出口"。
  */
 const chainableProxies = computed(() => externalProxies.value.filter((p) => p.dialable_by_node))
-const hiddenCount = computed(() => externalProxies.value.length - chainableProxies.value.length)
+const hiddenProxies = computed(() => externalProxies.value.filter((p) => !p.dialable_by_node))
+const hiddenCount = computed(() => hiddenProxies.value.length)
+const hiddenNote = computed(() =>
+  hiddenProxies.value.map((p) => `「${p.display_name}」${p.dialable_reason}`).join(';'),
+)
 
 const externalOptions = computed(() =>
   chainableProxies.value.map((p) => ({ value: p.id, label: p.display_name })),
 )
 
-/** 外部代理那一栏空着时,说清楚是一条都没有,还是有但都拨不动。 */
+/** 外部代理那一栏空着时,说清楚是一条都没有,还是有但都拼不出出站。 */
 const externalReason = computed(() => {
   if (chainableProxies.value.length) return ''
   return hiddenCount.value > 0
-    ? `${hiddenCount.value} 条外部代理都走 QUIC(Hysteria2 / TUIC),节点上的 sing-box 拨不了它们。它们照常发给用户直连,只是不能当出口。`
+    ? `${hiddenCount.value} 条外部代理都不能当出口:${hiddenNote.value}。它们照常发给用户直连。`
     : '还没有可用的外部代理 —— 去「外部代理」页添加一条(订阅开关关着的也能当出口)。'
 })
 
@@ -289,8 +294,7 @@ function clearChain() {
           与能不能当出口无关。
           <template v-if="hiddenCount > 0">
             <br />
-            另有 {{ hiddenCount }} 条走 QUIC 的线路(Hysteria2 / TUIC)没列出来:
-            节点上的 sing-box 是精简构建,拨不动它们。
+            另有 {{ hiddenCount }} 条没列出来(节点上的 sing-box 拼不出它的出站):{{ hiddenNote }}
           </template>
         </div>
       </a-form-item>

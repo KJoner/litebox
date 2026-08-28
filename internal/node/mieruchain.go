@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/singbox"
@@ -95,24 +94,12 @@ func (s *Store) SetMieruChain(
 			return ErrChainTargetNotDeployed
 		}
 	case ChainTargetExternal:
-		var name, protocol string
-		err := tx.QueryRowContext(ctx,
-			`SELECT display_name, protocol FROM external_proxies
-			  WHERE id = ? AND deleted_at IS NULL`, targetID).Scan(&name, &protocol)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: 外部代理 id=%d", ErrNotFound, targetID)
-		}
-		if err != nil {
+		// 与 SetChain 一模一样的拦截,而且是同一个函数:先按渲染期那条路把它
+		// 拼成 sing-box 出站。走 QUIC 的、插件名 sing-box 不认的、SS2022 密钥
+		// 长度不对的,都在写库这一步被拒 —— 不然报错会在十几秒后出现在
+		// 【本机 sing-box】的部署记录里,而管理员做的事情是"给 Mieru 入口设出口"。
+		if err := s.externalEgressPreflight(ctx, tx, targetID); err != nil {
 			return err
-		}
-		// 与 SetChain 一模一样的拦截:走 QUIC 的外部代理,节点上的精简构建
-		// sing-box 拨不动它。在写库这一步拦住,不然报错会以一句
-		// "QUIC is not included in this build" 出现在十几秒后的部署记录里。
-		if p := externalproxy.Protocol(protocol); !p.DialableByNode() {
-			return fmt.Errorf(
-				"外部代理「%s」是 %s,走 QUIC,而节点上的 sing-box 是精简构建(不含 with_quic),"+
-					"拨不动它;这条线路可以照常进订阅给用户直连,只是不能当出口",
-				name, p.Label())
 		}
 	}
 
@@ -329,7 +316,7 @@ func (s *Store) ResolveMieruChain(
 		}
 		out.Target = &ChainTarget{Kind: ChainTargetInbound, Inbound: t}
 	case ChainTargetExternal:
-		t, err := s.chainExternalTarget(ctx, m.ChainTargetExternalID)
+		t, err := s.chainExternalTarget(ctx, s.db, m.ChainTargetExternalID)
 		if err != nil {
 			return nil, err
 		}

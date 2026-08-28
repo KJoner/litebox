@@ -99,7 +99,11 @@ type externalProxyView struct {
 	// 那是节点二进制的构建选项,前端没有办法知道,而它猜错的方向是
 	// 让管理员选中一条永远部署不成功(或者部署成功却谁也连不上)的落地。
 	DialableByNode bool `json:"dialable_by_node"`
-	Relayable      bool `json:"relayable"`
+	// DialableReason 是 DialableByNode 为假时的原因,一句管理员看得懂的话。
+	// 不只按协议判:一条 SS 线路的插件名 sing-box 不认、或 SS2022 密钥长度
+	// 不对,协议本身"能拨",而部署在 check 那一步 FATAL。
+	DialableReason string `json:"dialable_reason"`
+	Relayable      bool   `json:"relayable"`
 }
 
 func externalProxyViews(items []*externalproxy.Proxy) []externalProxyView {
@@ -118,11 +122,13 @@ func newExternalProxyView(p *externalproxy.Proxy) externalProxyView {
 			list = append(list, f)
 		}
 	}
+	reason := externalproxy.DialableReason(p.Protocol, p.Server, p.Port, p.Params)
 	return externalProxyView{
 		Proxy:            p,
 		FinalDisplayName: p.EffectiveDisplayName(),
 		LockedList:       list,
-		DialableByNode:   p.Protocol.DialableByNode(),
+		DialableByNode:   reason == "",
+		DialableReason:   reason,
 		Relayable:        p.Protocol.RelayableByNginx(),
 	}
 }
@@ -240,6 +246,7 @@ func (s *Server) handleParseProxyURI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	dialReason := externalproxy.DialableReason(parsed.Protocol, parsed.Server, parsed.Port, parsed.Params)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"protocol":       string(parsed.Protocol),
 		"protocol_label": parsed.Protocol.Label(),
@@ -256,7 +263,8 @@ func (s *Server) handleParseProxyURI(w http.ResponseWriter, r *http.Request) {
 		"tls":       parsed.Params.TLS,
 		// 这条线路能不能当成某个入口的出口。**在这里就说清楚**:
 		// 等他配到出口那一步才被拒,他已经忘了这条线路是什么协议了。
-		"dialable_by_node": parsed.Protocol.DialableByNode(),
+		"dialable_by_node": dialReason == "",
+		"dialable_reason":  dialReason,
 		"relayable":        parsed.Protocol.RelayableByNginx(),
 	})
 }

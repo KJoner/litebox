@@ -341,9 +341,7 @@ func clashPlugin(p Params) (string, map[string]string, error) {
 	if p.Plugin == "" {
 		return "", nil, nil
 	}
-	switch p.Plugin {
-	case "obfs", "obfs-local", "simple-obfs":
-	default:
+	if !ssObfsPluginNames[strings.TrimSpace(p.Plugin)] {
 		return "", nil, fmt.Errorf("%w:Clash 格式暂不支持 Shadowsocks 插件 %q",
 			ErrUnsupported, p.Plugin)
 	}
