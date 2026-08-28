@@ -2404,6 +2404,24 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   消失或下发一份与节点上不符的参数,而节点上跑的是新配置 —— 三方各说各话,
   没有任何一层报错。`deployer.rollback` 早就这么做了(回滚半途退出会让
   节点停在坏配置上),这一条只是把同一条道理补到了数据库那一侧;
+* **`longOperation` 靠 `SetWriteDeadline` 放宽响应写入期限,而任何包装
+  `http.ResponseWriter` 的中间件都必须实现 `Unwrap()`。** `http.Server` 有一个
+  全局 60s 的 `WriteTimeout`,`longOperation` 用 `http.NewResponseController`
+  把它放宽到 10 分钟;而 `NewResponseController` 是顺着 `Unwrap()` 往下找底层
+  连接的。`statusRecorder`(记状态码给访问日志用)只嵌了 `http.ResponseWriter`
+  接口(它不暴露 `SetWriteDeadline`),少了 `Unwrap()` 就让 `SetWriteDeadline`
+  静默返回 `ErrNotSupported`,60s 的 `WriteTimeout` 原样生效 ——
+  **表现是任何超过 60s 的操作(装 27MB 二进制、慢速 NAT 机、两台机器的链式
+  部署)在 60s 被掐断连接,浏览器收到「Empty reply / 操作失败」,而操作本身
+  (ctx 是解绑的 10 分钟)在后端继续跑到成功**。一次成功的部署被显示成失败,
+  管理员照着去重试,又白重启一次服务、再踢一次全部在线连接。这与上一条
+  「客户端断开不中止操作」是一体两面:那条保证操作跑完,这条保证结果送得回。
+  `SetWriteDeadline` 的错误因此不再静默吞掉(设不上就 `log` 一行),
+  `TestStatusRecorderUnwrapReachesUnderlyingDeadline` 钉住穿透路径。
+  反代那一侧同样要管:`deploy/nginx/litebox.conf` 的 `proxy_read_timeout` /
+  `proxy_send_timeout` 必须 ≥ 面板的 10 分钟上限,否则反代会在自己的超时处
+  重演同一个「成功却显示失败」。前端对「根本没拿到响应」(`ApiError` status 0)
+  单独提示"操作在后台很可能已跑完,刷新看真实状态",不让人去重试已经做完的事;
 * **一次部署的结局必须落进系统日志,不能只落部署记录。**
   部署的全部过程只存在于 `deployment.Result.Steps` 里,而它只经
   `deployStore.Save` 落库 —— Save 一失败(数据库锁、磁盘满、ctx 被取消),
