@@ -2258,6 +2258,63 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   失败、服务反复重启,日志里只有一句 "No such file or directory"。
   V15 在 lax-1(Alpine)上撞到,V13 的验证机恰好都装过包。
 
+## 多订阅地址与入口地址条目约束(V16)
+
+一台机器的订阅地址从固定两栏(`sub_ipv4_address` + `ipv6_address`)变成一个
+**地址池**,每个入口按地址各配公网端口与订阅显示名(迁移 0035:`node_addresses`
+与 `inbound_endpoints`)。它仍然**只影响订阅内容,一个字节都不进节点配置** ——
+与 IPv6 那一套同类,改它既不置 `SSHChanged` 也不置 `NeedsDeploy`、不部署。
+
+* **`node_addresses` 是 host 之外的额外订阅地址池**(family V4/V6)。host 仍是
+  唯一的管理通道,同时兼作默认 IPv4(endpoint 的 `address_id` 为 NULL 时指它)。
+  地址存无方括号的标准化形式或域名,面板一次都不解析(与 `ipv6_address` 同规矩);
+
+* **`inbound_endpoints` 是「哪个入口下发哪几条地址」**,`entry_kind` + `entry_id`
+  指向四类入口之一(SINGBOX / MIERU / NGINX / REALM,不做外键,与外部代理复用一
+  张表同理)。`node_id` 冗余存并挂 CASCADE,机器硬删时连带清掉;`address_id`
+  引用 `node_addresses` 挂 CASCADE —— **删一个地址,引用它的条目一起消失**,
+  那正是「把某个额外地址从机器上拿掉就从订阅撤下来」;
+
+* **渲染仍走 `Expand`,只是从「IPv4 + 可选 IPv6」改成「遍历 endpoints」**
+  (`subscription.Endpoint`,三类物理节点都加了 `Endpoints` 字段)。**endpoints
+  非空时是唯一依据;为空时回落到旧的 SubIPv4Address/IPv6* 字段路径** —— 老字段那条
+  路一字没改,现有的逐字节兼容测试因此全绿,而生产上 `nodesFor`/`mieruFor`/
+  `relaysFor` 一定会带 endpoint(迁移给每个入口回填了)。回落也是安全网:某个入口
+  一条 endpoint 都没有时按「host + 跟随端口 + 跟随名」下发一条,入口不会凭空消失;
+
+* **端口 0 = 跟随监听端口,名字空 = 跟随入口名(V6 加 -IPV6),都在渲染期解析**
+  —— 与 `public_port` 存 0 表示跟随一字不差。回落仍只有 `IPv6EntryName` /
+  入口名两处唯一实现,`Endpoint.entryName` 调它们,不另写一份。Mieru 的 endpoint
+  端口是段(`Port` 起点、`PortEnd` 终点);
+
+* **迁移必须把旧的单值逐字节回填成默认 endpoint**:每个 SINGBOX/MIERU 入口一条 V4
+  (sub_ipv4 非空则指向它、否则 host)+ 满足条件(机器有 IPv6 且入口 `ipv6_enabled`)
+  时一条 V6;中转规则同理但 ADDRESS 种类不进订阅、不给 endpoint。升级后订阅
+  逐字节不变是硬指标;
+
+* **`nodes.sub_ipv4_address` / `ipv6_address` 退化成「地址池首条 V4/V6 的镜像」**,
+  由 `node.Store.ReplaceAddresses` 维护,节点表单不再直接编辑(更新接口对这两栏
+  取当前值原样回填、不清空)。为什么保留这两列:链式/中转的落地
+  (`chainInboundTarget` → `SubscriptionIPv4`)与列表/详情显示的 `subscription_host`
+  都读它 —— 让它跟着池子走,这些读法一个字都不用改,而且永远与池子一致。
+  **镜像变了要传播中转脏标记**(`PropagateTargetChange`):落地对外的地址换了,
+  下游中转机的 `proxy_pass` 目标跟着换,不传播的话中转机继续送到旧地址而两台机器
+  都显示正常;
+
+* **地址池是独立接口,由表单在保存节点/入口时顺带调用**,不塞进节点/入口的
+  create/update 事务:它们只影响订阅、不需要部署、不标脏(除镜像变化那一下),
+  分开是为了不给那几条已经很重的事务再加一层。`PUT /api/nodes/{id}/addresses` 与
+  `PUT /api/inbound-endpoints/{kind}/{id}`;
+
+* **地址池按 id 做增量、不整表删了重插**:endpoint 引用地址 id,重插会让地址拿到
+  新 id、条目变孤儿。入口地址条目反过来整表替换(没有东西引用它自己,id 不承载语义);
+
+* **`node_inbounds` 上那几列(public_port / ipv6_enabled / ipv6_display_name /
+  ipv6_public_port)在有 endpoint 的入口上成了历史包袱**,渲染不再读它们(只在回落
+  路径读)。节点详情里 `subEntriesOf` 的地址预览暂时仍按这几列拼 —— 单 endpoint 的
+  常见情形(迁移出来的、或没细分的)与真实订阅一致,细分过的入口以入口表单里的
+  地址条目编辑器为准。
+
 ## 前端约束(V3)
 
 设计规范见 `docs/开发计划/v3/litebox-web-ui/`(该目录在 .gitignore 里,只在本地)。
@@ -2909,5 +2966,14 @@ V15 主机流量、指定地址转发、realm、不计流量、HTTP 拨测
 四种形态(VLESS 直连、Shadowsocks 直连、realm 透传、Mieru)的拨测全部以
 「HTTP 204」通过;不计流量入口 2MB 未入账、计量入口 1MB 入账;
 nginx 与 realm 的「指定地址」转发都实测搬了字节;巡检把手工停掉的 realm 自动拉起。
+
+V16 多订阅地址与入口地址条目(约束见上面「多订阅地址与入口地址条目约束(V16)」):
+
+* Phase 43 数据模型与渲染 —— 已完成(迁移 0035 `node_addresses` + `inbound_endpoints`
+  + 四类入口回填;`subscription.Endpoint` 与三类 `Expand` 改遍历 endpoint、旧字段留作回落;
+  `nodesFor`/`mieruFor`/`relaysFor` 加载 endpoint;`node.Store` 的地址池/条目 CRUD 与
+  镜像维护;`PUT /api/nodes/{id}/addresses`、`PUT /api/inbound-endpoints/{kind}/{id}`)
+* Phase 44 前端 —— 已完成(`AddressListEditor` 与 `EndpointsEditor` 两个组件;
+  节点表单的额外 IPv4 / IPv6 列表;四个入口表单的地址条目编辑器;client 类型与接口)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

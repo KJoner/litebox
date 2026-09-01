@@ -14,6 +14,8 @@ import {
   type MieruInbound,
   type NodeInbound,
   type NodeRelay,
+  type NodeAddress,
+  type InboundEndpointInput,
   type SingBoxChannel,
 } from '@/api/client'
 import {
@@ -31,6 +33,7 @@ import NodeOpProgressModal from './NodeOpProgressModal.vue'
 import { confirmDeployNode, confirmRestartNode } from './nodeOps'
 import { sortByEntryOrder } from './entryOrder'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
+import EndpointsEditor from './EndpointsEditor.vue'
 import {
   addressFamilyMeta,
   confirmRemoveInbound,
@@ -1037,8 +1040,22 @@ async function checkNginx() {
   }
 }
 
+// V16:中转规则的订阅地址条目(单端口)。nodeAddresses 是这台机器的地址池。
+const nodeAddresses = ref<NodeAddress[]>([])
+const relayEndpoints = ref<InboundEndpointInput[]>([])
+
+async function loadNodeAddresses() {
+  try {
+    nodeAddresses.value = (await api.nodeAddresses(props.node.id)).items
+  } catch {
+    nodeAddresses.value = []
+  }
+}
+
 function openCreate(engine: 'NGINX' | 'REALM' = 'NGINX') {
   editing.value = null
+  relayEndpoints.value = []
+  void loadNodeAddresses()
   form.value = {
     engine,
     display_name: '',
@@ -1058,8 +1075,23 @@ function openCreate(engine: 'NGINX' | 'REALM' = 'NGINX') {
   formOpen.value = true
 }
 
-function openEdit(r: NodeRelay) {
+async function openEdit(r: NodeRelay) {
   editing.value = r
+  relayEndpoints.value = []
+  void loadNodeAddresses()
+  // 「指定地址」不进订阅、没有地址条目。其余引擎按种类拉一次。
+  if (r.target_kind !== 'ADDRESS') {
+    try {
+      relayEndpoints.value = (await api.inboundEndpoints(r.engine, r.id)).items.map((e) => ({
+        address_id: e.address_id,
+        public_port: e.public_port,
+        public_port_end: e.public_port_end,
+        display_name: e.display_name,
+      }))
+    } catch {
+      relayEndpoints.value = []
+    }
+  }
   form.value = {
     engine: r.engine,
     display_name: r.display_name,
@@ -1087,10 +1119,19 @@ async function submitForm() {
   running.value = editing.value ? '正在保存' : '正在新增'
   emit('busy', running.value)
   try {
+    let relayID: number
+    let engine: 'NGINX' | 'REALM'
     if (editing.value) {
       await api.updateRelay(editing.value.id, { ...form.value })
+      relayID = editing.value.id
+      engine = editing.value.engine
     } else {
-      await api.createRelay(props.node.id, { ...form.value })
+      relayID = (await api.createRelay(props.node.id, { ...form.value })).relay.id
+      engine = form.value.engine
+    }
+    // 「指定地址」不进订阅,没有地址条目要存。其余按引擎(NGINX / REALM)存。
+    if (form.value.target_kind !== 'ADDRESS') {
+      await api.saveInboundEndpoints(engine, relayID, relayEndpoints.value)
     }
     formOpen.value = false
     await load()
@@ -1613,11 +1654,22 @@ onMounted(async () => {
         <a-form-item :label="`监听端口(${form.engine === 'REALM' ? 'realm' : 'nginx'} 在这台机器上真正监听的号码)`">
           <a-input-number v-model:value="form.listen_port" :min="1" :max="65535" />
         </a-form-item>
-        <a-form-item label="公网端口(留 0 表示与监听端口相同)">
-          <a-input-number v-model:value="form.public_port" :min="0" :max="65535" />
+        <!-- 「指定地址」不进订阅,没有订阅地址条目,只有监听端口。 -->
+        <a-form-item
+          v-if="form.target_kind !== 'ADDRESS'"
+          label="订阅地址(用户连哪几个地址、各自的公网端口与名字)"
+        >
+          <EndpointsEditor
+            v-model="relayEndpoints"
+            :addresses="nodeAddresses"
+            :host="node.host"
+            :is-mieru="false"
+            :name-hint="form.display_name"
+          />
           <div class="nr__hint">
-            NAT 主机上两者不同:公网 443 映射到主机的 20443 时,监听端口填 20443、公网端口填
-            443。填反了 nginx 会监听在转发链路另一端的号码上,而各项检查都会通过。
+            这条中转在订阅里下发的每一条地址(管理 IP / 额外 IPv4 / IPv6)。端口留空表示跟随监听端口;
+            NAT 主机上两者不同 —— 公网 443 映射到主机 20443 时,监听端口填 20443、这里填 443。
+            名字留空表示跟随线路名(IPv6 条目加 -IPV6)。
           </div>
         </a-form-item>
         <a-form-item v-if="!editing" label="转发引擎">

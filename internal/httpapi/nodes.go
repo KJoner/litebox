@@ -381,12 +381,26 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
+	// sub_ipv4_address / ipv6_address 自 V16 起是地址池首条的镜像,由
+	// /api/nodes/{id}/addresses 维护,节点表单不再直接编辑。这里取当前值原样
+	// 回填(保持不变),而不是拿请求里的空串去清空 —— 清空会把主地址抹掉,
+	// 全部用户的 IPv4 条目改指管理地址。存量前端若仍在传这两栏也一并忽略。
+	cur, err := s.nodes.Store().Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, node.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "节点不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	n, effect, err := s.nodes.Store().Update(r.Context(), id, node.UpdateParams{
 		Name:                strings.TrimSpace(req.Name),
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		Host:                strings.TrimSpace(req.Host),
-		SubIPv4Address:      strings.TrimSpace(req.SubIPv4Address),
-		IPv6Address:         strings.TrimSpace(req.IPv6Address),
+		SubIPv4Address:      cur.SubIPv4Address,
+		IPv6Address:         cur.IPv6Address,
 		TrafficQuotaBytes:   req.TrafficQuotaBytes,
 		TrafficResetCycle:   req.TrafficResetCycle,
 		TrafficResetDay:     req.TrafficResetDay,

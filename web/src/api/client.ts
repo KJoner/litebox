@@ -409,6 +409,42 @@ export interface MieruInstallResult {
   mita_version: string
 }
 
+/** V16:一台机器的额外订阅地址(host 之外)。host 是管理地址,不在这个列表里。 */
+export interface NodeAddress {
+  id: number
+  node_id: number
+  family: 'V4' | 'V6'
+  address: string
+  sort_order: number
+}
+export interface NodeAddressInput {
+  /** 0 或缺省表示新增 */
+  id?: number
+  family: 'V4' | 'V6'
+  address: string
+}
+
+export type EndpointKind = 'SINGBOX' | 'MIERU' | 'NGINX' | 'REALM'
+
+/** V16:一个入口在订阅里下发的一条地址。address_id 为 null 表示管理 IP(host)。 */
+export interface InboundEndpoint {
+  id: number
+  address_id: number | null
+  /** 0 表示跟随监听端口(单端口类);Mieru 是段起点 */
+  public_port: number
+  /** 仅 Mieru:段终点,0 表示跟随 */
+  public_port_end: number
+  /** 空表示跟随入口名(V6 加 -IPV6 后缀) */
+  display_name: string
+  sort_order: number
+}
+export interface InboundEndpointInput {
+  address_id: number | null
+  public_port: number
+  public_port_end: number
+  display_name: string
+}
+
 export interface NodeInbound {
   id: number
   node_id: number
@@ -2019,6 +2055,23 @@ export const api = {
   // 中转:转发规则的增删改只 reload nginx,不打断任何在途连接,
   // 因此这一组接口的操作摩擦比「部署」低一档。
   relays: () => request<{ items: NodeRelay[] }>('/api/relays'),
+  // V16:额外订阅地址(地址池)与入口的订阅地址条目。都只影响订阅内容,
+  // 不动节点配置 —— 保存后不需要部署。
+  nodeAddresses: (nodeID: number) =>
+    request<{ items: NodeAddress[] }>(`/api/nodes/${nodeID}/addresses`),
+  saveNodeAddresses: (nodeID: number, addresses: NodeAddressInput[]) =>
+    request<{ items: NodeAddress[] }>(`/api/nodes/${nodeID}/addresses`, {
+      method: 'PUT',
+      body: { addresses },
+    }),
+  inboundEndpoints: (kind: EndpointKind, entryID: number) =>
+    request<{ items: InboundEndpoint[] }>(`/api/inbound-endpoints/${kind}/${entryID}`),
+  saveInboundEndpoints: (kind: EndpointKind, entryID: number, endpoints: InboundEndpointInput[]) =>
+    request<{ items: InboundEndpoint[] }>(`/api/inbound-endpoints/${kind}/${entryID}`, {
+      method: 'PUT',
+      body: { endpoints },
+    }),
+
   nodeRelays: (nodeID: number) =>
     request<{ items: NodeRelay[] }>(`/api/nodes/${nodeID}/relays`),
   createRelay: (nodeID: number, body: Record<string, unknown>) =>

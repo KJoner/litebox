@@ -177,6 +177,12 @@ func (s *Server) Handler() http.Handler {
 		// 浏览器拿到的是一句「Empty reply」。
 		authed.HandleFunc("POST /api/nodes", longOperation(s.handleCreateNode))
 		authed.HandleFunc("GET /api/nodes/{id}", s.handleGetNode)
+		// V16:额外订阅地址(地址池)与入口的订阅地址条目。都只影响订阅内容,
+		// 不动节点配置,所以不挂 longOperation、不标脏、不部署。
+		authed.HandleFunc("GET /api/nodes/{id}/addresses", s.handleListNodeAddresses)
+		authed.HandleFunc("PUT /api/nodes/{id}/addresses", s.handleSaveNodeAddresses)
+		authed.HandleFunc("GET /api/inbound-endpoints/{kind}/{id}", s.handleListEndpoints)
+		authed.HandleFunc("PUT /api/inbound-endpoints/{kind}/{id}", s.handleSaveEndpoints)
 		authed.HandleFunc("PUT /api/nodes/{id}", s.handleUpdateNode)
 		authed.HandleFunc("DELETE /api/nodes/{id}", s.handleDeleteNode)
 		authed.HandleFunc("POST /api/nodes/{id}/enabled", s.handleSetNodeEnabled)

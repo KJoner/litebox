@@ -141,6 +141,32 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	// 附上每条中转规则的订阅地址条目(V16)。entry_kind 就是引擎(NGINX / REALM),
+	// 一条规则只属于一个引擎,所以两次查询按 id 各取各的、合并即可。
+	// 中转 endpoint 的「端口 0 = 跟随」跟的是这条规则解析后的公网端口(p.Port,
+	// 已由上面的 CASE 落到 listen_port),不需要另存监听端口。
+	ids := make([]int64, len(relays))
+	hostFor := make(map[int64]string, len(relays))
+	for i, r := range relays {
+		ids[i] = r.Order.ID
+		hostFor[r.Order.ID] = r.Host
+	}
+	merged := make(map[int64][]Endpoint)
+	for _, kind := range []string{"NGINX", "REALM"} {
+		eps, err := s.endpointsByEntry(ctx, kind, ids, hostFor)
+		if err != nil {
+			return nil, err
+		}
+		for id, e := range eps {
+			merged[id] = e
+		}
+	}
+	for i := range relays {
+		if e := merged[relays[i].Order.ID]; len(e) > 0 {
+			relays[i].Endpoints = e
+		}
+	}
 	return ExpandAllRelays(relays), nil
 }
 
