@@ -14,6 +14,9 @@ import {
 import { LbSensitiveField } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from '@/components/user/quota'
 import { formatUTCTime } from '@/utils/format'
+import AddressListEditor from './AddressListEditor.vue'
+
+type AddrRow = { id?: number; address: string }
 
 /**
  * 新建 / 编辑节点。同一个表单两种 mode,差异有三处:
@@ -71,10 +74,10 @@ const blank = {
   display_name: '',
   sort_order: 0,
   host: '',
-  sub_ipv4_address: '',
-  ipv6_address: '',
-  /** 0 / null 表示跟随 IPv4 的公网端口。 */
-  ipv6_proxy_port: null as number | null,
+  // V16:额外订阅地址(host 之外)按族各成一个列表。地址池的第一条 V4 / V6
+  // 会被后端当成这台机器的"主地址"(链式/中转落地、列表里显示的地址读它)。
+  extra_v4: [] as AddrRow[],
+  ipv6_list: [] as AddrRow[],
   quota_value: null as number | null,
   quota_unit: 'GB' as LbQuotaUnit,
   traffic_reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
@@ -99,13 +102,13 @@ let snapshot = JSON.stringify(blank)
 
 watch(
   () => props.open,
-  (open) => {
+  async (open) => {
     if (!open) return
     serverError.value = ''
     const n = props.node
     if (!n) {
       accessMode.value = 'password'
-      Object.assign(form, blank)
+      Object.assign(form, blank, { extra_v4: [], ipv6_list: [] })
     } else {
       const q = fromBytes(n.traffic_quota_bytes)
       accessMode.value = 'manual'
@@ -114,11 +117,8 @@ watch(
         display_name: n.display_name,
         sort_order: n.sort_order,
         host: n.host,
-        // 这两栏【必须】回填:后端把留空解释成"清空"而不是"保持原值"。
-        // 漏一个就是静默清空 —— 订阅 IPv4 被清掉的表现是全部用户的 IPv4
-        // 条目改指管理地址,而管理口上没开代理端口的机器上,所有人当场断线。
-        sub_ipv4_address: n.sub_ipv4_address,
-        ipv6_address: n.ipv6_address,
+        extra_v4: [],
+        ipv6_list: [],
         quota_value: q.value,
         quota_unit: q.unit,
         traffic_reset_cycle: n.traffic_reset_cycle,
@@ -134,10 +134,32 @@ watch(
         public_remark: n.public_remark,
         maintenance_message: n.maintenance_message,
       })
+      // 地址池是独立接口,编辑时拉一次填进两个列表。拉不到不阻塞表单 ——
+      // 地址只影响订阅内容,大不了这次不改它。
+      try {
+        const r = await api.nodeAddresses(n.id)
+        form.extra_v4 = r.items
+          .filter((a) => a.family === 'V4')
+          .map((a) => ({ id: a.id, address: a.address }))
+        form.ipv6_list = r.items
+          .filter((a) => a.family === 'V6')
+          .map((a) => ({ id: a.id, address: a.address }))
+      } catch {
+        form.extra_v4 = []
+        form.ipv6_list = []
+      }
     }
     snapshot = JSON.stringify(form)
   },
 )
+
+// 把两个列表拼成保存地址池要的形状。
+function addressPayload() {
+  return [
+    ...form.extra_v4.map((r) => ({ id: r.id, family: 'V4' as const, address: r.address })),
+    ...form.ipv6_list.map((r) => ({ id: r.id, family: 'V6' as const, address: r.address })),
+  ].filter((r) => r.address.trim() !== '')
+}
 
 const fieldLabels: Record<string, string> = {
   name: '内部名称',
@@ -250,11 +272,11 @@ async function doSubmit() {
         display_name: form.display_name,
         sort_order: form.sort_order,
         host: form.host,
-        // 留空表示 IPv4 条目跟随管理地址,回落在订阅生成时做。
-        sub_ipv4_address: form.sub_ipv4_address,
-        ipv6_address: form.ipv6_address,
-        // 留空发 0 —— 后端据此在订阅生成时回落到 IPv4 端口。
-        ipv6_proxy_port: form.ipv6_proxy_port ?? 0,
+        // 额外地址与 IPv6 现在是地址池(V16),建完节点再单独 PUT ——
+        // 主地址镜像由那次 PUT 写回。创建时这两栏发空即可。
+        sub_ipv4_address: '',
+        ipv6_address: '',
+        ipv6_proxy_port: 0,
         traffic_quota_bytes: quota,
         traffic_reset_cycle: form.traffic_reset_cycle,
         traffic_reset_day: form.traffic_reset_day,
@@ -274,6 +296,20 @@ async function doSubmit() {
       // 口令与私钥只在这一次请求里用到,立刻从表单状态里抹掉。
       form.root_password = ''
       form.ssh_key = ''
+      // 地址池在节点建好之后保存(那时才有 id)。失败不阻断创建 ——
+      // 节点已经建好,地址回头能补;只把话说清楚。
+      const addrs = addressPayload()
+      if (addrs.length) {
+        try {
+          await api.saveNodeAddresses(result.node.id, addrs)
+        } catch (e) {
+          message.warning(
+            '节点已创建,但额外订阅地址没能保存(' +
+              (e instanceof ApiError ? e.message : '未知错误') +
+              ')。在节点详情里重新编辑保存即可。',
+          )
+        }
+      }
       close()
 
       if (result.bootstrap_error) {
@@ -304,20 +340,17 @@ async function doSubmit() {
     }
 
     const id = props.node!.id
+    // 地址池先保存(V16):它更新主地址镜像,而下面 updateNode 会原样读回
+    // 那两列保持不变。顺序上先 PUT 地址、再 updateNode,镜像才是最新的。
+    // sub_ipv4_address / ipv6_address 不再由这个表单直接发。
+    await api.saveNodeAddresses(id, addressPayload())
+
     // 逐字段列出而不是 { ...form }:更新接口对未知字段是拒绝的
     // (DisallowUnknownFields),root_password 这类只属于新建的字段会让整个提交失败。
     const { effect } = await api.updateNode(id, {
       name: form.name,
       display_name: form.display_name,
       host: form.host,
-      // 留空即改回"跟随管理地址"。与下面清空 IPv6 不同的是,
-      // 这一步【不会】动各入口的 IPv4 公网端口 —— 那个端口在 NAT 机器上
-      // 本来就独立于订阅 IP 存在,跟着归零会把订阅端口悄悄换成监听端口。
-      sub_ipv4_address: form.sub_ipv4_address,
-      // 留空即清空 IPv6,订阅里的 IPv6 条目随即消失 ——
-      // 同时这台机器上全部入口的 IPv6 公网端口会一并归零(后端做),
-      // 免得下次重填 IPv6 时静默套用一个几个月前的端口。
-      ipv6_address: form.ipv6_address,
       traffic_quota_bytes: quota,
       traffic_reset_cycle: form.traffic_reset_cycle,
       traffic_reset_day: form.traffic_reset_day,
@@ -472,60 +505,21 @@ async function doSubmit() {
         </div>
       </a-form-item>
 
-      <a-form-item label="订阅 IPv4 地址 / 域名">
-        <a-input
-          v-model:value="form.sub_ipv4_address"
-          placeholder="留空表示跟随上面的管理地址"
+      <a-form-item label="额外 IPv4 地址 / 域名">
+        <AddressListEditor
+          v-model="form.extra_v4"
+          placeholder="输入 IPv4 或域名,点添加"
+          hint="选填,只影响订阅内容。第一条是这台机器的主 IPv4:链式/中转的落地与列表里显示的地址读它,留空则回落到管理地址。哪个入口在订阅里下发哪几条地址,在「入口」里按条选。面板一次都不解析这里,填错发现不了、只有用户连不上。"
         />
-        <div class="nf__help">
-          选填,<b>只影响订阅内容</b>。留空表示用户的 IPv4 条目就连管理地址 ——
-          绝大多数机器不用填这一栏。
-          <br />
-          需要它的情形是<b>管理地址与用户要连的地址不是同一个</b>:前面挂了一层 IP 转发、
-          管理口与业务口是两个 IP、或者管理 IP 上根本没有开放代理端口。
-          <br />
-          <strong>面板一次都不会解析这一栏</strong>(与 IPv6 那一栏同类):它不参与 SSH
-          与部署,填错了面板发现不了,只有用户连不上。
-          <br />
-          端口不在这里配:IPv4 公网端口在「入口」里<b>按条设置</b>,留空表示跟随该入口的监听端口。
-          <br />
-          改了它,指向这台机器的<b>中转转发与链式出口会一起改指新地址</b>,并在下次下发时生效。
-        </div>
       </a-form-item>
 
-      <a-row :gutter="12">
-        <a-col :span="15">
-          <a-form-item label="IPv6 地址 / 域名">
-            <a-input
-              v-model:value="form.ipv6_address"
-              placeholder="例如:2602:fed2:7116:2110::1 或 v6.example.com"
-            />
-          </a-form-item>
-        </a-col>
-        <a-col :span="9">
-          <!-- IPv6 公网端口已经是【入口】的属性(一台机器上可以有好几个入口,
-               各自映射到不同的号码),改它走节点详情的「入口」面板。
-               在这里留一份会变成第二个来源,而两个来源迟早分叉。 -->
-          <div class="nf__help nf__help--row">
-            IPv6 公网端口在「入口」里按条设置,默认跟随各自的 IPv4 公网端口。
-          </div>
-        </a-col>
-      </a-row>
-      <div class="nf__help nf__help--row">
-        IPv6 选填,只用于订阅下发。填写后<b>这台机器上每个入口都会额外生成一条 IPv6 条目</b>,
-        清空即全部撤下 —— 两种改动都不需要重新部署。这里同样可以填域名。
-        <br />
-        条目的名字与要不要生成,在「入口」里<b>按条设置</b>:留空表示在入口名后加
-        -IPV6 后缀,也可以给某个入口单独起名或者干脆关掉。
-        <br />
-        <strong>面板一次都不会解析这一栏</strong>:它不参与 SSH 与部署,
-        客户端拿到域名自己去查 AAAA。所以这里填一个只有 A 记录的域名,
-        面板发现不了,而用户的客户端会连到 IPv4 上去。
-        <br />
-        <strong>端口留空表示跟随左边的公网代理端口</strong>,以后改 IPv4 端口时它自动跟着变;
-        只有两个协议栈映射到不同外部端口时才需要单独填(NAT 小鸡上很常见:
-        IPv4 是服务商映射的高位端口,IPv6 是直连的 443)。
-      </div>
+      <a-form-item label="IPv6 地址 / 域名">
+        <AddressListEditor
+          v-model="form.ipv6_list"
+          placeholder="例如 2602:fed2::1 或 v6.example.com,点添加"
+          hint="选填,只用于订阅下发,可加多个。哪个入口生成 IPv6 条目、端口与名字,在「入口」里按条设置(留空表示入口名 + -IPV6 后缀)。面板一次都不解析这里:填一个只有 A 记录的域名发现不了,用户客户端会连到 IPv4 上。"
+        />
+      </a-form-item>
 
       <a-row :gutter="12">
         <a-col :span="9">

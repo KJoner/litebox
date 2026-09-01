@@ -88,7 +88,10 @@ func TestCreateNodeRejectsSwappedAddresses(t *testing.T) {
 
 // 改 IPv6 只影响订阅:既不该报告 SSH 变更(那会白白断掉一条长连接),
 // 也不该要求重新部署(那会重启 sing-box 踢掉全部在线连接)。
-func TestUpdateIPv6ReportsNoSSHOrDeployEffect(t *testing.T) {
+// V16:IPv6(以及额外 IPv4)现在走地址池接口,不再由节点更新接口设置。
+// 它是纯数据库写 —— 不连 SSH、不部署 —— 并把地址池首条 V6 写回 ipv6_address
+// 镜像,链式/中转落地与列表显示读那一列。
+func TestIPv6ViaAddressPoolMirrorsToNode(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
 
@@ -97,36 +100,27 @@ func TestUpdateIPv6ReportsNoSSHOrDeployEffect(t *testing.T) {
 	})
 	id := int64(n["id"].(float64))
 
-	resp := env.do(t, http.MethodPut, "/api/nodes/"+itoa(id), map[string]any{
-		"name": "LA-01", "host": "192.0.2.10",
-		"ipv6_address": "2602:fed2::9",
+	resp := env.do(t, http.MethodPut, "/api/nodes/"+itoa(id)+"/addresses", map[string]any{
+		"addresses": []map[string]any{
+			{"family": "V4", "address": "198.51.100.7"},
+			{"family": "V6", "address": "2602:fed2::9"},
+		},
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("状态码 %d:%s", resp.StatusCode, raw)
 	}
-	var out struct {
-		Node   map[string]any `json:"node"`
-		Effect struct {
-			SSHChanged  bool     `json:"ssh_changed"`
-			NeedsDeploy bool     `json:"needs_deploy"`
-			Changes     []string `json:"changes"`
-		} `json:"effect"`
-	}
-	json.NewDecoder(resp.Body).Decode(&out)
 
-	if out.Node["ipv6_address"] != "2602:fed2::9" {
-		t.Errorf("IPv6 = %v", out.Node["ipv6_address"])
+	nresp := env.do(t, http.MethodGet, "/api/nodes/"+itoa(id), nil)
+	defer nresp.Body.Close()
+	var node map[string]any
+	json.NewDecoder(nresp.Body).Decode(&node)
+	if node["ipv6_address"] != "2602:fed2::9" {
+		t.Errorf("IPv6 镜像 = %v,期望 2602:fed2::9", node["ipv6_address"])
 	}
-	if out.Effect.SSHChanged {
-		t.Error("改 IPv6 不该报告 SSH 变更")
-	}
-	if out.Effect.NeedsDeploy {
-		t.Error("改 IPv6 不该要求重新部署")
-	}
-	if len(out.Effect.Changes) == 0 {
-		t.Error("审计详情里没有任何变更记录")
+	if node["sub_ipv4_address"] != "198.51.100.7" {
+		t.Errorf("V4 镜像 = %v,期望 198.51.100.7", node["sub_ipv4_address"])
 	}
 }
 

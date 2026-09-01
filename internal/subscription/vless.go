@@ -95,6 +95,12 @@ type PhysicalNode struct {
 	SnellObfsHost  string
 	SnellV6Mode    string
 	SnellSharedPSK bool
+
+	// Endpoints 是这个入口在订阅里下发的每一条地址(V16)。非空时它是
+	// 唯一依据 —— 上面那几栏 SubIPv4Address/IPv6* 只在 Endpoints 为空时
+	// 作为回落使用(还在用旧字段的测试、以及理论上没配地址的入口)。
+	// 生产上 Service.nodesFor 一定会带至少一条(迁移保证)。
+	Endpoints []Endpoint
 }
 
 // Expand 把一条物理节点展开成订阅里的一到两个条目。
@@ -109,10 +115,8 @@ type PhysicalNode struct {
 // 之后管理员改了 IPv4 公网端口,IPv6 条目会自动跟着变。
 // 写库时就固化成当时的值,改完 IPv4 端口 IPv6 会停在旧端口上,而且不报任何错。
 func (p PhysicalNode) Expand() []Node {
-	v4 := Node{
+	base := Node{
 		Order:            p.Order,
-		DisplayName:      p.DisplayName,
-		Host:             SubscriptionIPv4(p.Host, p.SubIPv4Address),
 		Port:             p.Port,
 		Protocol:         p.Protocol,
 		TCPFastOpen:      p.TCPFastOpen,
@@ -128,6 +132,26 @@ func (p PhysicalNode) Expand() []Node {
 		SnellV6Mode:      p.SnellV6Mode,
 		SnellSharedPSK:   p.SnellSharedPSK,
 	}
+	if len(p.Endpoints) > 0 {
+		out := make([]Node, 0, len(p.Endpoints))
+		for _, e := range p.Endpoints {
+			n := base
+			n.DisplayName = e.entryName(p.DisplayName)
+			n.Host = e.Address
+			if e.Port > 0 {
+				n.Port = e.Port
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+
+	// 没有配 endpoint —— 回落到旧的「IPv4 + 可选 IPv6」逻辑,逐字节与
+	// 迁移前一致。生产上 nodesFor 一定会带 endpoint(迁移保证每个入口至少
+	// 一条),这条路只留给还在用旧字段的测试与理论上的空入口。
+	v4 := base
+	v4.DisplayName = p.DisplayName
+	v4.Host = SubscriptionIPv4(p.Host, p.SubIPv4Address)
 	if p.IPv6Address == "" || !p.IPv6Enabled {
 		return []Node{v4}
 	}

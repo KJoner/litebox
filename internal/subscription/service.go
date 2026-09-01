@@ -336,6 +336,9 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	defer rows.Close()
 
 	physical := make([]PhysicalNode, 0)
+	// listenFor:入口 id → 监听端口,作为 endpoint「端口 0 = 跟随」的基准。
+	// 与 p.Port 分开 —— 后者在旧路径里是解析后的公网端口,含义不同。
+	listenFor := make(map[int64]int)
 	for rows.Next() {
 		var p PhysicalNode
 		var protocol, ssMethod, ssKeyEnc, snellPSKEnc string
@@ -358,6 +361,7 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 		if p.Port == 0 {
 			p.Port = listenPort
 		}
+		listenFor[p.Order.ID] = listenPort
 		// 解析失败回落到 VLESS:这一列的值只由 MarkDeployed 写入,
 		// 出现未知值说明库被人手工改过。回落而不是报错,是因为报错会让
 		// 整份订阅失败,把用户客户端里的节点全部清空。
@@ -377,6 +381,26 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// 附上每个入口的订阅地址条目(V16)。有 endpoint 的入口走 endpoint 路径,
+	// 其 Port 基准换成监听端口(endpoint 的「端口 0 = 跟随」跟的是它);
+	// 没有 endpoint 的保持旧字段路径不变。
+	ids := make([]int64, len(physical))
+	hostFor := make(map[int64]string, len(physical))
+	for i, p := range physical {
+		ids[i] = p.Order.ID
+		hostFor[p.Order.ID] = p.Host
+	}
+	eps, err := s.endpointsByEntry(ctx, "SINGBOX", ids, hostFor)
+	if err != nil {
+		return nil, err
+	}
+	for i := range physical {
+		if e := eps[physical[i].Order.ID]; len(e) > 0 {
+			physical[i].Port = listenFor[physical[i].Order.ID]
+			physical[i].Endpoints = e
+		}
 	}
 	return ExpandAll(physical), nil
 }

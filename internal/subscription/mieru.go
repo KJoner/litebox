@@ -67,6 +67,11 @@ type PhysicalMieru struct {
 	// IPv6Name 为空表示跟随 DisplayName + IPv6NameSuffix。
 	IPv6Name string
 
+	// Endpoints 非空时是唯一依据,上面的 SubIPv4Address/IPv6* 只作回落
+	// (与 PhysicalNode 同一条道理)。Mieru 的端口是段:Endpoint.Port 是
+	// 段起点、Endpoint.PortEnd 是段终点。
+	Endpoints []Endpoint
+
 	Transport    mieru.Transport
 	Multiplexing mieru.Multiplexing
 	MTU          int
@@ -74,15 +79,34 @@ type PhysicalMieru struct {
 
 // Expand 把一条 Mieru 入口展开成订阅里的一到两个条目。
 func (p PhysicalMieru) Expand() []MieruNode {
-	v4 := MieruNode{
+	base := MieruNode{
 		Order:        p.Order,
-		DisplayName:  p.DisplayName,
-		Host:         SubscriptionIPv4(p.Host, p.SubIPv4Address),
 		Ports:        p.Ports,
 		Transport:    p.Transport,
 		Multiplexing: p.Multiplexing,
 		MTU:          p.MTU,
 	}
+	if len(p.Endpoints) > 0 {
+		out := make([]MieruNode, 0, len(p.Endpoints))
+		for _, e := range p.Endpoints {
+			n := base
+			n.DisplayName = e.entryName(p.DisplayName)
+			n.Host = e.Address
+			if e.Port > 0 || e.PortEnd > 0 {
+				n.Ports = mieru.PortRange{Start: e.Port, End: e.PortEnd}
+				if n.Ports.End == 0 {
+					n.Ports.End = n.Ports.Start
+				}
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+
+	// 回落:旧的「IPv4 + 可选 IPv6」逻辑。
+	v4 := base
+	v4.DisplayName = p.DisplayName
+	v4.Host = SubscriptionIPv4(p.Host, p.SubIPv4Address)
 	if p.IPv6Address == "" || !p.IPv6Enabled {
 		return []MieruNode{v4}
 	}

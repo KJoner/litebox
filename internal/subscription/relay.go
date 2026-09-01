@@ -41,6 +41,11 @@ type PhysicalRelay struct {
 	// IPv6Port 为 0 表示跟随 Port。
 	IPv6Port int
 
+	// Endpoints 非空时是唯一依据(V16),上面的 SubIPv4Address/IPv6Address
+	// 只作回落。中转的 endpoint 与自建入口同一张表,只是 Family V6 的那条
+	// 名字跟随 DisplayName + 后缀(中转本来就没有 per-relay IPv6 名)。
+	Endpoints []Endpoint
+
 	// 落地是自建节点时填。协议参数一律取 deployed_*,不取期望值 ——
 	// 落地改协议到它部署成功之间的窗口里,按期望值渲染会让用户拉到 ss://
 	// 而落地上跑的还是 VLESS,客户端握手失败,而数据库、两台节点、面板
@@ -81,6 +86,23 @@ type RelayExternalLanding struct {
 // 两个条目共用同一条 nginx 转发、同一份落地凭据,拆成两行会带来
 // 第二套配置与第二串部署记录,而机器只有一台。
 func (p PhysicalRelay) Expand() []PhysicalRelay {
+	if len(p.Endpoints) > 0 {
+		out := make([]PhysicalRelay, 0, len(p.Endpoints))
+		for _, e := range p.Endpoints {
+			r := p
+			r.DisplayName = e.entryName(p.DisplayName)
+			r.Host = e.Address
+			if e.Port > 0 {
+				r.Port = e.Port
+			}
+			r.IPv6Address = ""
+			r.SubIPv4Address = ""
+			r.Endpoints = nil
+			out = append(out, r)
+		}
+		return out
+	}
+
 	// 订阅 IPv4 的回落在这里做完,展开之后 Host 就是客户端要连的地址 ——
 	// EntryForRelay 因此一个字都不用改。留到后面去回落的话,那一步要
 	// 同时知道"这是 IPv4 条目还是 IPv6 条目",而 IPv6 条目上这一栏没有意义。

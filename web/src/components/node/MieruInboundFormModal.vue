@@ -9,8 +9,11 @@ import {
   type MieruMultiplexing,
   type MieruTransport,
   type Node,
+  type NodeAddress,
+  type InboundEndpointInput,
 } from '@/api/client'
 import { lbDangerConfirm } from '@/components/lb/lbDangerConfirm'
+import EndpointsEditor from './EndpointsEditor.vue'
 
 /**
  * 新增 / 编辑一个 Mieru 入口。
@@ -72,12 +75,39 @@ function blank() {
 
 const form = ref(blank())
 
+// V16:订阅地址条目(Mieru 的端口是段)。
+const addresses = ref<NodeAddress[]>([])
+const endpoints = ref<InboundEndpointInput[]>([])
+
+async function loadAddrsEndpoints() {
+  try {
+    addresses.value = (await api.nodeAddresses(props.node.id)).items
+  } catch {
+    addresses.value = []
+  }
+  if (props.inbound) {
+    try {
+      endpoints.value = (await api.inboundEndpoints('MIERU', props.inbound.id)).items.map((e) => ({
+        address_id: e.address_id,
+        public_port: e.public_port,
+        public_port_end: e.public_port_end,
+        display_name: e.display_name,
+      }))
+    } catch {
+      endpoints.value = []
+    }
+  } else {
+    endpoints.value = []
+  }
+}
+
 // 每次打开都按当前入口重置。留着上一次的值会让"新增"带上刚编辑过的那一段端口,
 // 而端口冲突是保存时才报的 —— 管理员会以为是自己填错了。
 watch(
   () => props.open,
   (open) => {
     if (!open) return
+    void loadAddrsEndpoints()
     const i = props.inbound
     form.value = i
       ? {
@@ -112,23 +142,6 @@ const listenCount = computed(() => {
   const { listen_port_start: a, listen_port_end: b } = form.value
   return a > 0 && b >= a ? b - a + 1 : 0
 })
-
-const publicCount = computed(() => {
-  const { public_port_start: a, public_port_end: b } = form.value
-  return a > 0 && b >= a ? b - a + 1 : 0
-})
-
-/**
- * 订阅段与监听段的端口数不一样时提醒一句。
- *
- * **只提醒,不拦。** NAT 机上服务商映射的外部段与本机监听段本来就可以是
- * 两个不相干的号码段,面板没有办法知道映射是几对几 —— 拦下来会让那种机器
- * 一个入口都配不出来。但数量不等时客户端会在一部分端口上连不通,
- * 而那种失败看起来像是"这条线路时好时坏",所以要说出来。
- */
-const portCountMismatch = computed(
-  () => publicCount.value > 0 && listenCount.value > 0 && publicCount.value !== listenCount.value,
-)
 
 /**
  * 这次保存会不会改掉 IPv6 条目在用户客户端里的名字。
@@ -183,11 +196,14 @@ async function doSave() {
   running.value = props.inbound ? '正在保存 Mieru 入口' : '正在新增 Mieru 入口'
   emit('busy', running.value)
   try {
+    let entryID: number
     if (props.inbound) {
       await api.updateMieruInbound(props.inbound.id, { ...form.value })
+      entryID = props.inbound.id
     } else {
-      await api.createMieruInbound(props.node.id, { ...form.value })
+      entryID = (await api.createMieruInbound(props.node.id, { ...form.value })).inbound.id
     }
+    await api.saveInboundEndpoints('MIERU', entryID, endpoints.value)
     emit('update:open', false)
     emit('saved')
     // 说「下次下发后生效」而不是「已保存」:自动下发会重启 mita,
@@ -246,21 +262,21 @@ async function doSave() {
         </div>
       </a-form-item>
 
-      <a-form-item label="公网端口段(两端都留 0 表示与监听段相同)">
-        <a-space>
-          <a-input-number v-model:value="form.public_port_start" :min="0" :max="65535" />
-          <span>—</span>
-          <a-input-number v-model:value="form.public_port_end" :min="0" :max="65535" />
-        </a-space>
+      <a-form-item label="订阅地址(用户连哪几个地址、各自的公网端口段与名字)">
+        <EndpointsEditor
+          v-model="endpoints"
+          :addresses="addresses"
+          :host="node.host"
+          :is-mieru="true"
+          :name-hint="form.display_name"
+        />
         <div class="mfm__hint">
-          只写进订阅,不进 mita 的配置。NAT 主机上服务商映射的外部段与本机监听段
-          可以是两个完全不相干的号码段。
-          <template v-if="publicCount"> 当前共 {{ publicCount }} 个端口。</template>
-        </div>
-        <div v-if="portCountMismatch" class="mfm__warn">
-          公网段有 {{ publicCount }} 个端口,而监听段有 {{ listenCount }} 个 ——
-          数量不一致时,客户端会在一部分端口上连不通,表现像是「这条线路时好时坏」。
-          确认服务商的映射确实是这样再保存。
+          这个入口在订阅里下发的每一条地址(管理 IP / 额外 IPv4 / IPv6)。端口段只写进订阅、
+          不进 mita 配置:两端都留空表示跟随监听段,NAT 主机上服务商映射的外部段与监听段
+          可以是两个不相干的号码段。名字留空表示跟随入口名(IPv6 条目加 -IPV6)。
+          <br />
+          公网段与监听段的端口数量不一致时,客户端会在一部分端口上连不通,
+          表现像是「这条线路时好时坏」—— 确认服务商的映射确实如此再保存。
         </div>
       </a-form-item>
 
@@ -290,34 +306,6 @@ async function doSave() {
         <div class="mfm__hint">只对 UDP 传输有意义。填 0 之外的值时范围是 1280–1500。</div>
       </a-form-item>
 
-      <!-- IPv6 那一块只在机器填了 IPv6 地址时出现:没填的话这几个输入框
-           一个都不会生效,摆在那里只会让人以为配了却没起作用。 -->
-      <template v-if="node.ipv6_address">
-        <a-form-item label="IPv6 条目">
-          <a-switch v-model:checked="form.ipv6_enabled" size="small" />
-          <span class="mfm__inline">关掉后这个入口不再生成 IPv6 条目</span>
-        </a-form-item>
-        <template v-if="form.ipv6_enabled">
-          <a-form-item label="IPv6 条目名称(留空表示在入口名后加 -IPV6)">
-            <a-input v-model:value="form.ipv6_display_name" placeholder="留空即跟随" />
-          </a-form-item>
-          <a-form-item label="IPv6 公网端口段(两端都留 0 表示与 IPv4 公网段相同)">
-            <a-space>
-              <a-input-number
-                v-model:value="form.ipv6_public_port_start"
-                :min="0"
-                :max="65535"
-              />
-              <span>—</span>
-              <a-input-number v-model:value="form.ipv6_public_port_end" :min="0" :max="65535" />
-            </a-space>
-          </a-form-item>
-        </template>
-        <div class="mfm__hint mfm__hint--block">
-          IPv6 条目<b>不是第二个入口</b>:它和 IPv4 是同一批监听端口的两个地址,
-          用户凭据与流量统计全部共用,只有名字和公网端口段能单独设。
-        </div>
-      </template>
 
       <a-form-item label="访问等级">
         <a-select

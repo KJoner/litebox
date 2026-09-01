@@ -17,7 +17,10 @@ import {
   type NodeSSMethod,
   type SnellObfsMode,
   type SnellV6Mode,
+  type NodeAddress,
+  type InboundEndpointInput,
 } from '@/api/client'
+import EndpointsEditor from './EndpointsEditor.vue'
 import { LbStatusTag, lbDangerConfirm } from '@/components/lb'
 
 /**
@@ -51,6 +54,33 @@ const emit = defineEmits<{
 }>()
 
 const running = ref('')
+
+// V16:订阅地址条目。addresses 是这台机器的地址池(host 之外),
+// endpoints 是这个入口下发哪几条地址。
+const addresses = ref<NodeAddress[]>([])
+const endpoints = ref<InboundEndpointInput[]>([])
+
+async function loadAddrsEndpoints() {
+  try {
+    addresses.value = (await api.nodeAddresses(props.node.id)).items
+  } catch {
+    addresses.value = []
+  }
+  if (props.inbound) {
+    try {
+      endpoints.value = (await api.inboundEndpoints('SINGBOX', props.inbound.id)).items.map((e) => ({
+        address_id: e.address_id,
+        public_port: e.public_port,
+        public_port_end: e.public_port_end,
+        display_name: e.display_name,
+      }))
+    } catch {
+      endpoints.value = []
+    }
+  } else {
+    endpoints.value = []
+  }
+}
 
 const form = ref({
   display_name: '',
@@ -87,6 +117,7 @@ watch(
     if (!open) return
     dests.value = []
     destError.value = ''
+    void loadAddrsEndpoints()
     const i = props.inbound
     form.value = i
       ? {
@@ -338,11 +369,15 @@ async function doSave() {
   running.value = props.inbound ? '正在保存入口' : '正在新增入口'
   emit('busy', running.value)
   try {
+    let entryID: number
     if (props.inbound) {
       await api.updateInbound(props.inbound.id, { ...form.value })
+      entryID = props.inbound.id
     } else {
-      await api.createInbound(props.node.id, { ...form.value })
+      entryID = (await api.createInbound(props.node.id, { ...form.value })).inbound.id
     }
+    // 订阅地址条目单独保存(V16)。空列表表示按「管理 IP + 跟随」下发一条。
+    await api.saveInboundEndpoints('SINGBOX', entryID, endpoints.value)
     emit('update:open', false)
     emit('saved')
     // 说「下次部署后生效」而不是「已保存」:自动部署会重启 sing-box,
@@ -530,41 +565,24 @@ async function doSave() {
       <a-form-item label="主机监听端口(sing-box 真正 bind 的号码)">
         <a-input-number v-model:value="form.listen_port" :min="1" :max="65535" />
       </a-form-item>
-      <a-form-item label="公网端口(留 0 表示与监听端口相同)">
-        <a-input-number v-model:value="form.public_port" :min="0" :max="65535" />
+      <a-form-item label="订阅地址(用户连哪几个地址、各自的公网端口与名字)">
+        <EndpointsEditor
+          v-model="endpoints"
+          :addresses="addresses"
+          :host="node.host"
+          :is-mieru="false"
+          :name-hint="form.display_name"
+        />
         <div class="ifm__hint">
-          NAT 主机上两者不同:公网 443 映射到主机的 20443 时,监听端口填 20443、公网端口填
-          443。填反了 sing-box 会监听在转发链路另一端的号码上,而各项检查都会通过。
+          这个入口在订阅里下发的每一条地址。可选管理 IP、机器的额外 IPv4 或 IPv6
+          (在节点表单里配)。端口留空表示跟随上面的监听端口;NAT 主机上两者不同 ——
+          公网 443 映射到主机 20443 时,监听端口填 20443、这里填 443。名字留空表示跟随入口名
+          (IPv6 条目自动加 -IPV6 后缀,且不能与入口名相同 —— 客户端靠名字区分)。
+          <br />
+          IPv6 条目<b>不是第二个入口</b>:与 IPv4 是同一个 sing-box 入站的两个地址,
+          协议、监听端口、用户凭据与流量统计全部共用。
         </div>
       </a-form-item>
-      <!-- IPv6 三项收在一起。它们回答的是同一个问题:这个入口在订阅里
-           要不要多出一条 IPv6 的地址、叫什么、连哪个端口。 -->
-      <template v-if="node.ipv6_address">
-        <a-form-item>
-          <a-checkbox v-model:checked="form.ipv6_enabled">
-            同时下发 IPv6 条目(这台机器填了 IPv6 地址)
-          </a-checkbox>
-          <div class="ifm__hint">
-            IPv6 条目<b>不是第二个入口</b> ——
-            它和上面那条是同一个 sing-box 入站的两个地址:协议、监听端口、用户凭据与流量统计全部共用,
-            只有名字和公网端口能单独设。
-          </div>
-        </a-form-item>
-        <a-form-item v-if="form.ipv6_enabled" label="IPv6 条目名称(留空表示自动加 -IPV6 后缀)">
-          <a-input
-            v-model:value="form.ipv6_display_name"
-            :placeholder="inbound?.ipv6_entry_name || '留空则跟随上面的入口名称'"
-          />
-          <div class="ifm__hint">
-            用户客户端里靠这个名字区分两条线路,所以它不能与入口名称相同。
-            <b>改名之后,已经导入过订阅的人客户端里会多出一份新节点,而旧的那份要他们自己删</b> ——
-            改回去也删不掉它。
-          </div>
-        </a-form-item>
-        <a-form-item v-if="form.ipv6_enabled" label="IPv6 公网端口(留 0 表示跟随 IPv4 公网端口)">
-          <a-input-number v-model:value="form.ipv6_public_port" :min="0" :max="65535" />
-        </a-form-item>
-      </template>
       <a-form-item>
         <a-checkbox v-model:checked="form.tcp_fast_open">
           TCP Fast Open(同时管两端:入站与订阅里下发的出站)

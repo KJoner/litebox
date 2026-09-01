@@ -48,6 +48,8 @@ func (s *Service) mieruFor(ctx context.Context, userID int64) ([]MieruNode, erro
 	defer rows.Close()
 
 	physical := make([]PhysicalMieru, 0)
+	// listenFor:入口 id → 已生效的监听段,作为 endpoint「端口段跟随」的基准。
+	listenFor := make(map[int64]mieru.PortRange)
 	for rows.Next() {
 		var p PhysicalMieru
 		var deployedListen mieru.PortRange
@@ -70,10 +72,28 @@ func (s *Service) mieruFor(ctx context.Context, userID int64) ([]MieruNode, erro
 		if p.Ports.Empty() {
 			p.Ports = deployedListen
 		}
+		listenFor[p.Order.ID] = deployedListen
 		physical = append(physical, p)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	ids := make([]int64, len(physical))
+	hostFor := make(map[int64]string, len(physical))
+	for i, p := range physical {
+		ids[i] = p.Order.ID
+		hostFor[p.Order.ID] = p.Host
+	}
+	eps, err := s.endpointsByEntry(ctx, "MIERU", ids, hostFor)
+	if err != nil {
+		return nil, err
+	}
+	for i := range physical {
+		if e := eps[physical[i].Order.ID]; len(e) > 0 {
+			physical[i].Ports = listenFor[physical[i].Order.ID]
+			physical[i].Endpoints = e
+		}
 	}
 	return ExpandAllMieru(physical), nil
 }
