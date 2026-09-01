@@ -82,7 +82,13 @@ const formats = computed(() => {
  * 不显示灰掉的按钮,也不显示「暂未配置」:用户对此做不了任何事,
  * 写出来只会让他来问。
  */
-const profiles = computed(() => (data.value?.available ? (data.value.profiles ?? []) : []))
+// 只列出【当前用户能用】的配置文件。不能用的整条不显示 —— 不显示灰掉的
+// 按钮,也不显示「这一份暂时不能用」:用户对一份自己等级里没有落地节点的
+// 配置做不了任何事,列出来只会引出「为什么我不能用」。available 是后端真的
+// 渲染过一遍得出来的(Service.ProfileLinks),不是按字段猜的。
+const profiles = computed(() =>
+  (data.value?.available ? (data.value.profiles ?? []) : []).filter((p) => p.available),
+)
 
 function regenerate() {
   lbDangerConfirm({
@@ -207,14 +213,8 @@ function regenerate() {
             </div>
             <div class="ps__fmt-hint">{{ p.description || profileKindHint[p.kind] }}</div>
 
-            <LbCopyField v-if="p.available" :value="p.url" middle-ellipsis button-text="复制" />
-            <!--
-              不可用时不给一个点了会报错的复制按钮:置灰只传达「现在不能点」,
-              传达不了「为什么」。原因是后端真的渲染过一遍得出来的。
-            -->
-            <div v-else class="ps__fmt-blocked">
-              <strong>这一份暂时不能用。</strong>{{ p.reason }}
-            </div>
+            <!-- 列表已按 available 过滤,这里出现的都是能用的。 -->
+            <LbCopyField :value="p.url" middle-ellipsis button-text="复制" />
           </div>
         </div>
       </section>

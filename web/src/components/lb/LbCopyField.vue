@@ -29,13 +29,29 @@ const box = ref<HTMLElement | null>(null)
 const copied = ref(false)
 
 /**
- * 中段省略。只省略最后一个「/」之后的那一段 ——
- * 订阅地址要的是「前缀完整 + token 缩短」(https://box.example.com/sub/a41e…7b02),
- * 把前缀一起吃掉会得到 https://127…bnAfuI,连是哪台面板都看不出来。
- * UUID 这类没有斜杠的串则整体中段省略,与 7f3a…c91d 一致。
+ * 中段省略。真正等同密码的是 `/sub/` 后面那一段 token,别的都可以完整显示。
+ *
+ * token 在【节点订阅】里是最后一段(`/sub/<token>` 或 `/sub/<token>?format=…`),
+ * 而在【配置文件】链接里在中间(`/sub/<token>/profile/<id>/<file>`)——
+ * 只省略最后一段的话,配置文件链接会把 token 整段明文显示出来。所以先定位
+ * token 段(`/sub/` 之后、下一个 `/` 或 `?` 之前)按它省略,前缀与后缀都留着:
+ *   https://box.example.com/sub/a41e…7b02/profile/3/config.json
+ * 把前缀一起吃掉会得到 https://127…json,连是哪台面板都看不出来。
+ * UUID 这类没有 `/sub/` 段的串按最后一段省略(没有斜杠时就是整体),
+ * 与 7f3a…c91d 一致。
  */
 function shown(v: string): string {
   if (!props.middleEllipsis) return v
+  const marker = '/sub/'
+  const at = v.indexOf(marker)
+  if (at >= 0) {
+    const start = at + marker.length
+    let end = start
+    while (end < v.length && v[end] !== '/' && v[end] !== '?') end++
+    const token = v.slice(start, end)
+    if (token.length <= 16) return v
+    return v.slice(0, start) + token.slice(0, 10) + '…' + token.slice(-6) + v.slice(end)
+  }
   const cut = v.lastIndexOf('/') + 1
   const head = v.slice(0, cut)
   const tail = v.slice(cut)
