@@ -688,6 +688,11 @@ export interface Node {
    * 只有 GET /api/nodes 与 GET /api/nodes/{id} 会带上它。
    */
   available_protocols?: { value: NodeProtocol; label: string }[]
+  /**
+   * 绑定的阿里云实例(V17),没绑定时是 null —— 据此决定要不要显示「云实例」
+   * 那一块,不显示一个全是空值的卡片。只有 GET /api/nodes 与 GET /api/nodes/{id} 带它。
+   */
+  cloud?: CloudNodeView | null
   created_at: string
   updated_at: string
   /**
@@ -861,6 +866,134 @@ export interface PanelSettings {
   probe_url: string
   /** 留空时实际打的那个地址 */
   default_probe_url: string
+  /** 云实例定时开关机 HH:MM 的解释时区(IANA 名),空串表示用默认 */
+  cloud_timezone: string
+  default_cloud_timezone: string
+  /** 云账号轮询间隔(秒),0 表示用默认 */
+  cloud_poll_interval_sec: number
+  default_cloud_poll_interval_sec: number
+}
+
+// ---------- 阿里云 CDT 主机(V17) ----------
+
+/** 阿里云实例状态,取值是阿里云的原文;空串表示还没查过 */
+export type CloudInstanceStatus = 'Running' | 'Stopped' | 'Starting' | 'Stopping' | 'Pending' | ''
+export type CloudStoppedMode = 'KeepCharging' | 'StopCharging'
+export type CloudThresholdAction = 'NOTIFY' | 'STOP'
+export type CloudStoppedBy = '' | 'THRESHOLD' | 'SCHEDULE' | 'MANUAL'
+export type CloudTrafficClass = 'INTL' | 'CN'
+
+export interface CloudAccountState {
+  intl_bytes: number
+  cn_bytes: number
+  /** 上一次【成功】采样的时间,空串表示从未成功 */
+  sampled_at: string
+  last_error: string
+  consecutive_failures: number
+}
+
+/**
+ * 云账号。Secret 永远不随接口返回;编辑时留空表示不改。
+ * 两个池子的百分比与超没超由后端算好 —— 阈值判定只能有一处实现。
+ */
+export interface CloudAccount {
+  id: number
+  name: string
+  provider: 'ALIYUN'
+  access_key_id: string
+  access_key_id_masked: string
+  /** 两个池子的免费额度(字节),0 表示不限 */
+  cdt_quota_intl_bytes: number
+  cdt_quota_cn_bytes: number
+  threshold_percent: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+  state: CloudAccountState
+  intl_percent: number | null
+  cn_percent: number | null
+  intl_over: boolean
+  cn_over: boolean
+  bound_nodes: number
+  intl_label: string
+  cn_label: string
+}
+
+/** 挂在节点上的云实例信息:绑定 + 运行态 + 所在池子(账号级)的用量。 */
+export interface CloudNodeView {
+  node_id: number
+  account_id: number
+  region_id: string
+  instance_id: string
+  traffic_class: CloudTrafficClass
+  threshold_action: CloudThresholdAction
+  stopped_mode: CloudStoppedMode
+  schedule_enabled: boolean
+  start_time: string
+  stop_time: string
+  keepalive: boolean
+  instance_status: CloudInstanceStatus
+  status_at: string
+  public_ip: string
+  has_eip: boolean
+  spot: boolean
+  charge_type: string
+  stopped_by: CloudStoppedBy
+  stopped_at: string
+  last_error: string
+  keepalive_failures: number
+  keepalive_retry_at: string
+  account_name: string
+  class_label: string
+  used_bytes: number
+  quota_bytes: number
+  usage_percent: number | null
+  over: boolean
+  sampled: boolean
+  sampled_at: string
+  query_error: string
+  status_label: string
+  stopped_by_label: string
+  stopped_mode_label: string
+  /** 实例的对外地址与节点管理地址不一致(管理地址是 IP 字面量时才比) */
+  ip_mismatch: boolean
+}
+
+export interface CloudInstance {
+  instance_id: string
+  instance_name: string
+  region_id: string
+  zone_id: string
+  instance_type: string
+  status: CloudInstanceStatus
+  stopped_mode: string
+  charge_type: string
+  spot_strategy: string
+  public_ip: string
+  eip: string
+  os_name: string
+}
+
+export interface CloudPowerEvent {
+  id: number
+  node_id: number
+  account_id: number
+  kind: string
+  kind_label: string
+  status: 'SENT' | 'FAILED' | 'SKIPPED'
+  detail: string
+  created_at: string
+}
+
+export interface CloudTestResult {
+  regions: { business_region_id: string; bytes: number }[]
+  intl_bytes: number
+  cn_bytes: number
+}
+
+export interface CloudSample {
+  bucket_ts: number
+  bytes: number
 }
 
 export interface NodeUpdateEffect {
@@ -2272,6 +2405,39 @@ export const api = {
   checkExternalProxy: (id: number) =>
     request<ProxyCheckResult>(`/api/external-proxies/${id}/check`, { method: 'POST' }),
   /** 粘贴分享链接解析,不落库。响应里没有密码 */
+  // ---------- 阿里云 CDT 主机(V17) ----------
+  cloudAccounts: () =>
+    request<{ items: CloudAccount[]; last_run: string }>('/api/cloud-accounts'),
+  createCloudAccount: (body: Record<string, unknown>) =>
+    request<CloudAccount>('/api/cloud-accounts', { method: 'POST', body }),
+  updateCloudAccount: (id: number, body: Record<string, unknown>) =>
+    request<CloudAccount>(`/api/cloud-accounts/${id}`, { method: 'PUT', body }),
+  deleteCloudAccount: (id: number) =>
+    request<void>(`/api/cloud-accounts/${id}`, { method: 'DELETE' }),
+  /** 用一对凭据当场查一次 CDT 用量。传 account_id 用库里的 Secret,或直接传一对新凭据。 */
+  testCloudAccount: (body: { account_id?: number; access_key_id?: string; access_key_secret?: string }) =>
+    request<CloudTestResult>('/api/cloud-accounts/test', { method: 'POST', body }),
+  refreshCloudAccount: (id: number) =>
+    request<CloudAccount>(`/api/cloud-accounts/${id}/refresh`, { method: 'POST' }),
+  cloudInstances: (id: number, region: string) =>
+    request<{ items: CloudInstance[] }>(
+      `/api/cloud-accounts/${id}/instances?region=${encodeURIComponent(region)}`,
+    ),
+  cloudSamples: (id: number, cls: CloudTrafficClass, days = 31) =>
+    request<{ items: CloudSample[] }>(`/api/cloud-accounts/${id}/samples?class=${cls}&days=${days}`),
+  nodeCloud: (id: number) => request<CloudNodeView>(`/api/nodes/${id}/cloud`),
+  saveNodeCloud: (id: number, body: Record<string, unknown>) =>
+    request<CloudNodeView>(`/api/nodes/${id}/cloud`, { method: 'PUT', body }),
+  deleteNodeCloud: (id: number) => request<void>(`/api/nodes/${id}/cloud`, { method: 'DELETE' }),
+  refreshNodeCloud: (id: number) =>
+    request<CloudNodeView>(`/api/nodes/${id}/cloud/refresh`, { method: 'POST' }),
+  startNodeCloud: (id: number) =>
+    request<CloudNodeView>(`/api/nodes/${id}/cloud/start`, { method: 'POST' }),
+  stopNodeCloud: (id: number) =>
+    request<CloudNodeView>(`/api/nodes/${id}/cloud/stop`, { method: 'POST' }),
+  nodeCloudEvents: (id: number, limit = 30) =>
+    request<{ items: CloudPowerEvent[] }>(`/api/nodes/${id}/cloud/events?limit=${limit}`),
+
   notifySettings: () => request<NotifySettings>('/api/settings/notify'),
   updateNotifySettings: (body: Record<string, unknown>) =>
     request<NotifySettings>('/api/settings/notify', { method: 'PUT', body }),

@@ -86,6 +86,10 @@ type nodeView struct {
 	// 只在预览版里的协议,那个下拉框会漏掉它,而后端明明支持 ——
 	// 与 udp_timeout、subscription_host 是同一条规矩。
 	AvailableProtocols []protocolOption `json:"available_protocols"`
+
+	// Cloud 是这台机器绑定的云实例(V17),没绑定时是 null —— 前端据此决定
+	// 要不要显示「云实例」那一块,不显示一个全是空值的卡片。
+	Cloud *cloudNodeView `json:"cloud"`
 }
 
 // protocolOption 是入站协议下拉框里的一项。
@@ -134,9 +138,16 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := s.nodes.ConfigStatuses(r.Context(), nodes)
+	hosts := make(map[int64]string, len(nodes))
+	for _, n := range nodes {
+		hosts[n.ID] = n.Host
+	}
+	clouds := s.cloudViews(r, hosts)
 	items := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
-		items = append(items, newNodeView(n, status[n.ID]))
+		v := newNodeView(n, status[n.ID])
+		v.Cloud = clouds[n.ID]
+		items = append(items, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -152,8 +163,9 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, needsDeploy := s.nodes.ConfigStatus(r.Context(), n)
-	writeJSON(w, http.StatusOK, newNodeView(n,
-		node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy}))
+	v := newNodeView(n, node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy})
+	v.Cloud = s.cloudViewFor(r, n.ID, n.Host)
+	writeJSON(w, http.StatusOK, v)
 }
 
 type createNodeRequest struct {

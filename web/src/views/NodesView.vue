@@ -31,6 +31,7 @@ import {
   type LbResultItem,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
+import { cloudStatusMeta } from '@/components/cloud/cloudMeta'
 import { usePagination } from '@/composables/usePagination'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
 import { daysUntil, formatBytes, formatUTCDay } from '@/utils/format'
@@ -428,6 +429,7 @@ const columns = [
   { title: '运行状态', key: 'run', width: 160 },
   { title: '配置状态', key: 'config', width: 160 },
   { title: '服务巡检', key: 'health', width: 150 },
+  { title: '云实例', key: 'cloud', width: 110 },
   { title: '最后同步', key: 'sync', width: 110 },
   { title: '本周期流量', key: 'cycle', width: 215 },
   { title: '操作', key: 'actions', width: 190, fixed: 'right' as const },
@@ -766,6 +768,10 @@ const keyOpen = ref(false)
             />
           </div>
           <div v-if="n.maintenance_message" class="nv__card-maint">{{ n.maintenance_message }}</div>
+          <div v-if="n.cloud" class="nv__stack nv__stack--row">
+            <span class="nv__reset">云实例</span>
+            <LbStatusTag :meta="cloudStatusMeta(n.cloud)" />
+          </div>
           <!-- 中转机上跑的是 nginx,它不接统计接口,面板在那台机器上
                拿不到任何计数。这里写明「不计流量」而不是画一条 0 的进度条 ——
                0 与「真的没用过」长得一模一样,那是最容易骗到管理员的一种失败。 -->
@@ -875,6 +881,12 @@ const keyOpen = ref(false)
               <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
               <template v-if="record.ipv6_address"> · IPv6</template>
             </div>
+          </template>
+
+          <!-- 云实例(V17):只有绑了阿里云实例的机器有;其余显示短横,不留空白格。 -->
+          <template v-else-if="column.key === 'cloud'">
+            <LbStatusTag v-if="record.cloud" :meta="cloudStatusMeta(record.cloud)" small />
+            <span v-else class="nv__reset">—</span>
           </template>
 
           <template v-else-if="column.key === 'health'">

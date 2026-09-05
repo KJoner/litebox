@@ -265,11 +265,15 @@ type syncTarget struct {
 // **只有 Mieru 入口的机器留在列表里,但只跑 Mieru 那一半**(HasSingBox)。
 // 它照样有流量要收,只是收的地方不是 V2Ray API。
 func (s *Scheduler) activeNodes(ctx context.Context) ([]syncTarget, error) {
+	// 阿里云说「不在跑」的云实例(V17)跳过:一台停着的机器每分钟报一次
+	// connection refused,只会把真正的同步失败淹掉。「还没查过」(状态为空)不跳。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT n.id, n.deployed_config_sha256 != ''
 		  FROM nodes n
+		  LEFT JOIN cloud_nodes c ON c.node_id = n.id
 		 WHERE n.deleted_at IS NULL AND n.role != 'RELAY'
 		   AND n.status IN ('ONLINE','OFFLINE','DEPLOY_FAILED')
+		   AND (c.node_id IS NULL OR c.instance_status IN ('', 'Running'))
 		 ORDER BY n.id`)
 	if err != nil {
 		return nil, err

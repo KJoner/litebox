@@ -44,6 +44,16 @@ const (
 	KindDeployFailed Kind = "DEPLOY_FAILED"
 	// KindNodeQuota 节点流量额度告警。
 	KindNodeQuota Kind = "NODE_QUOTA"
+	// KindCloudThreshold 云账号的 CDT 用量达到阈值(V17)。正文写明有没有停机。
+	KindCloudThreshold Kind = "CLOUD_THRESHOLD"
+	// KindCloudPower 云实例的定时 / 保活开关机结果,含失败与开机后换 IP(V17)。
+	// 每天两条不是人人都想收,所以它单独一种,可以关掉。
+	KindCloudPower Kind = "CLOUD_POWER"
+	// KindCloudQueryFailed CDT 流量连续几轮查不到(V17)。
+	//
+	// 这条不能省:**查不到的那一刻起阈值保护就没了**,而面板上那台机器仍然
+	// 显示着上一次采样的用量。与「连不上要两轮才推」同理,一轮抖动不推。
+	KindCloudQueryFailed Kind = "CLOUD_QUERY_FAILED"
 	// KindTest 设置页上的「发送测试」。它永远不受事件开关与冷却影响 ——
 	// 测试的意义就是"现在立刻发一条",被冷却拦下会让人以为配置错了。
 	KindTest Kind = "TEST"
@@ -54,6 +64,7 @@ func AllKinds() []Kind {
 	return []Kind{
 		KindServiceDown, KindServiceRecovered, KindRecoverFailed,
 		KindDeployFailed, KindNodeQuota,
+		KindCloudThreshold, KindCloudPower, KindCloudQueryFailed,
 	}
 }
 
@@ -70,6 +81,12 @@ func (k Kind) Label() string {
 		return "部署失败"
 	case KindNodeQuota:
 		return "节点流量额度告警"
+	case KindCloudThreshold:
+		return "云账号 CDT 流量达到阈值"
+	case KindCloudPower:
+		return "云实例开关机结果"
+	case KindCloudQueryFailed:
+		return "CDT 流量连续查询失败"
 	case KindTest:
 		return "测试推送"
 	}
