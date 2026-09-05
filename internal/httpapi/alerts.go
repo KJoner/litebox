@@ -6,6 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/litebox/litebox/internal/aliyun"
+	"github.com/litebox/litebox/internal/cloud"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/traffic"
@@ -98,6 +100,62 @@ func expiryAlerts(
 			fmt.Sprintf("%d 天内到期,%s", days+1, soonNote)}}
 	}
 	return nil
+}
+
+// buildCloudAlerts 是云账号与云实例(V17)的预警。四类:
+//   - 账号某个池子的 CDT 用量达到阈值(账号级,所以按账号报一条);
+//   - CDT 连续 3 轮查不到 —— 查不到的这段时间里阈值保护不会触发;
+//   - 实例停着:面板停的写明原因,别人停的写明状态;
+//   - 开机后实例的对外地址与节点管理地址不一致 —— 订阅里下发的正是管理地址。
+func buildCloudAlerts(accounts []*cloud.Account, bindings map[int64]*cloud.NodeBinding,
+	nodes []*node.Node) []Alert {
+	alerts := make([]Alert, 0)
+	byID := map[int64]*cloud.Account{}
+	for _, a := range accounts {
+		byID[a.ID] = a
+		if !a.Enabled {
+			continue
+		}
+		for _, class := range []aliyun.TrafficClass{aliyun.ClassInternational, aliyun.ClassChina} {
+			if a.OverThreshold(class) {
+				alerts = append(alerts, Alert{AlertError, "cloud_account", a.Name, a.ID,
+					fmt.Sprintf("CDT %s用量已达 %.0f%%(阈值 %d%%)",
+						class.Label(), *a.UsagePercent(class), a.ThresholdPercent)})
+			}
+		}
+		if a.State.ConsecutiveFailures >= 3 {
+			alerts = append(alerts, Alert{AlertError, "cloud_account", a.Name, a.ID,
+				fmt.Sprintf("CDT 用量连续 %d 轮查不到,超阈值停机不会触发:%s",
+					a.State.ConsecutiveFailures, truncateAlert(a.State.LastError))})
+		}
+	}
+	for _, n := range nodes {
+		b, ok := bindings[n.ID]
+		if !ok || n.Status == node.StatusDisabled {
+			continue
+		}
+		name := n.DisplayName
+		if name == "" {
+			name = n.Name
+		}
+		if a, ok := byID[b.AccountID]; ok && !a.Enabled {
+			alerts = append(alerts, Alert{AlertWarning, "node", name, n.ID,
+				"绑定的云账号已停用,这台实例不再受监控"})
+		}
+		switch {
+		case b.StoppedBy != cloud.StoppedByNobody:
+			alerts = append(alerts, Alert{AlertWarning, "node", name, n.ID,
+				"云实例已停机:" + b.StoppedBy.Label()})
+		case b.Stopped():
+			alerts = append(alerts, Alert{AlertWarning, "node", name, n.ID,
+				"云实例处于「" + b.InstanceStatus.Label() + "」状态(不是面板停的)"})
+		}
+		if b.PublicIP != "" && looksLikeIPLiteral(n.Host) && n.Host != b.PublicIP {
+			alerts = append(alerts, Alert{AlertError, "node", name, n.ID,
+				fmt.Sprintf("云实例的公网地址 %s 与管理地址 %s 不一致,订阅里下发的是管理地址", b.PublicIP, n.Host)})
+		}
+	}
+	return alerts
 }
 
 func truncateAlert(s string) string {
@@ -264,9 +322,27 @@ func (s *Server) handleDashboardAlerts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 云实例(V17)同理,取不到就当没有。停着的云实例不报「监控数据过期」——
+	// 它连都连不上,那条只会与「已停机」重复。
+	var cloudAlerts []Alert
+	if s.cloudStore != nil {
+		accounts, aerr := s.cloudStore.ListAccounts(r.Context())
+		bindings, berr := s.cloudStore.BindingMap(r.Context())
+		if aerr != nil || berr != nil {
+			s.logger.Error("查询云实例预警数据失败", "account_err", aerr, "binding_err", berr)
+		} else {
+			cloudAlerts = buildCloudAlerts(accounts, bindings, nodes)
+			for id, b := range bindings {
+				if b.Stopped() {
+					delete(metrics, id)
+				}
+			}
+		}
+	}
+
 	alerts := buildDashboardAlerts(users, nodes, metrics, cycles, time.Now().UTC())
 	// 外部代理的预警拼在后面再整体排一次序,让 error 仍然排在最前。
 	// 分两段输出的话,一条「机场已到期」会掉在一堆 warning 后面。
-	alerts = sortAlerts(append(alerts, external...))
+	alerts = sortAlerts(append(append(alerts, external...), cloudAlerts...))
 	writeJSON(w, http.StatusOK, map[string]any{"items": alerts})
 }

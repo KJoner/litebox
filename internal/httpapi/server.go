@@ -15,6 +15,7 @@ import (
 	"github.com/litebox/litebox/internal/adjustment"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
+	"github.com/litebox/litebox/internal/cloud"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/hosttraffic"
@@ -48,6 +49,8 @@ type Server struct {
 	notifier     *notify.Notifier
 	settings     *settings.Store
 	tiers        *access.Store
+	cloud        *cloud.Engine
+	cloudStore   *cloud.Store
 	external     *externalproxy.Service
 	profiles     *subscription.ProfileStore
 	portal       *portal.Service
@@ -86,6 +89,9 @@ type Options struct {
 	Notifier    *notify.Notifier
 	Settings    *settings.Store
 	Tiers       *access.Store
+	// Cloud 与 CloudStore 一起提供或一起省略(V17)。省略时云账号与云实例的路由整体不注册。
+	Cloud      *cloud.Engine
+	CloudStore *cloud.Store
 	// External 为 nil 时外部代理相关路由整体不注册。
 	External *externalproxy.Service
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
@@ -127,6 +133,8 @@ func NewServer(opts Options) *Server {
 		notifier:     opts.Notifier,
 		settings:     opts.Settings,
 		tiers:        opts.Tiers,
+		cloud:        opts.Cloud,
+		cloudStore:   opts.CloudStore,
 		portal:       opts.Portal,
 		portalAccts:  opts.PortalAccts,
 		portalData:   opts.PortalData,
@@ -287,6 +295,27 @@ func (s *Server) Handler() http.Handler {
 			authed.HandleFunc("POST /api/users/batch-adjust", s.handleBatchAdjust)
 		}
 		authed.HandleFunc("GET /api/dashboard/alerts", s.handleDashboardAlerts)
+
+		// 云账号与云实例(V17)。两个依赖一起给才注册 —— 注册了半套接口再在运行时空指针,
+		// 比页面上根本没有这一块更糟。
+		if s.cloud != nil && s.cloudStore != nil {
+			authed.HandleFunc("GET /api/cloud-accounts", s.handleListCloudAccounts)
+			authed.HandleFunc("POST /api/cloud-accounts", s.handleCreateCloudAccount)
+			authed.HandleFunc("POST /api/cloud-accounts/test", s.handleTestCloudAccount)
+			authed.HandleFunc("GET /api/cloud-accounts/{id}", s.handleGetCloudAccount)
+			authed.HandleFunc("PUT /api/cloud-accounts/{id}", s.handleUpdateCloudAccount)
+			authed.HandleFunc("DELETE /api/cloud-accounts/{id}", s.handleDeleteCloudAccount)
+			authed.HandleFunc("POST /api/cloud-accounts/{id}/refresh", s.handleRefreshCloudAccount)
+			authed.HandleFunc("GET /api/cloud-accounts/{id}/instances", s.handleListCloudInstances)
+			authed.HandleFunc("GET /api/cloud-accounts/{id}/samples", s.handleCloudSamples)
+			authed.HandleFunc("GET /api/nodes/{id}/cloud", s.handleGetNodeCloud)
+			authed.HandleFunc("PUT /api/nodes/{id}/cloud", s.handleSaveNodeCloud)
+			authed.HandleFunc("DELETE /api/nodes/{id}/cloud", s.handleDeleteNodeCloud)
+			authed.HandleFunc("POST /api/nodes/{id}/cloud/refresh", s.handleRefreshNodeCloud)
+			authed.HandleFunc("POST /api/nodes/{id}/cloud/start", s.handleStartNodeCloud)
+			authed.HandleFunc("POST /api/nodes/{id}/cloud/stop", s.handleStopNodeCloud)
+			authed.HandleFunc("GET /api/nodes/{id}/cloud/events", s.handleNodeCloudEvents)
+		}
 	}
 
 	// 外部代理:不属于本面板、不由本面板部署的成品线路。

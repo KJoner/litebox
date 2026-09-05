@@ -5,6 +5,10 @@ import {
   api,
   ApiError,
   type AccessTier,
+  type CloudAccount,
+  type CloudInstance,
+  type CloudStoppedMode,
+  type CloudThresholdAction,
   type Node,
   type NodeBillingMode,
   type NodeProtocol,
@@ -15,6 +19,7 @@ import { LbSensitiveField } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from '@/components/user/quota'
 import { formatUTCTime } from '@/utils/format'
 import AddressListEditor from './AddressListEditor.vue'
+import { CLOUD_REGIONS } from '@/components/cloud/cloudMeta'
 
 type AddrRow = { id?: number; address: string }
 
@@ -78,6 +83,18 @@ const blank = {
   // 会被后端当成这台机器的"主地址"(链式/中转落地、列表里显示的地址读它)。
   extra_v4: [] as AddrRow[],
   ipv6_list: [] as AddrRow[],
+  // 阿里云实例(V17)。绑定单独一个接口,在节点保存之后顺带保存 ——
+  // 它一个字节都不进节点配置,不需要部署。
+  cloud_enabled: false,
+  cloud_account_id: 0,
+  cloud_region_id: 'cn-hongkong',
+  cloud_instance_id: '',
+  cloud_threshold_action: 'NOTIFY' as CloudThresholdAction,
+  cloud_stopped_mode: 'StopCharging' as CloudStoppedMode,
+  cloud_schedule_enabled: false,
+  cloud_start_time: '',
+  cloud_stop_time: '',
+  cloud_keepalive: false,
   quota_value: null as number | null,
   quota_unit: 'GB' as LbQuotaUnit,
   traffic_reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
@@ -149,9 +166,93 @@ watch(
         form.ipv6_list = []
       }
     }
+    // 云账号列表每次打开拉一次(它在设置页维护);编辑时把已有绑定回填。
+    // 拉不到不阻塞表单 —— 那一块会显示"先到设置页添加云账号"。
+    cloudInstances.value = []
+    try {
+      cloudAccounts.value = (await api.cloudAccounts()).items
+    } catch {
+      cloudAccounts.value = []
+    }
+    if (n?.cloud) {
+      Object.assign(form, {
+        cloud_enabled: true,
+        cloud_account_id: n.cloud.account_id,
+        cloud_region_id: n.cloud.region_id,
+        cloud_instance_id: n.cloud.instance_id,
+        cloud_threshold_action: n.cloud.threshold_action,
+        cloud_stopped_mode: n.cloud.stopped_mode,
+        cloud_schedule_enabled: n.cloud.schedule_enabled,
+        cloud_start_time: n.cloud.start_time,
+        cloud_stop_time: n.cloud.stop_time,
+        cloud_keepalive: n.cloud.keepalive,
+      })
+    }
     snapshot = JSON.stringify(form)
   },
 )
+
+// ---------- 阿里云实例(V17) ----------
+
+const cloudAccounts = ref<CloudAccount[]>([])
+const cloudInstances = ref<CloudInstance[]>([])
+const fetchingInstances = ref(false)
+
+const selectedInstance = computed(() =>
+  cloudInstances.value.find((i) => i.instance_id === form.cloud_instance_id) ?? null,
+)
+
+/** 从账号拉一次这个区域的实例列表,免得手抄 i-xxxxxxxx。 */
+async function fetchInstances() {
+  if (!form.cloud_account_id) {
+    message.warning('先选一个云账号')
+    return
+  }
+  fetchingInstances.value = true
+  try {
+    const r = await api.cloudInstances(form.cloud_account_id, form.cloud_region_id.trim())
+    cloudInstances.value = r.items
+    if (r.items.length === 0) message.info('这个账号在该区域没有实例,检查区域 ID 是否填对')
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '拉取实例列表失败')
+  } finally {
+    fetchingInstances.value = false
+  }
+}
+
+function instanceLabel(i: CloudInstance): string {
+  const addr = i.eip ? `${i.eip} (EIP)` : i.public_ip || '无公网 IP'
+  return `${i.instance_name || i.instance_id} · ${i.instance_id} · ${i.status} · ${addr}`
+}
+
+/**
+ * 节点保存成功之后保存 / 解除绑定。失败不回滚节点的保存 —— 节点已经落库,
+ * 只把话说清楚,管理员再进编辑补一次。
+ */
+async function saveCloud(id: number) {
+  try {
+    if (form.cloud_enabled) {
+      await api.saveNodeCloud(id, {
+        account_id: form.cloud_account_id,
+        region_id: form.cloud_region_id.trim(),
+        instance_id: form.cloud_instance_id.trim(),
+        threshold_action: form.cloud_threshold_action,
+        stopped_mode: form.cloud_stopped_mode,
+        schedule_enabled: form.cloud_schedule_enabled,
+        start_time: form.cloud_start_time.trim(),
+        stop_time: form.cloud_stop_time.trim(),
+        keepalive: form.cloud_keepalive,
+      })
+    } else if (props.node?.cloud) {
+      await api.deleteNodeCloud(id)
+    }
+  } catch (err) {
+    message.warning(
+      `节点已保存,但云实例绑定没有保存:${err instanceof ApiError ? err.message : '未知错误'}。到「编辑节点」里再试一次。`,
+      8,
+    )
+  }
+}
 
 // 把两个列表拼成保存地址池要的形状。
 function addressPayload() {
@@ -186,6 +287,16 @@ const fieldLabels: Record<string, string> = {
   subscription_enabled: '下发到用户订阅',
   public_remark: '公开备注',
   maintenance_message: '维护说明',
+  cloud_enabled: '阿里云实例',
+  cloud_account_id: '云账号',
+  cloud_region_id: '实例区域',
+  cloud_instance_id: '实例 ID',
+  cloud_threshold_action: '超阈值动作',
+  cloud_stopped_mode: '停机模式',
+  cloud_schedule_enabled: '定时开关机',
+  cloud_start_time: '定时开机时间',
+  cloud_stop_time: '定时停机时间',
+  cloud_keepalive: '保活',
 }
 
 /** 只在确实脏了时拦截关闭,并列出改了哪几项 —— 只说「有未保存的修改」还得回去找。 */
@@ -335,6 +446,7 @@ async function doSubmit() {
       } else {
         message.success('节点已创建,公钥已装好。接下来依次执行「探测」和「安装 sing-box」')
       }
+      await saveCloud(result.node.id)
       emit('saved', result.node.id)
       return
     }
@@ -364,6 +476,7 @@ async function doSubmit() {
       public_remark: form.public_remark,
       maintenance_message: form.maintenance_message,
     })
+    await saveCloud(id)
     form.ssh_key = ''
     close()
     emit('saved', id)
@@ -586,6 +699,116 @@ async function doSubmit() {
         不会禁用节点,也不会把节点从订阅里摘掉 —— 那会同时打断这台机器上的全部用户。
       </div>
 
+      <!-- 阿里云实例(V17)。绑定单独一个接口,在节点保存之后顺带保存。 -->
+      <a-form-item label="阿里云实例(CDT 流量监控与开关机)">
+        <a-switch v-model:checked="form.cloud_enabled" />
+        <span class="nf__help nf__help--inline">
+          这台机器是阿里云 ECS、公网流量走 CDT 计费时打开。面板会按账号轮询 CDT 用量、查实例状态,
+          并按下面的规则开关机。
+        </span>
+      </a-form-item>
+      <template v-if="form.cloud_enabled">
+        <div v-if="cloudAccounts.length === 0" class="nf__note">
+          还没有云账号。先到「系统设置 → 云账号(阿里云 CDT)」添加一对 AccessKey,再回来绑定。
+        </div>
+        <a-row :gutter="12">
+          <a-col :span="12">
+            <a-form-item label="云账号" required>
+              <a-select v-model:value="form.cloud_account_id" placeholder="选择账号">
+                <a-select-option v-for="a in cloudAccounts" :key="a.id" :value="a.id">
+                  {{ a.name }}({{ a.access_key_id_masked }}){{ a.enabled ? '' : ' · 已停用' }}
+                </a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="实例区域" required>
+              <a-auto-complete
+                v-model:value="form.cloud_region_id"
+                :options="CLOUD_REGIONS.map((r) => ({ value: r.value, label: `${r.value} · ${r.label}` }))"
+                placeholder="cn-hongkong"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-form-item label="实例 ID" required>
+          <a-input-group compact style="display: flex">
+            <a-input v-model:value="form.cloud_instance_id" class="lb-mono" placeholder="i-…" style="flex: 1" />
+            <a-button :loading="fetchingInstances" @click="fetchInstances">从账号拉取实例列表</a-button>
+          </a-input-group>
+          <a-select
+            v-if="cloudInstances.length > 0"
+            v-model:value="form.cloud_instance_id"
+            style="width: 100%; margin-top: 6px"
+            placeholder="从列表里选"
+          >
+            <a-select-option v-for="i in cloudInstances" :key="i.instance_id" :value="i.instance_id">
+              {{ instanceLabel(i) }}
+            </a-select-option>
+          </a-select>
+          <div class="nf__help">
+            中国香港按阿里云的定价归<strong>国际</strong>区域的免费额度;内地区域是另一个池子。
+            <template v-if="selectedInstance">
+              <br />
+              选中的实例:{{ selectedInstance.charge_type === 'PostPaid' ? '按量付费' : selectedInstance.charge_type }}
+              <template v-if="selectedInstance.spot_strategy && selectedInstance.spot_strategy !== 'NoSpot'">
+                · 抢占式(会被阿里云回收,建议打开保活)
+              </template>
+              <template v-if="selectedInstance.eip"> · 有 EIP,节省停机不会换 IP</template>
+              <template v-else-if="selectedInstance.public_ip">
+                · <strong>没有 EIP</strong>,节省停机后开机公网 IP 可能会变
+              </template>
+            </template>
+          </div>
+        </a-form-item>
+        <a-form-item label="CDT 用量达到阈值时">
+          <a-radio-group v-model:value="form.cloud_threshold_action">
+            <a-radio value="NOTIFY">仅通知</a-radio>
+            <a-radio value="STOP">自动停机并通知</a-radio>
+          </a-radio-group>
+          <div class="nf__help">
+            阈值是账号级的(在云账号里设,默认 90%),按这台实例所在的池子判。选「自动停机」的后果:
+            <strong>这台机器上全部用户断线</strong>,直到下个月或你手动开机;同一个月内只停一次,
+            你手动开机之后面板不会再停它。这是面板里唯一会自动处置机器的地方。
+          </div>
+        </a-form-item>
+        <a-form-item label="停机模式">
+          <a-radio-group v-model:value="form.cloud_stopped_mode">
+            <a-radio value="StopCharging">节省停机 —— 停机期间不计算力费用</a-radio>
+            <a-radio value="KeepCharging">普通停机 —— 实例继续计费,IP 不变</a-radio>
+          </a-radio-group>
+          <div class="nf__help">
+            节省停机会释放<strong>系统分配的公网 IP</strong>,开机后换一个;有 EIP 的实例不受影响。
+            而订阅里下发的正是那个 IP —— 没有 EIP 的机器选这一档,开机后要到这里改管理地址,用户也要重新拉订阅。
+            面板会在开机后比对一次并提醒,但不会自动改。包年包月实例不支持节省停机。
+          </div>
+        </a-form-item>
+        <a-form-item label="定时开关机">
+          <a-switch v-model:checked="form.cloud_schedule_enabled" />
+          <template v-if="form.cloud_schedule_enabled">
+            <a-row :gutter="12" style="margin-top: 8px">
+              <a-col :span="12">
+                <a-input v-model:value="form.cloud_start_time" class="lb-mono" placeholder="开机 HH:MM(可空)" />
+              </a-col>
+              <a-col :span="12">
+                <a-input v-model:value="form.cloud_stop_time" class="lb-mono" placeholder="停机 HH:MM(可空)" />
+              </a-col>
+            </a-row>
+          </template>
+          <div class="nf__help">
+            每天按「系统设置 → 云账号」里的时区执行,两位小时(08:00)。到点之后 10 分钟内面板没跑到也会补做,
+            超过就不补。用量已达阈值时定时开机会被熔断并推送。
+          </div>
+        </a-form-item>
+        <a-form-item label="保活">
+          <a-switch v-model:checked="form.cloud_keepalive" />
+          <span class="nf__help nf__help--inline">
+            实例不是面板停的、却处于停止状态时(抢占式实例被回收、在控制台手停),面板自动开机;
+            开了定时时只在开机 ~ 停机时段内起作用。开机失败按退避重试,连续失败 6 次推一条。
+          </span>
+        </a-form-item>
+      </template>
+
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item label="SSH 端口">
@@ -795,6 +1018,14 @@ async function doSubmit() {
 
 .nf__help--row {
   margin: -12px 0 20px;
+}
+
+/* 跟在开关后面的说明:与开关同一行起头,换行后正常流。 */
+.nf__help--inline {
+  display: inline-block;
+  margin: 0 0 0 10px;
+  vertical-align: middle;
+  max-width: calc(100% - 60px);
 }
 
 /* 抵消 .nf__help--row 的 -12px,让说明文字落在 Alert 下方而不是压在它身上。 */

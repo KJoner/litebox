@@ -141,6 +141,9 @@ type Watchdog struct {
 
 	// autoRecover 关掉之后只推送、不动手。
 	autoRecover func(ctx context.Context) bool
+	// skipFunc 返回非空时这台机器这一轮不巡检,那句话进报告的 detail(V17:云实例停着)。
+	// 与下面的 skip(退避计数)是两回事。
+	skipFunc func(ctx context.Context, nodeID int64) string
 
 	mu      sync.Mutex
 	reports map[int64]*HealthReport
@@ -155,6 +158,10 @@ type WatchdogOptions struct {
 	Interval time.Duration
 	// AutoRecover 每轮读一次,让管理员在设置页改完立刻生效。
 	AutoRecover func(ctx context.Context) bool
+	// Skip 返回非空表示这台机器这一轮不巡检,返回值是给人看的原因(V17:阿里云说
+	// 这台实例停着 —— 一台停着的机器每两分钟报一次 UNREACHABLE 只会把真正的
+	// 故障淹掉,而且巡检去救它也只是白连一次)。
+	Skip func(ctx context.Context, nodeID int64) string
 }
 
 func NewWatchdog(opts WatchdogOptions) *Watchdog {
@@ -172,6 +179,7 @@ func NewWatchdog(opts WatchdogOptions) *Watchdog {
 		logger:      opts.Logger,
 		interval:    interval,
 		autoRecover: auto,
+		skipFunc:    opts.Skip,
 		reports:     map[int64]*HealthReport{},
 		skip:        map[int64]int{},
 	}
@@ -241,6 +249,18 @@ func (w *Watchdog) RunOnce(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+		}
+		if w.skipFunc != nil {
+			if reason := w.skipFunc(ctx, n.ID); reason != "" {
+				// 报告里写明为什么没巡检,而不是让上一轮的结果(多半是 UNREACHABLE)
+				// 停在页面上:那会被读成"机器坏了",而它只是被停了。
+				w.save(&HealthReport{NodeID: n.ID, NodeName: n.Name, CheckedAt: time.Now(),
+					SingBox: ServiceNotApplicable, SingBoxDetail: reason,
+					Nginx: ServiceNotApplicable, NginxDetail: reason,
+					Realm: ServiceNotApplicable, RealmDetail: reason,
+					Mieru: []MieruServiceReport{}})
+				continue
+			}
 		}
 		w.checkNode(ctx, n, auto)
 	}

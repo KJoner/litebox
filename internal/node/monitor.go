@@ -26,6 +26,7 @@ type Monitor struct {
 	logger    *slog.Logger
 	interval  time.Duration
 	retention time.Duration
+	skip      func(ctx context.Context, nodeID int64) string
 
 	mu       sync.Mutex
 	lastRun  time.Time
@@ -38,6 +39,8 @@ type MonitorOptions struct {
 	Logger    *slog.Logger
 	Interval  time.Duration
 	Retention time.Duration
+	// Skip 返回非空表示这台机器这一轮不采集(V17:云实例停着,连也连不上)。
+	Skip func(ctx context.Context, nodeID int64) string
 }
 
 func NewMonitor(opts MonitorOptions) *Monitor {
@@ -55,6 +58,7 @@ func NewMonitor(opts MonitorOptions) *Monitor {
 		logger:    opts.Logger,
 		interval:  interval,
 		retention: retention,
+		skip:      opts.Skip,
 		lastErrs:  map[int64]string{},
 	}
 }
@@ -98,6 +102,9 @@ func (m *Monitor) RunOnce(ctx context.Context) {
 		}
 		// 从未探测过的节点多半还没接上,采集只会一路超时。
 		if n.Arch == "" {
+			continue
+		}
+		if m.skip != nil && m.skip(ctx, n.ID) != "" {
 			continue
 		}
 		if _, err := m.CollectNode(ctx, n.ID); err != nil {

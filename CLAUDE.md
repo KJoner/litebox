@@ -26,6 +26,9 @@ V14 增加了 Snell(sing-box 1.14 的入站,连带引入「版本通道」:
 V15 增加了主机流量(vnStat)与实时网卡曲线、nginx 转发的「指定地址」落地、
 第二种转发引擎 realm、sing-box 入口的「不计流量」开关,并把部署拨测的终点
 从本机 sshd 换成一个 HTTP 204 地址,定位不变。
+V16 把一台机器的订阅地址从固定两栏变成地址池,每个入口按地址各配端口与订阅名。
+V17 增加了阿里云 CDT 主机:按账号轮询 CDT 用量、超阈值自动停实例、定时开关机、
+保活与推送 —— **这是面板第一处对机器做自动处置的地方**,只对显式选了停机的实例。
 **自建节点的落地协议到 V13 才第一次变长** —— 在此之前 V4~V12 一个字没加。
 现在是 VLESS + REALITY、Shadowsocks 2022、Mieru 与 Snell 四种,
 仍然只有这四种:那是我们自己要运维的东西,与登记别人配好的线路是两件事。
@@ -2315,6 +2318,93 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   常见情形(迁移出来的、或没细分的)与真实订阅一致,细分过的入口以入口表单里的
   地址条目编辑器为准。
 
+## 阿里云 CDT 主机约束(V17)
+
+参考项目是 CDT-Monitor(Go 单体 + SQLite),计划见 `docs/开发计划/v17/v17版本开发计划.md`,
+真机结论见 `docs/开发计划/v17/V17-技术验证报告.md`(该目录在 .gitignore 里,只在本地)。
+数据层四张表(迁移 0036):`cloud_accounts`(一对 AccessKey + 两个池子的额度与阈值)、
+`cloud_nodes`(节点 → 实例的绑定 + 运行态)、`cloud_action_marks`(去重键)、
+`cloud_power_events`(开关机记录),外加 `cloud_account_state` 与小时样本。
+**`nodes` 表一个字节没动**:云实例的一切都在独立表里,判据是「有没有 `cloud_nodes` 那一行」。
+
+* **CDT 的计数器是【账号级 × 业务区域】的,不是实例级的。** `ListCdtInternetTraffic`
+  返回这个账号在每个 `BusinessRegionId` 下本月累计的公网流量,里面没有实例维度,
+  同一个账号下两台实例共用一个池子。所以额度与阈值挂在账号上(国际 / 内地两个池子,
+  `aliyun.ClassOf`:`cn-*` 归内地,**但 `cn-hongkong` 归国际** —— 阿里云的定价就这么分),
+  「超了怎么办」挂在节点上。界面上那条进度条要写明「账号级,与同账号别的实例共用」;
+
+* **这个接口不在官方 SDK 里,也不在 OpenAPI 门户的元数据里。** `internal/aliyun` 自己做
+  RPC V1 签名(HMAC-SHA1,`percentEncode` 把 `+`→`%20`、`*`→`%2A`、`%7E`→`~`),
+  不引 SDK。真机实测响应是**顶层** `TrafficDetails[]{BusinessRegionId, Traffic(字节)}`,
+  代码连「套在 `Data` 下」那种形状也收;**没有 `TrafficDetails` 是错误(`ErrNoTrafficDetails`),
+  不是用量为 0** —— 那是接口形状变了或账号没开通 CDT,两种都要人看;
+
+* **读接口失败时一个字都不改,连续 3 轮才推送,恢复要报。** 用量与 `sampled_at` 保持上一次
+  成功的值,只记 `last_error` 与 `consecutive_failures`;第三轮推 `CLOUD_QUERY_FAILED`
+  的 CRITICAL —— **查不到的那一刻起阈值保护就失效了**,而面板上那台机器仍显示着上一次的用量;
+  之后恢复了推一条 INFO。与「连不上要两轮才推」「只报警不报恢复的人下次不会爬起来」同理;
+
+* **拿不到数据时不动手。** `Account.OverThreshold` 在额度为 0(不限)或**从未采样过**时恒为假,
+  比较用整数乘法(`used*100 >= quota*percent`),与节点额度那条一字不差。
+  `UsagePercent` 那两种情况返回 nil 不返回 0;
+
+* **这是面板第一处自动处置机器的地方,而且只对显式选了 `STOP` 的实例。** 默认 `NOTIFY`。
+  「节点额度只预警」那条规矩的理由(同步有间隔、各家口径不一)在 CDT 这里不成立:计数器来自
+  阿里云自己、与账单同一口径,超额是按 GB 收钱。**节点额度那条规矩一个字不改**,它算的是
+  ledger,与 CDT 是两套账;
+
+* **停机之前尽力同步一次这台机器的代理流量,失败【不中止】停机。** 这里保护的是账单,
+  与「重启前同步失败必须中止部署」的取舍相反,差异写进事件详情(「最后一段流量可能没入账」)。
+  同步走 `Scheduler.SyncNodeNow`,没部署过 sing-box 的机器它自己会跳过;
+
+* **去重靠 `cloud_action_marks` 的 `INSERT OR IGNORE`,拿到键才动手。** 三种键:
+  `threshold-stop:<node>:<yyyymm>`(同月只停一次,管理员手动开机后本月不再停)、
+  `threshold-notify:<account>:<class>:<yyyymm>`(阈值汇总每月推一次,这一轮真的停了机器时再推)、
+  `schedule:<node>:<yyyymmdd>:<start|stop>`(按日)、`keepalive:<node>:<yyyymmddhhmm>`(按分钟)。
+  **用量回落到阈值之下时释放当月的阈值键**:管理员把额度改大之后再次超过,要能再触发。
+  动作失败时释放键(下一轮重试),成功与失败都进 `cloud_power_events`,那张表不承担去重;
+
+* **`cloud_nodes.stopped_by` 是载重的,回答「这台机器停着是面板干的还是别人干的」。**
+  只由面板的三种停机(阈值 / 定时 / 手动)写入;**开机成功时清空,实例在面板之外被开起来
+  (状态转成 Running)时也清空**。三处读它:保活只管 `stopped_by` 为空的机器(面板停的不碰,
+  控制台手停或抢占式被回收的才拉);巡检、资源采集、流量同步在 `instance_status != Running`
+  时跳过(判据用状态不用 stopped_by:别人停的也连不上);**状态为空(还没查过)不算停** ——
+  它说明不了任何事。巡检跳过时要写一份 `NOT_APPLICABLE` + 原因的报告,不能让上一轮的
+  `UNREACHABLE` 停在页面上被读成"机器坏了";
+
+* **阈值熔断优先于一切开机动作**(与参考项目一致):超阈值期间定时开机记 SKIPPED 并推送
+  (不推的话管理员看到的是「配了定时、到点没开、面板什么都没说」),保活不执行。
+  三条规则的交叉写在纯函数 `cloud.decide` 里,由 `decide_test.go` 钉住;引擎的时钟与
+  推送出口可注入(`e.now` / `e.emit`),`engine_test.go` 对着真 SQLite 跑整轮;
+
+* **定时开关机的 HH:MM 按全局设置 `cloud_timezone` 解释(默认 Asia/Shanghai),
+  这是本项目第一处不按 UTC 的时间。** 补偿窗口 10 分钟:面板重启、轮次错过还来得及补,
+  超过就不补 —— 一台该 8 点关、结果 11 点被补关的机器,管理员会以为面板坏了。
+  **时间必须两位小时**(`hhmmPattern`):`time.Parse` 收得下 `8:00`,而时段判断按字符串比大小,
+  `"8:00" > "23:00"`,静默出错;
+
+* **保活按退避重试:5 分钟起翻倍、封顶 6 小时,连续失败 6 次推一条 CRITICAL,只推一次。**
+  节省停机后库存不足(`OperationDenied.NoStock`)是常态,每轮捅一次换不来任何东西。
+  开了定时且两头都填时,保活只在开机 ~ 停机时段内起作用;
+
+* **节省停机(`StopCharging`)会释放【系统分配】的公网 IP,开机后换地址;EIP 不受影响。**
+  阿里云文档写明,真机上有 EIP 的实例验过不换。默认值定为 `StopCharging`(用户的实例都挂 EIP),
+  表单与确认框上必须把「没有 EIP 会换 IP」写出来,选中的实例有没有 EIP 也直接显示。
+  **开机后比对一次对外地址与 `nodes.host`**:不一致推 `CLOUD_POWER` + 仪表盘常驻一条预警,
+  **不自动改 host** —— 那是唯一的管理通道,改错一次面板就再也连不上这台机器;
+  host 是域名时不比(那正是解这个问题的正路);
+
+* **AccessKey Secret 主密钥加密、`json:"-"`、编辑时 nil / 空串 = 保持;错误文本里擦掉
+  Secret,AccessKey ID 只留前 7 位**(`aliyun.scrub`,`TestRetriesOnlyRetryableFailures` 钉着)。
+  审计详情写脱敏后的 ID,不写 Secret。重试只对 5xx / 429 / Throttling 与传输层错误,
+  4xx 重试三次只是把一次失败拖成三次;
+
+* **一台实例只能绑一个节点**(`idx_cloud_nodes_instance` 唯一索引):两个节点各按自己的规则
+  开关同一台机器,它会被反复开开关关而两边各自看起来都对。换绑到另一台实例时运行态整体清零,
+  旧实例的「被谁停的」对新实例不成立。还有节点绑着的账号不能删(RESTRICT);
+
+* **门户一个字不动。** 用户决定不向门户用户显示「已停机」;`portal.Node` 白名单里没有云字段。
+
 ## 前端约束(V3)
 
 设计规范见 `docs/开发计划/v3/litebox-web-ui/`(该目录在 .gitignore 里,只在本地)。
@@ -2975,5 +3065,26 @@ V16 多订阅地址与入口地址条目(约束见上面「多订阅地址与入
   镜像维护;`PUT /api/nodes/{id}/addresses`、`PUT /api/inbound-endpoints/{kind}/{id}`)
 * Phase 44 前端 —— 已完成(`AddressListEditor` 与 `EndpointsEditor` 两个组件;
   节点表单的额外 IPv4 / IPv6 列表;四个入口表单的地址条目编辑器;client 类型与接口)
+
+V17 阿里云 CDT 主机(约束见上面「阿里云 CDT 主机约束(V17)」):
+
+* Phase 45 技术验证 —— 已完成,见 `docs/开发计划/v17/V17-技术验证报告.md`
+  (cn-hongkong 一台抢占式实例:`ListCdtInternetTraffic` 社区用法直接可用、
+  顶层 `TrafficDetails` 字节数;节省停机 16 s 到 Stopped、`StoppedMode` 读回 `StopCharging`、
+  EIP 不变、开机 6 s 到 Running)
+* Phase 46 数据模型与客户端 —— 已完成(迁移 0036 六张表;`internal/aliyun` 自签名客户端
+  与 `httptest` 验签测试;`cloud.Store`;`/api/cloud-accounts*` 与 `/api/nodes/{id}/cloud*`;
+  设置项 `cloud_timezone` / `cloud_poll_interval`)
+* Phase 47 引擎 —— 已完成(`cloud.Engine`:轮询、小时样本、纯函数 `decide`、阈值 / 定时 /
+  保活的执行与去重、三种推送;巡检与资源采集的 `Skip`、流量同步的 LEFT JOIN 跳过;
+  仪表盘四类预警)
+* Phase 48 页面 —— 已完成(设置页「云账号」区块 `CloudAccountsPanel`;节点表单的
+  「阿里云实例」区块;节点详情 `CloudInstanceCard`(状态、账号级用量、手动开关机、
+  开关机记录、30 天曲线);节点列表「云实例」列)
+
+scratch 面板对着那台实例跑完了:建账号 → 测试 → 建节点 → 绑定 → 手动停机(事件、
+巡检报告变 `NOT_APPLICABLE` + 原因、预警「云实例已停机:在面板上手动停机」)→
+手动开机(预警清空、EIP 不变)。阈值那条路把额度改到 1 GiB 验的:先 NOTIFY 只预警,
+改成 STOP 后一轮就停、同月第二轮不再停、额度改回后去重键释放。
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

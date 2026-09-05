@@ -15,6 +15,7 @@ import {
 } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { LbCopyField, LbEmptyState } from '@/components/lb'
+import CloudAccountsPanel from '@/components/cloud/CloudAccountsPanel.vue'
 
 /**
  * 系统设置。全站唯一的「分组表单」页,也是唯一需要「还原」按钮的地方 ——
@@ -40,6 +41,7 @@ const sections = [
   { id: 'sub', label: '订阅地址' },
   { id: 'probe', label: '拨测目标' },
   { id: 'notify', label: '监控与推送' },
+  { id: 'cloud', label: '云账号(阿里云 CDT)' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
   { id: 'pwd', label: '管理员密码' },
@@ -577,6 +579,17 @@ onMounted(loadAll)
               <a-button type="primary" :loading="savingNotify" @click="saveNotify">保存</a-button>
             </div>
           </template>
+        </div>
+      </section>
+
+      <!-- 云账号(阿里云 CDT,V17) -->
+      <section id="set-cloud" class="st__card">
+        <div class="st__card-head">
+          <span>云账号(阿里云 CDT)</span>
+          <span class="st__badge st__badge--ok">改完立即生效</span>
+        </div>
+        <div class="st__card-body">
+          <CloudAccountsPanel />
         </div>
       </section>
 

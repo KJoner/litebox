@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
@@ -23,20 +24,38 @@ type settingsResponse struct {
 	ProbeURL string `json:"probe_url"`
 	// DefaultProbeURL 是留空时实际用的那个,让页面上显示得出"现在打的是哪个"。
 	DefaultProbeURL string `json:"default_probe_url"`
+	// CloudTimezone 是定时开关机 HH:MM 的解释时区(V17),空串表示用默认。
+	CloudTimezone        string `json:"cloud_timezone"`
+	DefaultCloudTimezone string `json:"default_cloud_timezone"`
+	// CloudPollIntervalSec 是云账号轮询间隔(秒),0 表示用默认。
+	CloudPollIntervalSec        int `json:"cloud_poll_interval_sec"`
+	DefaultCloudPollIntervalSec int `json:"default_cloud_poll_interval_sec"`
 }
 
 // currentSettings 组装设置响应。读写两条路径共用它,
 // 保证 PUT 的返回和 GET 完全同构 —— 少一个字段前端合并时就会把已有的值覆盖成空。
 func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 	resp := settingsResponse{
-		ConfigBaseURL:       s.cfg.HTTP.BaseURL,
-		SubscriptionBaseURL: s.settings.BaseURL(ctx, s.cfg.HTTP.BaseURL),
-		DefaultProbeURL:     deployment.DefaultProbeURL,
+		ConfigBaseURL:               s.cfg.HTTP.BaseURL,
+		SubscriptionBaseURL:         s.settings.BaseURL(ctx, s.cfg.HTTP.BaseURL),
+		DefaultProbeURL:             deployment.DefaultProbeURL,
+		DefaultCloudTimezone:        settings.DefaultCloudTimezone,
+		DefaultCloudPollIntervalSec: int(settings.DefaultCloudPollInterval.Seconds()),
 	}
 	if v, err := s.settings.Get(ctx, settings.KeyProbeURL); err != nil {
 		s.logger.Error("读取拨测目标失败", "error", err)
 	} else {
 		resp.ProbeURL = v
+	}
+	if v, err := s.settings.Get(ctx, settings.KeyCloudTimezone); err != nil {
+		s.logger.Error("读取云实例时区失败", "error", err)
+	} else {
+		resp.CloudTimezone = v
+	}
+	if v, err := s.settings.Get(ctx, settings.KeyCloudPollInterval); err != nil {
+		s.logger.Error("读取云账号轮询间隔失败", "error", err)
+	} else if d, err := settings.ParseCloudPollInterval(v); err == nil && strings.TrimSpace(v) != "" {
+		resp.CloudPollIntervalSec = int(d.Seconds())
 	}
 	if s.nodes != nil {
 		key, err := s.nodes.PanelPublicKey(ctx)
@@ -58,6 +77,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 type updateSettingsRequest struct {
 	SubscriptionBaseURL *string `json:"subscription_base_url"`
 	ProbeURL            *string `json:"probe_url"`
+	// 云实例(V17):时区空串 = 用默认;轮询间隔 0 = 用默认。
+	CloudTimezone        *string `json:"cloud_timezone"`
+	CloudPollIntervalSec *int    `json:"cloud_poll_interval_sec"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +88,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	if req.SubscriptionBaseURL == nil && req.ProbeURL == nil {
+	if req.SubscriptionBaseURL == nil && req.ProbeURL == nil &&
+		req.CloudTimezone == nil && req.CloudPollIntervalSec == nil {
 		writeError(w, http.StatusBadRequest, "没有要改的设置项")
 		return
 	}
@@ -104,6 +127,43 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			details = append(details, "拨测目标改回默认("+deployment.DefaultProbeURL+")")
 		} else {
 			details = append(details, "拨测目标改为 "+raw)
+		}
+	}
+	if req.CloudTimezone != nil {
+		tz, err := settings.ValidateTimezone(*req.CloudTimezone)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.settings.Set(r.Context(), settings.KeyCloudTimezone, tz); err != nil {
+			s.logger.Error("保存云实例时区失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if tz == "" {
+			details = append(details, "云实例时区改回默认("+settings.DefaultCloudTimezone+")")
+		} else {
+			details = append(details, "云实例时区改为 "+tz)
+		}
+	}
+	if req.CloudPollIntervalSec != nil {
+		raw := ""
+		if *req.CloudPollIntervalSec > 0 {
+			raw = strconv.Itoa(*req.CloudPollIntervalSec)
+		}
+		if _, err := settings.ParseCloudPollInterval(raw); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.settings.Set(r.Context(), settings.KeyCloudPollInterval, raw); err != nil {
+			s.logger.Error("保存云账号轮询间隔失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if raw == "" {
+			details = append(details, "云账号轮询间隔改回默认")
+		} else {
+			details = append(details, "云账号轮询间隔改为 "+raw+" 秒")
 		}
 	}
 

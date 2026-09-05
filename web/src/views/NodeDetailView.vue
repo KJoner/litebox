@@ -26,6 +26,7 @@ import MetricsChart from '@/components/MetricsChart.vue'
 import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
 import NodeEntriesPanel from '@/components/node/NodeEntriesPanel.vue'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
+import CloudInstanceCard from '@/components/cloud/CloudInstanceCard.vue'
 import {
   LbEmptyState,
   LbNameConfirm,
@@ -1788,6 +1789,9 @@ const needsPortForward = computed(() =>
                 </template>
               </div>
             </section>
+
+            <!-- 云实例(V17):只对绑了阿里云实例的机器显示。用量是账号级的,卡片里写明。 -->
+            <CloudInstanceCard v-if="node.cloud" :node="node" @changed="reload" />
 
             <section class="nd__card">
               <div class="nd__card-head">

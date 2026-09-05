@@ -28,8 +28,10 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/adjustment"
+	"github.com/litebox/litebox/internal/aliyun"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
+	"github.com/litebox/litebox/internal/cloud"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
@@ -536,6 +538,54 @@ func cmdServe(args []string) error {
 	})
 	go scheduler.Run(ctx)
 
+	// 阿里云 CDT 主机(V17):账号轮询、超阈值停机、定时开关机、保活。
+	// 它管的是【实例】,巡检管的是【服务】;停着的实例巡检、采集与流量同步都跳过 ——
+	// 一台停着的机器每分钟报一次 connection refused,只会把真正的故障淹掉。
+	cloudStore := cloud.NewStore(db, cipher)
+	cloudEngine := cloud.New(cloud.Options{
+		Store:    cloudStore,
+		API:      aliyun.New(),
+		Notifier: notifier,
+		Logger:   logger,
+		Interval: settingsStore.CloudPollInterval,
+		Location: settingsStore.CloudLocation,
+		NodeName: func(ctx context.Context, id int64) string {
+			n, err := nodeStore.Get(ctx, id)
+			if err != nil {
+				return fmt.Sprintf("节点 #%d", id)
+			}
+			if n.DisplayName != "" {
+				return n.DisplayName
+			}
+			return n.Name
+		},
+		NodeHost: func(ctx context.Context, id int64) string {
+			n, err := nodeStore.Get(ctx, id)
+			if err != nil {
+				return ""
+			}
+			return n.Host
+		},
+		// 停机之前尽力把这台机器上 sing-box / mita 的计数器同步回来。
+		Sync: func(ctx context.Context, id int64) error {
+			_, err := scheduler.SyncNodeNow(ctx, id)
+			return err
+		},
+	})
+	go cloudEngine.Run(ctx)
+	// 阿里云说停着的实例,巡检与资源采集这一轮都跳过;原因进巡检报告。
+	cloudSkip := func(ctx context.Context, nodeID int64) string {
+		b, err := cloudStore.Binding(ctx, nodeID)
+		if err != nil || !b.Stopped() {
+			return ""
+		}
+		reason := "云实例" + b.InstanceStatus.Label()
+		if by := b.StoppedBy.Label(); by != "" {
+			reason += "(" + by + ")"
+		}
+		return reason
+	}
+
 	// 节点资源监控。间隔为负表示关闭 —— 极端受限的节点上宁可不采。
 	metricsStore := node.NewMetricsStore(db)
 	var monitor *node.Monitor
@@ -546,6 +596,7 @@ func cmdServe(args []string) error {
 			Logger:    logger,
 			Interval:  cfg.Node.MetricsInterval,
 			Retention: cfg.Node.MetricsRetention,
+			Skip:      cloudSkip,
 		})
 		go monitor.Run(ctx)
 	} else {
@@ -562,6 +613,7 @@ func cmdServe(args []string) error {
 		AutoRecover: func(ctx context.Context) bool {
 			return settingsStore.AutoRecoverEnabled(ctx)
 		},
+		Skip: cloudSkip,
 	})
 	go watchdog.Run(ctx)
 
@@ -600,6 +652,8 @@ func cmdServe(args []string) error {
 		Notifier:    notifier,
 		Settings:    settingsStore,
 		Tiers:       access.NewStore(db),
+		Cloud:       cloudEngine,
+		CloudStore:  cloudStore,
 
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),
