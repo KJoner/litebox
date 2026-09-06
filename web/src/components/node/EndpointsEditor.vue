@@ -121,7 +121,7 @@ function add() {
 .ee__empty {
   font-size: 11.5px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
   padding: 2px 0;
 }
 .ee__row {
@@ -144,7 +144,7 @@ function add() {
   min-width: 0;
 }
 .ee__del {
-  color: #b4291d;
+  color: var(--bad);
   padding: 0 6px;
 }
 .ee__add {

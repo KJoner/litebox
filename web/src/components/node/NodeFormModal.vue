@@ -1005,7 +1005,7 @@ async function doSubmit() {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 /* 开关右边的状态字。开关本身只有形态没有文字,单看它分不出「开着」还是
@@ -1013,7 +1013,7 @@ async function doSubmit() {
 .nf__inline {
   margin-left: 10px;
   font-size: 12.5px;
-  color: #576070;
+  color: var(--text2);
 }
 
 .nf__help--row {
@@ -1036,17 +1036,17 @@ async function doSubmit() {
 .nf__note {
   margin-bottom: 20px;
   padding: 10px 12px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
   font-size: 11.5px;
   line-height: 1.7;
-  color: #576070;
+  color: var(--text2);
 }
 
 .nf__foot {
   padding-top: 4px;
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

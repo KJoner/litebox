@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { color } from '@/theme/tokens'
 import { formatBytes, formatUTCDay } from '@/utils/format'
 
 /**
@@ -8,7 +7,11 @@ import { formatBytes, formatUTCDay } from '@/utils/format'
  *
  * 关键规则:**缺失的点传 null,不补 0、不插值。**
  * 补 0 会让当天看起来「没人用」,插值会凭空造出一个从未存在的数字。
- * 折线用灰虚线跨过缺口,柱状用空心柱。
+ * 折线用灰虚线跨过缺口(面积不填),柱状用空心虚线柱。
+ *
+ * V18:线 --brand 2.3px round + lb-draw 入场;面积 --brand 28%→0 渐变;
+ * 峰值点 r5 描 --surface;柱圆角 3,峰值 --brand、其余 --brand-bg,逐柱 lb-growy;
+ * 网格 --sep2;X 轴标签由调用方放在 #axis 插槽。
  */
 export interface LbPoint {
   /** ISO 日期(UTC 日) */
@@ -31,7 +34,7 @@ const props = withDefaults(
   }>(),
   {
     type: 'line',
-    height: 120,
+    height: 150,
     markMax: true,
     format: formatBytes,
     labelFormat: formatUTCDay,
@@ -40,41 +43,57 @@ const props = withDefaults(
 
 const W = 800
 
+// 渐变 id 要按实例唯一:同一页上两张图共用一个 id,后一张会引到前一张的 defs。
+let seq = 0
+const uid = `lb-spark-${++seq}`
+
 const max = computed(() => {
   const vals = props.points.map((p) => p.value).filter((v): v is number => v !== null)
   return vals.length ? Math.max(...vals) : 0
 })
 
+const top = 8
+const bottom = computed(() => props.height - 10)
+
 const scaled = computed(() => {
-  const h = props.height
   const n = Math.max(props.points.length - 1, 1)
-  const top = 8
-  const bottom = h - 10
   return props.points.map((p, i) => ({
     ...p,
     x: (i / n) * W,
     y:
       p.value === null || max.value === 0
         ? null
-        : bottom - (p.value / max.value) * (bottom - top),
+        : bottom.value - (p.value / max.value) * (bottom.value - top),
   }))
 })
 
 /** 把折线切成若干连续段,缺口不参与 polyline。 */
 const segments = computed(() => {
-  const segs: string[] = []
-  let cur: string[] = []
+  const segs: { x: number; y: number }[][] = []
+  let cur: { x: number; y: number }[] = []
   for (const p of scaled.value) {
     if (p.y === null) {
-      if (cur.length > 1) segs.push(cur.join(' '))
+      if (cur.length > 1) segs.push(cur)
       cur = []
     } else {
-      cur.push(`${p.x},${p.y}`)
+      cur.push({ x: p.x, y: p.y })
     }
   }
-  if (cur.length > 1) segs.push(cur.join(' '))
+  if (cur.length > 1) segs.push(cur)
   return segs
 })
+
+const segmentPoints = computed(() => segments.value.map((s) => s.map((p) => `${p.x},${p.y}`).join(' ')))
+
+/** 每段下面的面积:沿折线走一遍再沿底边回来。缺口处不填 —— 那里没有数据。 */
+const areaPaths = computed(() =>
+  segments.value.map((s) => {
+    const first = s[0]
+    const last = s[s.length - 1]
+    const line = s.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ')
+    return `${line} L${last.x},${bottom.value} L${first.x},${bottom.value} Z`
+  }),
+)
 
 /** 缺口两端连一条灰虚线,让人看出「这里断了」而不是「这里是低谷」。 */
 const gapLines = computed(() => {
@@ -107,7 +126,7 @@ defineExpose({ hasGap })
 //
 // 图上只有形状,没有数字。管理员看到「这天比昨天高一截」之后必然要问高多少,
 // 没有读数就只能去别处翻。缺失的日子同样要能悬停 —— 「当天没有记录」和
-// 「当天是 0」在图上一个是空心柱一个是贴底的实柱,但那点差别在 140px 高的
+// 「当天是 0」在图上一个是空心柱一个是贴底的实柱,但那点差别在 150px 高的
 // 图里很容易看反,悬停是唯一能把两者说死的地方。
 
 const hover = ref<number | null>(null)
@@ -151,6 +170,13 @@ const tipStyle = computed(() => {
       @mousemove="onMove"
       @mouseleave="hover = null"
     >
+      <defs>
+        <linearGradient :id="uid" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="var(--brand)" stop-opacity="0.28" />
+          <stop offset="1" stop-color="var(--brand)" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+
       <line
         v-for="f in [0.25, 0.5, 0.75]"
         :key="f"
@@ -158,23 +184,38 @@ const tipStyle = computed(() => {
         :y1="props.height * f"
         :x2="W"
         :y2="props.height * f"
-        :stroke="color.borderSubtle"
+        stroke="var(--sep2)"
       />
-      <line x1="0" :y1="props.height - 10" :x2="W" :y2="props.height - 10" :stroke="color.border" />
+      <line x1="0" :y1="bottom" :x2="W" :y2="bottom" stroke="var(--sep)" />
 
       <template v-if="props.type === 'bar'">
         <rect
           v-for="(p, i) in scaled"
           :key="i"
+          class="lb-spark__bar"
+          :class="{ 'lb-spark__bar--gap': p.y === null }"
           :x="p.x - barW / 2"
-          :y="p.y === null ? props.height - 18 : p.y"
+          :y="p.y === null ? bottom - 8 : p.y"
           :width="barW"
-          :height="p.y === null ? 8 : props.height - 10 - p.y"
-          :fill="p.y === null ? color.borderSubtle : p.value === max ? '#9EC3EC' : color.brandBorder"
+          :height="p.y === null ? 8 : bottom - p.y"
+          rx="3"
+          :fill="p.y === null ? 'var(--fill)' : p.value === max ? 'var(--brand)' : 'var(--brand-bg)'"
+          :stroke="p.y === null ? 'var(--text3)' : 'none'"
+          :stroke-dasharray="p.y === null ? '2 2' : undefined"
+          stroke-width="1"
+          vector-effect="non-scaling-stroke"
+          :style="{ animationDelay: `${i * 18}ms` }"
         />
       </template>
 
       <template v-else>
+        <path
+          v-for="(d, i) in areaPaths"
+          :key="'a' + i"
+          :d="d"
+          :fill="`url(#${uid})`"
+          class="lb-spark__area"
+        />
         <line
           v-for="(g, i) in gapLines"
           :key="'g' + i"
@@ -182,18 +223,22 @@ const tipStyle = computed(() => {
           :y1="g.y1"
           :x2="g.x2"
           :y2="g.y2"
-          :stroke="color.divider"
+          stroke="var(--text3)"
           stroke-width="1.5"
-          stroke-dasharray="3 3"
+          stroke-dasharray="4 4"
+          vector-effect="non-scaling-stroke"
         />
         <polyline
-          v-for="(s, i) in segments"
+          v-for="(s, i) in segmentPoints"
           :key="'s' + i"
           :points="s"
           fill="none"
-          :stroke="color.brand"
-          stroke-width="1.8"
+          stroke="var(--brand)"
+          stroke-width="2.3"
           stroke-linejoin="round"
+          stroke-linecap="round"
+          vector-effect="non-scaling-stroke"
+          class="lb-spark__line"
         />
       </template>
 
@@ -201,8 +246,12 @@ const tipStyle = computed(() => {
         v-if="maxPoint && maxPoint.y !== null"
         :cx="maxPoint.x"
         :cy="maxPoint.y"
-        r="3.5"
-        :fill="color.brand"
+        r="5"
+        fill="var(--brand)"
+        stroke="var(--surface)"
+        stroke-width="2.5"
+        vector-effect="non-scaling-stroke"
+        class="lb-spark__peak"
       />
 
       <!-- 悬停标记画在最后,盖在柱子和折线之上。 -->
@@ -211,19 +260,22 @@ const tipStyle = computed(() => {
           :x1="hoverPoint.x"
           y1="4"
           :x2="hoverPoint.x"
-          :y2="props.height - 10"
-          :stroke="color.text3"
+          :y2="bottom"
+          stroke="var(--text3)"
           stroke-width="1"
           stroke-dasharray="2 2"
+          vector-effect="non-scaling-stroke"
         />
         <circle
           v-if="hoverPoint.y !== null"
           :cx="hoverPoint.x"
           :cy="hoverPoint.y"
-          r="3.5"
-          :fill="color.brand"
-          stroke="#fff"
-          stroke-width="1.5"
+          r="4"
+          fill="var(--brand)"
+          stroke="var(--surface)"
+          stroke-width="2"
+          vector-effect="non-scaling-stroke"
+          class="lb-spark__peak"
         />
       </template>
     </svg>
@@ -234,7 +286,7 @@ const tipStyle = computed(() => {
       <div v-if="hoverPoint.value === null" class="lb-spark__tip-none">
         当天没有记录(不是 0)
       </div>
-      <b v-else class="lb-mono">{{ props.format(hoverPoint.value) }}</b>
+      <b v-else class="lb-tabular">{{ props.format(hoverPoint.value) }}</b>
     </div>
 
     <slot name="axis" />
@@ -252,19 +304,41 @@ const tipStyle = computed(() => {
 
 .lb-spark svg {
   display: block;
+  overflow: visible;
 }
 
-/* 色值取自 tokens.ts:bgSurface / border / text3 / shadowOverlay。 */
+.lb-spark__line {
+  stroke-dasharray: 1600;
+  animation: lb-draw 1.4s var(--ease);
+}
+
+.lb-spark__area {
+  animation: lb-fade 1.2s var(--ease);
+}
+
+/* preserveAspectRatio="none" 下圆会被拉成椭圆;peak 点不参与缩放的办法是
+   把它画小一点、靠描边撑视觉 —— 这里接受轻微变形,换不用第二层 SVG。 */
+.lb-spark__peak {
+  animation: lb-fade 0.6s var(--ease) both;
+  animation-delay: 1s;
+}
+
+.lb-spark__bar {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: lb-growy 0.7s var(--ease) both;
+}
+
 .lb-spark__tip {
   position: absolute;
   top: 2px;
   z-index: 2;
-  padding: 6px 9px;
-  background: rgb(255 255 255 / 97%);
-  border: 1px solid #e3e6ea;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgb(20 24 28 / 8%);
-  font-size: 12px;
+  padding: 8px 11px;
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
   line-height: 1.5;
   white-space: nowrap;
   /* 读数框自己不能吃鼠标事件,否则鼠标移到它上面就触发 mouseleave,框会闪。 */
@@ -272,11 +346,11 @@ const tipStyle = computed(() => {
 }
 
 .lb-spark__tip-day {
-  font-size: 10.5px;
-  color: #6b7480;
+  font-size: 11px;
+  color: var(--text3);
 }
 
 .lb-spark__tip-none {
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

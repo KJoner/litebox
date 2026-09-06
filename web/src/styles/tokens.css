@@ -1,0 +1,107 @@
+/*
+ * LiteBox iOS 风格改版 · 设计令牌(CSS 变量版)。
+ * 与 docs/开发计划/v18/design_handoff_ios_restyle/tokens.css 一致,
+ * 多出的只有 --purple-bg / --neutral 两组(设计稿里语义浅底一律按「色 12% alpha」算,
+ * 这里把算好的值写死,免得每个组件各自 color-mix 一遍)。
+ *
+ * 用法:<html data-theme="light" | "dark">。AntD 那一侧由 theme/antd.ts 读 tokens.ts
+ * 里的同一份实值 —— ConfigProvider 要按实值推导派生色,认不得 var()。
+ */
+:root {
+  /* 表面 */
+  --bg: #F5F5F7;            /* 页面底 */
+  --surface: #FFFFFF;       /* 卡片 */
+  --surface2: #F5F5F7;      /* 卡片内的分组列表底 / 行 hover */
+  --fill: rgba(0,0,0,.05);  /* 幽灵按钮、chip、输入框底 */
+  --fill2: rgba(0,0,0,.09); /* 上者的 hover / 开关关闭态 */
+  --sep: rgba(0,0,0,.09);   /* 分隔线(强) */
+  --sep2: rgba(0,0,0,.05);  /* 分隔线(弱,表格行) */
+  --glass: rgba(255,255,255,.78); /* 顶栏 / Toast 毛玻璃底,配 backdrop-filter: saturate(180%) blur(20px) */
+  --track: rgba(0,0,0,.07); /* 进度条轨道 */
+
+  /* 文字三级 */
+  --text: #1D1D1F;
+  --text2: #5F5F66;
+  --text3: #86868B;
+
+  /* 品牌蓝(保留原值) */
+  --brand: #2563B8;
+  --brand-hover: #1D4F96;
+  --brand-bg: #EEF4FC;
+
+  /* 语义色(保留原值;浅色底一律 color 上 12% alpha 版) */
+  --ok: #1B7A4B;   --ok-bg: rgba(27,122,75,.12);
+  --warn: #92610A; --warn-bg: rgba(146,97,10,.12);
+  --bad: #B4291D;  --bad-bg: rgba(180,41,29,.12);
+  --purple: #5F52A0; --purple-bg: rgba(95,82,160,.12); /* 停发订阅 / 维护中 */
+  --neutral: #5F5F66; --neutral-bg: rgba(0,0,0,.05);   /* 中性标签:已停用 / 未知 */
+
+  /* 阴影:卡片极浅,浮层重 */
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
+  --shadow-hover: 0 2px 4px rgba(0,0,0,.05), 0 14px 36px rgba(0,0,0,.09);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,.16);
+  --shadow-brand: 0 4px 12px rgba(37,99,184,.25); /* 主按钮 */
+
+  /* 圆角 */
+  --r-card: 20px;   /* 页面卡片 */
+  --r-sheet: 22px;  /* 弹窗 / 抽屉 */
+  --r-group: 14px;  /* 卡片内分组列表 / Tooltip */
+  --r-tile: 12px;   /* 38px 图标底块 */
+  --r-input: 10px;  /* 输入框 / 搜索框 / chip */
+  --r-seg: 9px;     /* 分段控件外框(内选中块 7px) */
+  --r-pill: 999px;  /* 按钮、标签、导航项 */
+
+  /* 字体:系统栈,不再加载 IBM Plex */
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'PingFang SC', 'Helvetica Neue', 'Noto Sans SC', sans-serif;
+  /* Windows 上没有 SF Mono / Menlo,Chrome 也不认 ui-monospace,不补 Consolas 会落到 Courier New。 */
+  --mono: 'SF Mono', ui-monospace, Menlo, Consolas, 'Cascadia Mono', monospace;
+
+  /* 动效 */
+  --ease: cubic-bezier(.2,.8,.2,1);
+  --ease-sheet: cubic-bezier(.32,.72,0,1);
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #000000;
+  --surface: #1C1C1E;
+  --surface2: #2C2C2E;
+  --fill: rgba(255,255,255,.08);
+  --fill2: rgba(255,255,255,.14);
+  --sep: rgba(255,255,255,.12);
+  --sep2: rgba(255,255,255,.07);
+  --glass: rgba(28,28,30,.78);
+  --track: rgba(255,255,255,.1);
+  --text: #F5F5F7;
+  --text2: #A1A1A6;
+  --text3: #8E8E93;
+  --brand: #5B9AF0;
+  --brand-hover: #7DB0F5;
+  --brand-bg: rgba(91,154,240,.18);
+  --ok: #4CC38A;   --ok-bg: rgba(76,195,138,.18);
+  --warn: #E0A526; --warn-bg: rgba(224,165,38,.18);
+  --bad: #F0665C;  --bad-bg: rgba(240,102,92,.18);
+  --purple: #B3A6F0; --purple-bg: rgba(179,166,240,.18);
+  --neutral: #A1A1A6; --neutral-bg: rgba(255,255,255,.08);
+  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.4);
+  --shadow-hover: 0 2px 4px rgba(0,0,0,.5), 0 14px 36px rgba(0,0,0,.6);
+  --shadow-lg: 0 12px 48px rgba(0,0,0,.7);
+  --shadow-brand: 0 4px 12px rgba(91,154,240,.3);
+
+  color-scheme: dark;
+}
+
+/* 关键帧(设计稿原样) */
+@keyframes lb-fadeup { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
+@keyframes lb-pop    { from { opacity: 0; transform: translateY(-4px) scale(.96) } to { opacity: 1; transform: none } }
+@keyframes lb-sheet  { from { opacity: 0; transform: translateY(16px) scale(.97) } to { opacity: 1; transform: none } }
+@keyframes lb-fade   { from { opacity: 0 } to { opacity: 1 } }
+@keyframes lb-slide-in { from { transform: translateX(40px); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes lb-banner { 0% { transform: translateY(-120%) scale(.96); opacity: 0 } 60% { transform: translateY(6px) scale(1) } 100% { transform: none; opacity: 1 } }
+@keyframes lb-grow   { from { transform: scaleX(0) } to { transform: scaleX(1) } }
+@keyframes lb-growy  { from { transform: scaleY(0) } to { transform: scaleY(1) } }
+@keyframes lb-step   { from { opacity: 0; transform: translateX(-6px) } to { opacity: 1; transform: none } }
+@keyframes lb-draw   { from { stroke-dashoffset: 1600 } to { stroke-dashoffset: 0 } }
+@keyframes lb-spin   { to { transform: rotate(360deg) } }
+@keyframes lb-pulse  { 0%,100% { opacity: .35 } 50% { opacity: 1 } }

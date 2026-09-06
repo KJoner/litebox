@@ -112,10 +112,12 @@ function deviceName(s: PortalSession): string {
 </script>
 
 <template>
-  <div class="pv">
-    <div class="pv__head">
-      <h2 class="pv__title">安全设置</h2>
-      <div class="pv__sub">密码与登录设备</div>
+  <div class="lb-page pv">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">安全设置</h1>
+        <div class="lb-page__summary">密码与登录设备。改密后其他设备要重新登录,订阅地址不受影响。</div>
+      </div>
     </div>
 
     <div v-if="mustChange" class="pv__force">
@@ -126,7 +128,7 @@ function deviceName(s: PortalSession): string {
     </div>
 
     <section class="pv__card">
-      <div class="pv__card-head"><span>修改密码</span></div>
+      <div class="pv__card-head"><span>修改密码</span><span class="lb-effect lb-effect--sessions">会撤销其他设备的登录</span></div>
       <div class="pv__card-body">
         <a-form layout="vertical" @submit.prevent="changePassword">
           <a-form-item :label="mustChange ? '当前密码(管理员给你的那个)' : '当前密码'" required>
@@ -209,52 +211,32 @@ function deviceName(s: PortalSession): string {
 
 <style scoped>
 .pv {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.pv__head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.pv__title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.pv__sub {
-  font-size: 12.5px;
-  color: #6b7480;
+  gap: 20px;
 }
 
 .pv__force {
-  padding: 12px 14px;
-  background: #fcf3e3;
-  border: 1px solid #efdcb4;
-  border-radius: 8px;
+  padding: 14px 18px;
+  background: var(--warn-bg);
+  border-radius: var(--r-card);
 }
 
 .pv__force-title {
   font-size: 13px;
   font-weight: 600;
-  color: #5c4405;
+  color: var(--warn);
 }
 
 .pv__force-body {
   margin-top: 5px;
   font-size: 12.5px;
   line-height: 1.8;
-  color: #5c4405;
+  color: var(--warn);
 }
 
 .pv__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 .pv__card-head {
@@ -263,17 +245,16 @@ function deviceName(s: PortalSession): string {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 12px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
+  padding: 18px 22px 0;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .pv__card-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
+  padding: 16px 22px 20px;
 }
 
 .pv__card-body :deep(.ant-form-item) {
@@ -283,26 +264,26 @@ function deviceName(s: PortalSession): string {
 .pv__help {
   margin-top: 4px;
   font-size: 12px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pv__help--ok {
-  color: #1b7a4b;
+  color: var(--ok);
 }
 
 .pv__note {
   padding: 11px 13px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
   font-size: 12px;
   line-height: 1.8;
-  color: #576070;
+  color: var(--text2);
 }
 
 .pv__sessions {
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
   overflow: hidden;
 }
 
@@ -314,7 +295,7 @@ function deviceName(s: PortalSession): string {
 }
 
 .pv__session + .pv__session {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep2);
 }
 
 .pv__session-head {
@@ -328,17 +309,17 @@ function deviceName(s: PortalSession): string {
 .pv__session-cur {
   flex: none;
   padding: 1px 6px;
-  background: #eef4fc;
-  border: 1px solid #c9dcf3;
-  border-radius: 3px;
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-bg);
+  border-radius: var(--r-pill);
   font-size: 10.5px;
-  color: #1d4f96;
+  color: var(--brand-hover);
 }
 
 .pv__session-meta {
   grid-column: 1;
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pv__session-act {
@@ -349,6 +330,6 @@ function deviceName(s: PortalSession): string {
 }
 
 .pv__muted {
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

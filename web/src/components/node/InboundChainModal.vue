@@ -302,17 +302,17 @@ async function runClear(i: NodeInbound) {
   margin: 0 0 12px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 .icm__warn {
   margin: 8px 0 0;
   font-size: 12px;
   line-height: 1.6;
-  color: #b4291d;
+  color: var(--bad);
 }
 .icm__now {
   margin-top: 12px;
   font-size: 12px;
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

@@ -11,24 +11,29 @@ import {
   type NodeCycleUsage,
   type NodeMetrics,
 } from '@/api/client'
-import { formatBytes } from '@/utils/format'
+import { formatBytes, formatUTCDay } from '@/utils/format'
 import {
   LbEmptyState,
+  LbIcon,
+  LbInfoTip,
   LbMetricCard,
   LbQuotaBar,
+  LbSectionTitle,
   LbSparkline,
   LbStatusTag,
   LbTimeText,
   configStatusMeta,
+  subscriptionOffMeta,
   type LbPoint,
 } from '@/components/lb'
 import { configState, nodeBadges } from '@/components/lb/derive'
 import { threshold } from '@/theme/tokens'
 
 /**
- * 仪表盘要回答的只有一句话:今天有没有事。
+ * 仪表盘要回答的只有一句话:今天有没有事。V18(方案 B「留白」)把这句话
+ * 直接做成 h1:没有 error 级告警时是「今天没有大事。」,有则「有 N 件事要处理。」
  *
- * 因此四块内容各自独立取数、各自降级 —— 现有实现是一个 Promise.all 加一个
+ * 四块内容各自独立取数、各自降级 —— 原来是一个 Promise.all 加一个
  * message.error,任何一个接口挂掉整页都只弹一条三秒吐司,而卡片渲染的是
  * `summary?.traffic_month ?? 0`,页面稳稳地显示「本月流量 0 B」。
  * 读不到和真的是零长得一模一样,这是最容易骗到管理员的一种失败。
@@ -139,6 +144,33 @@ const nodeMetricState = computed(() =>
 
 const offlineCount = computed(() => nodes.value.filter((n) => n.status === 'OFFLINE').length)
 const subOffCount = computed(() => nodes.value.filter((n) => !n.subscription_enabled).length)
+const errorAlerts = computed(() => alerts.value.filter((a) => a.level === 'error').length)
+
+/** 一句话结论。取自告警数量:有 error 级告警才算「有事」。 */
+const headline = computed(() => {
+  if (loading.value && !summary.value) return '正在看今天的情况…'
+  return errorAlerts.value > 0 ? `有 ${errorAlerts.value} 件事要处理。` : '今天没有大事。'
+})
+
+const summaryLine = computed(() => {
+  const parts: string[] = []
+  if (alerts.value.length) parts.push(`${alerts.value.length} 条告警待处理`)
+  if (summary.value) {
+    const online = summary.value.node_online
+    const total = summary.value.node_total
+    if (total === 0) parts.push('还没有添加任何节点')
+    else if (online === total) parts.push(`${total} 台节点全部运行正常`)
+    else parts.push(`${online} / ${total} 台节点运行正常`)
+  }
+  if (!parts.length) return summaryError.value ? '概览数据读取失败。' : ''
+  return parts.join(',') + '。'
+})
+
+const today = computed(() => {
+  const d = new Date()
+  const week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()]
+  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 · 星期${week}`
+})
 
 /** 近 7 天部署。分母也取这个窗口,否则「2 / 共 100 次」里的 100 是几个月的量。 */
 const recentDeploys = computed(() => {
@@ -172,8 +204,9 @@ const axisLabels = computed(() => {
 })
 
 const peak = computed(() => {
-  const vals = daily.value.map((d) => d.total)
-  return vals.length ? Math.max(...vals) : 0
+  let best: DailyPoint | null = null
+  for (const d of daily.value) if (!best || d.total > best.total) best = d
+  return best
 })
 
 const monthStart = computed(() => {
@@ -181,13 +214,10 @@ const monthStart = computed(() => {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`
 })
 
-const nodeColumns = [
-  { title: '节点', key: 'node', width: 230 },
-  { title: '运行状态', key: 'run', width: 150 },
-  { title: '配置状态', key: 'config', width: 160 },
-  { title: '最后同步', key: 'sync', width: 110 },
-  { title: '本周期流量', key: 'cycle', width: 180 },
-]
+const headTip = computed(
+  () =>
+    `一句话结论取自告警数量:有 error 级告警时改为「有 N 件事要处理」。周期边界均为 UTC 00:00,本月自 ${monthStart.value} 起;节点额度只预警,不会停服。`,
+)
 
 /** 部署记录的一行结论。失败要分两种说法 —— 见 DeploymentsView 里的说明。 */
 function conclusion(d: DeploymentRecord): string {
@@ -198,39 +228,71 @@ function conclusion(d: DeploymentRecord): string {
   }
   return d.error_message || '失败'
 }
+
+function alertKind(a: DashboardAlert): 'bad' | 'warn' {
+  return a.level === 'error' ? 'bad' : 'warn'
+}
+
+function alertCategory(a: DashboardAlert): string {
+  switch (a.category) {
+    case 'user':
+      return '用户'
+    case 'cloud_account':
+      return '云账号'
+    default:
+      return '节点'
+  }
+}
+
+function alertGo(a: DashboardAlert) {
+  switch (a.category) {
+    case 'user':
+      return { label: '查看用户', to: '/users' }
+    case 'cloud_account':
+      return { label: '查看云账号', to: '/settings' }
+    default:
+      return { label: '查看节点', to: a.target_id ? `/nodes/${a.target_id}` : '/nodes' }
+  }
+}
 </script>
 
 <template>
-  <div class="dv">
-    <div class="dv__head">
-      <div>
-        <h2 class="dv__title">仪表盘</h2>
-        <div class="dv__sub">
-          周期边界均为 UTC 00:00 · 本月自 {{ monthStart }} 起 · 节点额度只预警,不会停服
-        </div>
+  <div class="lb-page dv">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <div class="lb-page__eyebrow">{{ today }}</div>
+        <h1 class="lb-page__title">
+          <span>{{ headline }}</span>
+          <LbInfoTip :text="headTip" :width="300" />
+        </h1>
+        <div class="lb-page__summary">{{ summaryLine }}</div>
       </div>
-      <a-button :loading="loading" @click="load">刷新</a-button>
+      <div class="lb-page__actions">
+        <a-button type="primary" :loading="loading" @click="load">刷新</a-button>
+      </div>
     </div>
 
-    <!-- 系统告警。0 条时整块不出现 —— 不要给「今天没事」也占一块版面。 -->
+    <!-- 系统告警:iOS 通知式卡片。0 条时整块不出现 —— 不要给「今天没事」也占一块版面。 -->
     <section v-if="alerts.length" class="dv__alerts">
-      <div class="dv__alerts-head">系统告警 · {{ alerts.length }} 条待处理</div>
-      <div
-        v-for="(a, i) in alerts"
-        :key="i"
-        class="dv__alert"
-        :class="a.level === 'error' ? 'dv__alert--error' : 'dv__alert--warn'"
-      >
-        <span class="dv__alert-cat">{{ a.category === 'user' ? '用户' : '节点' }}</span>
-        <span class="dv__alert-target">{{ a.target }}</span>
-        <span class="dv__alert-msg">{{ a.message }}</span>
-        <a class="dv__alert-go" @click="router.push(a.category === 'user' ? '/users' : '/nodes')">
-          {{ a.category === 'user' ? '查看用户' : '查看节点' }}
-        </a>
+      <div v-for="(a, i) in alerts" :key="i" class="lb-notice lb-card--hover dv__alert">
+        <span class="lb-notice__icon" :class="`lb-notice__icon--${alertKind(a)}`">
+          <LbIcon :name="a.category === 'user' ? 'user' : a.category === 'cloud_account' ? 'cloud' : 'alert-triangle'" :size="18" />
+        </span>
+        <div class="lb-notice__body">
+          <div class="lb-notice__title">
+            <span>{{ a.target }}</span>
+            <span class="lb-notice__cat">{{ alertCategory(a) }}</span>
+          </div>
+          <div class="lb-notice__text">{{ a.message }}</div>
+        </div>
+        <div class="lb-notice__actions">
+          <a-button size="small" class="lb-btn-ghost" @click="router.push(alertGo(a).to)">{{ alertGo(a).label }}</a-button>
+        </div>
       </div>
     </section>
 
-    <div class="dv__metrics">
+    <!-- 指标条:一张卡内的分隔栅格,不是四张卡。 -->
+    <section class="lb-metrics">
       <LbMetricCard
         label="有效用户"
         :state="metricState"
@@ -238,7 +300,9 @@ function conclusion(d: DeploymentRecord): string {
         :total="summary?.user_total"
         :hint="
           summary
-            ? `已过期与超额共 ${summary.quota_exceeded + summary.expiring_soon} 人待处理`
+            ? summary.quota_exceeded + summary.expiring_soon
+              ? `${summary.quota_exceeded + summary.expiring_soon} 人已过期或超额`
+              : '没有人过期或超额'
             : undefined
         "
       />
@@ -252,51 +316,64 @@ function conclusion(d: DeploymentRecord): string {
       >
         <template #foot>
           <LbStatusTag v-if="offlineCount" kind="node" status="OFFLINE" :suffix="String(offlineCount)" />
-          <LbStatusTag
-            v-if="subOffCount"
-            :meta="{ text: '停发订阅', shape: 'pause', fg: '#5F52A0', bg: '#F0EEF9', bd: '#D6D0EE' }"
-            :suffix="String(subOffCount)"
-          />
-          <span v-if="!offlineCount && !subOffCount">全部正常运行</span>
+          <LbStatusTag v-if="subOffCount" :meta="subscriptionOffMeta" :suffix="String(subOffCount)" />
+          <span v-if="!offlineCount && !subOffCount && summary && summary.node_online < summary.node_total">
+            {{ summary.node_total - summary.node_online }} 台待初始化或已禁用
+          </span>
+          <span v-else-if="!offlineCount && !subOffCount">全部正常运行</span>
         </template>
       </LbMetricCard>
       <LbMetricCard
         label="本月流量"
         :state="metricState"
-        :value="summary ? formatBytes(summary.traffic_month) : undefined"
-        :hint="summary ? `今日 ${formatBytes(summary.traffic_today)} · 按 UTC 日` : undefined"
+        :value="summary ? formatBytes(summary.traffic_month).split(' ')[0] : undefined"
+        :unit="summary ? formatBytes(summary.traffic_month).split(' ')[1] : undefined"
+        :hint="summary ? `今日 ${formatBytes(summary.traffic_today)}` : undefined"
       />
       <LbMetricCard
-        label="失败部署(近 7 天)"
+        label="失败部署"
+        tip="统计近 7 天。分母也取这个窗口,否则「2 / 共 100 次」里的 100 是几个月的量。"
         :state="deployError ? 'error' : loading ? 'loading' : 'ready'"
         :value="failedDeploys.length"
-        :total="`共 ${recentDeploys.length} 次`"
+        :total="`${recentDeploys.length} 次`"
         :tone="failedDeploys.length ? 'danger' : 'default'"
       >
         <template #foot>
-          <a v-if="failedDeploys.length" @click="router.push('/deployments')">查看部署记录</a>
+          <a v-if="failedDeploys.length" class="dv__link" @click="router.push('/deployments')">查看部署记录 ›</a>
           <span v-else>近 7 天没有失败的部署</span>
         </template>
       </LbMetricCard>
-    </div>
+    </section>
 
-    <a-card :body-style="{ padding: '16px' }">
-      <template #title>
-        <span class="dv__card-title">{{ range }} 天流量趋势</span>
-        <span class="dv__card-note">按 UTC 日聚合 · 全站上下行合计</span>
-      </template>
-      <template #extra>
+    <!-- 趋势:面积图 -->
+    <section class="lb-card dv__trend">
+      <div class="dv__trend-head">
+        <div>
+          <div class="dv__trend-label">
+            <span>{{ range }} 天流量趋势</span>
+            <LbInfoTip text="按 UTC 日聚合,全站上下行合计。虚线跨过的日子没有记录 —— 不补 0 也不插值。悬停查看当日流量。" :width="300" />
+          </div>
+          <div v-if="peak" class="dv__trend-peak">
+            <span class="dv__trend-peak-value lb-tabular">{{ formatBytes(peak.total) }}</span>
+            <span class="dv__trend-peak-note">峰值 · {{ formatUTCDay(peak.day) }}</span>
+          </div>
+        </div>
         <!-- 范围切换用分段控件,不用下拉:三个选项摊开比藏起来快。 -->
-        <a-segmented
-          v-model:value="range"
-          :options="[
-            { label: '7 天', value: 7 },
-            { label: '30 天', value: 30 },
-            { label: '90 天', value: 90 },
-          ]"
-          size="small"
-        />
-      </template>
+        <div class="lb-seg lb-seg--sm" role="tablist">
+          <button
+            v-for="r in [7, 30, 90]"
+            :key="r"
+            type="button"
+            role="tab"
+            class="lb-seg__item"
+            :class="{ 'lb-seg__item--on': range === r }"
+            :aria-selected="range === r"
+            @click="range = r"
+          >
+            {{ r }} 天
+          </button>
+        </div>
+      </div>
 
       <LbEmptyState
         v-if="dailyError"
@@ -312,266 +389,228 @@ function conclusion(d: DeploymentRecord): string {
         description="订阅还没有被任何客户端拉取过,或者流量同步尚未跑过一轮。"
       />
       <template v-else>
-        <LbSparkline :points="points" type="line" :height="140" />
-        <div class="dv__axis lb-mono">
+        <LbSparkline :points="points" type="line" :height="150" class="dv__spark" />
+        <div class="dv__axis lb-tabular">
           <span v-for="(l, i) in axisLabels" :key="i">{{ l }}</span>
         </div>
-        <div class="dv__axis-note">
-          峰值 {{ formatBytes(peak) }} · 悬停查看当日流量 · 虚线跨过的日子没有记录,不补 0 也不插值
-        </div>
       </template>
-    </a-card>
+    </section>
 
-    <div class="dv__cols">
-      <a-card :body-style="{ padding: 0 }">
-        <template #title><span class="dv__card-title">节点健康</span></template>
-        <template #extra><a @click="router.push('/nodes')">全部节点 →</a></template>
-
-        <LbEmptyState
-          v-if="nodesError"
-          variant="error"
-          title="无法加载节点列表"
-          description="不显示「暂无数据」—— 那会被读成一台机器都没有。"
-          @retry="loadNodes"
-        />
-        <LbEmptyState
-          v-else-if="!loading && nodes.length === 0"
-          variant="empty"
-          title="还没有任何节点"
-          description="添加第一台 VPS 后,这里会显示节点健康与本周期流量。"
-        >
-          <template #action>
-            <a-button type="primary" size="small" @click="router.push('/nodes')">添加节点</a-button>
-          </template>
-        </LbEmptyState>
-        <a-table
-          v-else
-          :columns="nodeColumns"
-          :data-source="nodes"
-          :loading="loading"
-          :pagination="false"
-          row-key="id"
-          size="small"
-          :scroll="{ x: 830 }"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'node'">
-              <a @click="router.push('/nodes')">{{ record.display_name }}</a>
-              <div class="dv__node-sub lb-mono">
-                {{ record.host }} · {{ record.access_tier_name }}
-              </div>
+    <div class="lb-grid-2 dv__cols">
+      <section>
+        <LbSectionTitle title="节点健康">
+          <template #extra><a class="dv__link" @click="router.push('/nodes')">全部节点 ›</a></template>
+        </LbSectionTitle>
+        <div class="lb-card lb-card--flush">
+          <LbEmptyState
+            v-if="nodesError"
+            variant="error"
+            title="无法加载节点列表"
+            description="不显示「暂无数据」—— 那会被读成一台机器都没有。"
+            @retry="loadNodes"
+          />
+          <LbEmptyState
+            v-else-if="!loading && nodes.length === 0"
+            variant="empty"
+            title="还没有任何节点"
+            description="添加第一台 VPS 后,这里会显示节点健康与本周期流量。"
+          >
+            <template #action>
+              <a-button type="primary" size="small" @click="router.push('/nodes')">添加节点</a-button>
             </template>
-
-            <!-- 运行与配置分两列:一台在跑旧配置、部署失败的机器,
-                 挤在一格里只显示「部署失败」,看不出它其实还在服务用户。 -->
-            <template v-else-if="column.key === 'run'">
-              <div class="dv__stack">
-                <LbStatusTag kind="node" :status="record.status" />
+          </LbEmptyState>
+          <template v-else>
+            <div v-for="n in nodes" :key="n.id" class="dv__node">
+              <div class="dv__node-main">
+                <a class="dv__node-name" @click="router.push(`/nodes/${n.id}`)">{{ n.display_name }}</a>
+                <div class="dv__node-sub">
+                  <span class="lb-mono">{{ n.host }}</span>
+                  <span> · 同步 </span>
+                  <LbTimeText
+                    :value="n.last_heartbeat_at"
+                    :warn-after-ms="threshold.metricsStaleMs"
+                    :danger-after-ms="threshold.metricsStaleMs * 6"
+                    empty="从未"
+                  />
+                </div>
+              </div>
+              <!-- 运行与配置分两列:一台在跑旧配置、部署失败的机器,
+                   挤在一格里只显示「部署失败」,看不出它其实还在服务用户。 -->
+              <div class="dv__node-tags">
+                <LbStatusTag kind="node" :status="n.status" />
                 <LbStatusTag
-                  v-for="(b, i) in nodeBadges(record, metrics[record.id]?.collected_at)"
+                  v-for="(b, i) in nodeBadges(n, metrics[n.id]?.collected_at)"
                   :key="i"
                   :meta="b"
                 />
               </div>
-            </template>
-
-            <template v-else-if="column.key === 'config'">
-              <LbStatusTag
-                :meta="configStatusMeta[configState(record)]"
-                :suffix="`rev ${record.config_revision}`"
-              />
-            </template>
-
-            <template v-else-if="column.key === 'sync'">
-              <LbTimeText
-                :value="record.last_heartbeat_at"
-                :warn-after-ms="threshold.metricsStaleMs"
-                :danger-after-ms="threshold.metricsStaleMs * 6"
-              />
-            </template>
-
-            <template v-else-if="column.key === 'cycle'">
-              <LbQuotaBar
-                :used-bytes="cycles[record.id]?.used_bytes ?? null"
-                :quota-bytes="cycles[record.id]?.quota_bytes ?? record.traffic_quota_bytes"
-                :warning-level="cycles[record.id]?.warning_level"
-              />
-            </template>
-          </template>
-        </a-table>
-      </a-card>
-
-      <a-card :body-style="{ padding: 0 }">
-        <template #title><span class="dv__card-title">最近部署</span></template>
-        <template #extra><a @click="router.push('/deployments')">全部记录 →</a></template>
-
-        <LbEmptyState
-          v-if="deployError"
-          variant="error"
-          title="无法加载部署记录"
-          @retry="loadDeploys"
-        />
-        <LbEmptyState
-          v-else-if="!loading && deploys.length === 0"
-          variant="empty"
-          title="还没有部署记录"
-          description="添加节点并执行第一次部署后,这里会记录每一步的结果。"
-        />
-        <div v-else class="dv__deploys">
-          <div v-for="d in deploys.slice(0, 6)" :key="d.id" class="dv__deploy">
-            <LbStatusTag kind="deploy" :status="d.status" />
-            <div class="dv__deploy-body">
-              <div class="dv__deploy-title">
-                <span>{{ nodes.find((n) => n.id === d.node_id)?.display_name ?? `节点 ${d.node_id}` }}</span>
-                <span class="lb-mono dv__deploy-rev">rev {{ d.revision }}</span>
+              <LbStatusTag :meta="configStatusMeta[configState(n)]" :suffix="`rev ${n.config_revision}`" />
+              <div class="dv__node-quota">
+                <LbQuotaBar
+                  :used-bytes="cycles[n.id]?.used_bytes ?? null"
+                  :quota-bytes="cycles[n.id]?.quota_bytes ?? n.traffic_quota_bytes"
+                  :warning-level="cycles[n.id]?.warning_level"
+                />
               </div>
-              <div class="dv__deploy-msg lb-clamp-2">{{ conclusion(d) }}</div>
-              <div v-if="d.rollback_result" class="dv__deploy-rb">{{ d.rollback_result }}</div>
             </div>
-            <LbTimeText :value="d.started_at" />
+          </template>
+        </div>
+      </section>
+
+      <section>
+        <LbSectionTitle title="最近部署">
+          <template #extra><a class="dv__link" @click="router.push('/deployments')">全部记录 ›</a></template>
+        </LbSectionTitle>
+        <div class="lb-card lb-card--flush">
+          <LbEmptyState
+            v-if="deployError"
+            variant="error"
+            title="无法加载部署记录"
+            @retry="loadDeploys"
+          />
+          <LbEmptyState
+            v-else-if="!loading && deploys.length === 0"
+            variant="empty"
+            title="还没有部署记录"
+            description="添加节点并执行第一次部署后,这里会记录每一步的结果。"
+          />
+          <div v-else class="dv__deploys">
+            <div v-for="d in deploys.slice(0, 6)" :key="d.id" class="dv__deploy">
+              <LbStatusTag kind="deploy" :status="d.status" />
+              <div class="dv__deploy-body">
+                <div class="dv__deploy-title">
+                  <span>{{ nodes.find((n) => n.id === d.node_id)?.display_name ?? `节点 ${d.node_id}` }}</span>
+                  <span class="dv__deploy-rev lb-tabular">rev {{ d.revision }}</span>
+                </div>
+                <div class="dv__deploy-msg lb-clamp-2">{{ conclusion(d) }}</div>
+                <div v-if="d.rollback_result" class="dv__deploy-rb">{{ d.rollback_result }}</div>
+              </div>
+              <LbTimeText :value="d.started_at" />
+            </div>
           </div>
         </div>
-      </a-card>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
-.dv {
+.dv__alerts {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.dv__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.dv__title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.dv__sub {
-  margin-top: 3px;
-  font-size: 12.5px;
-  color: #6b7480;
-}
-
-.dv__alerts {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.dv__alerts-head {
-  padding: 11px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 10px;
 }
 
 .dv__alert {
+  align-items: center;
+}
+
+.dv__link {
+  font-weight: 500;
+}
+
+.dv__trend {
+  padding: 22px 28px 20px;
+}
+
+.dv__trend-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.dv__trend-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text3);
+}
+
+.dv__trend-peak {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 10px 16px;
-  font-size: 12.5px;
+  gap: 8px;
+  margin-top: 6px;
 }
 
-.dv__alert + .dv__alert {
-  border-top: 1px solid #edeff2;
+.dv__trend-peak-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
 }
 
-.dv__alert-cat {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.dv__alert--error .dv__alert-cat {
-  background: #fdecea;
-  color: #b4291d;
-}
-
-.dv__alert--warn .dv__alert-cat {
-  background: #fcf3e3;
-  color: #92610a;
-}
-
-.dv__alert-target {
-  flex: none;
-  font-weight: 500;
-}
-
-.dv__alert-msg {
-  flex: 1;
-  min-width: 0;
-  color: #576070;
-  line-height: 1.6;
-}
-
-.dv__alert-go {
-  flex: none;
-  font-size: 12px;
-}
-
-.dv__metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.dv__card-title {
+.dv__trend-peak-note {
   font-size: 13px;
-  font-weight: 600;
-}
-
-.dv__card-note {
-  margin-left: 10px;
-  font-size: 11.5px;
-  font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .dv__axis {
   display: flex;
   justify-content: space-between;
-  margin-top: 4px;
-  font-size: 10.5px;
-  color: #6b7480;
-}
-
-.dv__axis-note {
   margin-top: 6px;
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .dv__cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: 16px;
   align-items: start;
 }
 
-.dv__node-sub {
-  font-size: 11px;
-  color: #6b7480;
+.dv__node {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) auto auto minmax(120px, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 16px 22px;
+  transition: background 0.15s;
+}
+.dv__node + .dv__node {
+  border-top: 1px solid var(--sep2);
+}
+.dv__node:hover {
+  background: var(--surface2);
 }
 
-.dv__stack {
+.dv__node-main {
+  min-width: 0;
+}
+
+.dv__node-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dv__node-name:hover {
+  color: var(--brand);
+}
+
+.dv__node-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.dv__node-sub :deep(.lb-time) {
+  font-size: 12px;
+}
+
+.dv__node-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dv__node-quota {
+  min-width: 0;
 }
 
 .dv__deploys {
@@ -583,12 +622,12 @@ function conclusion(d: DeploymentRecord): string {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
-  gap: 10px;
-  padding: 11px 16px;
+  gap: 12px;
+  padding: 14px 20px;
 }
 
 .dv__deploy + .dv__deploy {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep2);
 }
 
 .dv__deploy-body {
@@ -602,44 +641,46 @@ function conclusion(d: DeploymentRecord): string {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 13.5px;
+  font-weight: 600;
 }
 
 .dv__deploy-rev {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .dv__deploy-msg {
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.6;
-  color: #576070;
+  color: var(--text2);
 }
 
 .dv__deploy-rb {
-  font-size: 11px;
-  color: #92610a;
+  font-size: 11.5px;
+  color: var(--warn);
 }
 
-@media (max-width: 1279px) {
-  .dv__metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+@media (max-width: 1023px) {
+  .dv__node {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 10px;
   }
-
-  .dv__cols {
-    grid-template-columns: minmax(0, 1fr);
+  .dv__node-quota {
+    grid-column: 1 / -1;
   }
 }
 
 @media (max-width: 767px) {
-  .dv__metrics {
-    grid-template-columns: minmax(0, 1fr);
+  .dv__trend {
+    padding: 16px 16px 14px;
   }
-
   .dv__alert {
     flex-wrap: wrap;
+  }
+  .dv__node {
+    padding: 14px 16px;
   }
 }
 </style>

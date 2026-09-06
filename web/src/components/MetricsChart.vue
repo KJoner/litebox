@@ -7,6 +7,9 @@
  *
  * 支持一到两条序列(上下行速率要画在一起才看得出方向差异),
  * 单序列时不画图例 —— 标题已经说明了画的是什么。
+ *
+ * V18:线 2.2px round,网格 --sep2,轴标签 11px --text3 tabular,
+ * 读数框与 LbSparkline 同一套。颜色全走 CSS 变量,深色下自动换。
  */
 import { computed, ref } from 'vue'
 
@@ -198,7 +201,7 @@ const tooltipStyle = computed(() => {
         <div v-for="s in series" :key="s.name" class="tooltip-row">
           <span class="dot" :style="{ background: s.color }" />
           <span>{{ s.name }}</span>
-          <b>{{ format(s.values[hoverIndex] ?? 0) }}</b>
+          <b class="lb-tabular">{{ format(s.values[hoverIndex] ?? 0) }}</b>
         </div>
       </div>
 
@@ -214,47 +217,43 @@ const tooltipStyle = computed(() => {
 
 <style scoped>
 .chart-root {
-  --series-1: #2a78d6;
-  --text-muted: #898781;
-  --gridline: #e1e0d9;
   position: relative;
-}
-
-@media (prefers-color-scheme: dark) {
-  .chart-root {
-    --gridline: #2c2c2a;
-  }
 }
 
 .chart-svg {
   width: 100%;
   display: block;
+  overflow: visible;
 }
 
 .grid line {
-  stroke: var(--gridline);
+  stroke: var(--sep2);
   stroke-width: 1;
 }
 
 .line {
   fill: none;
-  stroke-width: 2;
+  stroke-width: 2.2;
   stroke-linejoin: round;
   stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .crosshair {
-  stroke: var(--text-muted);
+  stroke: var(--text3);
   stroke-width: 1;
+  stroke-dasharray: 2 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .marker {
-  stroke: #fff;
+  stroke: var(--surface);
   stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .axis-text text {
-  fill: var(--text-muted);
+  fill: var(--text3);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -262,18 +261,20 @@ const tooltipStyle = computed(() => {
 .tooltip {
   position: absolute;
   pointer-events: none;
-  background: rgb(255 255 255 / 97%);
-  border: 1px solid rgb(11 11 11 / 10%);
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 12px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  box-shadow: var(--shadow-lg);
   white-space: nowrap;
   z-index: 2;
+  color: var(--text);
 }
 
 .tooltip-time {
-  color: var(--text-muted);
+  color: var(--text3);
+  font-size: 11px;
   margin-bottom: 4px;
 }
 
@@ -285,7 +286,6 @@ const tooltipStyle = computed(() => {
 
 .tooltip-row b {
   margin-left: auto;
-  font-variant-numeric: tabular-nums;
 }
 
 .dot {
@@ -299,8 +299,9 @@ const tooltipStyle = computed(() => {
   display: flex;
   gap: 16px;
   justify-content: center;
+  margin-top: 6px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text3);
 }
 
 .legend-item {
@@ -314,7 +315,7 @@ const tooltipStyle = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--text3);
   font-size: 13px;
 }
 </style>

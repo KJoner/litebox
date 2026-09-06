@@ -136,8 +136,8 @@ const nodeLabel = computed(() => props.node.display_name || props.node.name)
  */
 const channelTag = computed(() =>
   props.node.singbox_channel === 'PREVIEW'
-    ? { text: '预览版 1.14', shape: 'dot' as const, fg: '#8A5300', bg: '#FDF3E2', bd: '#F0DCB6' }
-    : { text: '正式版', shape: 'dot' as const, fg: '#4A5568', bg: '#F2F4F7', bd: '#DDE1E8' },
+    ? { text: '预览版 1.14', shape: 'dot' as const, fg: 'var(--warn)', bg: 'var(--warn-bg)' }
+    : { text: '正式版', shape: 'dot' as const, fg: 'var(--neutral)', bg: 'var(--neutral-bg)' },
 )
 
 async function loadTargets() {
@@ -173,14 +173,14 @@ async function load() {
 // ---------------------------------------------------------------- 状态标记
 
 const readyMeta: Record<'yes' | 'no', LbStatusMeta> = {
-  yes: { text: '落地就绪', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
+  yes: { text: '落地就绪', shape: 'check', fg: color.success, bg: color.successBg},
   // 三重编码:形状 + 文案 + 颜色。打印与色觉障碍下颜色全部失效,
   // 而「落地未就绪」与「已停用」的处置方式完全不同。
-  no: { text: '落地未就绪', shape: 'triangle', fg: color.warning, bg: color.warningBg, bd: color.warningBorder },
+  no: { text: '落地未就绪', shape: 'triangle', fg: color.warning, bg: color.warningBg},
 }
 const enabledMeta: Record<'on' | 'off', LbStatusMeta> = {
-  on: { text: '启用', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
-  off: { text: '已停用', shape: 'minus', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
+  on: { text: '启用', shape: 'check', fg: color.success, bg: color.successBg},
+  off: { text: '已停用', shape: 'minus', fg: color.neutral, bg: color.neutralBg},
 }
 /**
  * 不计流量的入口(V15)要在列表里一眼看得出来:它的流量既不扣用户额度,
@@ -188,7 +188,7 @@ const enabledMeta: Record<'on' | 'off', LbStatusMeta> = {
  * 用警告色:它不是坏了,但它改变了"停用即断线、超额即断线"这两条全站规矩。
  */
 const unmeteredMeta: LbStatusMeta = {
-  text: '不计流量', shape: 'triangle', fg: color.warning, bg: color.warningBg, bd: color.warningBorder,
+  text: '不计流量', shape: 'triangle', fg: color.warning, bg: color.warningBg,
 }
 
 /**
@@ -200,7 +200,7 @@ const unmeteredMeta: LbStatusMeta = {
  */
 function mieruMeta(m: MieruInbound): LbStatusMeta {
   if (!m.deployed_transport) {
-    return { text: '未下发', shape: 'ring', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder }
+    return { text: '未下发', shape: 'ring', fg: color.neutral, bg: color.neutralBg}
   }
   const pending = m.deployed_transport !== m.transport
   return {
@@ -208,7 +208,6 @@ function mieruMeta(m: MieruInbound): LbStatusMeta {
     shape: pending ? 'triangle' : 'check',
     fg: pending ? color.warning : color.success,
     bg: pending ? color.warningBg : color.successBg,
-    bd: pending ? color.warningBorder : color.successBorder,
   }
 }
 
@@ -1756,8 +1755,8 @@ onMounted(async () => {
   flex-direction: column;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #E3E6EA;
-  border-radius: 8px;
+  border: 1px solid var(--sep);
+  border-radius: 16px;
   margin-bottom: 12px;
 }
 .nr__head,
@@ -1772,8 +1771,8 @@ onMounted(async () => {
    会长得一样重,而前者重启服务、后者只 reload。 */
 .nr__ops {
   padding: 6px 8px;
-  border: 1px solid #E3E6EA;
-  border-radius: 6px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
   background: #fafbfc;
 }
 
@@ -1791,9 +1790,9 @@ onMounted(async () => {
 .nr__kind {
   display: inline-block;
   padding: 0 6px;
-  border-radius: 3px;
-  background: #f1f3f5;
-  color: #576070;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
   font-size: 11px;
   letter-spacing: 0.02em;
 }
@@ -1802,7 +1801,7 @@ onMounted(async () => {
    但对日常操作没有意义 —— 所以弱化,不与名字抢注意力。 */
 .nr__tag {
   font-size: 11px;
-  color: #6B7480;
+  color: var(--text3);
 }
 
 .nr__section {
@@ -1821,8 +1820,8 @@ onMounted(async () => {
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid #E3E6EA;
-  border-radius: 6px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
   background: #fafbfc;
 }
 .nr__sb-head {
@@ -1839,7 +1838,7 @@ onMounted(async () => {
 }
 .nr__sb-sub {
   font-size: 12px;
-  color: #6B7480;
+  color: var(--text3);
   line-height: 1.7;
 }
 .nr__sb-entry {
@@ -1850,18 +1849,18 @@ onMounted(async () => {
 }
 .nr__running {
   font-size: 12px;
-  color: #6B7480;
+  color: var(--text3);
 }
 .nr__note,
 .nr__hint {
   font-size: 12px;
-  color: #6B7480;
+  color: var(--text3);
   margin: 0;
   line-height: 1.6;
 }
 .nr__warn {
   font-size: 12px;
-  color: #B4291D;
+  color: var(--bad);
 }
 .nr__nginx {
   font-size: 12px;
@@ -1869,13 +1868,13 @@ onMounted(async () => {
 }
 .nr__sub {
   font-size: 12px;
-  color: #6B7480;
+  color: var(--text3);
   margin-left: 6px;
 }
 .nr__result {
   font-size: 12px;
   line-height: 1.7;
-  border-top: 1px dashed #E3E6EA;
+  border-top: 1px dashed var(--sep);
   padding-top: 8px;
 }
 .nr__step {
@@ -1886,7 +1885,7 @@ onMounted(async () => {
   min-width: 180px;
 }
 .nr__step-detail {
-  color: #6B7480;
+  color: var(--text3);
   word-break: break-all;
 }
 </style>

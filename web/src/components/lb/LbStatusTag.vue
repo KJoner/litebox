@@ -8,6 +8,8 @@ import { statusMeta, type LbStatusKind, type LbStatusMeta } from './statusMeta'
  *
  * 不裸用 a-tag:AntD Tag 只有色 + 文,给不了第三重编码。
  * meta 可直接传入,用于「停发订阅」「数据过期」这类不属于任何枚举的派生态。
+ *
+ * V18:胶囊、无边框,底色是语义色 12% alpha(深色 18%),都从 meta 里来。
  */
 const props = defineProps<{
   kind?: LbStatusKind
@@ -28,9 +30,9 @@ const small = computed(() => props.size !== 'md')
   <span
     class="lb-status"
     :class="{ 'lb-status--md': !small }"
-    :style="{ color: m.fg, background: m.bg, borderColor: m.bd }"
+    :style="{ color: m.fg, background: m.bg }"
   >
-    <LbShapeIcon :shape="m.shape" :color="m.fg" :size="small ? 7 : 8" />
+    <LbShapeIcon :shape="m.shape" :color="m.fg" :size="7" />
     <span>{{ m.text }}</span>
     <span v-if="props.suffix" class="lb-status__suffix">{{ props.suffix }}</span>
   </span>
@@ -41,23 +43,23 @@ const small = computed(() => props.size !== 'md')
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 7px;
-  border: 1px solid;
-  border-radius: 4px;
-  font-size: 11.5px;
-  font-weight: 500;
-  line-height: 1.5;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
   white-space: nowrap;
 }
 
 .lb-status--md {
-  padding: 2px 8px;
-  font-size: 12px;
+  padding: 4px 11px;
+  font-size: 12.5px;
 }
 
 .lb-status__suffix {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-family: var(--mono);
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
   opacity: 0.75;
 }
 </style>

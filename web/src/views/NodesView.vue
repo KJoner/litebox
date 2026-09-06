@@ -20,10 +20,13 @@ import {
   LbCopyField,
   LbEmptyState,
   LbFilterBar,
+  LbIcon,
+  LbInfoTip,
   LbMetricCard,
   LbQuotaBar,
   LbResultList,
   LbRowCard,
+  LbSectionTitle,
   LbStatusTag,
   LbTimeText,
   configStatusMeta,
@@ -150,6 +153,25 @@ const stats = computed(() => ({
 const metricState = computed(() =>
   loadError.value ? 'error' : loading.value ? 'loading' : nodes.value.length ? 'ready' : 'empty',
 )
+
+/** 头部一句话摘要:几台机器、几台在线,再点出待部署与停发订阅。 */
+const summaryLine = computed(() => {
+  if (loadError.value) return '节点列表读取失败。'
+  if (loading.value && !nodes.value.length) return '正在读取节点…'
+  const s = stats.value
+  if (!s.total) return '还没有添加任何机器。'
+  const head = `${s.total} 台机器,${s.online} 台在线。`
+  const tails: string[] = []
+  if (s.pending) tails.push(`${s.pending} 台待部署`)
+  if (s.subOff) tails.push(`${s.subOff} 台已停发订阅`)
+  return tails.length ? `${head}${tails.join(',')}。` : head
+})
+
+const billedCount = computed(
+  () => Object.values(cycles.value).filter((c) => c.quota_bytes > 0).length,
+)
+
+const offlineCount = computed(() => nodes.value.filter((n) => n.status === 'OFFLINE').length)
 
 // ---------- 取数 ----------
 
@@ -424,15 +446,17 @@ async function runHealthNow() {
   }
 }
 
+// 列宽之和控制在 1120 以内:1440 宽的屏幕减去侧栏与内距正好剩 1144,
+// 再宽一点右侧固定列就会盖住「本周期流量」—— 那是这一页最常看的数字。
 const columns = [
-  { title: '节点', key: 'node', width: 250, fixed: 'left' as const },
-  { title: '运行状态', key: 'run', width: 160 },
-  { title: '配置状态', key: 'config', width: 160 },
-  { title: '服务巡检', key: 'health', width: 150 },
-  { title: '云实例', key: 'cloud', width: 110 },
-  { title: '最后同步', key: 'sync', width: 110 },
-  { title: '本周期流量', key: 'cycle', width: 215 },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right' as const },
+  { title: '节点', key: 'node', width: 230, fixed: 'left' as const },
+  { title: '运行', key: 'run', width: 130 },
+  { title: '配置', key: 'config', width: 135 },
+  { title: '服务巡检', key: 'health', width: 130 },
+  { title: '云实例', key: 'cloud', width: 90 },
+  { title: '最后同步', key: 'sync', width: 92 },
+  { title: '本周期流量', key: 'cycle', width: 170 },
+  { title: '操作', key: 'actions', width: 110, fixed: 'right' as const },
 ]
 
 /**
@@ -573,50 +597,58 @@ const keyOpen = ref(false)
 </script>
 
 <template>
-  <div class="nv">
-    <div class="nv__head">
-      <div>
-        <h2 class="nv__title">节点管理</h2>
-        <div class="nv__sub">
-          {{ nodes.length }} 台机器 · 按排序值升序(与订阅、门户同序) · 一台机器只承载一个节点 ·
-          SSH 与部署一律走 IPv4
-        </div>
+  <div class="lb-page nv">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>自建节点</span>
+          <LbInfoTip
+            text="按排序值升序,与订阅、门户同序。一台机器只承载一个节点 —— 两个节点指向同一台机器会互相覆盖配置。SSH 与部署一律走 IPv4。"
+            :width="320"
+          />
+        </h1>
+        <div class="lb-page__summary">{{ summaryLine }}</div>
       </div>
-      <a-space>
-        <a-button @click="keyOpen = true">复制面板 SSH 公钥</a-button>
+      <div class="lb-page__actions">
+        <a-button @click="keyOpen = true">SSH 公钥</a-button>
         <a-button :loading="loading" @click="load">刷新</a-button>
         <!-- 立刻巡检一轮。它可能顺带触发自动恢复,所以要几秒到十几秒;
              不放在「刷新」里 —— 刷新是纯读,而这一下会去连每一台机器。 -->
         <a-button :loading="runningHealth" @click="runHealthNow">立即巡检</a-button>
-        <a-button type="primary" @click="openCreate">添加节点</a-button>
-      </a-space>
+        <a-button type="primary" @click="openCreate">+ 添加节点</a-button>
+      </div>
     </div>
 
-    <div class="nv__metrics">
+    <section class="lb-metrics">
       <LbMetricCard
         label="在线节点"
         :state="metricState"
         :value="stats.online"
         :total="stats.total"
         empty-hint="尚未添加节点"
+        :hint="offlineCount ? `${offlineCount} 台离线` : stats.total ? '全部在线' : undefined"
       />
-      <LbMetricCard label="待部署" :state="metricState" :value="stats.pending" tone="warning">
-        <template #action>
-          <a v-if="stats.pending" @click="filters.config = 'PENDING'">筛选</a>
+      <LbMetricCard label="待部署" :state="metricState" :value="stats.pending" :tone="stats.pending ? 'warning' : 'default'">
+        <template #foot>
+          <a v-if="stats.pending" class="nv__link" @click="filters.config = 'PENDING'">筛选 ›</a>
+          <span v-else>配置都已同步</span>
         </template>
       </LbMetricCard>
       <LbMetricCard label="停发订阅" :state="metricState" :value="stats.subOff">
-        <template #action>
-          <a v-if="stats.subOff" @click="filters.subOff = true">筛选</a>
+        <template #foot>
+          <a v-if="stats.subOff" class="nv__link" @click="filters.subOff = true">筛选 ›</a>
+          <span v-else>全部在订阅里</span>
         </template>
       </LbMetricCard>
       <LbMetricCard
         label="本周期流量合计"
+        tip="按各节点自己的周期边界与计费口径汇总。双向计费的机器已 ×2 折算;中转主机不计。"
         :state="cycleError ? 'error' : metricState"
-        :value="formatBytes(stats.cycleUsed)"
-        hint="按各节点自己的周期边界与计费口径汇总"
+        :value="formatBytes(stats.cycleUsed).split(' ')[0]"
+        :unit="formatBytes(stats.cycleUsed).split(' ')[1]"
+        :hint="billedCount ? `${billedCount} 台计费节点` : '没有设额度的节点'"
       />
-    </div>
+    </section>
 
     <!-- 列级降级要显式说出来:一整列的「—」看起来像所有机器都挂了。 -->
     <a-alert
@@ -655,20 +687,13 @@ const keyOpen = ref(false)
       </template>
     </a-alert>
 
-    <a-card :body-style="{ padding: 0 }">
-      <LbFilterBar
-        :active-count="activeFilterCount"
-        :filtered="visible.length"
-        :total="nodes.length"
-        unit="台"
-        @clear="clearFilters"
-      >
-        <a-input-search
-          v-model:value="filters.keyword"
-          placeholder="名称 / 展示名称 / IP"
-          allow-clear
-          style="width: 220px"
-        />
+    <section>
+      <LbSectionTitle title="全部节点" :count="`${visible.length} / ${nodes.length} 台`" />
+      <div class="lb-card lb-card--flush">
+      <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
+        <a-input v-model:value="filters.keyword" placeholder="名称 / 展示名称 / IP" allow-clear>
+          <template #prefix><LbIcon name="search" :size="14" /></template>
+        </a-input>
         <a-select v-model:value="filters.run" placeholder="运行状态" allow-clear style="width: 130px">
           <a-select-option value="ONLINE">运行中</a-select-option>
           <a-select-option value="OFFLINE">离线</a-select-option>
@@ -686,7 +711,10 @@ const keyOpen = ref(false)
         <a-select v-model:value="filters.tierID" placeholder="访问等级" allow-clear style="width: 120px">
           <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
         </a-select>
-        <a-checkbox v-model:checked="filters.subOff">仅停发订阅</a-checkbox>
+        <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.subOff }">
+          <a-switch v-model:checked="filters.subOff" size="small" />
+          仅停发订阅
+        </label>
       </LbFilterBar>
 
       <LbBatchBar
@@ -733,13 +761,13 @@ const keyOpen = ref(false)
       <div v-else-if="narrow" class="nv__cards">
         <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
           <template #head>
-            <span class="nv__sort lb-mono">#{{ n.sort_order }}</span>
             <a class="nv__card-name" @click="openDetail(n.id)">{{ n.display_name || n.name }}</a>
-            <span v-if="n.role === 'RELAY'" class="nv__role">中转</span>
+            <span class="nv__meta lb-tabular">#{{ n.sort_order }}</span>
+            <span v-if="n.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
             <LbStatusTag kind="node" :status="n.status" />
           </template>
 
-          <div class="nv__host lb-mono">
+          <div class="nv__host lb-tabular">
             <template v-if="n.role !== 'RELAY'">
               <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
               {{ n.host }} · 端口 {{ portSummary(n) }} · {{ tierSummary(n) }}
@@ -806,7 +834,7 @@ const keyOpen = ref(false)
                 class="lb-touch-target"
                 :aria-label="`${n.display_name || n.name} 的更多操作`"
               >
-                ⋯
+                <LbIcon name="more" :size="16" />
               </a-button>
               <template #overlay>
                 <a-menu>
@@ -839,43 +867,42 @@ const keyOpen = ref(false)
         :pagination="pager.options.value"
         row-key="id"
         size="small"
-        :scroll="{ x: 1125 }"
+        :scroll="{ x: 1090 }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'node'">
             <!-- 排序值直接写出来。它决定订阅与门户里的先后,不显示的话
                  管理员改了值也看不出改到了第几位。 -->
-            <span
-              class="nv__sort lb-mono"
-              :title="`排序值 ${record.sort_order} —— 数值小的排在订阅与门户前面`"
-            >
-              #{{ record.sort_order }}
-            </span>
-            <a @click="openDetail(record.id)">{{ record.display_name || record.name }}</a>
-            <!-- 内部名称与展示名称都列:管理员按内部名称找机器,用户报的是展示名称。 -->
-            <span v-if="record.display_name !== record.name" class="nv__inner">{{ record.name }}</span>
-            <!-- 中转主机与落地节点在同一份列表里混着,而它们几乎没有共同点:
-                 中转上没有 sing-box、没有协议与端口、也没有任何流量数字。
-                 不标出来的话,管理员会对着一台中转机找它的协议为什么是空的。 -->
-            <span v-if="record.role === 'RELAY'" class="nv__role">中转</span>
-            <span
-              v-if="hasChain(record)"
-              class="nv__chain"
-              title="这台机器的出口指向别处(链式中转)。订阅内容不受影响。"
-              >经中转出网</span
-            >
-            <div class="nv__host lb-mono">
+            <div class="nv__name-row">
+              <a class="nv__name" @click="openDetail(record.id)">{{ record.display_name || record.name }}</a>
+              <!-- 内部名称与排序值都列:管理员按内部名称找机器,用户报的是展示名称;
+                   排序值决定订阅与门户里的先后,不显示的话改了值也看不出改到了第几位。 -->
+              <span class="nv__meta lb-tabular" :title="`排序值 ${record.sort_order} —— 数值小的排在订阅与门户前面`">
+                <template v-if="record.display_name !== record.name">{{ record.name }} · </template>#{{ record.sort_order }}
+              </span>
+              <!-- 中转主机与落地节点在同一份列表里混着,而它们几乎没有共同点:
+                   中转上没有 sing-box、没有协议与端口、也没有任何流量数字。
+                   不标出来的话,管理员会对着一台中转机找它的协议为什么是空的。 -->
+              <span v-if="record.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
+              <span
+                v-if="hasChain(record)"
+                class="lb-chip nv__chip"
+                title="这台机器的出口指向别处(链式中转)。订阅内容不受影响。"
+                >经中转出网</span
+              >
+            </div>
+            <div class="nv__host lb-tabular">
               <!-- 协议放在地址前面。同一份列表里两种协议混着,不标的话
                    管理员分不出哪台机器的订阅条目是 ss:// —— 而排查
                    「某个客户端连不上」时那正是第一个要知道的事。 -->
               <template v-if="record.role !== 'RELAY'">
                 <span class="nv__proto" :title="protocolTitle(record)">{{ protocolShort(record) }}</span>
-                {{ record.host }} · 端口 {{ portSummary(record) }}
+                <span class="lb-mono">{{ record.host }}</span> · 端口 {{ portSummary(record) }}
               </template>
               <!-- 中转机没有自己的协议与代理端口:那些列在库里是 0 /
                    保持默认值,渲染出来只会让人以为配漏了。
                    客户端连的端口在「转发」面板里,一条规则一个。 -->
-              <template v-else>{{ record.host }} · 端口见转发规则</template>
+              <template v-else><span class="lb-mono">{{ record.host }}</span> · 端口见转发规则</template>
               <!-- 订阅地址与管理地址不同时才写出来,理由同上。 -->
               <template v-if="record.sub_ipv4_address"> · 订阅 {{ record.sub_ipv4_address }}</template>
               <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
@@ -981,24 +1008,24 @@ const keyOpen = ref(false)
               <a-button
                 size="small"
                 :type="primaryAction(record) === 'detail' ? 'default' : 'primary'"
+                :class="{ 'lb-btn-ghost': primaryAction(record) === 'detail' }"
                 :loading="!!busy[record.id]"
                 @click="runPrimary(record)"
               >
                 {{ actionLabel[primaryAction(record)] }}
               </a-button>
-              <a-button v-if="primaryAction(record) !== 'detail'" size="small" @click="openDetail(record.id)">
-                详情
-              </a-button>
               <a-dropdown placement="bottomRight">
                 <a-button
                   size="small"
+                  class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text"
                   :aria-label="`${record.display_name || record.name} 的更多操作`"
                   :title="`${record.display_name || record.name} 的更多操作`"
                 >
-                  ⋯
+                  <LbIcon name="more" :size="16" />
                 </a-button>
                 <template #overlay>
                   <a-menu>
+                    <a-menu-item v-if="primaryAction(record) !== 'detail'" @click="openDetail(record.id)">详情</a-menu-item>
                     <a-menu-item @click="openEdit(record)">编辑节点</a-menu-item>
                     <a-menu-item @click="run(record.id, '探测', () => api.probeNode(record.id), '探测完成')">
                       探测
@@ -1023,7 +1050,8 @@ const keyOpen = ref(false)
           </template>
         </template>
       </a-table>
-    </a-card>
+      </div>
+    </section>
 
     <NodeFormModal
       v-model:open="formOpen"
@@ -1068,76 +1096,58 @@ const keyOpen = ref(false)
 </template>
 
 <style scoped>
-.nv {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.nv__link {
+  font-weight: 500;
 }
 
-.nv__head {
+.nv__name-row {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.nv__title {
-  margin: 0;
-  font-size: 19px;
+.nv__name {
+  font-size: 14px;
   font-weight: 600;
+  color: var(--text);
+}
+.nv__name:hover {
+  color: var(--brand);
 }
 
-.nv__sub {
-  margin-top: 3px;
-  font-size: 12.5px;
-  color: #6b7480;
+.nv__meta {
+  font-size: 11.5px;
+  color: var(--text3);
 }
 
-.nv__metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.nv__inner {
-  margin-left: 6px;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 10.5px;
-  color: #6b7480;
+.nv__chip {
+  font-size: 11px;
+  padding: 1px 7px;
 }
 
 .nv__host {
-  font-size: 11px;
-  color: #6b7480;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 /* 协议标记。用中性底色而不是彩色 —— 协议不是状态,没有好坏之分,
-   给它上色会跟旁边真正表达状态的那几个 LbStatusTag 抢注意力。
-   两个值都取自 tokens.ts(bgSubtle / text2)。 */
+   给它上色会跟旁边真正表达状态的那几个 LbStatusTag 抢注意力。 */
 .nv__proto {
   display: inline-block;
-  margin-right: 6px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #f1f3f5;
-  color: #576070;
-  font-size: 10px;
-  letter-spacing: 0.02em;
-}
-
-/* 角色与链式标记。同样用中性底色 —— 它们描述的是「这台机器是什么」,
-   不是状态,上色会跟旁边真正表达状态的 LbStatusTag 抢注意力。
-   取值同样来自 tokens.ts(bgSubtle / text2)。 */
-.nv__role,
-.nv__chain {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #f1f3f5;
-  color: #576070;
-  font-size: 10px;
-  letter-spacing: 0.02em;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--fill);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
 }
 
 .nv__hitem {
@@ -1147,25 +1157,25 @@ const keyOpen = ref(false)
 }
 .nv__hname {
   font-size: 12px;
-  color: #6B7480;
+  color: var(--text3);
 }
 .nv__hfail {
-  font-size: 12px;
-  color: #B4291D;
+  font-size: 11.5px;
+  color: var(--bad);
 }
 .nv__hok {
-  font-size: 12px;
-  color: #1B7A4B;
+  font-size: 11.5px;
+  color: var(--ok);
 }
 .nv__dash {
-  color: #8A93A0;
+  color: var(--text3);
 }
 
 .nv__stack {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
+  gap: 4px;
 }
 
 .nv__stack--row {
@@ -1186,11 +1196,12 @@ const keyOpen = ref(false)
   min-width: 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text);
 }
 
 .nv__card-maint {
   font-size: 11.5px;
-  color: #5f52a0;
+  color: var(--purple);
 }
 
 .nv__pager {
@@ -1199,56 +1210,50 @@ const keyOpen = ref(false)
 }
 
 .nv__maint {
-  max-width: 150px;
-  font-size: 10.5px;
-  color: #5f52a0;
+  max-width: 160px;
+  font-size: 11.5px;
+  color: var(--purple);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .nv__busy {
-  font-size: 10.5px;
-  color: #2563b8;
+  font-size: 11.5px;
+  color: var(--brand);
 }
 
 .nv__tier {
-  margin-top: 3px;
-  font-size: 10.5px;
-  color: #6b7480;
-}
-
-/* 排序值。跟内部名称一样是运维视角的信息,弱化处理,不跟展示名称抢视线。 */
-.nv__sort {
-  margin-right: 6px;
-  font-size: 10.5px;
-  color: #6b7480;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text3);
 }
 
 .nv__reset {
-  margin-top: 3px;
-  font-size: 10.5px;
-  color: #6b7480;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text3);
 }
 
 .nv__actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
 }
 
 .nv__key-note {
   margin: 0 0 12px;
-  font-size: 12.5px;
-  line-height: 1.75;
-  color: #576070;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text2);
 }
 
 .nv__key-note code {
   padding: 1px 5px;
-  background: #f1f3f5;
-  border-radius: 3px;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  background: var(--fill);
+  border-radius: 5px;
+  font-family: var(--mono);
   font-size: 12px;
 }
 
@@ -1258,15 +1263,8 @@ const keyOpen = ref(false)
   margin-top: 16px;
 }
 
-@media (max-width: 1279px) {
-  .nv__metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 767px) {
-  .nv__metrics {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* 「最后同步」这类时间列不折行。 */
+.nv :deep(.ant-table-cell .lb-time) {
+  white-space: nowrap;
 }
 </style>

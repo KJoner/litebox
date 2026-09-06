@@ -17,10 +17,13 @@ import {
   LbBatchBar,
   LbEmptyState,
   LbFilterBar,
+  LbIcon,
+  LbInfoTip,
   LbMetricCard,
   LbNameConfirm,
   LbQuotaBar,
   LbRowCard,
+  LbSectionTitle,
   LbStatusTag,
   LbTimeText,
   lbDangerConfirm,
@@ -129,31 +132,61 @@ const metricState = computed(() =>
   loadError.value ? 'error' : loading.value ? 'loading' : users.value.length ? 'ready' : 'empty',
 )
 
+/** 有效用户之外的人分三类点名 —— 「3 人待处理」看不出该做什么。 */
+const inactiveNote = computed(() => {
+  const parts: string[] = []
+  const count = (st: string) => users.value.filter((u) => u.status === st).length
+  const disabled = count('DISABLED')
+  const expired = count('EXPIRED')
+  const exceeded = count('QUOTA_EXCEEDED')
+  const pending = count('DEPLOY_PENDING') + count('DEPLOY_FAILED')
+  if (disabled) parts.push(`${disabled} 已停用`)
+  if (expired) parts.push(`${expired} 已到期`)
+  if (exceeded) parts.push(`${exceeded} 流量用尽`)
+  if (pending) parts.push(`${pending} 待部署`)
+  return parts.length ? parts.join(' · ') : stats.value.total ? '全部有效' : ''
+})
+
+/** 头部一句话摘要。 */
+const summaryLine = computed(() => {
+  if (loadError.value) return '用户列表读取失败。'
+  if (loading.value && !users.value.length) return '正在读取用户…'
+  const s = stats.value
+  if (!s.total) return '还没有创建任何用户。'
+  const head = `${s.total} 个用户,${s.active} 个有效。`
+  const tails: string[] = []
+  if (s.expiring) tails.push(`${s.expiring} 人 7 天内到期`)
+  if (s.near) tails.push(`${s.near} 人流量超 80%`)
+  return tails.length ? `${head}${tails.join(',')}。` : head
+})
+
 // ---------- 列 ----------
 
 // 用户列左固定、操作列右固定:768–1279 中间那一档要横向滚动,
 // 不固定的话滚动之后既看不出这是谁,也够不着操作按钮。
+// 列宽之和控制在 1100 以内:1440 宽的屏幕减去侧栏与内距只剩 1144,
+// 再宽右侧固定列就会盖住「到期时间」。
 const columns = [
-  { title: '用户', key: 'name', width: 220, fixed: 'left' as const },
-  { title: '等级', key: 'tier', width: 100 },
-  { title: '状态', key: 'status', width: 150 },
+  { title: '用户', key: 'name', width: 210, fixed: 'left' as const },
+  { title: '等级', key: 'tier', width: 96 },
+  { title: '状态', key: 'status', width: 140 },
   { title: '节点', key: 'nodes', width: 110 },
   {
     title: '已用流量',
     key: 'used',
-    width: 180,
+    width: 170,
     sorter: (a: ProxyUser, b: ProxyUser) => a.used_total - b.used_total,
   },
   {
     title: '到期时间',
     key: 'expires',
-    width: 150,
+    width: 130,
     // 默认按到期时间升序 —— 管理员最常做的事是找快过期的人。
     defaultSortOrder: 'ascend' as const,
     sorter: (a: ProxyUser, b: ProxyUser) =>
       (daysUntil(a.expires_at) ?? Infinity) - (daysUntil(b.expires_at) ?? Infinity),
   },
-  { title: '操作', key: 'actions', width: 200, fixed: 'right' as const },
+  { title: '操作', key: 'actions', width: 120, fixed: 'right' as const },
 ]
 
 const pager = usePagination('users', () => visible.value.length)
@@ -332,57 +365,71 @@ onMounted(load)
 </script>
 
 <template>
-  <div id="lb-main" class="uv">
-    <div class="uv__head">
-      <div>
-        <h2 class="uv__title">用户管理</h2>
-        <div class="uv__sub">
-          {{ stats.total }} 个用户 · 流量周期边界为 UTC 00:00 · 等级不高于用户等级的节点自动继承
-        </div>
+  <div class="lb-page uv">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>用户管理</span>
+          <LbInfoTip
+            text="流量周期边界为 UTC 00:00。等级不高于用户等级的节点自动继承,额外授权在此之外单独追加。默认按到期时间升序 —— 管理员最常做的事是找快过期的人。"
+            :width="320"
+          />
+        </h1>
+        <div class="lb-page__summary">{{ summaryLine }}</div>
       </div>
-      <a-space>
+      <div class="lb-page__actions">
         <a-button :loading="loading" @click="load">刷新</a-button>
-        <a-button type="primary" @click="openCreate">新增用户</a-button>
-      </a-space>
+        <a-button type="primary" @click="openCreate">+ 新增用户</a-button>
+      </div>
     </div>
 
-    <a-alert
-      v-if="nodes.length === 0 && !loading && !loadError"
-      type="info"
-      show-icon
-      class="uv__hint"
-      message="还没有节点"
-      description="用户需要分配到节点才能使用。请先在节点管理中添加并部署节点。"
-    />
-
-    <div class="uv__metrics">
-      <LbMetricCard label="有效用户" :state="metricState" :value="stats.active" :total="stats.total" />
-      <LbMetricCard label="7 天内到期" :state="metricState" :value="stats.expiring" tone="warning">
-        <template #action>
-          <a v-if="stats.expiring" @click="filters.expiringSoon = true">筛选</a>
-        </template>
-      </LbMetricCard>
-      <LbMetricCard label="流量超 80%" :state="metricState" :value="stats.near" tone="warning">
-        <template #action>
-          <a v-if="stats.near" @click="filters.nearQuota = true">筛选</a>
-        </template>
-      </LbMetricCard>
-      <LbMetricCard label="累计已用流量" :state="metricState" :value="formatBytes(stats.monthBytes)" />
+    <div v-if="nodes.length === 0 && !loading && !loadError" class="lb-notice">
+      <span class="lb-notice__icon lb-notice__icon--info"><LbIcon name="server" :size="18" /></span>
+      <div class="lb-notice__body">
+        <div class="lb-notice__title">还没有节点</div>
+        <div class="lb-notice__text">用户需要分配到节点才能使用。请先在自建节点里添加并部署节点。</div>
+      </div>
+      <div class="lb-notice__actions">
+        <a-button size="small" class="lb-btn-ghost" @click="$router.push('/nodes')">去添加节点</a-button>
+      </div>
     </div>
 
-    <a-card :body-style="{ padding: 0 }">
-      <LbFilterBar
-        :active-count="activeFilterCount"
-        :filtered="visible.length"
-        :total="users.length"
-        @clear="clearFilters"
+    <section class="lb-metrics">
+      <LbMetricCard label="有效用户" :state="metricState" :value="stats.active" :total="stats.total" :hint="inactiveNote" />
+      <LbMetricCard label="7 天内到期" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
+        <template #foot>
+          <a v-if="stats.expiring" class="uv__link" @click="filters.expiringSoon = true">筛选 ›</a>
+          <span v-else>近期没有人到期</span>
+        </template>
+      </LbMetricCard>
+      <LbMetricCard
+        label="流量超 80%"
+        tip="按用户额度算,不限量的用户不计。达到 100% 时账号自动停用并触发受影响节点重新部署。"
+        :state="metricState"
+        :value="stats.near"
+        :tone="stats.near ? 'warning' : 'default'"
       >
-        <a-input-search
-          v-model:value="filters.keyword"
-          placeholder="名称 / 编号 / 备注 / 登录账号"
-          allow-clear
-          style="width: 230px"
-        />
+        <template #foot>
+          <a v-if="stats.near" class="uv__link" @click="filters.nearQuota = true">筛选 ›</a>
+          <span v-else>没有人接近额度</span>
+        </template>
+      </LbMetricCard>
+      <LbMetricCard
+        label="累计已用流量"
+        :state="metricState"
+        :value="formatBytes(stats.monthBytes).split(' ')[0]"
+        :unit="formatBytes(stats.monthBytes).split(' ')[1]"
+        hint="全部用户本周期用量之和"
+      />
+    </section>
+
+    <section>
+      <LbSectionTitle title="全部用户" :count="`${visible.length} / ${users.length} 人`" />
+      <div class="lb-card lb-card--flush">
+      <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
+        <a-input v-model:value="filters.keyword" placeholder="名称 / 编号 / 备注 / 登录账号" allow-clear>
+          <template #prefix><LbIcon name="search" :size="14" /></template>
+        </a-input>
         <a-select v-model:value="filters.status" placeholder="状态" allow-clear style="width: 130px">
           <a-select-option value="ACTIVE">正常</a-select-option>
           <a-select-option value="DISABLED">已停用</a-select-option>
@@ -400,8 +447,14 @@ onMounted(load)
           <a-select-option value="off">已关闭</a-select-option>
           <a-select-option value="none">未开通</a-select-option>
         </a-select>
-        <a-checkbox v-model:checked="filters.expiringSoon">7 天内到期</a-checkbox>
-        <a-checkbox v-model:checked="filters.nearQuota">流量超 80%</a-checkbox>
+        <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.expiringSoon }">
+          <a-switch v-model:checked="filters.expiringSoon" size="small" />
+          7 天内到期
+        </label>
+        <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.nearQuota }">
+          <a-switch v-model:checked="filters.nearQuota" size="small" />
+          流量超 80%
+        </label>
       </LbFilterBar>
 
       <LbBatchBar
@@ -453,7 +506,7 @@ onMounted(load)
             <LbStatusTag kind="user" :status="u.status" />
           </template>
 
-          <div class="uv__card-sub lb-mono">
+          <div class="uv__card-sub lb-tabular">
             {{ u.user_code }} · {{ u.access_tier_name }} ·
             <span v-if="hasNoUsableNode(u)" class="uv__nonode-inline">无可用节点</span>
             <span v-else>{{ nodeCountOf(u) }} 个节点</span>
@@ -492,7 +545,9 @@ onMounted(load)
               {{ userActionLabel[primaryUserAction(u)] }}
             </a-button>
             <a-dropdown v-if="primaryUserAction(u) !== 'detail'" placement="topRight">
-              <a-button class="lb-touch-target" :aria-label="`${u.display_name} 的更多操作`">⋯</a-button>
+              <a-button class="lb-touch-target" :aria-label="`${u.display_name} 的更多操作`">
+                <LbIcon name="more" :size="16" />
+              </a-button>
               <template #overlay>
                 <a-menu>
                   <a-menu-item @click="detailId = u.id">详情</a-menu-item>
@@ -527,12 +582,12 @@ onMounted(load)
         :pagination="pager.options.value"
         row-key="id"
         size="small"
-        :scroll="{ x: 1120 }"
+        :scroll="{ x: 1010 }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a @click="detailId = record.id">{{ record.display_name }}</a>
-            <div class="uv__code lb-mono">
+            <a class="uv__name" @click="detailId = record.id">{{ record.display_name }}</a>
+            <div class="uv__code lb-tabular">
               {{ record.user_code }}
               <template v-if="record.portal_account">· {{ record.portal_account.username }}</template>
               <template v-else>· 未开通登录</template>
@@ -540,7 +595,7 @@ onMounted(load)
           </template>
 
           <template v-else-if="column.key === 'tier'">
-            <a-tag>{{ record.access_tier_name }}</a-tag>
+            <span class="lb-chip">{{ record.access_tier_name }}</span>
           </template>
 
           <!-- 状态列两行:status 一行,与它正交的派生标记一行。不挤进同一个标签。 -->
@@ -555,15 +610,10 @@ onMounted(load)
           </template>
 
           <template v-else-if="column.key === 'nodes'">
-            <span v-if="hasNoUsableNode(record)" class="uv__nonode">
-              <span class="lb-mono">0</span>
-              <span>无可用节点</span>
-            </span>
-            <span v-else class="lb-mono">
+            <span v-if="hasNoUsableNode(record)" class="uv__nonode lb-tabular">0 · 无可用节点</span>
+            <span v-else class="lb-tabular uv__count">
               {{ nodeCountOf(record) }}
-              <span v-if="record.node_ids.length" class="uv__extra">
-                (含追加 {{ record.node_ids.length }})
-              </span>
+              <span v-if="record.node_ids.length" class="uv__extra">(含追加 {{ record.node_ids.length }})</span>
             </span>
           </template>
 
@@ -587,7 +637,7 @@ onMounted(load)
             <span v-if="!record.expires_at" class="uv__muted">不过期</span>
             <span v-else class="uv__expiry">
               <span
-                class="lb-mono"
+                class="lb-tabular uv__expiry-days"
                 :style="{
                   color:
                     (daysUntil(record.expires_at) ?? 99) < 0
@@ -612,17 +662,23 @@ onMounted(load)
               <a-button
                 size="small"
                 :type="primaryUserAction(record) === 'detail' ? 'default' : 'primary'"
+                :class="{ 'lb-btn-ghost': primaryUserAction(record) === 'detail' }"
                 @click="runPrimary(record)"
               >
                 {{ userActionLabel[primaryUserAction(record)] }}
               </a-button>
-              <a-button v-if="primaryUserAction(record) !== 'detail'" size="small" @click="detailId = record.id">
-                详情
-              </a-button>
               <a-dropdown placement="bottomRight">
-                <a-button size="small" :aria-label="`${record.display_name} 的更多操作`" :title="`${record.display_name} 的更多操作`">⋯</a-button>
+                <a-button
+                  size="small"
+                  class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text"
+                  :aria-label="`${record.display_name} 的更多操作`"
+                  :title="`${record.display_name} 的更多操作`"
+                >
+                  <LbIcon name="more" :size="16" />
+                </a-button>
                 <template #overlay>
                   <a-menu>
+                    <a-menu-item v-if="primaryUserAction(record) !== 'detail'" @click="detailId = record.id">详情</a-menu-item>
                     <a-menu-item @click="openEdit(record)">编辑</a-menu-item>
                     <a-menu-item @click="openAdjust(record, 'EXTEND_EXPIRY')">续期 / 调整</a-menu-item>
                     <a-menu-item @click="openAdjust(record, 'RESET_TRAFFIC')">重置流量</a-menu-item>
@@ -640,7 +696,8 @@ onMounted(load)
           </template>
         </template>
       </a-table>
-    </a-card>
+      </div>
+    </section>
 
     <UserFormModal
       v-model:open="formOpen"
@@ -696,35 +753,8 @@ onMounted(load)
 </template>
 
 <style scoped>
-.uv {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.uv__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.uv__title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.uv__sub {
-  margin-top: 3px;
-  font-size: 12.5px;
-  color: #6b7480;
-}
-
-.uv__metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
+.uv__link {
+  font-weight: 500;
 }
 
 .uv__cards {
@@ -739,15 +769,16 @@ onMounted(load)
   min-width: 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text);
 }
 
 .uv__card-sub {
-  font-size: 11.5px;
-  color: #6b7480;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .uv__nonode-inline {
-  color: #b4291d;
+  color: var(--bad);
 }
 
 .uv__pager {
@@ -755,62 +786,73 @@ onMounted(load)
   padding: 4px 0 2px;
 }
 
+.uv__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.uv__name:hover {
+  color: var(--brand);
+}
+
 .uv__code {
-  font-size: 11px;
-  color: #6b7480;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .uv__status {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
+  gap: 4px;
 }
 
 .uv__flag {
-  font-size: 11px;
-  color: #6b7480;
+  font-size: 11.5px;
+  color: var(--text3);
 }
 
 .uv__flag--warn {
-  color: #92610a;
+  color: var(--warn);
 }
 
 .uv__nonode {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  color: #b4291d;
-  font-size: 10.5px;
+  color: var(--bad);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
-.uv__nonode .lb-mono {
-  font-size: 12px;
+.uv__count {
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .uv__extra,
 .uv__muted {
-  font-size: 11px;
-  color: #6b7480;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text3);
 }
 
 .uv__expiry {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+}
+.uv__expiry-days {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.uv__expiry :deep(.lb-time) {
+  font-size: 11.5px;
+  color: var(--text3);
 }
 
 .uv__actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-}
-
-/* 768 以下整表换卡片。这里先保证操作列可达:
-   AntD 的横向滚动会把最右边的操作列推到看不见的地方。 */
-@media (max-width: 1279px) {
-  .uv__metrics {
-    grid-template-columns: repeat(2, 1fr);
-  }
 }
 </style>

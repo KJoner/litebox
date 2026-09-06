@@ -398,24 +398,24 @@ async function save() {
 .pm__label {
   font-size: 12.5px;
   font-weight: 500;
-  color: #15181c;
+  color: var(--text);
 }
 
 .pm__req {
-  color: #b4291d;
+  color: var(--bad);
 }
 
 .pm__help {
   font-size: 11.5px;
   line-height: 1.75;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pm__help code,
 .pm__note code {
   padding: 0 3px;
-  background: #f1f3f5;
-  border-radius: 3px;
+  background: var(--fill);
+  border-radius: var(--r-pill);
 }
 
 .pm__switch {
@@ -424,14 +424,14 @@ async function save() {
   gap: 8px;
   height: 32px;
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pm__ph {
   padding: 10px 12px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
 }
 
 .pm__ph-head {
@@ -447,7 +447,7 @@ async function save() {
 .pm__ph-note {
   font-weight: 400;
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pm__ph-list {
@@ -461,22 +461,22 @@ async function save() {
   align-items: center;
   gap: 7px;
   padding: 5px 9px;
-  background: #fff;
-  border: 1px solid #dfe3e8;
-  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-input);
   font-size: 11.5px;
-  color: #576070;
+  color: var(--text2);
   cursor: pointer;
 }
 
 .pm__chip:hover {
-  border-color: #c9dcf3;
-  background: #eef4fc;
+  border-color: var(--brand-bg);
+  background: var(--brand-bg);
 }
 
 .pm__chip code {
-  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #1d4f96;
+  font-family: var(--mono);
+  color: var(--brand-hover);
 }
 
 .pm__editor-bar {
@@ -495,26 +495,26 @@ async function save() {
 
 .pm__size {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pm__size--bad {
-  color: #b4291d;
+  color: var(--bad);
   font-weight: 600;
 }
 
 .pm__upload {
   padding: 3px 9px;
-  border: 1px solid #dfe3e8;
-  border-radius: 4px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-input);
   font-size: 12px;
-  color: #576070;
+  color: var(--text2);
   cursor: pointer;
 }
 
 .pm__upload:hover {
-  border-color: #c9dcf3;
-  color: #1d4f96;
+  border-color: var(--brand-bg);
+  color: var(--brand-hover);
 }
 
 .pm__upload input {
@@ -525,35 +525,35 @@ async function save() {
   width: 100%;
   min-height: 340px;
   padding: 10px 12px;
-  border: 1px solid #e3e6ea;
-  border-radius: 6px;
-  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
+  font-family: var(--mono);
   font-size: 12px;
   line-height: 1.65;
-  color: #15181c;
+  color: var(--text);
   resize: vertical;
   tab-size: 2;
 }
 
 .pm__editor:focus {
   outline: none;
-  border-color: #2563b8;
+  border-color: var(--brand);
 }
 
 .pm__note {
   padding: 10px 12px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
   font-size: 11.5px;
   line-height: 1.8;
-  color: #576070;
+  color: var(--text2);
   word-break: break-all;
 }
 
 .pm__preview {
-  border: 1px solid #e3e6ea;
-  border-radius: 6px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
   overflow: hidden;
 }
 
@@ -564,8 +564,8 @@ async function save() {
   gap: 10px;
   flex-wrap: wrap;
   padding: 9px 12px;
-  background: #f6f7f9;
-  border-bottom: 1px solid #edeff2;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--sep2);
   font-size: 12.5px;
   font-weight: 600;
 }
@@ -582,26 +582,26 @@ async function save() {
   flex-wrap: wrap;
   padding: 9px 12px;
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pm__preview-error {
   padding: 11px 12px;
-  background: #fdecea;
-  border-bottom: 1px solid #f3cfc9;
+  background: var(--bad-bg);
+  border-bottom: 1px solid var(--bad-bg);
   font-size: 12px;
   line-height: 1.8;
-  color: #8e2117;
+  color: var(--bad);
 }
 
 .pm__preview-warn {
   padding: 10px 12px;
-  background: #fcf3e3;
-  border-top: 1px solid #efdcb4;
-  border-bottom: 1px solid #efdcb4;
+  background: var(--warn-bg);
+  border-top: 1px solid var(--warn-bg);
+  border-bottom: 1px solid var(--warn-bg);
   font-size: 11.5px;
   line-height: 1.8;
-  color: #5c4405;
+  color: var(--warn);
 }
 
 .pm__preview-warn-note {

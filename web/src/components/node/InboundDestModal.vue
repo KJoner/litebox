@@ -99,17 +99,17 @@ async function run() {
   margin: 0 0 12px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 .idm__warn {
   font-size: 12px;
   line-height: 1.6;
-  color: #b4291d;
+  color: var(--bad);
 }
 .idm__result {
   margin-top: 8px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

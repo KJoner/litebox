@@ -17,6 +17,8 @@ import { checkLoginUsername, checkPassword } from '@/utils/validate'
 import {
   LbCopyField,
   LbEmptyState,
+  LbIcon,
+  LbInfoTip,
   LbNameConfirm,
   LbQuotaBar,
   LbSparkline,
@@ -466,7 +468,7 @@ const adjustColumns = [
   <a-drawer
     :open="userId !== null"
     :width="720"
-    :body-style="{ padding: '0 20px 20px' }"
+    class="ud"
     @close="emit('close')"
   >
     <template #title>
@@ -474,9 +476,9 @@ const adjustColumns = [
         <div class="ud__title">
           <span class="ud__name">{{ head?.display_name ?? '用户详情' }}</span>
           <LbStatusTag v-if="head" kind="user" :status="head.status" />
-          <a-tag v-if="head">{{ head.access_tier_name }}</a-tag>
+          <span v-if="head" class="lb-chip">{{ head.access_tier_name }}</span>
         </div>
-        <div v-if="head" class="ud__sub lb-mono">
+        <div v-if="head" class="ud__sub lb-tabular">
           {{ head.user_code }} · 创建于 {{ formatTime(head.created_at) }} ·
           <template v-if="user?.last_renewal_at">
             最近续期 <LbTimeText :value="user.last_renewal_at" />
@@ -487,11 +489,18 @@ const adjustColumns = [
     </template>
 
     <template #extra>
-      <a-space v-if="user">
+      <div v-if="user" class="ud__extra">
         <a-button type="primary" size="small" @click="runPrimary">{{ primaryLabel }}</a-button>
-        <a-button size="small" @click="emit('edit', user)">编辑</a-button>
+        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" @click="emit('edit', user)">编辑</a-button>
         <a-dropdown placement="bottomRight">
-          <a-button size="small" :aria-label="`${user.display_name} 的更多操作`" title="更多操作">⋯</a-button>
+          <a-button
+            size="small"
+            class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text ud__more"
+            :aria-label="`${user.display_name} 的更多操作`"
+            title="更多操作"
+          >
+            <LbIcon name="more" :size="16" />
+          </a-button>
           <template #overlay>
             <a-menu>
               <a-menu-item @click="openAdjust('RESET_TRAFFIC')">重置已用流量</a-menu-item>
@@ -509,7 +518,7 @@ const adjustColumns = [
             </a-menu>
           </template>
         </a-dropdown>
-      </a-space>
+      </div>
     </template>
 
     <!-- 用户本身读不到 —— 整个抽屉进错误态。附属数据的失败不走这里。 -->
@@ -545,13 +554,12 @@ const adjustColumns = [
     </div>
 
     <template v-else>
-      <a-alert
-        v-if="banner"
-        class="ud__banner"
-        :type="banner.type"
-        show-icon
-        :message="banner.text"
-      />
+      <div v-if="banner" class="lb-notice ud__banner">
+        <span class="lb-notice__icon" :class="banner.type === 'error' ? 'lb-notice__icon--bad' : 'lb-notice__icon--warn'">
+          <LbIcon name="alert-triangle" :size="18" />
+        </span>
+        <div class="lb-notice__body ud__banner-text">{{ banner.text }}</div>
+      </div>
 
       <a-tabs v-model:activeKey="tab" size="small">
         <a-tab-pane key="profile" tab="档案">
@@ -585,7 +593,10 @@ const adjustColumns = [
                 </div>
                 <div class="ud__spark">
                   <LbSparkline :points="dailyPoints" type="bar" :height="72" />
-                  <div class="ud__spark-cap">近 30 天 · 按 UTC 日 · 空心柱表示当天没有记录,不是 0</div>
+                  <div class="ud__spark-cap">
+                    近 30 天 · 按 UTC 日
+                    <LbInfoTip text="空心柱表示当天没有记录,不是 0 —— 不补 0、不插值。" :width="260" />
+                  </div>
                 </div>
               </div>
             </section>
@@ -593,13 +604,13 @@ const adjustColumns = [
             <section class="ud__card">
               <div class="ud__card-head">
                 门户登录账号
-                <a-space size="small">
+                <span class="ud__card-links">
                   <a v-if="user.portal_account" @click="openAccountForm">重设密码</a>
                   <a v-if="user.portal_account" @click="toggleLogin">
                     {{ user.portal_account.login_enabled ? '关闭门户登录' : '开启门户登录' }}
                   </a>
                   <a v-else @click="openAccountForm">开通</a>
-                </a-space>
+                </span>
               </div>
               <div v-if="user.portal_account" class="ud__card-body">
                 <div class="ud__facts">
@@ -609,12 +620,12 @@ const adjustColumns = [
                     <b>
                       <LbStatusTag
                         v-if="user.portal_account.must_change_password"
-                        :meta="{ text: '待改初始密码', shape: 'triangle', fg: '#92610A', bg: '#FCF3E3', bd: '#EFDCB4' }"
+                        :meta="{ text: '待改初始密码', shape: 'triangle', fg: 'var(--warn)', bg: 'var(--warn-bg)' }"
                       />
                       <!-- login_enabled=false 全站统称「门户登录已关闭」,不叫「已停用」 -->
                       <LbStatusTag
                         v-else-if="!user.portal_account.login_enabled"
-                        :meta="{ text: '门户登录已关闭', shape: 'pause', fg: '#5F52A0', bg: '#F0EEF9', bd: '#D6D0EE' }"
+                        :meta="{ text: '门户登录已关闭', shape: 'pause', fg: 'var(--purple)', bg: 'var(--purple-bg)' }"
                       />
                       <LbStatusTag v-else kind="user" status="ACTIVE" />
                     </b>
@@ -678,7 +689,7 @@ const adjustColumns = [
             </section>
 
             <section class="ud__card">
-              <div class="ud__card-head">可用节点 {{ user.effective_node_ids.length }}</div>
+              <div class="ud__card-head">可用节点 <span class="ud__count">{{ user.effective_node_ids.length }}</span></div>
               <div class="ud__card-body">
                 <div v-if="user.effective_node_ids.length" class="ud__nodes">
                   <span v-for="id in user.effective_node_ids" :key="id" class="ud__node">
@@ -704,10 +715,18 @@ const adjustColumns = [
             @retry="user && loadSections(user)"
           />
           <template v-else>
-            <LbSparkline :points="dailyPoints" type="bar" :height="140" />
-            <div class="ud__spark-cap">
-              近 30 天 · 按 UTC 日聚合 · 悬停查看当日用量 · 空心柱表示当天没有记录(不补 0、不插值)
-            </div>
+            <section class="ud__card">
+              <div class="ud__card-head">
+                近 30 天流量
+                <span class="ud__spark-cap">
+                  按 UTC 日聚合
+                  <LbInfoTip text="悬停查看当日用量。空心柱表示当天没有记录,不是 0 —— 不补 0、不插值。" :width="260" />
+                </span>
+              </div>
+              <div class="ud__card-body">
+                <LbSparkline :points="dailyPoints" type="bar" :height="130" />
+              </div>
+            </section>
 
             <div class="ud__card-head ud__card-head--plain">按节点</div>
             <div v-if="traffic && traffic.by_node.length" class="ud__bynode">
@@ -786,8 +805,8 @@ const adjustColumns = [
               <LbStatusTag
                 :meta="
                   l.succeeded
-                    ? { text: '成功', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }
-                    : { text: '失败', shape: 'cross', fg: '#B4291D', bg: '#FDECEA', bd: '#F3CFC9' }
+                    ? { text: '成功', shape: 'check', fg: 'var(--ok)', bg: 'var(--ok-bg)' }
+                    : { text: '失败', shape: 'cross', fg: 'var(--bad)', bg: 'var(--bad-bg)' }
                 "
               />
               <div class="ud__log-body">
@@ -882,35 +901,61 @@ const adjustColumns = [
 .ud__head {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .ud__title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .ud__name {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .ud__sub {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
+}
+
+.ud__extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ud__extra :deep(.ant-btn-sm) {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.ud__extra :deep(.ud__more.ant-btn) {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
 }
 
 .ud__skel {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding-top: 16px;
+  padding-top: 8px;
 }
 
 .ud__banner {
-  margin-top: 12px;
+  align-items: center;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+.ud__banner-text {
+  font-size: 13.5px;
+  line-height: 1.5;
 }
 
 .ud__grid {
@@ -920,9 +965,10 @@ const adjustColumns = [
 }
 
 .ud__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
 }
 
 .ud__card-head {
@@ -930,29 +976,37 @@ const adjustColumns = [
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
+  padding: 18px 22px 0;
+  font-size: 15px;
   font-weight: 600;
+}
+.ud__card-links {
+  display: flex;
+  gap: 14px;
+  font-weight: 500;
+  font-size: 13px;
+}
+.ud__count {
+  color: var(--text3);
+  font-weight: 400;
 }
 
 .ud__card-head--plain {
   margin-top: 20px;
-  padding: 0 0 8px;
-  border-bottom: none;
+  padding: 0 4px 10px;
 }
 
 .ud__card-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
+  padding: 16px 22px 20px;
 }
 
 .ud__facts {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 20px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .ud__facts > div {
@@ -967,57 +1021,64 @@ const adjustColumns = [
 }
 
 .ud__facts span {
-  font-size: 11.5px;
-  color: #6b7480;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .ud__facts b {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .ud__spark {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .ud__spark-cap {
-  font-size: 11px;
-  color: #6b7480;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text3);
 }
 
 .ud__note {
-  padding: 10px 12px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
-  font-size: 12px;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  font-size: 13px;
   line-height: 1.7;
-  color: #576070;
+  color: var(--text2);
 }
 
 .ud__note--info {
-  background: #eef4fc;
-  border-color: #c9dcf3;
-  color: #1d4f96;
+  background: var(--brand-bg);
+  color: var(--text);
 }
 
 .ud__note--danger {
-  background: #fdecea;
-  border-color: #f3cfc9;
-  color: #8e2117;
+  background: var(--bad-bg);
+  color: var(--text);
 }
 
 .ud__acct-ops {
   display: flex;
   gap: 16px;
-  padding-top: 2px;
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .ud__danger {
-  color: #b4291d;
+  color: var(--bad);
+}
+.ud__danger:hover {
+  color: var(--bad);
+  opacity: 0.8;
 }
 
 .ud__nodes {
@@ -1028,24 +1089,26 @@ const adjustColumns = [
 
 .ud__node {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 3px 9px;
-  background: #f6f7f9;
-  border: 1px solid #e3e6ea;
-  border-radius: 4px;
-  font-size: 12.5px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--surface2);
+  border-radius: var(--r-pill);
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .ud__node em {
   font-style: normal;
-  font-size: 10.5px;
-  color: #6b7480;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text3);
 }
 
 .ud__bynode {
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
@@ -1054,25 +1117,26 @@ const adjustColumns = [
   grid-template-columns: 1.4fr 0.8fr 1.4fr;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
-  font-size: 12.5px;
+  padding: 14px 20px;
+  font-size: 13px;
 }
 
 .ud__bynode-row + .ud__bynode-row {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep2);
 }
 
 .ud__bynode-dir {
-  font-size: 11px;
-  color: #6b7480;
+  font-size: 12px;
+  color: var(--text3);
   text-align: right;
 }
 
 .ud__logs {
   display: flex;
   flex-direction: column;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
@@ -1081,11 +1145,11 @@ const adjustColumns = [
   grid-template-columns: auto 1fr auto;
   align-items: start;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 14px 20px;
 }
 
 .ud__log + .ud__log {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep2);
 }
 
 .ud__log-body {
@@ -1096,24 +1160,31 @@ const adjustColumns = [
 }
 
 .ud__log-action {
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 13.5px;
+  font-weight: 600;
 }
 
 .ud__log-detail {
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text2);
 }
 
 .ud__muted {
-  color: #6b7480;
+  color: var(--text3);
 }
 
-/* 窄屏:两列事实压成一列,抽屉本身由 AntD 撑满宽度。 */
+/* 窄屏:四列事实压成两列,抽屉本身由 AntD 撑满宽度。 */
 @media (max-width: 767px) {
   .ud__facts {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ud__card-head {
+    padding: 16px 16px 0;
+  }
+  .ud__card-body {
+    padding: 14px 16px 16px;
   }
 
   .ud__bynode-row {

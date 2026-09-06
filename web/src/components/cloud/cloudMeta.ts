@@ -12,7 +12,7 @@ import { color } from '@/theme/tokens'
 export function cloudStatusMeta(v: CloudNodeView): LbStatusMeta {
   switch (v.instance_status) {
     case 'Running':
-      return { text: '运行中', shape: 'dot', fg: color.success, bg: color.successBg, bd: color.successBorder }
+      return { text: '运行中', shape: 'dot', fg: color.success, bg: color.successBg}
     case 'Stopped':
       if (v.stopped_by) {
         return {
@@ -20,16 +20,15 @@ export function cloudStatusMeta(v: CloudNodeView): LbStatusMeta {
           shape: 'pause',
           fg: color.maintenance,
           bg: color.maintenanceBg,
-          bd: color.maintenanceBorder,
         }
       }
-      return { text: '已停止', shape: 'square', fg: color.danger, bg: color.dangerBg, bd: color.dangerBorder }
+      return { text: '已停止', shape: 'square', fg: color.danger, bg: color.dangerBg}
     case 'Starting':
     case 'Stopping':
     case 'Pending':
-      return { text: v.status_label, shape: 'spinner', fg: color.brand, bg: color.brandBg, bd: color.brandBorder }
+      return { text: v.status_label, shape: 'spinner', fg: color.brand, bg: color.brandBg}
     default:
-      return { text: '未查询', shape: 'ring', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder }
+      return { text: '未查询', shape: 'ring', fg: color.neutral, bg: color.neutralBg}
   }
 }
 

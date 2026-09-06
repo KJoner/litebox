@@ -373,7 +373,7 @@ async function doSave() {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.7;
-  color: #6b7480;
+  color: var(--text3);
 }
 .ps__help--row {
   margin-top: -12px;
@@ -382,8 +382,8 @@ async function doSave() {
 .ps__summary {
   padding: 12px 14px;
   margin-bottom: 12px;
-  background: #f1f3f5;
-  border-radius: 6px;
+  background: var(--fill);
+  border-radius: var(--r-group);
   font-size: 13px;
   line-height: 1.8;
 }
@@ -391,17 +391,17 @@ async function doSave() {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.75;
-  color: #576070;
+  color: var(--text2);
 }
 .ps__note--warn {
-  color: #92610a;
+  color: var(--warn);
 }
 .ps__errline {
   font-size: 11px;
   word-break: break-all;
 }
 .ps__dim {
-  color: #6b7480;
+  color: var(--text3);
 }
 .ps__actions {
   display: flex;
@@ -411,15 +411,15 @@ async function doSave() {
 .ps__list {
   max-height: 320px;
   overflow-y: auto;
-  border: 1px solid #e3e6ea;
-  border-radius: 6px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
 }
 .ps__row {
   display: flex;
   gap: 10px;
   align-items: center;
   padding: 7px 11px;
-  border-bottom: 1px solid #edeff2;
+  border-bottom: 1px solid var(--sep2);
 }
 .ps__row:last-child {
   border-bottom: none;
@@ -432,20 +432,20 @@ async function doSave() {
 }
 .ps__row-addr {
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 .ps__tag {
   display: inline-block;
   margin-left: 6px;
   padding: 0 5px;
-  border-radius: 3px;
-  background: #f1f3f5;
-  color: #576070;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
   font-size: 10.5px;
 }
 .ps__tag--warn {
-  background: #fcf3e3;
-  color: #92610a;
+  background: var(--warn-bg);
+  color: var(--warn);
 }
 .ps__foot {
   display: flex;

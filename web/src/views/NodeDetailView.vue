@@ -29,6 +29,8 @@ import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import CloudInstanceCard from '@/components/cloud/CloudInstanceCard.vue'
 import {
   LbEmptyState,
+  LbIcon,
+  LbInfoTip,
   LbNameConfirm,
   LbQuotaBar,
   LbSparkline,
@@ -936,17 +938,19 @@ const needsPortForward = computed(() =>
 </script>
 
 <template>
-  <div class="nd">
+  <div class="lb-page nd">
     <!-- 返回链接不是装饰:整页之后浏览器的后退键会离开整个面板,
          而管理员多半只是想回到列表。
          不做成完整面包屑 —— 顶栏已经有一条「分组 / 节点详情」,
          再来一条只是把同一句话说两遍。 -->
-    <RouterLink class="nd__back" :to="{ name: 'nodes' }">← 返回自建节点</RouterLink>
+    <RouterLink class="nd__back" :to="{ name: 'nodes' }">
+      <span class="nd__back-chevron">‹</span>自建节点
+    </RouterLink>
 
     <div class="nd__bar">
       <div class="nd__head">
         <div class="nd__title">
-          <span class="nd__name">{{ node?.display_name || node?.name || '节点详情' }}</span>
+          <h1 class="nd__name">{{ node?.display_name || node?.name || '节点详情' }}</h1>
           <template v-if="node">
             <LbStatusTag kind="node" :status="node.status" />
             <!-- rev 只在这台机器确实有 sing-box 配置时才有意义。
@@ -960,8 +964,8 @@ const needsPortForward = computed(() =>
                  在标题旁边显示一个机器级的等级,会让人以为它管着整台机器。 -->
           </template>
         </div>
-        <div v-if="node" class="nd__sub lb-mono">
-          {{ node.name }} · {{ node.host }}
+        <div v-if="node" class="nd__sub lb-tabular">
+          {{ node.name }} · <span class="lb-mono">{{ node.host }}</span>
           <!-- 中转角色没有自己的入站,那三个端口在库里是 0,写出来只会让人
                以为配漏了。客户端连的端口在「入口」里,一条规则一个。 -->
           <!-- 写明「端口」二字:多入站之后这里是一串数字,不标的话
@@ -979,7 +983,7 @@ const needsPortForward = computed(() =>
         </div>
       </div>
 
-      <a-space v-if="node">
+      <div v-if="node" class="nd__actions">
         <!-- 库里的配置已经在节点上生效时不做成主按钮:那一下点下去只会白白
              重启一次 sing-box、断掉全部在线连接,换回一模一样的配置。 -->
         <!-- 中转机上没有 sing-box 配置可部署 —— 那一下点下去只会得到一句
@@ -990,13 +994,14 @@ const needsPortForward = computed(() =>
              这里只留一个跳过去的入口,并把「该部署了」这件事说出来。 -->
         <a-button
           :type="needsDeploy(node) ? 'primary' : 'default'"
-          size="small"
           @click="tab = 'entries'"
         >
           {{ needsDeploy(node) ? '待部署 · 去入口' : '入口与部署' }}
         </a-button>
         <a-dropdown placement="bottomRight">
-          <a-button size="small" :aria-label="`${node.name} 的更多操作`" title="更多操作">⋯</a-button>
+          <a-button class="lb-btn-circle nd__more" :aria-label="`${node.name} 的更多操作`" title="更多操作">
+            <LbIcon name="more" :size="16" />
+          </a-button>
           <!-- **这里只放和「这台机器」有关的操作。**
                装/卸/下发是**服务**的事,而一台机器上有三类服务
                (sing-box、每个 Mieru 入口一个 mita、nginx),它们的
@@ -1026,7 +1031,7 @@ const needsPortForward = computed(() =>
             </a-menu>
           </template>
         </a-dropdown>
-      </a-space>
+      </div>
     </div>
 
     <LbEmptyState
@@ -1046,15 +1051,18 @@ const needsPortForward = computed(() =>
 
     <template v-else>
       <!-- 失败原因提到第一屏。埋在某个 Tab 里等于没有。 -->
-      <div v-if="failureBanner" class="nd__fail">
-        <div class="nd__fail-title">{{ failureBanner.title }}</div>
-        <div v-if="failureBanner.body" class="nd__fail-body">{{ failureBanner.body }}</div>
-        <div v-if="failureBanner.rollback" class="nd__fail-rb">
-          {{ failureBanner.rollback }} —— 节点当前运行的是回滚后的配置,用户未受影响。
-        </div>
-        <div class="nd__fail-acts">
-          <a @click="tab = 'deploys'">查看完整步骤</a>
-          <a @click="doDiff">配置比对</a>
+      <div v-if="failureBanner" class="lb-notice nd__fail">
+        <span class="lb-notice__icon lb-notice__icon--bad"><LbIcon name="alert-triangle" :size="18" /></span>
+        <div class="lb-notice__body">
+          <div class="nd__fail-title">{{ failureBanner.title }}</div>
+          <div v-if="failureBanner.body" class="nd__fail-body lb-mono">{{ failureBanner.body }}</div>
+          <div v-if="failureBanner.rollback" class="nd__fail-rb">
+            {{ failureBanner.rollback }} —— 节点当前运行的是回滚后的配置,用户未受影响。
+          </div>
+          <div class="nd__fail-acts">
+            <a-button size="small" class="lb-btn-ghost" @click="tab = 'deploys'">查看完整步骤</a-button>
+            <a-button size="small" class="lb-btn-ghost" @click="doDiff">配置比对</a-button>
+          </div>
         </div>
       </div>
 
@@ -1068,8 +1076,15 @@ const needsPortForward = computed(() =>
       <!-- 服务巡检。与上面那排状态是两回事:那些说的是"上次探测能不能连上、
            上次部署成不成功",这一行说的是"此刻还能不能服务用户"。
            一台 ONLINE 的机器完全可能跑着一个已经死掉的 sing-box。 -->
-      <div v-if="health" class="nd__health">
-        <span class="nd__health-label">服务巡检</span>
+      <div class="lb-grid-2 nd__strip">
+      <div v-if="health" class="lb-card lb-card--sm nd__health">
+        <span class="nd__health-label">
+          服务巡检
+          <LbInfoTip
+            :width="320"
+            text="与上面的运行状态是两回事:那里说的是上次探测与上次部署,这里说的是此刻还能不能服务用户。「连不上」= SSH 都不通,服务是死是活并不知道;「没在跑」= 服务定义在、进程确实没跑。"
+          />
+        </span>
         <template v-if="node.role !== 'RELAY'">
           <span class="nd__health-item" :title="health.singbox_detail">
             sing-box
@@ -1110,16 +1125,20 @@ const needsPortForward = computed(() =>
       </div>
 
       <!-- 只读检查常驻工具条。这一排都不改动节点状态。 -->
-      <div class="nd__tools">
-        <span class="nd__tools-label">只读检查</span>
-        <a-button size="small" :loading="running === '测试 SSH'" @click="doTestSSH">测试 SSH</a-button>
-        <a-button size="small" :loading="running === '探测'" @click="doProbe">探测</a-button>
+      <div class="lb-card lb-card--sm nd__tools">
+        <span class="nd__tools-label">
+          只读检查
+          <LbInfoTip text="这一排都不改动节点状态,结果一律弹窗呈现。点错了最坏结果是白等几秒。" :width="260" />
+        </span>
+        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '测试 SSH'" @click="doTestSSH">测试 SSH</a-button>
+        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '探测'" @click="doProbe">探测</a-button>
         <!-- 比对配置、扫描握手目标、同步流量在中转机上都没有对应的东西:
              它上面没有 sing-box 配置、不用 REALITY、也没有计数器。
              留着只会让人点一下换回一句报错。 -->
         <a-button
           v-if="!isRelay"
           size="small"
+          class="lb-btn-ghost lb-btn-ghost--text"
           :loading="running === '比对配置'"
           @click="doDiff"
         >
@@ -1133,12 +1152,13 @@ const needsPortForward = computed(() =>
         <a-button
           v-if="!isRelay"
           size="small"
+          class="lb-btn-ghost lb-btn-ghost--text"
           :loading="running === '同步流量'"
           @click="doSyncTraffic"
         >
           同步流量
         </a-button>
-        <a-button size="small" :loading="running === '采集资源'" @click="doCollectMetrics">
+        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '采集资源'" @click="doCollectMetrics">
           采集资源
         </a-button>
         <!-- 「转发」按钮去掉了:这台机器的入口(sing-box 与 nginx 转发)
@@ -1147,6 +1167,7 @@ const needsPortForward = computed(() =>
         <!-- 这一下只是算方案并与当前值对比,不写节点。要不要应用在面板里另点。 -->
         <a-button
           size="small"
+          class="lb-btn-ghost lb-btn-ghost--text"
           :loading="running === 'TCP 调优检查'"
           title="按这台机器的内存现算一份内核参数方案,先看后应用"
           @click="doTuning"
@@ -1158,7 +1179,7 @@ const needsPortForward = computed(() =>
         <span v-if="running" class="nd__tools-running">
           {{ running }}中…&nbsp;结果会弹窗显示
         </span>
-        <span v-else class="nd__tools-note">都不改动节点状态</span>
+      </div>
       </div>
 
       <!-- 只读动作的结果一律弹窗呈现。
@@ -1183,8 +1204,8 @@ const needsPortForward = computed(() =>
           <LbStatusTag
             :meta="
               sshResult.ok
-                ? { text: 'SSH 连接正常', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }
-                : { text: 'SSH 连接失败', shape: 'cross', fg: '#B4291D', bg: '#FDECEA', bd: '#F3CFC9' }
+                ? { text: 'SSH 连接正常', shape: 'check', fg: 'var(--ok)', bg: 'var(--ok-bg)' }
+                : { text: 'SSH 连接失败', shape: 'cross', fg: 'var(--bad)', bg: 'var(--bad-bg)' }
             "
           />
         </div>
@@ -1359,7 +1380,7 @@ const needsPortForward = computed(() =>
         <a-tab-pane key="overview" tab="概览">
           <div class="nd__grid">
             <section class="nd__card">
-              <div class="nd__card-head">连接与端口</div>
+              <div class="nd__card-head"><span class="nd__card-head-title">连接与端口</span></div>
               <div class="nd__card-body">
                 <div class="nd__kv">
                   <div>
@@ -1403,33 +1424,31 @@ const needsPortForward = computed(() =>
                     <div v-if="hasSingBox">
                       <span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b>
                     </div>
-                    <div>
-                      <span>配置存放</span>
-                      <b>
-                        <a-switch
-                          :checked="node.config_in_ram"
-                          :loading="configRAMBusy"
-                          :disabled="node.role === 'RELAY' || !!running"
-                          size="small"
-                          @change="(v: unknown) => toggleConfigRAM(v === true)"
-                        />
+                    <div class="nd__kv-wide nd__ram">
+                      <a-switch
+                        :checked="node.config_in_ram"
+                        :loading="configRAMBusy"
+                        :disabled="node.role === 'RELAY' || !!running"
+                        @change="(v: unknown) => toggleConfigRAM(v === true)"
+                      />
+                      <span class="nd__ram-text">
+                        <span class="nd__ram-title">
+                          配置不落盘
+                          <LbInfoTip
+                            :width="320"
+                            :text="
+                              node.role === 'RELAY'
+                                ? '中转主机上没有 sing-box 配置,这一项不适用。'
+                                : node.config_in_ram
+                                  ? '磁盘上没有配置与备份 —— 快照、镜像、商家手里的旧硬盘上都拿不到。代价:机器重启后 sing-box 起不来,要等巡检重新下发。'
+                                  : '配置里有这台机器全部入口的用户凭据,以及它链出去的落地账号。改成不落盘可以让磁盘上一个字节都不留;代价是机器重启后 sing-box 起不来,要等巡检重新下发。'
+                            "
+                          />
+                        </span>
                         <span class="nd__ram-state">
-                          {{ node.config_in_ram ? '内存(/run/litebox,磁盘不留)' : '磁盘(/opt/litebox)' }}
+                          当前:{{ node.config_in_ram ? '内存(/run/litebox,磁盘不留)' : '磁盘(/opt/litebox)' }}
                         </span>
-                        <span class="nd__ram-help">
-                          <template v-if="node.role === 'RELAY'">
-                            中转主机上没有 sing-box 配置,这一项不适用。
-                          </template>
-                          <template v-else-if="node.config_in_ram">
-                            磁盘上没有配置与备份 —— 快照、镜像、商家手里的旧硬盘上都拿不到。
-                            代价:<b>机器重启后 sing-box 起不来</b>,要等巡检重新下发。
-                          </template>
-                          <template v-else>
-                            配置里有这台机器全部入口的用户凭据,以及它链出去的落地账号。
-                            改成不落盘可以让磁盘上一个字节都不留。
-                          </template>
-                        </span>
-                      </b>
+                      </span>
                     </div>
                   </template>
                   <div v-else>
@@ -1501,8 +1520,8 @@ const needsPortForward = computed(() =>
                  渲染一份从来没有生效过的配置看起来像是配好了。 -->
             <section v-if="!isRelay" class="nd__card">
               <div class="nd__card-head">
-                入口与配置版本
-                <a @click="tab = 'entries'">去「入口」管理</a>
+                <span class="nd__card-head-title">入口与配置版本</span>
+                <a class="nd__card-link" @click="tab = 'entries'">去「入口」管理 ›</a>
               </div>
               <div class="nd__card-body">
                 <!-- 判据要把 Mieru 一起算上:只有 Mieru 入口的机器上用户是连得上的,
@@ -1709,7 +1728,20 @@ const needsPortForward = computed(() =>
 
             <section class="nd__card">
               <div class="nd__card-head">
-                本周期流量
+                <span class="nd__card-head-title">
+                  本周期流量
+                  <LbInfoTip
+                    v-if="cycle"
+                    :width="320"
+                    :text="
+                      '额度只做统计与预警,不会停止 sing-box、不禁用节点,也不改订阅开关。' +
+                      (cycle.billing_factor > 1
+                        ? '这台机器按进出合计计费:一次用户下载在网卡上要走两趟(从源站收一份、再发给客户端一份),所以主机口径约是代理转发量的两倍。额度填的就是 VPS 商给的数字。'
+                        : '这台机器按出站计费,与 sing-box 的计数 1:1。若你的 VPS 是进出合计计费,到编辑里把「计费口径」改成双向。') +
+                      '换算不含 TCP/IP 头、重传,以及系统更新、SSH 这些不走代理的流量,实际账单通常还要再高几个百分点。'
+                    "
+                  />
+                </span>
                 <span v-if="cycle" class="nd__card-note">
                   {{
                     cycle.reset_cycle === 'MONTHLY'
@@ -1769,23 +1801,6 @@ const needsPortForward = computed(() =>
                       </b>
                     </div>
                   </div>
-                  <div class="nd__card-foot">
-                    额度只做统计与预警,不会停止 sing-box、不禁用节点,也不改订阅开关。
-                    <template v-if="cycle.billing_factor > 1">
-                      <br />
-                      这台机器按<strong>进出合计</strong>计费:一次用户下载在网卡上要走两趟
-                      (从源站收一份、再发给客户端一份),所以主机口径约是代理转发量的两倍。
-                      额度填的就是 VPS 商给的数字。
-                    </template>
-                    <template v-else>
-                      <br />
-                      这台机器按<strong>出站</strong>计费,与 sing-box 的计数 1:1。
-                      若你的 VPS 是进出合计计费,到编辑里把「计费口径」改成双向。
-                    </template>
-                    <br />
-                    换算不含 TCP/IP 头、重传,以及系统更新、SSH 这些不走代理的流量,
-                    实际账单通常还要再高几个百分点。
-                  </div>
                 </template>
               </div>
             </section>
@@ -1795,7 +1810,13 @@ const needsPortForward = computed(() =>
 
             <section class="nd__card">
               <div class="nd__card-head">
-                资源
+                <span class="nd__card-head-title">
+                  资源
+                  <LbInfoTip
+                    :width="280"
+                    :text="`阈值 ${threshold.usageWarn}% 转黄、${threshold.usageDanger}% 转红。128MB 的机器内存曲线本来就贴着高位走,阈值定低了会天天报警。采样间隔 5 分钟。`"
+                  />
+                </span>
                 <span v-if="latest" class="nd__card-note">
                   采样 <LbTimeText :value="latest.collected_at" /> · 间隔 5 分钟
                 </span>
@@ -1823,20 +1844,18 @@ const needsPortForward = computed(() =>
                     },
                   ]" :key="u.label" class="nd__usage-row">
                     <span class="nd__usage-label">{{ u.label }}</span>
-                    <span class="nd__usage-track">
-                      <span
-                        class="nd__usage-fill"
-                        :style="{ width: Math.min(u.pct, 100) + '%', background: usageColor(u.pct) }"
-                      />
+                    <span class="nd__usage-mid">
+                      <span class="nd__usage-track">
+                        <span
+                          class="nd__usage-fill"
+                          :style="{ width: Math.min(u.pct, 100) + '%', background: usageColor(u.pct) }"
+                        />
+                      </span>
+                      <span class="lb-tabular nd__usage-sub">{{ u.sub }}</span>
                     </span>
-                    <span class="lb-mono nd__usage-pct" :style="{ color: usageColor(u.pct) }">
+                    <span class="lb-tabular nd__usage-pct" :style="{ color: usageColor(u.pct) }">
                       {{ u.pct.toFixed(0) }}%
                     </span>
-                    <span class="lb-mono nd__usage-sub">{{ u.sub }}</span>
-                  </div>
-                  <div class="nd__card-foot">
-                    阈值 {{ threshold.usageWarn }}% 转黄、{{ threshold.usageDanger }}% 转红。
-                    128MB 的机器内存曲线本来就贴着高位走,阈值定低了会天天报警。
                   </div>
                 </div>
               </div>
@@ -2065,7 +2084,7 @@ const needsPortForward = computed(() =>
     :footer="null"
   >
     <div v-if="deployRunning" class="nd__deploying">
-      <a-spin />
+      <span class="nd__spinner" aria-hidden="true" />
       <div>
         <div class="nd__deploying-title">正在部署到 {{ node?.display_name || node?.name }}</div>
         <div class="nd__deploying-note">
@@ -2144,20 +2163,26 @@ const needsPortForward = computed(() =>
 </template>
 
 <style scoped>
-/* 整页容器。抽屉时期外层 padding 由 body-style 给,现在由页面自己负责。 */
+/* 整页容器。间距比列表页紧一档:标题下面紧跟着的是横幅与工具条。 */
 .nd {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  gap: 18px;
 }
 
 .nd__back {
   align-self: flex-start;
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.nd__back-chevron {
+  font-size: 18px;
+  line-height: 1;
 }
 
 /* 标题与操作按钮同一行。窄屏换行 —— 桌面的紧凑排布可以缩间距,
-   但不能把「部署」挤出可视区,那是这个页面唯一的主按钮。 */
+   但不能把主按钮挤出可视区。 */
 .nd__bar {
   display: flex;
   align-items: flex-start;
@@ -2169,83 +2194,99 @@ const needsPortForward = computed(() =>
 .nd__head {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .nd__title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .nd__name {
-  font-size: 16px;
-  font-weight: 600;
+  margin: 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
 }
 
 .nd__sub {
-  font-size: 11px;
-  font-weight: 400;
-  color: #6b7480;
+  font-size: 13px;
+  color: var(--text3);
+}
+
+.nd__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.nd__more.ant-btn {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  color: var(--text2);
 }
 
 .nd__skel {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding-top: 16px;
+  padding-top: 8px;
 }
 
 .nd__fail {
-  margin-top: 12px;
-  padding: 12px 14px;
-  background: #fdecea;
-  border: 1px solid #f3cfc9;
-  border-radius: 6px;
+  align-items: flex-start;
+  padding: 18px 20px;
 }
 
 .nd__fail-title {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  color: #8e2117;
 }
 
 .nd__fail-body {
-  margin-top: 5px;
-  font-size: 12px;
-  line-height: 1.75;
-  color: #8e2117;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text2);
   white-space: pre-wrap;
 }
 
 .nd__fail-rb {
-  margin-top: 5px;
-  font-size: 11.5px;
-  color: #8e2117;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text2);
 }
 
 .nd__fail-acts {
   display: flex;
-  gap: 14px;
-  margin-top: 8px;
-  font-size: 12px;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nd__strip {
+  gap: 16px;
 }
 
 .nd__health {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  border: 1px solid #E3E6EA;
-  border-radius: 6px;
-  background: #FFFFFF;
+  gap: 12px;
   font-size: 13px;
 }
-.nd__health-label {
-  color: #6B7480;
+.nd__health-label,
+.nd__tools-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text3);
+  font-weight: 500;
+  white-space: nowrap;
 }
 .nd__health-item {
   display: inline-flex;
@@ -2253,24 +2294,18 @@ const needsPortForward = computed(() =>
   gap: 6px;
 }
 .nd__health-note--ok {
-  color: #1B7A4B;
+  color: var(--ok);
+  font-size: 12.5px;
 }
 .nd__health-note--bad {
-  color: #B4291D;
+  color: var(--bad);
+  font-size: 12.5px;
 }
 .nd__health-time {
   margin-left: auto;
-  color: #8A93A0;
-}
-.nd__ram-state {
-  margin-left: 8px;
-}
-.nd__ram-help {
-  display: block;
-  margin-top: 4px;
+  color: var(--text3);
   font-size: 12px;
-  line-height: 1.7;
-  color: #6B7480;
+  font-variant-numeric: tabular-nums;
 }
 
 .nd__badges {
@@ -2278,12 +2313,11 @@ const needsPortForward = computed(() =>
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 12px;
 }
 
 .nd__maint {
-  font-size: 11.5px;
-  color: #5f52a0;
+  font-size: 12.5px;
+  color: var(--purple);
 }
 
 .nd__tools {
@@ -2291,41 +2325,23 @@ const needsPortForward = computed(() =>
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 12px;
-  padding: 10px 12px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  padding: 12px 20px;
 }
-
 .nd__tools-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #576070;
-  margin-right: 2px;
-}
-
-.nd__tools-note {
-  margin-left: auto;
-  font-size: 11px;
-  color: #6b7480;
+  margin-right: 4px;
+  font-size: 13px;
 }
 
 .nd__tools-running {
   margin-left: auto;
-  font-size: 11px;
-  color: #2563b8;
+  font-size: 12px;
+  color: var(--brand);
 }
 
 .nd__panel {
-  margin-top: 12px;
-  padding: 12px 14px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .nd__panel-head {
@@ -2333,43 +2349,42 @@ const needsPortForward = computed(() =>
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .nd__panel-title {
   font-weight: 600;
+  font-size: 14px;
 }
 
 .nd__panel-note {
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.7;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .nd__panel-ok {
-  font-size: 12px;
-  color: #1b7a4b;
+  font-size: 13px;
+  color: var(--ok);
 }
 
 .nd__panel-warn {
-  padding: 9px 11px;
-  background: #fcf3e3;
-  border: 1px solid #efdcb4;
-  border-radius: 6px;
-  font-size: 11.5px;
+  padding: 12px 14px;
+  background: var(--warn-bg);
+  border-radius: var(--r-group);
+  font-size: 12.5px;
   line-height: 1.7;
-  color: #5c4405;
+  color: var(--text);
 }
 
 .nd__pre {
   margin: 0;
-  padding: 9px 11px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-radius: var(--r-input);
+  font-size: 12px;
   line-height: 1.7;
-  color: #576070;
+  color: var(--text2);
   white-space: pre-wrap;
   overflow-x: auto;
 }
@@ -2377,7 +2392,7 @@ const needsPortForward = computed(() =>
 .nd__kv {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 20px;
+  gap: 16px 20px;
 }
 
 .nd__kv > div {
@@ -2392,48 +2407,80 @@ const needsPortForward = computed(() =>
 }
 
 .nd__kv span {
-  font-size: 11.5px;
-  color: #6b7480;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .nd__kv b {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 「配置不落盘」开关行:卡片内的 --surface2 圆角 12 块。 */
+.nd__ram {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 12px !important;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-radius: 12px;
+}
+.nd__ram-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.nd__ram-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13.5px !important;
+  font-weight: 500;
+  color: var(--text) !important;
+}
+.nd__ram-state {
+  font-size: 12px !important;
+  color: var(--text3) !important;
 }
 
 .nd__diff-sum {
-  font-size: 12px;
-  color: #576070;
+  font-size: 13px;
+  color: var(--text2);
 }
 
 .nd__diff {
-  padding: 9px 11px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 4px;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 11.5px;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  font-family: var(--mono);
+  font-size: 12px;
   line-height: 1.9;
 }
 
 .nd__diff-add {
-  color: #1b7a4b;
+  color: var(--ok);
 }
 
 .nd__diff-del {
-  color: #b4291d;
+  color: var(--bad);
 }
 
 .nd__grid {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
   gap: 16px;
+  align-items: start;
 }
 
 .nd__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
 }
 
 .nd__card-head {
@@ -2441,172 +2488,177 @@ const needsPortForward = computed(() =>
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
+  padding: 16px 22px 0;
+  font-size: 15px;
   font-weight: 600;
+}
+.nd__card-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.nd__card-link {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .nd__card-note {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .nd__card-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
+  padding: 16px 22px 20px;
 }
 
 .nd__card-foot {
-  padding: 10px 16px;
-  border-top: 1px solid #edeff2;
-  font-size: 11px;
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--sep2);
+  font-size: 12.5px;
   line-height: 1.7;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .nd__usage {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
 }
 
 .nd__usage-row {
   display: grid;
-  grid-template-columns: 44px 1fr 44px auto;
+  grid-template-columns: 48px 1fr 52px;
   align-items: center;
-  gap: 10px;
-  font-size: 11.5px;
+  gap: 12px;
+  font-size: 13px;
 }
 
 .nd__usage-label {
-  color: #6b7480;
+  color: var(--text2);
+  font-weight: 500;
+}
+
+.nd__usage-mid {
+  min-width: 0;
 }
 
 .nd__usage-track {
-  height: 6px;
-  background: #edeff2;
-  border-radius: 2px;
+  display: block;
+  height: 8px;
+  background: var(--track);
+  border-radius: var(--r-input);
   overflow: hidden;
 }
 
 .nd__usage-fill {
   display: block;
-  height: 6px;
-  border-radius: 2px;
+  height: 8px;
+  border-radius: var(--r-input);
+  transform-origin: left;
+  animation: lb-grow 0.8s var(--ease);
 }
 
 .nd__usage-pct {
   text-align: right;
+  font-weight: 600;
 }
 
 .nd__usage-sub {
-  font-size: 10.5px;
-  color: #6b7480;
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text3);
 }
 
 .nd__chart {
   margin-bottom: 16px;
+  padding: 18px 22px 20px;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
 }
 
 .nd__chart-title {
-  margin-bottom: 4px;
-  font-size: 12.5px;
-  font-weight: 500;
+  margin-bottom: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.nd__chart-title .nd__card-note {
+  font-weight: 400;
+  margin-left: 6px;
 }
 
 .nd__range {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
 }
-/* 实时曲线暂停时的占位:颜色只用 tokens 里已有的那几个。 */
+/* 实时曲线暂停时的占位。 */
 .nd__live-paused {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 16px;
-  border: 1px dashed #E3E6EA;
-  border-radius: 8px;
-  color: #6B7480;
-  font-size: 12px;
-}
-
-.nd__spark-cap {
-  margin-top: 4px;
-}
-
-.nd__sub-list {
-  border: 1px solid #edeff2;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.nd__sub-item {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  font-size: 12.5px;
-}
-
-.nd__sub-item + .nd__sub-item {
-  border-top: 1px solid #edeff2;
-}
-
-.nd__sub-name {
-  font-weight: 500;
-}
-
-.nd__sub-addr {
-  font-size: 11.5px;
-  color: #6b7480;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  color: var(--text2);
+  font-size: 13px;
 }
 
 .nd__deploying {
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 12px 0;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0 4px;
+}
+
+/* 34px 圆环 spinner:3px --fill2 底、--brand 顶。 */
+.nd__spinner {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid var(--fill2);
+  border-top-color: var(--brand);
+  animation: lb-spin 0.9s linear infinite;
 }
 
 .nd__deploying-title {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .nd__deploying-note {
-  margin-top: 5px;
-  font-size: 12px;
-  line-height: 1.75;
-  color: #6b7480;
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text2);
 }
 
 .nd__deploy-verdict {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   margin-bottom: 14px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  font-size: 12px;
+  padding: 14px 16px;
+  border-radius: var(--r-group);
+  font-size: 13.5px;
 }
 
 .nd__deploy-verdict--ok {
-  background: #e9f5ee;
-  border: 1px solid #c3e3d0;
-  color: #14603b;
+  background: var(--ok-bg);
 }
 
 .nd__deploy-verdict--bad {
-  background: #fdecea;
-  border: 1px solid #f3cfc9;
-  color: #8e2117;
+  background: var(--bad-bg);
 }
 
 .nd__deploy-foot {
@@ -2617,44 +2669,60 @@ const needsPortForward = computed(() =>
 
 .nd__boot-note {
   margin: 0 0 14px;
-  font-size: 12.5px;
-  line-height: 1.75;
-  color: #576070;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text2);
 }
 
 .nd__boot-note code,
-.nd__panel-title code {
+.nd__panel-title code,
+.nd__panel-note code {
   padding: 1px 5px;
-  background: #f1f3f5;
-  border-radius: 3px;
+  background: var(--fill);
+  border-radius: 5px;
   font-size: 12px;
 }
 
 .nd__boot-help {
   margin-top: 4px;
   font-size: 12px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
-@media (max-width: 767px) {
-  .nd__kv {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Mieru 差异那一段的两个小样式。颜色只用 tokens.ts 里已有的 text3。 */
+/* Mieru 差异那一段的两个小样式。 */
 .nd__diff-mieru-head {
   margin-top: 12px;
 }
 
 .nd__diff-name {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
-  color: #576070;
+  color: var(--text2);
 }
 
 .nd__dim {
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
+}
+
+@media (max-width: 767px) {
+  .nd__name {
+    font-size: 26px;
+  }
+  .nd__kv {
+    grid-template-columns: 1fr;
+  }
+  .nd__grid {
+    grid-template-columns: 1fr;
+  }
+  .nd__card-head {
+    padding: 14px 16px 0;
+  }
+  .nd__card-body {
+    padding: 14px 16px 16px;
+  }
+  .nd__chart {
+    padding: 14px 16px 16px;
+  }
 }
 </style>

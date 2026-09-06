@@ -8,7 +8,7 @@ import {
   type PortalNode,
 } from '@/api/client'
 import { formatBytes } from '@/utils/format'
-import { LbEmptyState, LbStatusTag, LbTimeText, portalNodeStatusMeta } from '@/components/lb'
+import { LbEmptyState, LbStatusTag, LbTimeText, portalNodeStatusMeta, LbInfoTip,} from '@/components/lb'
 
 /**
  * 我的节点。用户要判断的是「现在该连哪个」。
@@ -72,13 +72,18 @@ const summary = computed(() => {
 </script>
 
 <template>
-  <div class="pn">
-    <div class="pn__head">
-      <div>
-        <h2 class="pn__title">我的节点</h2>
-        <div class="pn__sub">{{ summary }} · 流量数字按 UTC 日统计</div>
+  <div class="lb-page pn">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>我的节点</span>
+          <LbInfoTip text="只列当前能用、在订阅里的节点。流量数字按 UTC 日统计;标着「IPv6」的节点在订阅里有两条,指向同一台机器。" :width="280" />
+        </h1>
+        <div class="lb-page__summary">{{ summary }}。</div>
       </div>
-      <a-button size="small" :loading="loading" @click="load">刷新</a-button>
+      <div class="lb-page__actions">
+        <a-button :loading="loading" @click="load">刷新</a-button>
+      </div>
     </div>
 
     <LbEmptyState v-if="loadError" variant="error" :title="loadError" @retry="load" />
@@ -185,40 +190,21 @@ const summary = computed(() => {
   align-items: baseline;
   gap: 10px;
   flex-wrap: wrap;
-  margin-top: 4px;
+  padding: 0 4px;
+  margin-bottom: -8px;
 }
 .pn__section-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .pn__section-note {
   font-size: 12px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pn {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.pn__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.pn__title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.pn__sub {
-  margin-top: 3px;
-  font-size: 12.5px;
-  color: #6b7480;
+  gap: 20px;
 }
 
 .pn__skel {
@@ -226,24 +212,24 @@ const summary = computed(() => {
   flex-direction: column;
   gap: 16px;
   padding: 16px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 .pn__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 /* 列表:一台机器一行。桌面上左边是信息、右边是流量三格,窄屏时纵向堆叠。 */
 .pn__list {
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
   overflow: hidden;
 }
 
@@ -252,8 +238,12 @@ const summary = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px;
-  border-top: 1px solid #edeff2;
+  padding: 16px 22px;
+  border-top: 1px solid var(--sep2);
+  transition: background 0.15s;
+}
+.pn__row:hover {
+  background: var(--surface2);
 }
 .pn__row:first-child {
   border-top: none;
@@ -279,38 +269,36 @@ const summary = computed(() => {
 }
 
 .pn__row-tier {
-  padding: 1px 6px;
-  background: #f1f3f5;
-  border: 1px solid #dfe3e8;
-  border-radius: 3px;
-  font-size: 11px;
-  color: #5c6672;
+  padding: 2px 9px;
+  background: var(--fill);
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text2);
 }
 
 .pn__row-tag {
-  padding: 1px 6px;
-  background: #eef4fc;
-  border: 1px solid #c9dcf3;
-  border-radius: 3px;
-  font-size: 11px;
+  padding: 2px 9px;
+  background: var(--brand-bg);
+  border-radius: var(--r-pill);
+  font-size: 12px;
   font-weight: 500;
-  color: #1d4f96;
+  color: var(--brand);
 }
 
 .pn__row-meta {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pn__row-hint,
 .pn__row-remark {
-  padding: 7px 10px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
-  font-size: 11.5px;
-  line-height: 1.7;
-  color: #576070;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border-radius: var(--r-input);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text2);
 }
 
 .pn__row-stats {
@@ -328,7 +316,7 @@ const summary = computed(() => {
 
 .pn__row-stats span {
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pn__row-stats b {

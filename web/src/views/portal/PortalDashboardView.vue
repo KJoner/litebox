@@ -8,14 +8,15 @@ import {
   type PublicAdjustment,
 } from '@/api/client'
 import { formatBytes, formatQuota } from '@/utils/format'
-import { LbEmptyState, LbQuotaBar, LbStatusTag, LbTimeText } from '@/components/lb'
+import { LbEmptyState, LbIcon, LbInfoTip, LbQuotaBar, LbStatusTag, LbTimeText } from '@/components/lb'
 
 /**
  * 概览。这一页只回答一句话:我还能不能用。
  *
  * 后端已经给了 serviceable / reason / alerts[],原实现却把 reason 渲染成
  * 账号卡底部一行红字,夹在状态标签与流量卡之间 —— 正是用户视线扫过去的空档。
- * 这里把它升为顶部横幅的第一句,字段一个没动。
+ * V18 把它做成 h1 一句话结论(「一切正常。」/「流量快用完了。」/ 不可用的原因),
+ * 字段一个没动;下面是指标条(额度 / 到期 / 可用节点)、告警条与额度大卡。
  */
 const router = useRouter()
 
@@ -56,24 +57,39 @@ const warningLevel = computed(() => {
   return 'NORMAL' as const
 })
 
-/** 顶部一句话结论。可用与不可用是完全不同的两种语气。 */
-const verdict = computed(() => {
+/** 一句话结论。可用与不可用是完全不同的两种语气。 */
+const headline = computed(() => {
   const d = data.value
-  if (!d) return null
-  if (!d.serviceable) {
-    return { ok: false, title: d.reason || d.status_text, extra: '' }
-  }
-  return {
-    ok: true,
-    title: `账号正常 · 订阅可用 · 可访问 ${d.node_count} 个节点`,
-    extra: d.tier_name,
-  }
+  if (!d) return ''
+  if (!d.serviceable) return d.reason || d.status_text || '账号当前不可用。'
+  const p = d.used_percent ?? 0
+  if (d.quota_bytes > 0 && p >= 95) return '流量快用完了。'
+  if (d.remaining_days !== null && d.remaining_days <= 7) return `${d.remaining_days} 天后到期。`
+  if (d.quota_bytes > 0 && p >= 80) return '流量用了八成。'
+  return '一切正常。'
+})
+
+const summaryLine = computed(() => {
+  const d = data.value
+  if (!d) return ''
+  const parts: string[] = []
+  parts.push(d.serviceable ? '订阅可用' : '订阅暂不可用')
+  parts.push(`可访问 ${d.node_count} 个节点`)
+  if (d.tier_name) parts.push(d.tier_name)
+  return parts.join(' · ') + '。'
+})
+
+const usedParts = computed(() => {
+  const s = formatBytes(data.value?.used_total ?? 0).split(' ')
+  return { num: s[0], unit: s[1] ?? '' }
 })
 </script>
 
 <template>
-  <div class="pd">
-    <LbEmptyState v-if="loadError" variant="error" :title="loadError" @retry="load" />
+  <div class="lb-page pd">
+    <div v-if="loadError" class="lb-card lb-card--flush">
+      <LbEmptyState variant="error" :title="loadError" @retry="load" />
+    </div>
 
     <div v-else-if="loading || !data" class="pd__skel">
       <a-skeleton active :paragraph="{ rows: 3 }" />
@@ -82,112 +98,122 @@ const verdict = computed(() => {
 
     <template v-else>
       <!-- reason 升为第一句,不再是夹在中间的一行小红字。 -->
-      <div
-        v-if="verdict"
-        class="pd__verdict"
-        :class="verdict.ok ? 'pd__verdict--ok' : 'pd__verdict--bad'"
-      >
-        <span class="pd__verdict-dot" />
-        <span class="pd__verdict-text">{{ verdict.title }}</span>
-        <span v-if="verdict.extra" class="pd__verdict-tier">{{ verdict.extra }}</span>
+      <div class="lb-page__head">
+        <div class="lb-page__title-wrap">
+          <h1 class="lb-page__title" :class="{ 'pd__title--bad': !data.serviceable }">
+            <span>{{ headline }}</span>
+            <LbInfoTip
+              :width="280"
+              text="流量与到期按 UTC 计。额度用满或到期后,客户端会连不上;续期或加量由管理员操作。"
+            />
+          </h1>
+          <div class="lb-page__summary">{{ summaryLine }}</div>
+        </div>
       </div>
 
-      <div
-        v-for="(a, i) in data.alerts"
-        :key="i"
-        class="pd__alert"
-        :class="a.level === 'error' ? 'pd__alert--error' : 'pd__alert--warn'"
-      >
-        {{ a.message }}
+      <div v-if="data.alerts.length" class="pd__alerts">
+        <div v-for="(a, i) in data.alerts" :key="i" class="lb-notice pd__alert">
+          <span class="lb-notice__icon" :class="a.level === 'error' ? 'lb-notice__icon--bad' : 'lb-notice__icon--warn'">
+            <LbIcon name="alert-triangle" :size="18" />
+          </span>
+          <div class="lb-notice__body">
+            <div class="lb-notice__text pd__alert-text">{{ a.message }}</div>
+          </div>
+        </div>
       </div>
 
-      <div class="pd__cards">
-        <section class="pd__card">
-          <div class="pd__card-head">
-            <span>本月流量</span>
-            <span v-if="data.next_reset_at" class="pd__card-note">
+      <!-- 指标条:额度 / 到期 / 可用节点。 -->
+      <section class="lb-metrics">
+        <div class="lb-metric pd__metric">
+          <div class="pd__metric-label">
+            本月流量
+            <span v-if="data.next_reset_at" class="pd__metric-note">
               <LbTimeText :value="data.next_reset_at" mode="cycle" /> 重置
             </span>
-            <span v-else class="pd__card-note">不自动重置</span>
+            <span v-else class="pd__metric-note">不自动重置</span>
           </div>
-          <div class="pd__card-body">
-            <div class="pd__big">
-              <span class="pd__big-num lb-mono">{{ formatBytes(data.used_total).split(' ')[0] }}</span>
-              <span class="pd__big-unit">{{ formatBytes(data.used_total).split(' ')[1] }}</span>
-              <span class="pd__big-total">/ {{ formatQuota(data.quota_bytes) }}</span>
-              <span v-if="data.used_percent !== null" class="pd__big-pct lb-mono">
-                {{ Math.round(data.used_percent) }}%
-              </span>
-            </div>
-            <LbQuotaBar
-              :used-bytes="data.used_total"
-              :quota-bytes="data.quota_bytes"
-              :warning-level="warningLevel"
-              size="md"
-              :show-value="false"
-            />
-            <div class="pd__facts">
-              <div>
-                <span>剩余</span>
-                <!-- 不限量时不算剩余,也不显示一个假的百分比。 -->
-                <b class="lb-mono">
-                  {{ data.used_percent === null ? '不限量' : formatBytes(data.remaining) }}
-                </b>
-              </div>
-              <div><span>上行</span><b class="lb-mono">{{ formatBytes(data.used_uplink) }}</b></div>
-              <div><span>下行</span><b class="lb-mono">{{ formatBytes(data.used_downlink) }}</b></div>
-            </div>
+          <div class="pd__metric-row">
+            <span class="pd__metric-value lb-tabular" :class="{ 'pd__metric-value--warn': warningLevel === 'WARNING', 'pd__metric-value--bad': warningLevel === 'DANGER' || warningLevel === 'EXCEEDED' }">
+              {{ usedParts.num }}
+            </span>
+            <span class="pd__metric-unit">{{ usedParts.unit }}</span>
+            <span class="pd__metric-unit">/ {{ formatQuota(data.quota_bytes) }}</span>
           </div>
-        </section>
+          <div class="pd__metric-foot">
+            <template v-if="data.used_percent === null">不限量</template>
+            <template v-else>剩余 {{ formatBytes(data.remaining) }} · 已用 {{ Math.round(data.used_percent) }}%</template>
+          </div>
+        </div>
+        <div class="lb-metric pd__metric">
+          <div class="pd__metric-label">有效期</div>
+          <div class="pd__metric-row">
+            <span class="pd__metric-value pd__metric-value--sm lb-tabular">
+              {{ data.remaining_days === null ? '不限' : data.remaining_days }}
+            </span>
+            <span v-if="data.remaining_days !== null" class="pd__metric-unit">天</span>
+          </div>
+          <div class="pd__metric-foot">
+            {{ data.expires_at ? `到 ${data.expires_at.slice(0, 10)}` : '不过期' }}
+          </div>
+        </div>
+        <div class="lb-metric pd__metric">
+          <div class="pd__metric-label">可用节点</div>
+          <div class="pd__metric-row">
+            <span class="pd__metric-value lb-tabular">{{ data.node_count }}</span>
+            <span class="pd__metric-unit">个</span>
+          </div>
+          <div class="pd__metric-foot">
+            <a class="pd__link" @click="router.push('/user/nodes')">查看节点 ›</a>
+          </div>
+        </div>
+      </section>
 
-        <section class="pd__card">
-          <div class="pd__card-head"><span>有效期</span></div>
-          <div class="pd__card-body">
-            <div class="pd__big">
-              <span class="pd__big-num pd__big-num--sm lb-mono">
-                {{ data.expires_at ? data.expires_at.slice(0, 10) : '不过期' }}
-              </span>
-            </div>
-            <div class="pd__facts">
-              <div>
-                <span>剩余天数</span>
-                <b class="lb-mono">
-                  {{ data.remaining_days === null ? '不限' : `${data.remaining_days} 天` }}
-                </b>
-              </div>
-              <div>
-                <span>可用节点</span>
-                <b class="lb-mono">{{ data.node_count }} 个</b>
-              </div>
-              <div>
-                <span>最近重置</span>
-                <b><LbTimeText :value="data.last_reset_at" empty="从未" /></b>
-              </div>
-            </div>
-            <div class="pd__links">
-              <a @click="router.push('/user/subscription')">我的订阅</a>
-              <a @click="router.push('/user/nodes')">我的节点</a>
-              <a @click="router.push('/user/traffic')">我的流量</a>
-            </div>
+      <!-- 额度大卡:8px 进度条 + 三项事实 + 三条链接。 -->
+      <section class="lb-card pd__quota">
+        <div class="pd__quota-head">
+          <span class="lb-card__title pd__quota-title">流量与有效期</span>
+          <LbStatusTag :meta="{ text: data.status_text, shape: data.serviceable ? 'dot' : 'cross', fg: data.serviceable ? 'var(--ok)' : 'var(--bad)', bg: data.serviceable ? 'var(--ok-bg)' : 'var(--bad-bg)' }" />
+        </div>
+        <LbQuotaBar
+          :used-bytes="data.used_total"
+          :quota-bytes="data.quota_bytes"
+          :warning-level="warningLevel"
+          size="md"
+        />
+        <div class="lb-kv lb-kv--4 pd__facts">
+          <div class="lb-kv__item">
+            <span class="lb-kv__k">剩余</span>
+            <!-- 不限量时不算剩余,也不显示一个假的百分比。 -->
+            <b class="lb-kv__v">{{ data.used_percent === null ? '不限量' : formatBytes(data.remaining) }}</b>
           </div>
-        </section>
-      </div>
+          <div class="lb-kv__item"><span class="lb-kv__k">上行</span><b class="lb-kv__v">{{ formatBytes(data.used_uplink) }}</b></div>
+          <div class="lb-kv__item"><span class="lb-kv__k">下行</span><b class="lb-kv__v">{{ formatBytes(data.used_downlink) }}</b></div>
+          <div class="lb-kv__item">
+            <span class="lb-kv__k">最近重置</span>
+            <b class="lb-kv__v"><LbTimeText :value="data.last_reset_at" empty="从未" /></b>
+          </div>
+        </div>
+        <div class="pd__links">
+          <a-button size="small" class="lb-btn-ghost" @click="router.push('/user/subscription')">我的订阅</a-button>
+          <a-button size="small" class="lb-btn-ghost" @click="router.push('/user/nodes')">我的节点</a-button>
+          <a-button size="small" class="lb-btn-ghost" @click="router.push('/user/traffic')">我的流量</a-button>
+        </div>
+      </section>
 
-      <section v-if="adjustments.length" class="pd__card">
-        <div class="pd__card-head"><span>最近调整</span></div>
+      <section v-if="adjustments.length" class="lb-card lb-card--flush">
+        <div class="pd__adjs-head">最近调整</div>
         <div class="pd__adjs">
           <div v-for="(a, i) in adjustments" :key="i" class="pd__adj">
             <LbStatusTag
               :meta="{
                 text: a.action_text,
                 shape: 'dot',
-                fg: '#2563B8',
-                bg: '#EEF4FC',
-                bd: '#C9DCF3',
+                fg: 'var(--brand)',
+                bg: 'var(--brand-bg)',
               }"
             />
             <div class="pd__adj-body">
-              <div v-if="a.quota_delta_bytes || a.expiry_delta_days" class="pd__adj-delta lb-mono">
+              <div v-if="a.quota_delta_bytes || a.expiry_delta_days" class="pd__adj-delta lb-tabular">
                 <template v-if="a.quota_delta_bytes">
                   {{ a.quota_delta_bytes > 0 ? '+' : '−'
                   }}{{ formatBytes(Math.abs(a.quota_delta_bytes)) }}
@@ -208,9 +234,7 @@ const verdict = computed(() => {
 
 <style scoped>
 .pd {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  gap: 20px;
 }
 
 .pd__skel {
@@ -219,170 +243,108 @@ const verdict = computed(() => {
   gap: 20px;
 }
 
-.pd__verdict {
+.pd__title--bad {
+  color: var(--bad);
+}
+
+.pd__alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pd__alert {
+  align-items: center;
+}
+.pd__alert-text {
+  margin-top: 0;
+  color: var(--text);
+}
+
+.pd__metric {
+  gap: 12px;
+  padding: 22px 24px;
+}
+.pd__metric-label {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border: 1px solid;
-  border-radius: 8px;
+  gap: 8px;
+  flex-wrap: wrap;
   font-size: 13px;
+  font-weight: 500;
+  color: var(--text3);
 }
-
-.pd__verdict--ok {
-  background: #e9f5ee;
-  border-color: #c3e3d0;
-  color: #14603b;
-}
-
-.pd__verdict--bad {
-  background: #fdecea;
-  border-color: #f3cfc9;
-  color: #8e2117;
-}
-
-.pd__verdict-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-  flex: none;
-}
-
-.pd__verdict-text {
-  flex: 1;
-  min-width: 0;
-  line-height: 1.7;
-}
-
-.pd__verdict-tier {
-  flex: none;
-  padding: 1px 8px;
-  background: rgb(255 255 255 / 70%);
-  border-radius: 3px;
+.pd__metric-note {
   font-size: 11.5px;
+  font-weight: 400;
+}
+.pd__metric-note :deep(.lb-time) {
+  font-size: 11.5px;
+}
+.pd__metric-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pd__metric-value {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+.pd__metric-value--sm {
+  font-size: 30px;
+}
+.pd__metric-value--warn {
+  color: var(--warn);
+}
+.pd__metric-value--bad {
+  color: var(--bad);
+}
+.pd__metric-unit {
+  font-size: 14px;
+  color: var(--text3);
+}
+.pd__metric-foot {
+  font-size: 12.5px;
+  color: var(--text2);
+}
+.pd__link {
   font-weight: 500;
 }
 
-.pd__alert {
-  padding: 11px 14px;
-  border: 1px solid;
-  border-radius: 8px;
-  font-size: 12.5px;
-  line-height: 1.75;
-}
-
-.pd__alert--error {
-  background: #fdecea;
-  border-color: #f3cfc9;
-  color: #8e2117;
-}
-
-.pd__alert--warn {
-  background: #fcf3e3;
-  border-color: #efdcb4;
-  color: #5c4405;
-}
-
-.pd__cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.pd__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
-}
-
-.pd__card-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.pd__card-note {
-  font-size: 11px;
-  font-weight: 400;
-  color: #6b7480;
-}
-
-.pd__card-body {
+.pd__quota {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
 }
-
-.pd__big {
+.pd__quota-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pd__quota-title {
+  margin: 0;
+}
+.pd__facts {
+  gap: 12px;
+}
+.pd__links {
+  display: flex;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.pd__big-num {
-  font-size: 30px;
+.pd__adjs-head {
+  padding: 18px 22px 0;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1;
 }
-
-.pd__big-num--sm {
-  font-size: 22px;
-}
-
-.pd__big-unit {
-  font-size: 14px;
-  color: #576070;
-}
-
-.pd__big-total,
-.pd__big-pct {
-  font-size: 12.5px;
-  color: #6b7480;
-}
-
-.pd__facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.pd__facts > div {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.pd__facts span {
-  font-size: 11.5px;
-  color: #6b7480;
-}
-
-.pd__facts b {
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
-.pd__links {
-  display: flex;
-  gap: 16px;
-  padding-top: 10px;
-  border-top: 1px solid #edeff2;
-  font-size: 12.5px;
-}
-
 .pd__adjs {
   display: flex;
   flex-direction: column;
+  padding-top: 8px;
 }
 
 .pd__adj {
@@ -390,11 +352,11 @@ const verdict = computed(() => {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 11px 16px;
+  padding: 12px 22px;
 }
 
 .pd__adj + .pd__adj {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep2);
 }
 
 .pd__adj-body {
@@ -405,19 +367,23 @@ const verdict = computed(() => {
 }
 
 .pd__adj-delta {
-  font-size: 12.5px;
-  color: #1b7a4b;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ok);
 }
 
 .pd__adj-remark {
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.6;
-  color: #576070;
+  color: var(--text2);
 }
 
 @media (max-width: 767px) {
-  .pd__cards {
-    grid-template-columns: minmax(0, 1fr);
+  .pd__metric {
+    padding: 16px 18px;
+  }
+  .pd__metric-value {
+    font-size: 30px;
   }
 }
 </style>

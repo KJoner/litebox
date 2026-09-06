@@ -14,7 +14,11 @@ import {
   type NodeInbound,
 } from '@/api/client'
 import DeployStepList from '@/components/DeployStepList.vue'
-import { LbEmptyState, LbRowCard, LbStatusTag, configStatusMeta, lbDangerConfirm } from '@/components/lb'
+import { LbEmptyState, LbRowCard, LbStatusTag, configStatusMeta, lbDangerConfirm,
+  LbInfoTip,
+  LbSectionTitle,
+  LbIcon,
+} from '@/components/lb'
 import { configState, needsDeploy } from '@/components/lb/derive'
 import InboundChainModal from '@/components/node/InboundChainModal.vue'
 import InboundDestModal from '@/components/node/InboundDestModal.vue'
@@ -132,9 +136,8 @@ const rowHasIPv6 = (r: Row) =>
 const mieruPendingMeta = {
   text: '待下发',
   shape: 'dot' as const,
-  fg: '#8C6D1F',
-  bg: '#FCF3E3',
-  bd: '#EFDCB4',
+  fg: 'var(--warn)',
+  bg: 'var(--warn-bg)',
 }
 
 const rowDeployed = (r: Row) =>
@@ -162,9 +165,8 @@ function rowProtocolMeta(r: Row) {
   return {
     text: pending ? `${m.deployed_transport} → ${m.transport} 待下发` : `Mieru ${m.transport}`,
     shape: 'dot' as const,
-    fg: pending ? '#8C6D1F' : '#2B5CA8',
-    bg: pending ? '#FCF3E3' : '#EAF1FB',
-    bd: pending ? '#EFDCB4' : '#C7DAF3',
+    fg: pending ? 'var(--warn)' : 'var(--brand)',
+    bg: pending ? 'var(--warn-bg)' : 'var(--brand-bg)',
   }
 }
 
@@ -478,20 +480,21 @@ const columns = [
 </script>
 
 <template>
-  <div class="iv">
-    <div class="iv__head">
-      <div>
-        <h2 class="iv__title">入口管理</h2>
-        <p class="iv__sub">
-          全部机器上的 sing-box 与 Mieru 入口。中转主机不在这里 —— 它上面
-          两种都没有,它的 nginx 转发在各自的节点详情里管。
-          <br />
-          <b>两类的下发方式不同</b>:sing-box 是整台机器一次(踢掉这台机器上
-          全部 sing-box 入口的连接),Mieru 是逐入口各下各的(一个入口一个
-          mita 实例,只断那一个)。
-        </p>
+  <div class="lb-page iv">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>入口管理</span>
+          <LbInfoTip :width="340">
+            全部机器上的 sing-box 与 Mieru 入口。中转主机不在这里 —— 它上面两种都没有,它的 nginx 转发在各自的节点详情里管。
+            <b>两类的下发方式不同</b>:sing-box 是整台机器一次(踢掉这台机器上全部 sing-box 入口的连接),Mieru 是逐入口各下各的(一个入口一个 mita 实例,只断那一个)。
+          </LbInfoTip>
+        </h1>
+        <div v-if="!loading && !loadError" class="lb-page__summary">
+          {{ summary.total }} 个入口,分布在 {{ summary.nodes }} 台机器。<template v-if="summary.chained">{{ summary.chained }} 个走链式出口,</template><template v-if="summary.disabled">{{ summary.disabled }} 个已停用,</template><span v-if="summary.pending" class="iv__pending">{{ summary.pending }} 个待部署。</span>
+        </div>
       </div>
-      <a-space>
+      <div class="lb-page__actions">
         <!-- 新增 Mieru 入口不放在这里:它的表单要先知道这台机器上已有几个
              Mieru 入口(端口段冲突检测要用),而那要先挑机器。
              走节点详情的「入口」Tab —— 那里三类的按钮各占一行,
@@ -507,21 +510,16 @@ const columns = [
           </template>
         </a-dropdown>
         <a-button :loading="loading" @click="load">刷新</a-button>
-      </a-space>
+      </div>
     </div>
 
-    <div v-if="!loading && !loadError" class="iv__summary">
-      <span>{{ summary.total }} 个入口 · 分布在 {{ summary.nodes }} 台机器</span>
-      <span v-if="summary.chained">· {{ summary.chained }} 个走链式出口</span>
-      <span v-if="summary.disabled">· {{ summary.disabled }} 个已停用</span>
-      <!-- 待部署单独标红:它是这一页唯一一个"需要你去做点什么"的数字 -->
-      <span v-if="summary.pending" class="iv__pending">
-        · {{ summary.pending }} 个待部署
-      </span>
-    </div>
-
-    <div class="iv__filters">
-      <a-input-search v-model:value="kw" placeholder="搜入口名 / tag / 机器 / 端口" allow-clear style="width: 240px" />
+    <section>
+    <LbSectionTitle title="全部入口" :count="`${filtered.length} / ${rows.length} 个`" />
+    <div class="lb-card lb-card--flush">
+    <div class="lb-filter iv__filters">
+      <a-input v-model:value="kw" placeholder="搜入口名 / tag / 机器 / 端口" allow-clear>
+        <template #prefix><LbIcon name="search" :size="14" /></template>
+      </a-input>
       <a-select
         v-model:value="filterNode"
         placeholder="机器"
@@ -548,10 +546,13 @@ const columns = [
         <a-radio-button value="DIRECT">本机直连</a-radio-button>
         <a-radio-button value="CHAIN">链式</a-radio-button>
       </a-radio-group>
-      <a-checkbox v-model:checked="onlyPending">只看待部署</a-checkbox>
+      <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': onlyPending }">
+        <a-switch v-model:checked="onlyPending" size="small" />
+        只看待部署
+      </label>
     </div>
 
-    <p v-if="loadError" class="iv__error">{{ loadError }}</p>
+    <div v-if="loadError" class="lb-error-strip iv__error">{{ loadError }}</div>
 
     <!-- 窄屏整表换卡片:AntD 的横向滚动会把最右边的「操作」列推出屏幕。 -->
     <div v-if="narrow" class="iv__cards">
@@ -718,6 +719,8 @@ const columns = [
         </template>
       </template>
     </a-table>
+    </div>
+    </section>
 
     <template v-if="targetNode && target">
       <InboundFormModal
@@ -780,54 +783,19 @@ const columns = [
 
 <style scoped>
 /* 颜色只用 tokens.ts 里已有的值:text1 / text3 / warning。 */
-.iv__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 8px;
-}
-.iv__title {
-  margin: 0;
-  font-size: 18px;
-  color: #15181c;
-}
-.iv__sub {
-  margin: 4px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #6b7480;
-}
-.iv__summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: #6b7480;
-}
 .iv__pending {
-  color: #8a5300;
-}
-.iv__filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  color: var(--warn);
 }
 .iv__error {
-  margin: 0 0 12px;
-  font-size: 12px;
-  color: #b4291d;
+  margin: 12px 20px 0;
 }
 .iv__name {
   font-weight: 500;
-  color: #15181c;
+  color: var(--text);
 }
 .iv__dim {
   font-size: 12px;
-  color: #6b7480;
+  color: var(--text3);
 }
 .iv__cards {
   display: flex;
@@ -838,7 +806,7 @@ const columns = [
   padding: 24px 8px;
   font-size: 13px;
   line-height: 1.7;
-  color: #6b7480;
+  color: var(--text3);
 }
 .iv__deploy-foot {
   margin-top: 16px;

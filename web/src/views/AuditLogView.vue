@@ -2,7 +2,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { api, ApiError, type AuditLog, type Node, type ProxyUser } from '@/api/client'
-import { LbEmptyState, LbFilterBar, LbRowCard, LbStatusTag, LbTimeText } from '@/components/lb'
+import { LbEmptyState, LbFilterBar, LbRowCard, LbStatusTag, LbTimeText,
+  LbInfoTip,
+  LbSectionTitle,
+  LbIcon,
+} from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
 import { usePagination } from '@/composables/usePagination'
 
@@ -266,21 +270,24 @@ const columns = [
 </script>
 
 <template>
-  <div class="al">
-    <div class="al__head">
-      <div>
-        <h2 class="al__title">审计日志</h2>
-        <div class="al__sub">
-          最近 200 条 · 记录所有写操作与登录尝试 · 详情里不含 token、密码与 UUID 全值
-        </div>
+  <div class="lb-page al">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>审计日志</span>
+          <LbInfoTip text="最近 200 条,记录所有写操作与登录尝试。详情里不含 token、密码与 UUID 全值。" :width="300" />
+        </h1>
+        <div class="lb-page__summary">{{ logs.length }} 条记录,{{ logs.filter((l) => !l.succeeded).length }} 条失败。</div>
       </div>
-      <a-space>
+      <div class="lb-page__actions">
         <a-button :disabled="visible.length === 0" @click="exportCSV">导出 CSV</a-button>
         <a-button :loading="loading" @click="load">刷新</a-button>
-      </a-space>
+      </div>
     </div>
 
-    <a-card :body-style="{ padding: 0 }">
+    <section>
+    <LbSectionTitle title="全部记录" :count="`${visible.length} / ${logs.length} 条`" />
+    <div class="lb-card lb-card--flush">
       <!-- 分类常驻,不占额外高度。27 个动作名靠打字筛太慢。 -->
       <div class="al__cats">
         <button
@@ -301,24 +308,19 @@ const columns = [
         </button>
       </div>
 
-      <LbFilterBar
-        :active-count="activeFilterCount"
-        :filtered="visible.length"
-        :total="logs.length"
-        @clear="clearFilters"
-      >
-        <a-input-search
-          v-model:value="filters.keyword"
-          placeholder="搜索操作、目标、详情或 IP"
-          allow-clear
-          style="width: 240px"
-        />
+      <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
+        <a-input v-model:value="filters.keyword" placeholder="搜索操作、目标、详情或 IP" allow-clear>
+          <template #prefix><LbIcon name="search" :size="14" /></template>
+        </a-input>
         <a-select v-model:value="filters.days" placeholder="时间范围" allow-clear style="width: 130px">
           <a-select-option :value="1">近 24 小时</a-select-option>
           <a-select-option :value="7">近 7 天</a-select-option>
           <a-select-option :value="30">近 30 天</a-select-option>
         </a-select>
-        <a-checkbox v-model:checked="filters.onlyFailed">只看失败</a-checkbox>
+        <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.onlyFailed }">
+          <a-switch v-model:checked="filters.onlyFailed" size="small" />
+          只看失败
+        </label>
       </LbFilterBar>
 
       <LbEmptyState
@@ -362,8 +364,8 @@ const columns = [
                 <LbStatusTag
                   :meta="
                     l.succeeded
-                      ? { text: '成功', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }
-                      : { text: '失败', shape: 'cross', fg: '#B4291D', bg: '#FDECEA', bd: '#F3CFC9' }
+                      ? { text: '成功', shape: 'check', fg: 'var(--ok)', bg: 'var(--ok-bg)' }
+                      : { text: '失败', shape: 'cross', fg: 'var(--bad)', bg: 'var(--bad-bg)' }
                   "
                 />
               </template>
@@ -420,8 +422,8 @@ const columns = [
             <LbStatusTag
               :meta="
                 record.succeeded
-                  ? { text: '成功', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }
-                  : { text: '失败', shape: 'cross', fg: '#B4291D', bg: '#FDECEA', bd: '#F3CFC9' }
+                  ? { text: '成功', shape: 'check', fg: 'var(--ok)', bg: 'var(--ok-bg)' }
+                  : { text: '失败', shape: 'cross', fg: 'var(--bad)', bg: 'var(--bad-bg)' }
               "
             />
           </template>
@@ -447,7 +449,8 @@ const columns = [
           </template>
         </template>
       </a-table>
-    </a-card>
+    </div>
+    </section>
   </div>
 </template>
 
@@ -474,7 +477,7 @@ const columns = [
 .al__sub {
   margin-top: 3px;
   font-size: 12.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .al__cats {
@@ -486,10 +489,10 @@ const columns = [
 
 .al__cat {
   padding: 4px 10px;
-  border: 1px solid #e3e6ea;
-  border-radius: 4px;
-  background: #fff;
-  color: #576070;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-input);
+  background: var(--surface);
+  color: var(--text2);
   font-size: 12.5px;
   font-family: inherit;
   cursor: pointer;
@@ -498,18 +501,18 @@ const columns = [
 .al__cat span {
   margin-left: 4px;
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .al__cat--on {
-  background: #eef4fc;
-  border-color: #c9dcf3;
-  color: #1d4f96;
+  background: var(--brand-bg);
+  border-color: var(--brand-bg);
+  color: var(--brand-hover);
   font-weight: 500;
 }
 
 .al__cat--on span {
-  color: #4a7bbe;
+  color: var(--brand);
 }
 
 .al__action {
@@ -522,16 +525,16 @@ const columns = [
 .al__cat-tag {
   flex: none;
   padding: 1px 5px;
-  background: #f1f3f5;
-  border-radius: 3px;
+  background: var(--fill);
+  border-radius: var(--r-pill);
   font-size: 10.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .al__burst {
   margin-top: 2px;
   font-size: 10.5px;
-  color: #b4291d;
+  color: var(--bad);
 }
 
 .al__burst a {
@@ -541,7 +544,7 @@ const columns = [
 .al__detail {
   font-size: 12px;
   line-height: 1.65;
-  color: #576070;
+  color: var(--text2);
 }
 
 .al__more {
@@ -549,7 +552,7 @@ const columns = [
 }
 
 .al__muted {
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .al__group {
@@ -560,7 +563,7 @@ const columns = [
   padding: 12px 2px 6px;
   font-size: 11.5px;
   font-weight: 600;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .al__cards {
@@ -579,7 +582,7 @@ const columns = [
 
 .al__card-meta {
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .al__pager {

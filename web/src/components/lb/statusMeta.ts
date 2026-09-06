@@ -14,6 +14,10 @@ import { color } from '@/theme/tokens'
  *   dashRing 灰虚线环 = 采样过期(不是离线)
  *   check    对勾   = 已同步 / 成功
  *   minus    短横   = 已跳过
+ *
+ * 颜色全是 CSS 变量引用(tokens.ts 的 color),深色模式下自动换成深色版语义色;
+ * 浅底是语义色的 12%(深色 18%)alpha,已经在 tokens.css 里算好。
+ * V18 起标签**没有边框**,所以这里也没有 bd 字段。
  */
 export type LbShape =
   | 'dot' | 'cross' | 'triangle' | 'spinner' | 'pause'
@@ -24,21 +28,23 @@ export interface LbStatusMeta {
   shape: LbShape
   fg: string
   bg: string
-  bd: string
 }
 
 const ok = (text: string, shape: LbShape = 'dot'): LbStatusMeta =>
-  ({ text, shape, fg: color.success, bg: color.successBg, bd: color.successBorder })
+  ({ text, shape, fg: color.success, bg: color.successBg })
 const warn = (text: string, shape: LbShape = 'triangle'): LbStatusMeta =>
-  ({ text, shape, fg: color.warning, bg: color.warningBg, bd: color.warningBorder })
+  ({ text, shape, fg: color.warning, bg: color.warningBg })
 const bad = (text: string, shape: LbShape = 'cross'): LbStatusMeta =>
-  ({ text, shape, fg: color.danger, bg: color.dangerBg, bd: color.dangerBorder })
+  ({ text, shape, fg: color.danger, bg: color.dangerBg })
 const info = (text: string, shape: LbShape = 'spinner'): LbStatusMeta =>
-  ({ text, shape, fg: color.brand, bg: color.brandBg, bd: color.brandBorder })
+  ({ text, shape, fg: color.brand, bg: color.brandBg })
 const mute = (text: string, shape: LbShape = 'ring'): LbStatusMeta =>
-  ({ text, shape, fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder })
+  ({ text, shape, fg: color.neutral, bg: color.neutralBg })
 const paused = (text: string): LbStatusMeta =>
-  ({ text, shape: 'pause', fg: color.maintenance, bg: color.maintenanceBg, bd: color.maintenanceBorder })
+  ({ text, shape: 'pause', fg: color.maintenance, bg: color.maintenanceBg })
+
+/** 给别处拼派生标签用的四个构造器,免得各自再抄一遍颜色。 */
+export const metaOf = { ok, warn, bad, info, mute, paused }
 
 /**
  * 用户状态。DEPLOY_PENDING / DEPLOY_FAILED 也要显示 ——
@@ -135,8 +141,7 @@ export const staleMeta: LbStatusMeta = {
   text: '数据过期',
   shape: 'dashRing',
   fg: color.text3,
-  bg: color.bgPage,
-  bd: color.neutralBorder,
+  bg: color.fill,
 }
 
 /** 节点停发订阅 —— subscription_enabled=false,与 DISABLED 是两回事。 */

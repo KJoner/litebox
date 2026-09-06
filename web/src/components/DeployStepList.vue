@@ -10,20 +10,22 @@ import { color } from '@/theme/tokens'
  * 失败原因与回滚结果置顶 —— 这一点原实现就做对了,保留。
  * 失败步骤的输出用等宽 + 保留换行:那是拨测的原始输出,
  * 折行重排之后就不是它了。
+ *
+ * V18:--surface2 圆角 14 的步骤列表,22px 圆形状态图标,每行 lb-step 依次入场。
  */
 defineProps<{ record: DeploymentRecord }>()
 
-const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string; text: string }> = {
-  SUCCESS: { shape: 'check', fg: color.success, text: '成功' },
-  FAILED: { shape: 'cross', fg: color.danger, text: '失败' },
+const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string; bg: string; text: string }> = {
+  SUCCESS: { shape: 'check', fg: color.success, bg: color.successBg, text: '成功' },
+  FAILED: { shape: 'cross', fg: color.danger, bg: color.dangerBg, text: '失败' },
   // 已跳过不标绿 —— 那会让人以为这一步做过了。
-  SKIPPED: { shape: 'minus', fg: color.neutral, text: '跳过' },
+  SKIPPED: { shape: 'minus', fg: color.neutral, bg: color.neutralBg, text: '跳过' },
 }
 </script>
 
 <template>
   <div class="ds">
-    <div class="ds__meta">
+    <div class="ds__meta lb-tabular">
       <span>
         开始 <LbTimeText :value="record.started_at" mode="both" />
       </span>
@@ -49,8 +51,16 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
     </div>
 
     <ol class="ds__steps">
-      <li v-for="(s, i) in record.steps" :key="i" class="ds__step">
-        <span class="ds__step-icon">
+      <li
+        v-for="(s, i) in record.steps"
+        :key="i"
+        class="ds__step"
+        :style="{ animationDelay: `${i * 60}ms` }"
+      >
+        <span
+          class="ds__step-icon"
+          :style="{ background: stepMeta[s.status]?.bg ?? color.neutralBg }"
+        >
           <LbShapeIcon
             :shape="stepMeta[s.status]?.shape ?? 'ring'"
             :color="stepMeta[s.status]?.fg ?? color.neutral"
@@ -59,15 +69,14 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
         </span>
         <div class="ds__step-body">
           <div class="ds__step-head">
-            <span class="ds__step-no lb-mono">{{ i + 1 }}</span>
-            <span class="ds__step-name">{{ s.name }}</span>
+            <span class="ds__step-name">{{ i + 1 }}. {{ s.name }}</span>
             <span
               class="ds__step-status"
               :style="{ color: stepMeta[s.status]?.fg ?? color.neutral }"
             >
               {{ stepMeta[s.status]?.text ?? s.status }}
             </span>
-            <span v-if="s.duration_ms > 0" class="ds__step-time lb-mono">
+            <span v-if="s.duration_ms > 0" class="ds__step-time lb-tabular">
               {{ formatDuration(s.duration_ms) }}
             </span>
           </div>
@@ -88,68 +97,79 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
 .ds {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .ds__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  font-size: 11.5px;
-  color: #6b7480;
+  gap: 18px;
+  font-size: 12.5px;
+  color: var(--text3);
 }
 
 .ds__banner {
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px solid;
+  padding: 12px 14px;
+  border-radius: var(--r-group);
 }
 
 .ds__banner--error {
-  background: #fdecea;
-  border-color: #f3cfc9;
-  color: #8e2117;
+  background: var(--bad-bg);
 }
 
 .ds__banner--warn {
-  background: #fcf3e3;
-  border-color: #efdcb4;
-  color: #5c4405;
+  background: var(--warn-bg);
 }
 
 .ds__banner-title {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   margin-bottom: 4px;
+  color: var(--text);
+}
+.ds__banner--error .ds__banner-title {
+  color: var(--bad);
+}
+.ds__banner--warn .ds__banner-title {
+  color: var(--warn);
 }
 
 .ds__banner-body {
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
 }
 
 .ds__steps {
   margin: 0;
   padding: 0;
   list-style: none;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
   overflow: hidden;
 }
 
 .ds__step {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 12px;
+  padding: 12px 16px;
+  animation: lb-step 0.35s var(--ease) both;
 }
 
 .ds__step + .ds__step {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep);
 }
 
 .ds__step-icon {
-  padding-top: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
 }
 
 .ds__step-body {
@@ -162,37 +182,34 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
 .ds__step-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
-.ds__step-no {
-  font-size: 11px;
-  color: #6b7480;
-}
-
 .ds__step-name {
-  font-size: 12.5px;
+  font-size: 13.5px;
+  font-weight: 500;
 }
 
-.ds__step-status,
-.ds__step-time {
-  font-size: 11px;
+.ds__step-status {
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .ds__step-time {
-  color: #6b7480;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .ds__step-detail {
   margin: 0;
-  padding: 8px 10px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 4px;
-  font-size: 11px;
-  line-height: 1.7;
-  color: #576070;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: var(--r-input);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text2);
   white-space: pre-wrap;
   overflow-x: auto;
 }

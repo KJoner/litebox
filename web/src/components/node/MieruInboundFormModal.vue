@@ -344,10 +344,10 @@ async function doSave() {
 .mfm__where {
   margin: 0 0 12px;
   font-size: 13px;
-  color: #15181C;
+  color: var(--text);
 }
 .mfm__dim {
-  color: #6B7480;
+  color: var(--text3);
 }
 .mfm__intro {
   margin-bottom: 12px;
@@ -356,7 +356,7 @@ async function doSave() {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6B7480;
+  color: var(--text3);
 }
 .mfm__hint--block {
   margin: -4px 0 12px;
@@ -366,11 +366,11 @@ async function doSave() {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
-  color: #92610A;
+  color: var(--warn);
 }
 .mfm__inline {
   margin-left: 8px;
   font-size: 12px;
-  color: #6B7480;
+  color: var(--text3);
 }
 </style>
