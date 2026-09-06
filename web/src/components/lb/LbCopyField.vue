@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { message } from 'ant-design-vue'
+import LbInfoTip from './LbInfoTip.vue'
 
 /**
  * 只读可复制字段:订阅地址、UUID、面板公钥。
@@ -9,12 +10,15 @@ import { message } from 'ant-design-vue'
  * 不能只说「复制失败」就完 —— 用户还是需要拿到这段内容。所以:
  *   1. 提示他手动复制,并给出快捷键;
  *   2. **真的把文本选中**,让下一个动作就能完成。
+ *
+ * V18:--surface2 底圆角 10、高 36、mono 12.5px;右侧「复制」是 --fill 底蓝字、
+ * 圆角 10(不是胶囊,与输入框齐)。caution 收进实心 ⓘ 警告图标。
  */
 const props = withDefaults(
   defineProps<{
     value: string
     label?: string
-    /** 提示语,例如「等同于密码,勿转发」 */
+    /** 提示语,例如「等同于密码,勿转发」。V18 起收进实心警告 ⓘ。 */
     caution?: string
     /** hash / token 用中段省略:7f3a…c91d 还能人工比对,7f3a2b1c… 不能。 */
     middleEllipsis?: boolean
@@ -87,19 +91,19 @@ async function copy() {
   <div class="lb-copy">
     <div v-if="props.label || props.caution" class="lb-copy__head">
       <span v-if="props.label" class="lb-copy__label">{{ props.label }}</span>
-      <span v-if="props.caution" class="lb-copy__caution">{{ props.caution }}</span>
+      <LbInfoTip v-if="props.caution" warn :text="props.caution" :width="240" />
     </div>
     <div class="lb-copy__row">
       <div ref="box" class="lb-copy__box lb-mono" :title="props.value">{{ shown(props.value) }}</div>
-      <a-button
-        :type="props.primary ? 'primary' : 'default'"
+      <button
+        type="button"
         class="lb-copy__btn"
-        :class="{ 'lb-copy__btn--ok': copied }"
+        :class="{ 'lb-copy__btn--ok': copied, 'lb-copy__btn--primary': props.primary }"
         :aria-label="`复制${props.label ?? ''}`"
         @click="copy"
       >
         {{ copied ? '已复制' : props.buttonText }}
-      </a-button>
+      </button>
     </div>
   </div>
 </template>
@@ -114,18 +118,13 @@ async function copy() {
 
 .lb-copy__head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 5px;
 }
 
 .lb-copy__label {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.lb-copy__caution {
-  font-size: 11.5px;
-  color: #92610a;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .lb-copy__row {
@@ -137,28 +136,60 @@ async function copy() {
 .lb-copy__box {
   flex: 1;
   min-width: 0;
-  height: 30px;
+  height: 36px;
   display: flex;
   align-items: center;
-  padding: 0 10px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 4px;
-  font-size: 11.5px;
-  color: #576070;
+  padding: 0 14px;
+  background: var(--surface2);
+  border-radius: var(--r-input);
+  font-size: 12.5px;
+  color: var(--text2);
   /* 不折行:地址折成三行会把主按钮推到屏幕外。 */
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
   user-select: all;
 }
 
 .lb-copy__btn {
   flex: none;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--r-input);
+  background: var(--fill);
+  color: var(--brand);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, transform 0.15s var(--ease);
+}
+.lb-copy__btn:hover {
+  background: var(--fill2);
+}
+.lb-copy__btn:active {
+  transform: scale(0.97);
+}
+.lb-copy__btn--primary {
+  background: var(--brand);
+  color: var(--surface);
+}
+.lb-copy__btn--primary:hover {
+  background: var(--brand-hover);
+}
+.lb-copy__btn--ok,
+.lb-copy__btn--ok:hover {
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 
-.lb-copy__btn--ok {
-  color: #14603b !important;
-  background: #e9f5ee !important;
-  border-color: #c3e3d0 !important;
+@media (max-width: 767px) {
+  .lb-copy__btn {
+    min-height: 44px;
+  }
+  .lb-copy__box {
+    height: 44px;
+  }
 }
 </style>

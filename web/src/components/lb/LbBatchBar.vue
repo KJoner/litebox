@@ -6,6 +6,7 @@
  * 而不是全表,批量停用漏掉或多带上几个人,代价完全不对等。
  *
  * 切换筛选时页面应当清空选择 —— 调用方监听筛选变化后 emit clear。
+ * V18:与工具条同规格(14px 20px),底色 --brand-bg,按钮 28px 胶囊。
  */
 withDefaults(
   defineProps<{
@@ -23,8 +24,8 @@ defineEmits<{ (e: 'clear'): void }>()
 
 <template>
   <div v-if="selectedCount > 0" class="lb-batch">
-    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-      <rect x="0.5" y="0.5" width="11" height="11" rx="2" fill="#2563B8" />
+    <svg width="14" height="14" viewBox="0 0 12 12" aria-hidden="true">
+      <rect x="0.5" y="0.5" width="11" height="11" rx="3" fill="var(--brand)" />
       <path d="M3 6.2 5 8.2 9 3.8" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
     </svg>
     <span class="lb-batch__count">已选 {{ selectedCount }} {{ unit }}</span>
@@ -36,7 +37,7 @@ defineEmits<{ (e: 'clear'): void }>()
     </span>
     <div class="lb-batch__actions">
       <slot />
-      <a-button type="link" size="small" @click="$emit('clear')">取消选择</a-button>
+      <a-button type="text" size="small" @click="$emit('clear')">取消选择</a-button>
     </div>
   </div>
 </template>
@@ -46,26 +47,34 @@ defineEmits<{ (e: 'clear'): void }>()
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  background: #eef4fc;
-  border-bottom: 1px solid #edeff2;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  background: var(--brand-bg);
+  border-bottom: 1px solid var(--sep2);
 }
 
 .lb-batch__count {
-  font-size: 12.5px;
-  font-weight: 500;
-  color: #1d4f96;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand);
 }
 
 .lb-batch__note {
-  font-size: 11.5px;
-  color: #4a7bbe;
+  font-size: 12px;
+  color: var(--text2);
 }
 
 .lb-batch__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-left: auto;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 767px) {
+  .lb-batch {
+    padding: 10px 14px;
+  }
 }
 </style>

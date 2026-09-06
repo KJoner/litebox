@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { api, ApiError, type AccessTier, type Node, type ProxyUser } from '@/api/client'
 import { checkLoginUsername, checkPassword } from '@/utils/validate'
-import { LbSensitiveField } from '@/components/lb'
+import { LbInfoTip } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from './quota'
 
 /**
@@ -14,6 +14,9 @@ import { fromBytes, toBytes, type LbQuotaUnit } from './quota'
  *             那里才能同时说清「重设密码会踢掉全部会话」。
  *   标识字段  新建显示「自动分配」;编辑显示真值且只读。
  *   主按钮    「创建用户」/「保存」,后者无改动时禁用。
+ *
+ * V18:iOS Sheet —— 三栏头由 antd-tune.css 给;正文是几段分组列表
+ * (130px 标签 | 控件),帮助文案收进标签旁的 ⓘ;底部居中一句摘要。
  */
 const props = defineProps<{
   open: boolean
@@ -233,162 +236,246 @@ async function submit() {
     @cancel="tryClose"
     @ok="submit"
   >
-    <a-alert
-      v-if="serverError"
-      type="error"
-      show-icon
-      class="uf__err"
-      :message="serverError"
-      description="表单内容已保留。"
-    />
+    <div class="uf">
+      <div v-if="serverError" class="lb-error-strip">
+        <div>
+          <b>{{ serverError }}</b>
+          <span class="uf__err-note">表单内容已保留。</span>
+        </div>
+      </div>
 
-    <a-form layout="vertical">
-      <a-form-item label="用户名称" required>
-        <a-input v-model:value="form.display_name" placeholder="用于识别的显示名" />
-        <div class="uf__help">只在管理后台出现,用户看不到。</div>
-      </a-form-item>
-
-      <a-form-item label="备注">
-        <a-input v-model:value="form.remark" placeholder="例如:2026 年 8 月起" />
-      </a-form-item>
-
-      <a-form-item label="访问等级">
-        <a-select v-model:value="form.access_tier_id">
-          <a-select-option v-for="t in props.tiers" :key="t.id" :value="t.id">
-            {{ t.name }} —— {{ t.description }}
-          </a-select-option>
-        </a-select>
-        <div class="uf__help">等级不高于该等级的节点会自动可用,不必逐个勾选。</div>
-      </a-form-item>
-
-      <a-row :gutter="12">
-        <a-col :span="14">
-          <a-form-item label="流量额度">
+      <div class="lb-group">
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            <span class="uf__req">*</span> 用户名称
+            <LbInfoTip text="只在管理后台出现,用户看不到。" :width="220" />
+          </span>
+          <a-input v-model:value="form.display_name" placeholder="用于识别的显示名" />
+        </div>
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">备注</span>
+          <a-input v-model:value="form.remark" placeholder="例如:2026 年 8 月起" />
+        </div>
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            访问等级
+            <LbInfoTip text="等级不高于该等级的节点会自动可用,不必逐个勾选。" :width="260" />
+          </span>
+          <a-select v-model:value="form.access_tier_id">
+            <a-select-option v-for="t in props.tiers" :key="t.id" :value="t.id">
+              {{ t.name }} —— {{ t.description }}
+            </a-select-option>
+          </a-select>
+        </div>
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            流量额度
+            <LbInfoTip text="留空或填 0 表示不限量。单位只影响输入,提交时换算成字节发给接口。" :width="260" />
+          </span>
+          <div class="uf__quota">
             <a-input-number
               v-model:value="form.quota_value"
               :min="0"
               :precision="2"
               placeholder="不限量"
-              style="width: 100%"
+              class="uf__quota-num"
             />
-          </a-form-item>
-        </a-col>
-        <a-col :span="10">
-          <a-form-item label="单位">
-            <a-select v-model:value="form.quota_unit">
+            <a-select v-model:value="form.quota_unit" class="uf__quota-unit">
               <a-select-option value="GB">GB</a-select-option>
               <a-select-option value="TB">TB</a-select-option>
             </a-select>
-          </a-form-item>
-        </a-col>
-      </a-row>
-      <div class="uf__help uf__help--row">
-        留空或填 0 表示不限量。单位只影响输入,提交时换算成字节发给接口。
+          </div>
+        </div>
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            到期时间
+            <LbInfoTip text="留空表示不过期。边界统一取 UTC。" :width="220" />
+          </span>
+          <a-input v-model:value="form.expires_at" type="date" />
+        </div>
       </div>
 
-      <a-form-item label="到期时间">
-        <a-input v-model:value="form.expires_at" type="date" style="width: 100%" />
-        <div class="uf__help">留空表示不过期。边界统一取 UTC。</div>
-      </a-form-item>
-
-      <a-form-item label="流量重置">
-        <a-radio-group v-model:value="form.reset_cycle">
-          <a-radio value="NONE">不重置</a-radio>
-          <a-radio value="MONTHLY">每月</a-radio>
-        </a-radio-group>
-      </a-form-item>
-
-      <a-form-item v-if="form.reset_cycle === 'MONTHLY'" label="重置日">
-        <a-input-number v-model:value="form.reset_day" :min="1" :max="28" style="width: 160px" />
-        <!-- 用户是 1~28,节点是 1~31。两处规则不同,各自写准确的帮助文字。 -->
-        <div class="uf__help">1~28 日。不支持 29~31,避开短月份歧义。边界统一取 UTC 00:00。</div>
-      </a-form-item>
+      <div class="lb-group">
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            流量重置
+            <LbInfoTip text="重置日 1~28。不支持 29~31,避开短月份歧义。边界统一取 UTC 00:00。" :width="280" />
+          </span>
+          <a-radio-group v-model:value="form.reset_cycle" class="uf__seg">
+            <a-radio-button value="NONE">不重置</a-radio-button>
+            <a-radio-button value="MONTHLY">每月</a-radio-button>
+          </a-radio-group>
+        </div>
+        <div v-if="form.reset_cycle === 'MONTHLY'" class="lb-group__row uf__row">
+          <span class="lb-group__label">重置日</span>
+          <div class="uf__day">
+            每月
+            <a-input-number v-model:value="form.reset_day" :min="1" :max="28" class="uf__day-num" />
+            日
+          </div>
+        </div>
+      </div>
 
       <template v-if="!isEdit">
-        <a-divider orientation="left" plain>门户登录(可选)</a-divider>
-        <a-form-item
-          label="登录账号"
-          :validate-status="usernameError ? 'error' : ''"
-          :help="usernameError"
-        >
-          <a-input v-model:value="form.login_username" placeholder="字母、数字、下划线、连字符与点,3~32 位" autocomplete="off" />
-          <div v-if="!usernameError" class="uf__help">留空表示该用户只用订阅,不登录用户中心。</div>
-        </a-form-item>
-
-        <template v-if="form.login_username">
-          <div :class="passwordError ? 'uf__pwd uf__pwd--err' : 'uf__pwd'">
-            <LbSensitiveField
-              v-model:value="form.login_password"
-              label="初始密码"
-              mode="create"
-              required
-              help="至少 8 位。提交后不再回显,也不写进审计日志。请通过安全渠道发给用户。"
-            />
-            <div v-if="passwordError" class="uf__pwd-err">{{ passwordError }}</div>
+        <div class="uf__sub-head">门户登录(可选)</div>
+        <div class="lb-group">
+          <div class="lb-group__row uf__row">
+            <span class="lb-group__label">
+              登录账号
+              <LbInfoTip text="字母、数字、下划线、连字符与点,3~32 位。留空表示该用户只用订阅,不登录用户中心。" :width="280" />
+            </span>
+            <div class="uf__field">
+              <a-input
+                v-model:value="form.login_username"
+                placeholder="留空则不开通登录"
+                autocomplete="off"
+                :status="usernameError ? 'error' : undefined"
+              />
+              <div v-if="usernameError" class="uf__field-err">{{ usernameError }}</div>
+            </div>
           </div>
-          <a-form-item>
-            <a-checkbox v-model:checked="form.must_change_password">
-              要求用户首次登录后修改密码
-            </a-checkbox>
-          </a-form-item>
-        </template>
-        <a-divider />
+          <template v-if="form.login_username">
+            <div class="lb-group__row uf__row">
+              <span class="lb-group__label">
+                <span class="uf__req">*</span> 初始密码
+                <LbInfoTip
+                  warn
+                  :width="280"
+                  text="至少 8 位。提交后不再回显,也不写进审计日志。请通过安全渠道发给用户。"
+                />
+              </span>
+              <div class="uf__field">
+                <a-input-password
+                  v-model:value="form.login_password"
+                  placeholder="不会回显"
+                  autocomplete="new-password"
+                  :status="passwordError ? 'error' : undefined"
+                />
+                <div v-if="passwordError" class="uf__field-err">{{ passwordError }}</div>
+              </div>
+            </div>
+            <div class="lb-group__row uf__row uf__row--switch">
+              <span class="lb-group__label">首次登录后须改密码</span>
+              <a-switch v-model:checked="form.must_change_password" />
+            </div>
+          </template>
+        </div>
       </template>
 
-      <a-form-item label="额外授权节点">
-        <a-select
-          v-model:value="form.node_ids"
-          mode="multiple"
-          :options="nodeOptions"
-          placeholder="通常留空"
-          style="width: 100%"
-        />
-        <div class="uf__help">
-          在访问等级之外单独追加。等级已经覆盖的节点不必勾选 ——
-          勾了会把继承关系固化成手工授权,之后调等级就不再自动生效。
+      <div class="lb-group">
+        <div class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            额外授权节点
+            <LbInfoTip
+              :width="300"
+              text="在访问等级之外单独追加。等级已经覆盖的节点不必勾选 —— 勾了会把继承关系固化成手工授权,之后调等级就不再自动生效。"
+            />
+          </span>
+          <a-select
+            v-model:value="form.node_ids"
+            mode="multiple"
+            :options="nodeOptions"
+            placeholder="通常留空"
+          />
         </div>
-      </a-form-item>
+        <div v-if="isEdit" class="lb-group__row uf__row">
+          <span class="lb-group__label">
+            用户编号
+            <LbInfoTip text="重新生成 UUID 不在这里 —— 它是危险操作,走详情页的确认弹窗。" :width="260" />
+          </span>
+          <div class="lb-group__value lb-group__value--mono">{{ props.user?.user_code }}</div>
+        </div>
+      </div>
 
-      <a-form-item v-if="isEdit" label="用户编号 / UUID">
-        <a-input :value="`${props.user?.user_code}`" disabled />
-        <div class="uf__help">重新生成 UUID 不在这里 —— 它是危险操作,走详情页的确认弹窗。</div>
-      </a-form-item>
-    </a-form>
-
-    <div v-if="!isEdit" class="uf__foot">保存后受影响节点将在数秒内自动部署。</div>
-    <div v-else-if="dirtyFields.length" class="uf__foot">已改动 {{ dirtyFields.length }} 项</div>
+      <div v-if="!isEdit" class="uf__foot">保存后受影响节点将在数秒内自动部署</div>
+      <div v-else-if="dirtyFields.length" class="uf__foot">
+        已改动 {{ dirtyFields.length }} 项 · 保存后受影响节点将在数秒内自动部署
+      </div>
+      <div v-else class="uf__foot">没有改动</div>
+    </div>
   </a-modal>
 </template>
 
 <style scoped>
-.uf__err {
-  margin-bottom: 16px;
+.uf {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
-.uf__help {
-  margin-top: 4px;
+.uf__err-note {
+  color: var(--text2);
+  margin-left: 4px;
+}
+
+.uf__row {
+  grid-template-columns: 130px minmax(0, 1fr);
+}
+.uf__row--switch {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.uf__row :deep(.ant-input),
+.uf__row :deep(.ant-input-affix-wrapper),
+.uf__row :deep(.ant-select),
+.uf__row :deep(.ant-input-number) {
+  width: 100%;
+}
+
+.uf__req {
+  color: var(--bad);
+}
+
+.uf__quota {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.uf__quota-num {
+  flex: 1;
+  min-width: 0;
+}
+.uf__quota :deep(.uf__quota-unit) {
+  width: 90px;
+  flex: none;
+}
+
+.uf__day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+}
+.uf__day :deep(.uf__day-num) {
+  width: 90px;
+}
+
+.uf__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.uf__field-err {
   font-size: 12px;
-  line-height: 1.6;
-  color: #6b7480;
+  color: var(--bad);
 }
 
-.uf__help--row {
-  margin: -12px 0 20px;
-}
-
-.uf__pwd--err :deep(.ant-input-affix-wrapper) {
-  border-color: #b4291d;
-}
-
-.uf__pwd-err {
-  margin: -18px 0 20px;
-  font-size: 12px;
-  color: #b4291d;
+.uf__sub-head {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 0 4px;
+  margin-bottom: -8px;
 }
 
 .uf__foot {
-  padding-top: 4px;
-  font-size: 11.5px;
-  color: #6b7480;
+  font-size: 12.5px;
+  color: var(--text3);
+  text-align: center;
+}
+
+@media (max-width: 767px) {
+  .uf__row {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

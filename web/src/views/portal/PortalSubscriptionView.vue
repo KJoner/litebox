@@ -8,7 +8,7 @@ import {
   profileKindLabel,
   type PortalSubscription,
 } from '@/api/client'
-import { LbCopyField, LbEmptyState, LbTimeText, lbDangerConfirm } from '@/components/lb'
+import { LbCopyField, LbEmptyState, LbTimeText, lbDangerConfirm, LbInfoTip,} from '@/components/lb'
 
 /**
  * 我的订阅。这一页只有一件事:把地址交到客户端里。
@@ -113,16 +113,23 @@ function regenerate() {
 </script>
 
 <template>
-  <div class="ps">
-    <div class="ps__head">
-      <h2 class="ps__title">我的订阅</h2>
-      <!-- 不可用时后端把节点数一并置零,这行写出来只会变成第二次「你没有节点」。 -->
-      <div v-if="data?.available" class="ps__sub">
-        {{ data.node_count }} 个节点 · 订阅共 {{ data.entry_count }} 条<template
-          v-if="data.ipv6_count"
-        >
-          ({{ data.ipv6_count }} 个节点额外提供 IPv6)</template
-        >
+  <div class="lb-page ps">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>我的订阅</span>
+          <LbInfoTip
+            :width="300"
+            text="节点订阅导进客户端是一串节点;配置文件导进去会替换整份配置(分流规则、DNS、代理方式都在里面)。按你用的客户端选一个。节点有变动时在客户端里手动更新一次订阅才能看到。"
+          />
+        </h1>
+        <!-- 不可用时后端把节点数一并置零,这行写出来只会变成第二次「你没有节点」。 -->
+        <div v-if="data?.available" class="lb-page__summary">
+          {{ data.node_count }} 个节点,订阅共 {{ data.entry_count }} 条<template
+            v-if="data.ipv6_count"
+          >({{ data.ipv6_count }} 个节点额外提供 IPv6)</template
+          >。
+        </div>
       </div>
     </div>
 
@@ -274,98 +281,76 @@ function regenerate() {
 
 <style scoped>
 .ps {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.ps__head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.ps__title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.ps__sub {
-  font-size: 12.5px;
-  color: #6b7480;
+  gap: 20px;
 }
 
 .ps__skel {
   padding: 16px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 .ps__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
   overflow: hidden;
 }
 
 .ps__card-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 12px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
+  padding: 18px 22px 0;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .ps__card-note {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .ps__card-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px;
+  padding: 16px 22px 20px;
 }
 
 .ps__unavailable {
-  padding: 14px 16px;
-  background: #fdecea;
-  border-bottom: 1px solid #f3cfc9;
+  padding: 18px 22px;
+  background: var(--bad-bg);
 }
 
 .ps__unavailable-title {
   font-size: 13px;
   font-weight: 600;
-  color: #8e2117;
+  color: var(--bad);
 }
 
 .ps__unavailable-body {
   margin-top: 5px;
   font-size: 12.5px;
   line-height: 1.8;
-  color: #8e2117;
+  color: var(--bad);
 }
 
 .ps__fmt {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 13px;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  padding: 14px 16px;
+  background: var(--surface2);
+  border-radius: 16px;
 }
 
 .ps__fmt--main {
-  background: #f6f9fd;
-  border-color: #c9dcf3;
+  background: var(--brand-bg);
 }
 
 .ps__fmt-head {
@@ -382,48 +367,47 @@ function regenerate() {
 
 .ps__fmt-badge {
   padding: 1px 6px;
-  background: #2563b8;
-  border-radius: 3px;
+  background: var(--brand);
+  border-radius: var(--r-pill);
   font-size: 10.5px;
   font-weight: 500;
-  color: #fff;
+  color: var(--surface);
 }
 
 .ps__fmt-apps {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .ps__fmt-hint {
   font-size: 11.5px;
   line-height: 1.7;
-  color: #576070;
+  color: var(--text2);
 }
 
 .ps__fmt-blocked {
   padding: 9px 11px;
-  background: #f1f3f5;
-  border: 1px solid #dfe3e8;
-  border-radius: 6px;
+  background: var(--fill);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
   font-size: 11.5px;
   line-height: 1.8;
-  color: #5c6672;
+  color: var(--text2);
 }
 
 .ps__note {
-  padding: 11px 13px;
-  background: #f6f7f9;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.8;
-  color: #576070;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text2);
 }
 
 .ps__note--warn {
-  background: #fcf3e3;
-  border-color: #efdcb4;
-  color: #5c4405;
+  background: var(--warn-bg);
+  border-color: var(--warn-bg);
+  color: var(--warn);
 }
 
 .ps__steps {
@@ -431,7 +415,7 @@ function regenerate() {
   padding-left: 20px;
   font-size: 12.5px;
   line-height: 2;
-  color: #576070;
+  color: var(--text2);
 }
 
 .ps__facts {
@@ -448,7 +432,7 @@ function regenerate() {
 
 .ps__facts span {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .ps__facts b {

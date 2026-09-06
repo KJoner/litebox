@@ -47,14 +47,12 @@ export function addressFamilyMeta(dual: boolean): LbStatusMeta {
         shape: 'dot',
         fg: color.neutral,
         bg: color.neutralBg,
-        bd: color.neutralBorder,
       }
     : {
         text: 'IPv4',
         shape: 'minus',
         fg: color.neutral,
         bg: color.neutralBg,
-        bd: color.neutralBorder,
       }
 }
 
@@ -74,7 +72,6 @@ export function inboundProtocolMeta(i: NodeInbound): LbStatusMeta {
       shape: 'ring',
       fg: color.neutral,
       bg: color.neutralBg,
-      bd: color.neutralBorder,
     }
   }
   const pending = p !== i.protocol
@@ -83,13 +80,12 @@ export function inboundProtocolMeta(i: NodeInbound): LbStatusMeta {
     shape: pending ? 'triangle' : 'check',
     fg: pending ? color.warning : color.success,
     bg: pending ? color.warningBg : color.successBg,
-    bd: pending ? color.warningBorder : color.successBorder,
   }
 }
 
 export const inboundEnabledMeta: Record<'on' | 'off', LbStatusMeta> = {
-  on: { text: '启用', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
-  off: { text: '已停用', shape: 'minus', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
+  on: { text: '启用', shape: 'check', fg: color.success, bg: color.successBg},
+  off: { text: '已停用', shape: 'minus', fg: color.neutral, bg: color.neutralBg},
 }
 
 /** 一行的端口写法。两个端口相同时只写一个号码 —— 写两遍会让人以为配了转发。 */

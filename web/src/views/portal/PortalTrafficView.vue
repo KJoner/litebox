@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { portalApi, ApiError, type PortalDashboard, type PortalTraffic } from '@/api/client'
 import { formatBytes, formatQuota } from '@/utils/format'
-import { LbEmptyState, LbQuotaBar, LbSparkline, LbTimeText, type LbPoint } from '@/components/lb'
+import { LbEmptyState, LbQuotaBar, LbSparkline, LbTimeText, type LbPoint, LbInfoTip,} from '@/components/lb'
 
 /**
  * 我的流量。只有 7 与 30 两档 —— 后端也只接受这两个值,
@@ -80,24 +80,34 @@ const maxShare = computed(() =>
 </script>
 
 <template>
-  <div class="pt">
-    <div class="pt__head">
-      <div>
-        <h2 class="pt__title">我的流量</h2>
-        <div class="pt__sub">
-          按 UTC 日统计<template v-if="quota?.next_reset_at">
-            · 额度在 <LbTimeText :value="quota.next_reset_at" mode="cycle" /> 重置</template
-          >
+  <div class="lb-page pt">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>我的流量</span>
+          <LbInfoTip text="按 UTC 日统计。空心柱表示那天没有统计记录(不是 0),这些天的流量也没有计入你的额度。" :width="280" />
+        </h1>
+        <div class="lb-page__summary">
+          <template v-if="quota?.next_reset_at">额度在 <LbTimeText :value="quota.next_reset_at" mode="cycle" /> 重置。</template>
+          <template v-else>额度不自动重置。</template>
         </div>
       </div>
-      <a-segmented
-        v-model:value="days"
-        :options="[
-          { label: '最近 7 天', value: 7 },
-          { label: '最近 30 天', value: 30 },
-        ]"
-        size="small"
-      />
+      <div class="lb-page__actions">
+        <div class="lb-seg lb-seg--sm" role="tablist">
+          <button
+            v-for="d in [7, 30]"
+            :key="d"
+            type="button"
+            role="tab"
+            class="lb-seg__item"
+            :class="{ 'lb-seg__item--on': days === d }"
+            :aria-selected="days === d"
+            @click="days = d"
+          >
+            最近 {{ d }} 天
+          </button>
+        </div>
+      </div>
     </div>
 
     <div
@@ -213,79 +223,58 @@ const maxShare = computed(() =>
 
 <style scoped>
 .pt {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.pt__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.pt__title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-}
-
-.pt__sub {
-  margin-top: 3px;
-  font-size: 12.5px;
-  color: #6b7480;
+  gap: 20px;
 }
 
 .pt__alert {
-  padding: 11px 14px;
-  border: 1px solid;
-  border-radius: 8px;
-  font-size: 12.5px;
-  line-height: 1.8;
+  padding: 14px 18px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
 .pt__alert--warn {
-  background: #fcf3e3;
-  border-color: #efdcb4;
-  color: #5c4405;
+  background: var(--warn-bg);
+  border-color: var(--warn-bg);
+  color: var(--warn);
 }
 
 .pt__alert--error {
-  background: #fdecea;
-  border-color: #f3cfc9;
-  color: #8e2117;
+  background: var(--bad-bg);
+  border-color: var(--bad-bg);
+  color: var(--bad);
 }
 
 .pt__card {
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 .pt__card-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
+  flex-wrap: wrap;
+  padding: 18px 22px 0;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .pt__card-note {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__card-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 16px;
+  padding: 16px 22px 20px;
 }
 
 .pt__totals {
@@ -303,7 +292,7 @@ const maxShare = computed(() =>
 
 .pt__total span {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__total b {
@@ -315,25 +304,25 @@ const maxShare = computed(() =>
 .pt__total em {
   font-style: normal;
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__quota-foot {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__axis {
   display: flex;
   justify-content: space-between;
   font-size: 10.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__gap-note {
   font-size: 11.5px;
   line-height: 1.7;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__nodes {
@@ -367,25 +356,25 @@ const maxShare = computed(() =>
 .pt__node-pct {
   width: 40px;
   text-align: right;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .pt__node-track {
   height: 6px;
-  background: #edeff2;
-  border-radius: 2px;
+  background: var(--sep2);
+  border-radius: 3px;
   overflow: hidden;
 }
 
 .pt__node-fill {
   height: 6px;
-  background: #2563b8;
-  border-radius: 2px;
+  background: var(--brand);
+  border-radius: 3px;
 }
 
 .pt__node-dir {
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 @media (max-width: 767px) {

@@ -1369,7 +1369,8 @@ export interface BatchAdjustResult {
 
 export interface DashboardAlert {
   level: 'warning' | 'error'
-  category: 'user' | 'node'
+  /** V17 起多了云账号一类(CDT 用量超阈值 / 查询失败)。 */
+  category: 'user' | 'node' | 'cloud_account'
   target: string
   target_id: number
   message: string

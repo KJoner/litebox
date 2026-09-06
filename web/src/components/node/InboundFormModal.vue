@@ -433,7 +433,7 @@ async function doSave() {
           <span v-else class="ifm__dim">尚未选择</span>
           <LbStatusTag
             v-if="inbound?.handshake_checked_at && form.reality_dest === inbound.reality_dest"
-            :meta="{ text: '已实测', shape: 'check', fg: '#1B7A4B', bg: '#E9F5EE', bd: '#C3E3D0' }"
+            :meta="{ text: '已实测', shape: 'check', fg: 'var(--ok)', bg: 'var(--ok-bg)' }"
           />
           <a-button size="small" :loading="!!running" @click="scanDests">扫描握手目标</a-button>
         </div>
@@ -647,22 +647,22 @@ async function doSave() {
 .ifm__where {
   margin: 0 0 12px;
   font-size: 13px;
-  color: #15181C;
+  color: var(--text);
 }
 .ifm__dim {
-  color: #6B7480;
+  color: var(--text3);
 }
 .ifm__hint {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6B7480;
+  color: var(--text3);
 }
 .ifm__warn {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
-  color: #B4291D;
+  color: var(--bad);
 }
 
 /* 混淆 Host 跟在下拉框后面同一行。 */
@@ -681,7 +681,7 @@ async function doSave() {
 .ifm__dests {
   margin-top: 8px;
   border: 1px solid #E5E8EC;
-  border-radius: 6px;
+  border-radius: var(--r-group);
   overflow: hidden;
 }
 .ifm__dest {
@@ -697,7 +697,7 @@ async function doSave() {
   border-top: none;
 }
 .ifm__dest--head {
-  color: #6B7480;
+  color: var(--text3);
   background: #FAFBFC;
 }
 </style>

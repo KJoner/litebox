@@ -41,27 +41,28 @@ const tone = computed(() => {
   <span v-if="!props.value" class="lb-time lb-time--empty">{{ props.empty }}</span>
 
   <!-- 周期边界:UTC 后缀常驻,不藏进 tooltip。 -->
-  <span v-else-if="props.mode === 'cycle'" class="lb-time lb-mono">
+  <span v-else-if="props.mode === 'cycle'" class="lb-time lb-tabular">
     {{ formatUTCTime(props.value) }}
   </span>
 
   <span v-else-if="props.mode === 'both'" class="lb-time lb-time--stack">
-    <span class="lb-mono">{{ formatTime(props.value) }}</span>
-    <span class="lb-time__rel lb-mono">{{ formatRelative(props.value) }}</span>
+    <span class="lb-tabular">{{ formatTime(props.value) }}</span>
+    <span class="lb-time__rel lb-tabular">{{ formatRelative(props.value) }}</span>
   </span>
 
-  <span v-else class="lb-time lb-mono" :style="{ color: tone }" :title="formatUTCTime(props.value)">
+  <span v-else class="lb-time lb-tabular" :style="{ color: tone }" :title="formatUTCTime(props.value)">
     {{ formatRelative(props.value) }}
   </span>
 </template>
 
 <style scoped>
 .lb-time {
-  font-size: 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 
 .lb-time--empty {
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .lb-time--stack {
@@ -71,7 +72,7 @@ const tone = computed(() => {
 }
 
 .lb-time__rel {
-  font-size: 10.5px;
-  color: #6b7480;
+  font-size: 11.5px;
+  color: var(--text3);
 }
 </style>

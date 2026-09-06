@@ -4,20 +4,21 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import { LbTimeText } from '@/components/lb'
-import { color } from '@/theme/tokens'
+import { useThemeStore } from '@/stores/theme'
+import { LbIcon, LbTimeText, type LbIconName } from '@/components/lb'
 
 /**
- * 后台布局。白侧栏 + 1px 右边线,不用深色 Sider ——
- * 深色块与「浅灰底 + 白内容区」的方向直接冲突。
+ * 后台布局(V18 iOS 风格壳)。白侧栏 232px + 1px 右边线,不用深色 Sider ——
+ * 深色块与「浅灰底 + 白内容区」的方向直接冲突。顶栏 52px 毛玻璃。
  *
- * 侧栏分三组(总览 / 资源 / 运维):六个平铺的菜单项没有层级,
+ * 侧栏分三组(总览 / 资源 / 运维):九个平铺的菜单项没有层级,
  * 每次都要从头读一遍才能找到目标。分组之后「用户」「节点」永远在中间那块。
  *
  * 断点三档,与表格的断点一致:
- *   >=1280 展开 216px;768–1279 折叠成图标条(不自动隐藏);<768 顶栏汉堡 + 抽屉。
+ *   >=1280 展开 232px;768–1279 折叠成图标条(不自动隐藏);<768 顶栏汉堡 + 抽屉。
  */
 const auth = useAuthStore()
+const themeStore = useThemeStore()
 const router = useRouter()
 const route = useRoute()
 
@@ -48,6 +49,7 @@ const sync = ref<{ lastRun?: string; failing: number } | null>(null)
 interface NavItem {
   key: string
   label: string
+  icon: LbIconName
   /** 计数徽标。undefined 表示不显示 —— 显示 0 会被读成「一个都没有」。 */
   badge?: number
   /** 徽标标红。只给「近 7 天失败部署」这种真需要处理的计数。 */
@@ -57,30 +59,30 @@ interface NavItem {
 const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
   {
     title: '总览',
-    items: [{ key: 'dashboard', label: '仪表盘' }],
+    items: [{ key: 'dashboard', label: '仪表盘', icon: 'layout-grid' }],
   },
   {
     title: '资源',
     items: [
-      { key: 'users', label: '用户管理', badge: counts.value.users },
+      { key: 'users', label: '用户管理', icon: 'users', badge: counts.value.users },
       // 「自建节点」与「外部代理」并列:两者只有「能被用户连」这一点相同 ——
       // 一个是我们有 root 的机器,一个是别人的。都叫「节点」的话,
       // 管理员读预警、读审计时每一次都要先判断说的是哪一类。
-      { key: 'nodes', label: '自建节点', badge: counts.value.nodes },
+      { key: 'nodes', label: '自建节点', icon: 'server', badge: counts.value.nodes },
       // 紧跟自建节点:入口是机器的一部分,而这一页只是换个方向去看它们。
-      { key: 'inbounds', label: '入口管理' },
-      { key: 'external-proxies', label: '外部代理', badge: counts.value.external },
+      { key: 'inbounds', label: '入口管理', icon: 'log-in' },
+      { key: 'external-proxies', label: '外部代理', icon: 'external-link', badge: counts.value.external },
       // 排在两类线路之后:管理员的工作流是配节点 → 配外部代理 →
       // 配这些东西怎么发出去。
-      { key: 'subscription-profiles', label: '订阅配置' },
+      { key: 'subscription-profiles', label: '订阅配置', icon: 'file-text' },
     ],
   },
   {
     title: '运维',
     items: [
-      { key: 'deployments', label: '部署记录', badge: counts.value.failedDeploys, danger: true },
-      { key: 'audit-logs', label: '审计日志' },
-      { key: 'settings', label: '系统设置' },
+      { key: 'deployments', label: '部署记录', icon: 'clock', badge: counts.value.failedDeploys, danger: true },
+      { key: 'audit-logs', label: '审计日志', icon: 'list' },
+      { key: 'settings', label: '系统设置', icon: 'settings' },
     ],
   },
 ])
@@ -159,26 +161,23 @@ async function onLogout() {
   }
   await router.replace({ name: 'login' })
 }
+
+const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUpperCase())
 </script>
 
 <template>
-  <a-layout class="ml">
+  <div class="ml">
     <!-- 窄屏走抽屉,桌面走常驻侧栏。两者共用同一份菜单模板。 -->
-    <a-layout-sider
-      v-if="!narrow"
-      :collapsed="collapsed"
-      :width="216"
-      :collapsed-width="56"
-      theme="light"
-      class="ml__sider"
-    >
-      <div class="ml__brand" :class="{ 'ml__brand--mini': collapsed }">
-        <span class="ml__logo">{{ collapsed ? 'LB' : 'LiteBox' }}</span>
+    <aside v-if="!narrow" class="ml__sider" :class="{ 'ml__sider--mini': collapsed }">
+      <div class="ml__brand">
+        <span class="ml__logo">LB</span>
+        <span v-if="!collapsed" class="ml__brand-name">LiteBox</span>
       </div>
 
       <nav class="ml__nav">
         <template v-for="g in groups" :key="g.title">
           <div v-if="!collapsed" class="ml__group">{{ g.title }}</div>
+          <div v-else class="ml__group-gap" />
           <button
             v-for="it in g.items"
             :key="it.key"
@@ -187,61 +186,79 @@ async function onLogout() {
             :title="collapsed ? it.label : undefined"
             @click="go(it.key)"
           >
-            <span class="ml__item-text">{{ collapsed ? it.label.slice(0, 2) : it.label }}</span>
+            <LbIcon :name="it.icon" />
+            <span v-if="!collapsed" class="ml__item-text">{{ it.label }}</span>
             <span
               v-if="it.badge && !collapsed"
-              class="ml__badge"
+              class="ml__badge lb-tabular"
               :class="{ 'ml__badge--danger': it.danger }"
             >
               {{ it.badge }}
             </span>
+            <span v-else-if="it.badge && collapsed && it.danger" class="ml__dot" />
           </button>
         </template>
       </nav>
 
       <!-- 后台任务还活不活着,只有这里看得出来。 -->
       <div v-if="sync && !collapsed" class="ml__sync">
-        <span
-          class="ml__sync-dot"
-          :style="{ background: sync.failing ? color.danger : color.success }"
-        />
+        <span class="ml__sync-dot" :class="{ 'ml__sync-dot--bad': sync.failing }" />
         <div class="ml__sync-text">
-          <div>{{ sync.failing ? `${sync.failing} 个节点同步失败` : '流量同步正常' }}</div>
+          <div class="ml__sync-title">
+            {{ sync.failing ? `${sync.failing} 个节点同步失败` : '流量同步正常' }}
+          </div>
           <div class="ml__sync-time">
             上次 <LbTimeText :value="sync.lastRun ?? null" empty="尚未运行" />
           </div>
         </div>
       </div>
-    </a-layout-sider>
+      <div v-else-if="sync && collapsed" class="ml__sync ml__sync--mini" :title="sync.failing ? `${sync.failing} 个节点同步失败` : '流量同步正常'">
+        <span class="ml__sync-dot" :class="{ 'ml__sync-dot--bad': sync.failing }" />
+      </div>
+    </aside>
 
-    <a-layout>
-      <a-layout-header class="ml__header">
-        <a-button v-if="narrow" type="text" class="lb-touch-target" @click="drawerOpen = true">
-          ☰
-        </a-button>
+    <div class="ml__main">
+      <header class="ml__header">
+        <button v-if="narrow" type="button" class="ml__iconbtn lb-touch-target" aria-label="打开导航" @click="drawerOpen = true">
+          <LbIcon name="menu" :size="18" />
+        </button>
         <div class="ml__crumb">
           <template v-if="crumb.group && !narrow">
             <span class="ml__crumb-group">{{ crumb.group }}</span>
-            <span class="ml__crumb-sep">/</span>
+            <span class="ml__crumb-sep">›</span>
           </template>
           <span class="ml__crumb-page">{{ crumb.page }}</span>
         </div>
         <div class="ml__user">
-          <span class="ml__avatar">{{ (auth.admin?.username ?? '?').slice(0, 2).toUpperCase() }}</span>
+          <button
+            type="button"
+            class="ml__iconbtn"
+            :aria-label="themeStore.mode === 'dark' ? '切换到浅色' : '切换到深色'"
+            :title="themeStore.mode === 'dark' ? '切换到浅色' : '切换到深色'"
+            @click="themeStore.toggle()"
+          >
+            <LbIcon :name="themeStore.mode === 'dark' ? 'sun' : 'moon'" :size="16" />
+          </button>
+          <span class="ml__avatar">{{ initials }}</span>
           <span v-if="!narrow" class="ml__username">{{ auth.admin?.username }}</span>
-          <a-button type="text" size="small" @click="onLogout">退出登录</a-button>
+          <button type="button" class="ml__logout" @click="onLogout">退出登录</button>
         </div>
-      </a-layout-header>
+      </header>
 
-      <a-layout-content id="lb-main" class="ml__content">
+      <main id="lb-main" class="ml__content">
         <RouterView />
-      </a-layout-content>
-    </a-layout>
-  </a-layout>
+      </main>
+    </div>
+  </div>
 
   <!-- 窄屏导航。菜单项 48px,点完自动收起。 -->
-  <a-drawer v-model:open="drawerOpen" placement="left" :width="240" :body-style="{ padding: '8px 0' }">
-    <template #title><span class="ml__logo">LiteBox</span></template>
+  <a-drawer v-model:open="drawerOpen" placement="left" :width="260" :body-style="{ padding: '8px 12px' }" class="ml__drawer">
+    <template #title>
+      <span class="ml__brand ml__brand--drawer">
+        <span class="ml__logo">LB</span>
+        <span class="ml__brand-name">LiteBox</span>
+      </span>
+    </template>
     <nav class="ml__nav">
       <template v-for="g in groups" :key="g.title">
         <div class="ml__group">{{ g.title }}</div>
@@ -252,8 +269,9 @@ async function onLogout() {
           :class="{ 'ml__item--on': selectedKeys[0] === it.key }"
           @click="go(it.key)"
         >
+          <LbIcon :name="it.icon" />
           <span class="ml__item-text">{{ it.label }}</span>
-          <span v-if="it.badge" class="ml__badge" :class="{ 'ml__badge--danger': it.danger }">
+          <span v-if="it.badge" class="ml__badge lb-tabular" :class="{ 'ml__badge--danger': it.danger }">
             {{ it.badge }}
           </span>
         </button>
@@ -264,99 +282,139 @@ async function onLogout() {
 
 <style scoped>
 .ml {
+  display: flex;
   min-height: 100vh;
+  background: var(--bg);
 }
 
 /*
  * 侧栏与顶栏都吸附在视口上,不跟着内容滚。
  *
  * 用 sticky 而不是 fixed:fixed 会脱离文档流,得再给内容区补一个等宽的
- * margin-left,而侧栏有展开 216 / 折叠 56 两种宽度,补错一次就是内容被压在
+ * margin-left,而侧栏有展开 232 / 折叠 64 两种宽度,补错一次就是内容被压在
  * 侧栏底下。sticky 仍然占位,宽度变化自动跟着走。
  */
 .ml__sider {
   position: sticky;
   top: 0;
+  flex: none;
+  width: 232px;
   height: 100vh;
-  /* 白侧栏靠 1px 边线与内容区分开,不靠投影。 */
-  border-right: 1px solid #e3e6ea;
   display: flex;
   flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--sep);
+  transition: width 0.25s var(--ease), background 0.35s;
 }
 
-/* 菜单项多到装不下时由侧栏自己滚,不把整页拉长。 */
-.ml__sider :deep(.ant-layout-sider-children) {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow-y: auto;
+.ml__sider--mini {
+  width: 64px;
 }
 
 .ml__brand {
-  height: 48px;
+  height: 60px;
+  flex: none;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  border-bottom: 1px solid #edeff2;
+  gap: 10px;
+  padding: 0 20px;
 }
-
-.ml__brand--mini {
+.ml__sider--mini .ml__brand {
   justify-content: center;
+  padding: 0;
+}
+.ml__brand--drawer {
+  height: auto;
   padding: 0;
 }
 
 .ml__logo {
-  font-size: 15px;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--brand), var(--brand-hover));
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: 0 2px 6px rgba(37, 99, 184, 0.3);
+}
+
+.ml__brand-name {
+  font-size: 17px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
 .ml__nav {
   flex: 1;
-  padding: 8px;
+  padding: 6px 12px;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   overflow-y: auto;
+  min-height: 0;
+}
+.ml__sider--mini .ml__nav {
+  padding: 6px 10px;
 }
 
 .ml__group {
-  padding: 10px 10px 4px;
-  font-size: 10.5px;
+  padding: 14px 12px 6px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  color: #6b7480;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+.ml__group-gap {
+  height: 12px;
 }
 
 .ml__item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 10px;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--r-pill);
   background: transparent;
-  color: #576070;
-  font-size: 13px;
+  color: var(--text2);
+  font-size: 13.5px;
+  font-weight: 500;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background 0.2s, color 0.2s, transform 0.15s;
 }
 
 .ml__item:hover {
-  background: #f1f3f5;
+  background: var(--fill);
+  color: var(--text);
+}
+.ml__item:active {
+  transform: scale(0.98);
 }
 
-.ml__item--on {
-  background: #eef4fc;
-  color: #1d4f96;
-  font-weight: 500;
+.ml__item--on,
+.ml__item--on:hover {
+  background: var(--brand);
+  color: var(--surface);
+  font-weight: 600;
 }
 
 .ml__item--mini {
   justify-content: center;
+  width: 44px;
   padding: 0;
+  margin: 0 auto;
+  position: relative;
 }
 
 .ml__item--tall {
@@ -372,53 +430,91 @@ async function onLogout() {
   white-space: nowrap;
 }
 
-.ml__item--mini .ml__item-text {
-  flex: none;
-}
-
 .ml__badge {
   flex: none;
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: #f1f3f5;
-  color: #6b7480;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 10.5px;
-  line-height: 16px;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--fill);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
   text-align: center;
+}
+.ml__item--on .ml__badge {
+  background: rgba(255, 255, 255, 0.25);
+  color: var(--surface);
 }
 
 .ml__badge--danger {
-  background: #fdecea;
-  color: #b4291d;
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.ml__dot {
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bad);
 }
 
 .ml__sync {
+  flex: none;
+  margin: 12px;
+  padding: 12px 14px;
+  border-radius: var(--r-group);
+  background: var(--surface2);
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid #edeff2;
+  gap: 10px;
+}
+.ml__sync--mini {
+  justify-content: center;
+  padding: 10px;
+  margin: 12px 10px;
 }
 
 .ml__sync-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   margin-top: 5px;
   border-radius: 50%;
   flex: none;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(27, 122, 75, 0.15);
+}
+.ml__sync--mini .ml__sync-dot {
+  margin-top: 0;
+}
+.ml__sync-dot--bad {
+  background: var(--bad);
+  box-shadow: 0 0 0 3px rgba(180, 41, 29, 0.15);
 }
 
 .ml__sync-text {
   min-width: 0;
-  font-size: 11.5px;
-  color: #576070;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ml__sync-title {
+  font-weight: 500;
 }
 
 .ml__sync-time {
-  font-size: 10.5px;
-  color: #6b7480;
+  font-size: 11.5px;
+  color: var(--text3);
+  margin-top: 1px;
+}
+
+.ml__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ml__header {
@@ -426,65 +522,114 @@ async function onLogout() {
   top: 0;
   /* 盖住滚上来的内容,但要低于抽屉(1000)与弹窗(1000)。 */
   z-index: 20;
+  height: 52px;
+  flex: none;
+  padding: 0 32px;
   display: flex;
   align-items: center;
   gap: 10px;
-  border-bottom: 1px solid #e3e6ea;
+  background: var(--glass);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--sep);
 }
 
 .ml__crumb {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
+  font-size: 13px;
 }
 
 .ml__crumb-group {
-  font-size: 13px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .ml__crumb-sep {
-  color: #a9b1bb;
+  color: var(--text3);
+  font-size: 11px;
 }
 
 .ml__crumb-page {
-  font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ml__user {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-left: auto;
 }
 
-.ml__avatar {
-  width: 24px;
-  height: 24px;
+.ml__iconbtn {
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  background: #eef4fc;
-  color: #1d4f96;
-  font-size: 10.5px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.ml__iconbtn:hover {
+  background: var(--fill);
+  color: var(--text);
+}
+
+.ml__avatar {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--brand-bg);
+  color: var(--brand);
+  font-size: 11px;
   font-weight: 600;
 }
 
 .ml__username {
-  font-size: 12.5px;
-  color: #576070;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.ml__logout {
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--brand);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.ml__logout:hover {
+  background: var(--fill);
 }
 
 .ml__content {
-  padding: 20px;
+  width: 100%;
+  max-width: 1440px;
+  padding: 28px 32px 48px;
+  box-sizing: border-box;
 }
 
 @media (max-width: 767px) {
+  .ml__header {
+    padding: 0 12px;
+  }
   .ml__content {
-    padding: 12px;
+    padding: 16px 12px 32px;
   }
 }
 </style>

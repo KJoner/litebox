@@ -337,14 +337,14 @@ function clearChain() {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6B7480;
+  color: var(--text3);
 }
 /* danger —— 与 InboundChainModal 的 icm__warn 同一档。 */
 .mcm__warn {
   margin: 8px 0 0;
   font-size: 12px;
   line-height: 1.6;
-  color: #B4291D;
+  color: var(--bad);
 }
 .mcm__footer {
   display: flex;

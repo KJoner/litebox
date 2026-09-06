@@ -38,15 +38,15 @@ const showAll = ref(false)
 const stateMeta: Record<TuneState, LbStatusMeta> = {
   // 六种状态六种形状。打印、投屏、色觉障碍下颜色全部失效,而
   //「容器里改不了」和「写了没生效」的处置方式完全不同 —— 只靠颜色分不出来。
-  PENDING: { text: '待应用', shape: 'triangle', fg: color.brand, bg: color.brandBg, bd: color.brandBorder },
-  SAME: { text: '已一致', shape: 'minus', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
-  APPLIED: { text: '已生效', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
-  UNSUPPORTED: { text: '内核不支持', shape: 'ring', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
+  PENDING: { text: '待应用', shape: 'triangle', fg: color.brand, bg: color.brandBg},
+  SAME: { text: '已一致', shape: 'minus', fg: color.neutral, bg: color.neutralBg},
+  APPLIED: { text: '已生效', shape: 'check', fg: color.success, bg: color.successBg},
+  UNSUPPORTED: { text: '内核不支持', shape: 'ring', fg: color.neutral, bg: color.neutralBg},
   READONLY: {
     text: '容器里改不了', shape: 'square',
-    fg: color.maintenance, bg: color.maintenanceBg, bd: color.maintenanceBorder,
+    fg: color.maintenance, bg: color.maintenanceBg,
   },
-  FAILED: { text: '未生效', shape: 'cross', fg: color.danger, bg: color.dangerBg, bd: color.dangerBorder },
+  FAILED: { text: '未生效', shape: 'cross', fg: color.danger, bg: color.dangerBg},
 }
 
 const facts = computed(() => props.report.facts)
@@ -251,9 +251,9 @@ function confirmRestore() {
 .tn {
   margin-top: 12px;
   padding: 12px 14px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -276,7 +276,7 @@ function confirmRestore() {
   flex-wrap: wrap;
   gap: 4px 14px;
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__profile {
@@ -285,51 +285,51 @@ function confirmRestore() {
   flex-wrap: wrap;
   gap: 10px;
   font-size: 12px;
-  color: #576070;
+  color: var(--text2);
 }
 
 .tn__running {
-  color: #2563b8;
+  color: var(--brand);
 }
 
 .tn__basis {
   font-size: 11px;
   line-height: 1.7;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__warn {
   padding: 9px 11px;
-  background: #fcf3e3;
-  border: 1px solid #efdcb4;
-  border-radius: 6px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-bg);
+  border-radius: var(--r-group);
   font-size: 11.5px;
   line-height: 1.75;
-  color: #5c4405;
+  color: var(--warn);
 }
 
 .tn__fail {
   padding: 9px 11px;
-  background: #fdecea;
-  border: 1px solid #f3cfc9;
-  border-radius: 6px;
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-bg);
+  border-radius: var(--r-group);
   font-size: 11.5px;
   line-height: 1.75;
-  color: #8e2117;
+  color: var(--bad);
 }
 
 .tn__list {
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
   overflow: hidden;
 }
 
 .tn__group {
   padding: 6px 11px;
-  background: #f6f7f9;
+  background: var(--surface2);
   font-size: 11px;
   font-weight: 600;
-  color: #576070;
+  color: var(--text2);
 }
 
 .tn__row {
@@ -337,7 +337,7 @@ function confirmRestore() {
   flex-direction: column;
   gap: 3px;
   padding: 8px 11px;
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep2);
 }
 
 .tn__row-main {
@@ -349,7 +349,7 @@ function confirmRestore() {
 
 .tn__key {
   font-size: 11.5px;
-  color: #15181c;
+  color: var(--text);
 }
 
 .tn__row-values {
@@ -361,32 +361,32 @@ function confirmRestore() {
 }
 
 .tn__cur {
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__arrow {
-  color: #a9b1bb;
+  color: var(--text3);
 }
 
 .tn__want {
-  color: #2563b8;
+  color: var(--brand);
 }
 
 .tn__why {
   font-size: 10.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__detail {
   font-size: 10.5px;
   line-height: 1.65;
-  color: #92610a;
+  color: var(--warn);
 }
 
 .tn__none {
   padding: 12px;
   font-size: 12px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__toggle {
@@ -399,18 +399,18 @@ function confirmRestore() {
 
 .tn__stamp {
   font-size: 10.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__notes {
   font-size: 11.5px;
   line-height: 1.75;
-  color: #576070;
+  color: var(--text2);
 }
 
 .tn__notes summary {
   cursor: pointer;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .tn__notes > div {
@@ -427,7 +427,7 @@ function confirmRestore() {
 .tn__acts-note {
   margin-left: auto;
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 @media (max-width: 767px) {

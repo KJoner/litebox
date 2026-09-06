@@ -9,6 +9,7 @@ import {
   type Node,
 } from '@/api/client'
 import {
+  LbInfoTip,
   LbQuotaBar,
   LbSparkline,
   LbStatusTag,
@@ -39,9 +40,9 @@ const points = ref<LbPoint[]>([])
 const extrasError = ref('')
 
 const eventMeta: Record<CloudPowerEvent['status'], LbStatusMeta> = {
-  SENT: { text: '已发送', shape: 'check', fg: color.success, bg: color.successBg, bd: color.successBorder },
-  FAILED: { text: '失败', shape: 'cross', fg: color.danger, bg: color.dangerBg, bd: color.dangerBorder },
-  SKIPPED: { text: '已跳过', shape: 'minus', fg: color.neutral, bg: color.neutralBg, bd: color.neutralBorder },
+  SENT: { text: '已发送', shape: 'check', fg: color.success, bg: color.successBg},
+  FAILED: { text: '失败', shape: 'cross', fg: color.danger, bg: color.dangerBg},
+  SKIPPED: { text: '已跳过', shape: 'minus', fg: color.neutral, bg: color.neutralBg},
 }
 
 async function loadExtras() {
@@ -133,9 +134,13 @@ function stop() {
 <template>
   <section class="cc">
     <div class="cc__head">
-      <span>
+      <span class="cc__head-title">
         云实例
         <span class="cc__note">阿里云 · {{ cloud.account_name }} · {{ cloud.class_label }}</span>
+        <LbInfoTip
+          :width="300"
+          text="云端的动作只管实例(开机 / 关机);实例运行后,这台机器上 sing-box / mita 的恢复由服务巡检负责。超阈值、定时与保活的规则在「编辑节点」里改。"
+        />
       </span>
       <LbStatusTag :meta="meta" size="md" />
     </div>
@@ -194,8 +199,9 @@ function stop() {
 
       <div>
         <div class="cc__pool-title">
-          本月 CDT 用量 · {{ cloud.class_label }}(账号级,与同账号下别的实例共用)
-          <span v-if="cloud.over" class="cc__chip cc__chip--bad">已达阈值</span>
+          本月 CDT 用量 · {{ cloud.class_label }}
+          <LbInfoTip text="账号级,与同账号下别的实例共用同一个池子。CDT 的数据有延迟,不是实时值。" :width="260" />
+          <span v-if="cloud.over" class="lb-chip lb-chip--bad">已达阈值</span>
         </div>
         <LbQuotaBar
           :used-bytes="cloud.sampled ? cloud.used_bytes : null"
@@ -219,7 +225,7 @@ function stop() {
       </div>
 
       <div class="cc__actions">
-        <a-button size="small" :loading="busy === '刷新'" :disabled="!!busy" @click="refresh">刷新状态</a-button>
+        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="busy === '刷新'" :disabled="!!busy" @click="refresh">刷新状态</a-button>
         <a-button
           size="small"
           type="primary"
@@ -251,95 +257,87 @@ function stop() {
         </div>
       </div>
     </div>
-    <div class="cc__foot">
-      云端的动作只管实例(开机 / 关机);实例运行后,这台机器上 sing-box / mita 的恢复由服务巡检负责。
-      超阈值、定时与保活的规则在「编辑节点」里改。
-    </div>
   </section>
 </template>
 
 <style scoped>
 .cc {
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
-  background: #ffffff;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
 }
 .cc__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 16px;
-  border-bottom: 1px solid #edeff2;
-  font-size: 13px;
+  padding: 16px 22px 0;
+  font-size: 15px;
   font-weight: 600;
 }
+.cc__head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .cc__note {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
-  color: #6b7480;
+  color: var(--text3);
 }
 .cc__body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-}
-.cc__foot {
-  padding: 10px 16px;
-  border-top: 1px solid #edeff2;
-  font-size: 11px;
-  line-height: 1.7;
-  color: #6b7480;
+  gap: 16px;
+  padding: 16px 22px 20px;
 }
 .cc__alert {
-  border-radius: 6px;
-  padding: 8px 11px;
-  font-size: 12px;
+  border-radius: var(--r-group);
+  padding: 12px 14px;
+  font-size: 13px;
   line-height: 1.6;
 }
 .cc__alert--warn {
-  background: #fcf3e3;
-  border: 1px solid #efdcb4;
+  background: var(--warn-bg);
 }
 .cc__alert--danger {
-  background: #fdecea;
-  border: 1px solid #f3cfc9;
+  background: var(--bad-bg);
 }
 .cc__kv {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 8px 16px;
-  font-size: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
 }
 .cc__kv > div {
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
 .cc__kv-wide {
   grid-column: 1 / -1;
 }
 .cc__kv span {
-  color: #6b7480;
+  font-size: 12px;
+  color: var(--text3);
+}
+.cc__kv b {
+  font-size: 13.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 .cc__pool-title {
-  font-size: 12px;
-  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text2);
+  margin-bottom: 8px;
   display: flex;
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
-}
-.cc__chip {
-  font-size: 11px;
-  padding: 0 6px;
-  border-radius: 10px;
-}
-.cc__chip--bad {
-  border: 1px solid #f3cfc9;
-  background: #fdecea;
-  color: #b4291d;
 }
 .cc__actions {
   display: flex;
@@ -349,16 +347,28 @@ function stop() {
 .cc__events {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  overflow: hidden;
+}
+.cc__events .cc__pool-title {
+  padding: 12px 14px 0;
+  margin-bottom: 4px;
 }
 .cc__event {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+}
+.cc__event + .cc__event {
+  border-top: 1px solid var(--sep);
 }
 .cc__event-kind {
   white-space: nowrap;
+  font-weight: 500;
 }
 .cc__event-detail {
   flex: 1;
@@ -366,6 +376,14 @@ function stop() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6b7480;
+  color: var(--text3);
+}
+@media (max-width: 767px) {
+  .cc__head {
+    padding: 14px 16px 0;
+  }
+  .cc__body {
+    padding: 14px 16px 16px;
+  }
 }
 </style>

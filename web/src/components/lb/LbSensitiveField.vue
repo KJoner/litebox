@@ -44,9 +44,9 @@ const ph = computed(
       <span class="lb-sens__label">
         {{ props.label }}
         <span class="lb-sens__badge">
-          <svg width="7" height="8" viewBox="0 0 8 9" aria-hidden="true">
-            <path d="M2 4V2.6a2 2 0 0 1 4 0V4" fill="none" stroke="#92610A" stroke-width="1.2" />
-            <rect x="1" y="4" width="6" height="4.4" rx="1" fill="#92610A" />
+          <svg width="8" height="9" viewBox="0 0 8 9" aria-hidden="true">
+            <path d="M2 4V2.6a2 2 0 0 1 4 0V4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <rect x="1" y="4" width="6" height="4.4" rx="1" fill="currentColor" />
           </svg>
           {{ props.mode === 'edit' ? '留空即不变' : '不会回显' }}
         </span>
@@ -79,19 +79,18 @@ const ph = computed(
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 5px;
-  background: #fcf3e3;
-  border: 1px solid #efdcb4;
-  border-radius: 3px;
+  padding: 1px 7px;
+  background: var(--warn-bg);
+  border-radius: var(--r-pill);
   font-size: 11px;
-  font-weight: 500;
-  color: #92610a;
+  font-weight: 600;
+  color: var(--warn);
 }
 
 .lb-sens__help {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

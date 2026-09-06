@@ -265,29 +265,32 @@ async function submit() {
       <a-form layout="vertical">
         <a-form-item label="操作">
           <div class="ua__actions">
-            <a-button
+            <button
               v-for="a in actions"
               :key="a.value"
-              size="small"
-              :type="form.action === a.value ? 'primary' : 'default'"
+              type="button"
+              class="ua__chip"
+              :class="{ 'ua__chip--on': form.action === a.value }"
+              :aria-pressed="form.action === a.value"
               @click="form.action = a.value"
             >
               {{ a.label }}
-            </a-button>
+            </button>
           </div>
         </a-form-item>
 
         <a-form-item v-if="form.action === 'EXTEND_EXPIRY'" label="延长天数">
           <div class="ua__row">
-            <a-button
+            <button
               v-for="d in [30, 90, 180, 365]"
               :key="d"
-              size="small"
-              :type="form.expiry_days === d ? 'primary' : 'default'"
+              type="button"
+              class="ua__chip"
+              :class="{ 'ua__chip--on': form.expiry_days === d }"
               @click="form.expiry_days = d"
             >
               +{{ d }}
-            </a-button>
+            </button>
             <a-input-number v-model:value="form.expiry_days" :step="30" style="flex: 1" />
           </div>
         </a-form-item>
@@ -376,95 +379,118 @@ async function submit() {
   align-items: center;
 }
 
+/* 动作 chip:选中 --brand-bg / --brand,未选 --fill / --text2。 */
+.ua__chip {
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.ua__chip:hover {
+  background: var(--fill2);
+  color: var(--text);
+}
+.ua__chip--on,
+.ua__chip--on:hover {
+  background: var(--brand-bg);
+  color: var(--brand);
+}
+
 .ua__targets {
   margin-bottom: 16px;
-  border: 1px solid #edeff2;
-  border-radius: 6px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
   overflow: hidden;
 }
 
 .ua__targets-head {
-  padding: 8px 11px;
-  background: #f6f7f9;
-  border-bottom: 1px solid #edeff2;
-  font-size: 11.5px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--sep);
+  font-size: 12px;
   font-weight: 600;
-  color: #576070;
+  color: var(--text3);
 }
 
 .ua__target {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 11px;
-  font-size: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
 }
 
 .ua__target + .ua__target {
-  border-top: 1px solid #edeff2;
+  border-top: 1px solid var(--sep);
 }
 
 .ua__target-meta {
   margin-left: auto;
-  font-size: 11px;
-  color: #6b7480;
+  font-size: 12px;
+  color: var(--text3);
 }
 
 .ua__warn {
   margin-bottom: 16px;
 }
 
+/* 「执行后」预览:--brand-bg 圆角 14 的条。 */
 .ua__preview {
   display: flex;
   flex-direction: column;
   gap: 7px;
   margin-bottom: 20px;
-  padding: 11px 13px;
-  background: #eef4fc;
-  border: 1px solid #c9dcf3;
-  border-radius: 6px;
+  padding: 12px 14px;
+  background: var(--brand-bg);
+  border-radius: var(--r-group);
 }
 
 .ua__preview-title {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
-  color: #1d4f96;
+  color: var(--brand);
 }
 
 .ua__preview-diff {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12.5px;
-  color: #1d4f96;
+  font-size: 13.5px;
+  color: var(--text);
 }
 
 .ua__from {
-  color: #7fa8da;
+  color: var(--text3);
   text-decoration: line-through;
 }
 
 .ua__preview-note {
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.65;
-  color: #4a7bbe;
+  color: var(--text2);
 }
 
 .ua__label-warn {
   font-size: 11.5px;
   font-weight: 400;
-  color: #b4291d;
+  color: var(--bad);
 }
 
 .ua__help {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .ua__foot {
-  font-size: 11.5px;
-  color: #6b7480;
+  font-size: 12.5px;
+  color: var(--text3);
+  text-align: center;
 }
 </style>

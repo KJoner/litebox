@@ -7,6 +7,9 @@ import { computed, ref, watch } from 'vue'
  *
  * 要求输入的是**内部名称**而不是展示名称 —— 内部名称唯一,展示名称可以重复。
  * 名称不匹配时主按钮保持禁用(而不是点了报错)。
+ *
+ * V18:危险 Sheet —— 影响范围是 --bad-bg 圆角 14 的条,确认按钮是 --bad 实底胶囊
+ * 留在底部(danger 按钮不进三栏头,见 antd-tune.css)。
  */
 const props = withDefaults(
   defineProps<{
@@ -49,11 +52,13 @@ watch(
     :ok-button-props="{ disabled: !matched, danger: true }"
     :ok-text="props.okText"
     cancel-text="取消"
+    wrap-class-name="lb-sheet--danger"
     @update:open="(v: boolean) => emit('update:open', v)"
     @ok="emit('confirm')"
   >
     <div class="lb-nc">
       <div class="lb-nc__impacts">
+        <div class="lb-nc__impacts-title">影响范围</div>
         <div v-for="(t, i) in props.impacts" :key="i">· {{ t }}</div>
       </div>
 
@@ -72,39 +77,43 @@ watch(
 .lb-nc {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .lb-nc__impacts {
-  padding: 10px 11px;
-  background: #fdecea;
-  border: 1px solid #f3cfc9;
-  border-radius: 6px;
-  font-size: 11.5px;
+  padding: 12px 14px;
+  background: var(--bad-bg);
+  border-radius: var(--r-group);
+  font-size: 12.5px;
   line-height: 1.75;
-  color: #8e2117;
+  color: var(--text);
+}
+.lb-nc__impacts-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--bad);
+  margin-bottom: 4px;
 }
 
 .lb-nc__field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .lb-nc__prompt {
-  font-size: 12px;
-  color: #576070;
+  font-size: 12.5px;
+  color: var(--text2);
 }
 
 .lb-nc__name {
-  padding: 1px 5px;
+  padding: 1px 6px;
   margin-left: 4px;
-  background: #f1f3f5;
-  border: 1px solid #e3e6ea;
-  border-radius: 3px;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  background: var(--fill);
+  border-radius: 6px;
+  font-family: var(--mono);
   font-size: 12px;
-  color: #15181c;
+  color: var(--text);
   user-select: all;
 }
 </style>

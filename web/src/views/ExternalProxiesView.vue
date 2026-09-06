@@ -22,6 +22,9 @@ import {
   missingMeta,
   syncFailedMeta,
   type LbStatusMeta,
+  LbInfoTip,
+  LbSectionTitle,
+  LbIcon,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
 import { daysUntil, formatBytes, formatUTCTime } from '@/utils/format'
@@ -322,16 +325,21 @@ const columns = [
 </script>
 
 <template>
-  <div class="xp">
-    <div class="xp__head">
-      <div>
-        <h2 class="xp__title">外部代理</h2>
-        <p class="xp__sub">
-          不属于本面板、不由本面板部署的成品线路。可以合并进用户的订阅,
-          但<strong>统计不到流量</strong> —— 流量走的是上游的服务器。
-        </p>
+  <div class="lb-page xp">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>外部代理</span>
+          <LbInfoTip :width="320">
+            不属于本面板、不由本面板部署的成品线路。可以合并进用户的订阅,但<b>统计不到流量</b> —— 流量走的是上游的服务器。
+            订阅源卡片点一下即按来源筛选;「同步」会按上游列表更新条目,上游消失的条目连续 3 轮才退出订阅,永不自动删除。
+          </LbInfoTip>
+        </h1>
+        <div class="lb-page__summary">
+          {{ proxies.length }} 条线路,来自 {{ sources.length }} 个订阅源。
+        </div>
       </div>
-      <div class="xp__actions">
+      <div class="lb-page__actions">
         <a-button @click="load">刷 新</a-button>
         <a-button @click="proxyModal.target = null; proxyModal.open = true">添加代理</a-button>
         <a-button type="primary" @click="sourceModal.target = null; sourceModal.open = true">
@@ -403,12 +411,17 @@ const columns = [
       </div>
     </div>
 
-    <div class="xp__filter">
-      <a-input-search v-model:value="keyword" placeholder="名称 / 地址" style="width: 260px" />
-      <a-checkbox v-model:checked="showExcluded" @change="load">
+    <section>
+    <LbSectionTitle title="全部线路" :count="`${visible.length} / ${proxies.length} 条`" />
+    <div class="lb-card lb-card--flush xp__table">
+    <div class="lb-filter xp__filter">
+      <a-input v-model:value="keyword" placeholder="名称 / 地址" allow-clear>
+        <template #prefix><LbIcon name="search" :size="14" /></template>
+      </a-input>
+      <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': showExcluded }">
+        <a-switch v-model:checked="showExcluded" size="small" @change="load" />
         显示已排除({{ excludedCount }})
-      </a-checkbox>
-      <span class="xp__count">{{ visible.length }} / {{ proxies.length }} 条</span>
+      </label>
     </div>
 
     <!-- <768 整表换卡片:横向滚动会把「操作」列推到屏幕外 -->
@@ -561,6 +574,8 @@ const columns = [
         </template>
       </template>
     </a-table>
+    </div>
+    </section>
 
     <ExternalProxyModal
       v-model:open="proxyModal.open"
@@ -617,59 +632,43 @@ const columns = [
 </template>
 
 <style scoped>
-.xp__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.xp__title {
-  margin: 0 0 4px;
-  font-size: 18px;
-}
-.xp__sub {
-  margin: 0;
-  max-width: 620px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: #6b7480;
-}
-.xp__actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
 .xp__alert {
-  margin-bottom: 16px;
+  margin: 0;
 }
 
+/* 订阅源卡片区放在指标位:每源一张小卡,圆角 16。 */
 .xp__sources {
   display: flex;
   gap: 12px;
   overflow-x: auto;
-  padding-bottom: 4px;
-  margin-bottom: 16px;
+  padding: 4px;
+  margin: -4px;
 }
 .xp__card {
   flex: 0 0 auto;
-  width: 210px;
-  padding: 12px 14px;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
-  background: #ffffff;
+  width: 220px;
+  padding: 14px 20px;
+  box-shadow: var(--shadow);
+  border-radius: 16px;
+  background: var(--surface);
   cursor: pointer;
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+.xp__card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
 }
 .xp__card--on {
-  border-color: #2563b8;
-  background: #eef4fc;
+  box-shadow: var(--shadow), 0 0 0 2px var(--brand);
 }
 .xp__card--add {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #6b7480;
-  border-style: dashed;
+  color: var(--text3);
+  box-shadow: none;
+  border: 1px dashed var(--sep);
+  background: transparent;
 }
 .xp__card-name {
   font-size: 13px;
@@ -678,7 +677,7 @@ const columns = [
 .xp__card-num {
   font-size: 22px;
   line-height: 1.2;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-family: var(--mono);
 }
 .xp__card-tags {
   display: flex;
@@ -689,7 +688,7 @@ const columns = [
 .xp__card-note {
   font-size: 11px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 .xp__card-ops {
   display: flex;
@@ -700,19 +699,11 @@ const columns = [
 .xp__off {
   margin-left: 6px;
   font-size: 10.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .xp__filter {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 12px;
-}
-.xp__count {
-  margin-left: auto;
-  font-size: 12px;
-  color: #6b7480;
+  margin: 0;
 }
 
 .xp__cards {
@@ -724,23 +715,23 @@ const columns = [
   display: inline-block;
   margin-right: 6px;
   padding: 0 4px;
-  border-radius: 3px;
-  background: #f1f3f5;
-  color: #576070;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
   font-size: 10px;
 }
 .xp__inner {
   margin-left: 6px;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-family: var(--mono);
   font-size: 10.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 .xp__name {
   font-size: 13px;
 }
 .xp__addr {
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 .xp__tagrow {
   display: flex;
@@ -751,33 +742,33 @@ const columns = [
 .xp__note {
   margin-top: 2px;
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 .xp__warn {
   margin-top: 2px;
   font-size: 11px;
-  color: #92610a;
+  color: var(--warn);
 }
 .xp__lock {
   padding: 0 5px;
-  border-radius: 3px;
-  background: #f1f3f5;
-  color: #576070;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
   font-size: 10.5px;
 }
 .xp__danger {
-  color: #b4291d;
+  color: var(--bad);
 }
 .xp__ok {
-  color: #1b7a4b;
+  color: var(--ok);
 }
 .xp__dim {
-  color: #6b7480;
+  color: var(--text3);
 }
 .xp__modal-p {
   font-size: 13px;
   line-height: 1.8;
-  color: #576070;
+  color: var(--text2);
 }
 .xp__modal-radio {
   display: flex;

@@ -1,11 +1,7 @@
 /*
- * 只放无法通过 Token 表达的东西:字体自托管、焦点环、reduced-motion、
- * 以及两条 body reset。其余一律走 ConfigProvider。
+ * 只放无法通过 Token 表达的东西:字体栈、焦点环、reduced-motion、
+ * 页面级动效与几条工具类。颜色一律 var(--xxx)(见 tokens.css)。
  */
-
-/* 字体自托管在 main.ts 里用 @fontsource 引入,不在这里写 @font-face ——
-   中文字体必须按 unicode-range 分片,手写 @font-face 只能整体加载。
-   为什么不引 CDN:面板要 embed 进单个二进制,断网的内网环境也得能用。 */
 
 html,
 body,
@@ -15,17 +11,40 @@ body,
 }
 
 /* 字体栈写在 body 上而不是只靠 ConfigProvider:后者只作用于 AntD 组件内部,
-   页面自己的 h2、div 拿不到,会与相邻的 AntD 控件差半档。 */
+   页面自己的 h1、div 拿不到,会与相邻的 AntD 控件差半档。 */
 body {
-  background: #f6f7f9;
-  font-family:
-    'IBM Plex Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-    'PingFang SC', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 深色 / 浅色切换那 400ms 里让底色与文字过渡;平时不挂 —— 常驻的 transition
+   会让每次路由切换都闪一下。 */
+html.lb-theme-switching,
+html.lb-theme-switching body,
+html.lb-theme-switching .ant-layout,
+html.lb-theme-switching .ant-card {
+  transition: background 0.35s, color 0.35s, background-color 0.35s;
+}
+
+a {
+  color: var(--brand);
+  transition: color 0.15s;
+}
+a:hover {
+  color: var(--brand-hover);
+}
+
+button {
+  font-family: inherit;
 }
 
 /* 数字、ID、地址、端口、时间戳一律等宽 + tabular-nums,表格里才对得齐。 */
 .lb-mono {
-  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -51,24 +70,519 @@ body {
 /* 键盘焦点一定可见,鼠标点击时不出现。
    不用 outline: none 换阴影 —— 高对比模式下阴影会被丢弃。 */
 :focus-visible {
-  outline: 2px solid #2563b8;
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
-/* 跳过导航。侧栏有 6 项,每页 Tab 六下才进内容区,代价太高。 */
+/* 跳过导航。侧栏有 9 项,每页 Tab 九下才进内容区,代价太高。 */
 .lb-skip-link {
   position: absolute;
   left: -9999px;
   top: 8px;
   z-index: 1100;
   padding: 8px 12px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-input);
   font-size: 13px;
 }
 .lb-skip-link:focus {
   left: 8px;
+}
+
+/* ---------- 页面级模式(有稿页与按模式页共用) ---------- */
+
+/* 页面进入:根节点淡入上移。 */
+.lb-page {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  animation: lb-fadeup 0.4s var(--ease);
+}
+
+/* 头部:h1 + 一句话摘要 | 右侧按钮组。 */
+.lb-page__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.lb-page__title-wrap {
+  min-width: 0;
+  flex: 1 1 360px;
+}
+.lb-page__eyebrow {
+  font-size: 13px;
+  color: var(--text3);
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.lb-page__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.lb-page__summary {
+  margin-top: 6px;
+  font-size: 15px;
+  color: var(--text2);
+}
+.lb-page__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+/* 卡片:无边框 + 极浅阴影。可交互卡加 lb-card--hover。 */
+.lb-card {
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+  padding: 18px 22px 20px;
+}
+.lb-card--flush {
+  padding: 0;
+  overflow: hidden;
+}
+.lb-card--sm {
+  border-radius: 16px;
+  padding: 14px 20px;
+}
+.lb-card--hover {
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+.lb-card--hover:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
+}
+.lb-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 指标条:一张卡内的分隔栅格,分隔线用 box-shadow 画,折行时仍正确。 */
+.lb-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  overflow: hidden;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+}
+
+/* 双栏卡片区。 */
+.lb-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 16px;
+}
+@media (max-width: 767px) {
+  .lb-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 分组列表(表单 / 键值):--surface2 底、圆角 14 的容器,行间 1px --sep。 */
+.lb-group {
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  overflow: hidden;
+}
+.lb-group__row {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 16px;
+}
+.lb-group__row + .lb-group__row {
+  border-top: 1px solid var(--sep);
+}
+.lb-group__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.lb-group__value {
+  min-width: 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.lb-group__value--mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+@media (max-width: 767px) {
+  .lb-group__row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 10px 14px;
+  }
+}
+
+/* 键值格(详情卡内 2 列 / 4 列)。 */
+.lb-kv {
+  display: grid;
+  gap: 12px 16px;
+}
+.lb-kv--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.lb-kv--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.lb-kv__item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.lb-kv__k {
+  font-size: 12px;
+  color: var(--text3);
+}
+.lb-kv__v {
+  font-size: 13.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 767px) {
+  .lb-kv--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 中性 chip(等级、协议、rev)。 */
+.lb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.lb-chip--brand {
+  background: var(--brand-bg);
+  color: var(--brand);
+}
+.lb-chip--ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.lb-chip--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.lb-chip--bad {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+.lb-chip--purple {
+  background: var(--purple-bg);
+  color: var(--purple);
+}
+
+/* 幽灵胶囊按钮(--fill 底)。AntD 按钮上加 class 即可。 */
+.lb-btn-ghost.ant-btn,
+.lb-btn-ghost.ant-btn:not(:disabled):not(.ant-btn-disabled) {
+  background: var(--fill);
+  border-color: transparent;
+  color: var(--brand);
+  box-shadow: none;
+  font-weight: 500;
+}
+.lb-btn-ghost.ant-btn:not(:disabled):not(.ant-btn-disabled):hover {
+  background: var(--fill2);
+  color: var(--brand);
+  border-color: transparent;
+}
+.lb-btn-ghost--text.ant-btn:not(:disabled):not(.ant-btn-disabled),
+.lb-btn-ghost--text.ant-btn:not(:disabled):not(.ant-btn-disabled):hover {
+  color: var(--text);
+}
+.lb-btn-ghost--bad.ant-btn:not(:disabled):not(.ant-btn-disabled),
+.lb-btn-ghost--bad.ant-btn:not(:disabled):not(.ant-btn-disabled):hover {
+  color: var(--bad);
+}
+
+/* 圆形图标按钮(28–34px 正圆)。 */
+.lb-btn-circle.ant-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* 通知 / 告警条(替代 a-alert 与左色条卡)。 */
+.lb-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+}
+.lb-notice__icon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-tile);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.lb-notice__icon--bad {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+.lb-notice__icon--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.lb-notice__icon--ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.lb-notice__icon--info {
+  background: var(--brand-bg);
+  color: var(--brand);
+}
+.lb-notice__body {
+  flex: 1;
+  min-width: 0;
+}
+.lb-notice__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 15px;
+  font-weight: 600;
+}
+.lb-notice__cat {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text3);
+}
+.lb-notice__text {
+  margin-top: 3px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+.lb-notice__actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 分段控件(Tab / 周期 / 单选)。 */
+.lb-seg {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--fill);
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.lb-seg--sm {
+  padding: 2px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+.lb-seg__item {
+  border: none;
+  background: transparent;
+  color: var(--text2);
+  line-height: 30px;
+  padding: 0 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.22s var(--ease);
+  white-space: nowrap;
+  font: inherit;
+}
+.lb-seg--sm .lb-seg__item {
+  line-height: 26px;
+  padding: 0 12px;
+  border-radius: 7px;
+}
+.lb-seg__item--on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+/* 表格卡工具条(LbFilterBar 与直接写 .lb-filter 的页面共用)。 */
+.lb-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--sep2);
+}
+/* 搜索框:240 宽、32 高、--fill 底、无边框。 */
+.lb-filter .ant-input-affix-wrapper,
+.lb-filter .ant-input-search .ant-input-affix-wrapper {
+  width: 240px;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--fill);
+  border-color: transparent;
+  border-radius: var(--r-input);
+  box-shadow: none;
+}
+.lb-filter .ant-input-affix-wrapper:hover {
+  background: var(--fill2);
+  border-color: transparent;
+}
+.lb-filter .ant-input-affix-wrapper-focused,
+.lb-filter .ant-input-affix-wrapper:focus-within {
+  background: var(--surface);
+  border-color: var(--brand) !important;
+  box-shadow: 0 0 0 3px var(--brand-bg) !important;
+}
+.lb-filter .ant-input-affix-wrapper .ant-input {
+  background: transparent;
+  font-size: 13px;
+}
+.lb-filter .ant-input-affix-wrapper .ant-input-prefix {
+  color: var(--text3);
+  margin-inline-end: 6px;
+}
+.lb-filter .ant-input-search .ant-input-group-addon {
+  display: none;
+}
+/* 下拉筛选:32px --fill chip,文字 13px。 */
+.lb-filter .ant-select:not(.ant-select-customize-input) .ant-select-selector {
+  height: 32px;
+  padding: 0 10px 0 12px;
+  background: var(--fill);
+  border-color: transparent;
+  border-radius: var(--r-input);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+.lb-filter .ant-select:not(.ant-select-disabled):hover .ant-select-selector {
+  background: var(--fill2);
+  border-color: transparent;
+}
+.lb-filter .ant-select-focused:not(.ant-select-disabled) .ant-select-selector {
+  border-color: var(--brand) !important;
+}
+.lb-filter .ant-select-single .ant-select-selector .ant-select-selection-item,
+.lb-filter .ant-select-single .ant-select-selector .ant-select-selection-placeholder,
+.lb-filter .ant-select-single .ant-select-selector .ant-select-selection-search-input {
+  line-height: 30px;
+  height: 30px;
+}
+.lb-filter .ant-select .ant-select-arrow {
+  color: var(--text2);
+  font-size: 10px;
+}
+/* 布尔筛选:小开关 + 文字。checkbox 也顺手压成 iOS 风格。 */
+.lb-filter .ant-checkbox-wrapper,
+.lb-filter .lb-filter__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--fill);
+  border-radius: var(--r-input);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+  cursor: pointer;
+  user-select: none;
+}
+.lb-filter .ant-checkbox-wrapper:hover,
+.lb-filter .lb-filter__toggle:hover {
+  background: var(--fill2);
+}
+.lb-filter .ant-checkbox-wrapper-checked,
+.lb-filter .lb-filter__toggle--on {
+  color: var(--text);
+}
+@media (max-width: 767px) {
+  .lb-filter {
+    padding: 12px 14px;
+  }
+  .lb-filter .ant-input-affix-wrapper {
+    width: 100%;
+  }
+}
+
+/* 生效方式徽标(设置页组标题旁)。 */
+.lb-effect {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.lb-effect--now {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.lb-effect--deploy {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.lb-effect--sessions {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+.lb-effect--readonly {
+  background: var(--fill);
+  color: var(--text2);
+}
+
+/* 就地校验错误条。 */
+.lb-error-strip {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: var(--r-group);
+  background: var(--bad-bg);
+  font-size: 13px;
+  line-height: 1.6;
+  animation: lb-pop 0.2s var(--ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -89,5 +603,20 @@ body {
 @media (max-width: 767px) {
   .lb-touch-target {
     min-height: 44px;
+  }
+  .lb-page {
+    gap: 20px;
+  }
+  .lb-page__title {
+    font-size: 26px;
+  }
+  .lb-page__summary {
+    font-size: 14px;
+  }
+  .lb-page__actions {
+    flex-wrap: wrap;
+  }
+  .lb-card {
+    padding: 16px 16px 18px;
   }
 }

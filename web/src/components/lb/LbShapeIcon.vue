@@ -81,13 +81,8 @@ const props = withDefaults(defineProps<{ shape: LbShape; color: string; size?: n
 </template>
 
 <style scoped>
+/* lb-spin 关键帧在 styles/tokens.css 里,全站一份。 */
 .lb-spin {
   animation: lb-spin 1.1s linear infinite;
-}
-
-@keyframes lb-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 </style>

@@ -10,6 +10,8 @@ import {
   LbRowCard,
   LbStatusTag,
   LbTimeText,
+  LbInfoTip,
+  LbSectionTitle,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
 import { usePagination } from '@/composables/usePagination'
@@ -188,16 +190,25 @@ const columns = [
 </script>
 
 <template>
-  <div class="dp">
-    <div class="dp__head">
-      <div>
-        <h2 class="dp__title">部署记录</h2>
-        <div class="dp__sub">最近 200 次 · 时间为本地时区,悬停显示 UTC · 点击行展开步骤时间线</div>
+  <div class="lb-page dp">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>部署记录</span>
+          <LbInfoTip text="最近 200 次。时间为本地时区,悬停显示 UTC;点击行展开步骤时间线。指标条只统计近 7 天。" :width="300" />
+        </h1>
+        <div class="lb-page__summary">
+          <template v-if="metricState === 'ready'">近 7 天 {{ stats.total }} 次部署,{{ stats.failed }} 次失败。</template>
+          <template v-else-if="metricState === 'error'">部署记录读取失败。</template>
+          <template v-else>正在读取部署记录…</template>
+        </div>
       </div>
-      <a-button :loading="loading" @click="load">刷新</a-button>
+      <div class="lb-page__actions">
+        <a-button :loading="loading" @click="load">刷新</a-button>
+      </div>
     </div>
 
-    <div class="dp__metrics">
+    <section class="lb-metrics">
       <LbMetricCard label="近 7 天部署" :state="metricState" :value="stats.total" unit="次" />
       <LbMetricCard
         label="失败"
@@ -205,8 +216,9 @@ const columns = [
         :value="stats.failed"
         :tone="stats.failed ? 'danger' : 'default'"
       >
-        <template #action>
-          <a v-if="stats.failed" @click="filters.onlyFailed = true">只看失败</a>
+        <template #foot>
+          <a v-if="stats.failed" class="dp__link" @click="filters.onlyFailed = true">只看失败 ›</a>
+          <span v-else>近 7 天没有失败</span>
         </template>
       </LbMetricCard>
       <LbMetricCard
@@ -222,15 +234,12 @@ const columns = [
         :value="stats.median === null ? '—' : (stats.median / 1000).toFixed(1)"
         unit="秒"
       />
-    </div>
+    </section>
 
-    <a-card :body-style="{ padding: 0 }">
-      <LbFilterBar
-        :active-count="activeFilterCount"
-        :filtered="visible.length"
-        :total="records.length"
-        @clear="clearFilters"
-      >
+    <section>
+    <LbSectionTitle title="全部记录" :count="`${visible.length} / ${records.length} 条`" />
+    <div class="lb-card lb-card--flush">
+      <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
         <a-select v-model:value="filters.nodeID" placeholder="节点" allow-clear style="width: 160px">
           <a-select-option v-for="n in nodes" :key="n.id" :value="n.id">
             {{ n.display_name || n.name }}
@@ -247,7 +256,10 @@ const columns = [
           <a-select-option :value="7">近 7 天</a-select-option>
           <a-select-option :value="30">近 30 天</a-select-option>
         </a-select>
-        <a-checkbox v-model:checked="filters.onlyFailed">只看失败</a-checkbox>
+        <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.onlyFailed }">
+          <a-switch v-model:checked="filters.onlyFailed" size="small" />
+          只看失败
+        </label>
       </LbFilterBar>
 
       <LbEmptyState
@@ -360,7 +372,8 @@ const columns = [
           </template>
         </template>
       </a-table>
-    </a-card>
+    </div>
+    </section>
 
     <a-modal
       :open="stepsOf !== null"
@@ -397,7 +410,7 @@ const columns = [
 .dp__sub {
   margin-top: 3px;
   font-size: 12.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .dp__metrics {
@@ -408,7 +421,7 @@ const columns = [
 
 .dp__host {
   font-size: 11px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .dp__cards {
@@ -427,7 +440,7 @@ const columns = [
 
 .dp__card-rev {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .dp__pager {
@@ -446,11 +459,11 @@ const columns = [
 }
 
 .dp__v2--warn {
-  color: #92610a;
+  color: var(--warn);
 }
 
 .dp__v2--error {
-  color: #6b7480;
+  color: var(--text3);
 }
 
 @media (max-width: 1279px) {

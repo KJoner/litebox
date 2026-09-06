@@ -86,7 +86,7 @@ function editAt(i: number, address: string) {
   flex: 1;
 }
 .ale__row-del {
-  color: #b4291d;
+  color: var(--bad);
   padding: 0 6px;
 }
 .ale__empty {
@@ -104,6 +104,6 @@ function editAt(i: number, address: string) {
 .ale__hint {
   font-size: 11.5px;
   line-height: 1.6;
-  color: #6b7480;
+  color: var(--text3);
 }
 </style>

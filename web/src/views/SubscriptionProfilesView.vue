@@ -11,7 +11,10 @@ import {
   type ProxyUser,
   type SubscriptionProfile,
 } from '@/api/client'
-import { LbEmptyState, LbRowCard, LbStatusTag, LbTimeText, lbDangerConfirm } from '@/components/lb'
+import { LbEmptyState, LbRowCard, LbStatusTag, LbTimeText, lbDangerConfirm,
+  LbInfoTip,
+  LbSectionTitle,
+} from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
 import SubscriptionProfileModal from '@/components/profile/SubscriptionProfileModal.vue'
 import { color } from '@/theme/tokens'
@@ -39,14 +42,12 @@ const enabledMeta = {
   shape: 'dot' as const,
   fg: color.success,
   bg: color.successBg,
-  bd: color.successBorder,
 }
 const disabledMeta = {
   text: '停用',
   shape: 'square' as const,
   fg: color.neutral,
   bg: color.neutralBg,
-  bd: color.neutralBorder,
 }
 
 /** 哪些类型已经配了(且启用)—— 没配的那几种用户压根看不到。 */
@@ -164,16 +165,23 @@ function kb(bytes: number) {
 </script>
 
 <template>
-  <div class="sp">
-    <div class="sp__head">
-      <div>
-        <h2 class="sp__title">订阅配置</h2>
-        <div class="sp__sub">
-          整份客户端配置,面板按用户替换里面的占位符。系统不预置任何模板 ——
-          没配的类型,用户的订阅页上不会出现。
+  <div class="lb-page sp">
+    <div class="lb-page__head">
+      <div class="lb-page__title-wrap">
+        <h1 class="lb-page__title">
+          <span>订阅配置</span>
+          <LbInfoTip
+            :width="320"
+            text="整份客户端配置,面板按用户替换里面的占位符。系统不预置任何模板 —— 没配的类型,用户的订阅页上不会出现。"
+          />
+        </h1>
+        <div class="lb-page__summary">
+          {{ items.length }} 份配置,{{ configured.size }} 种客户端已配置。
         </div>
       </div>
-      <a-button type="primary" @click="create">新增配置</a-button>
+      <div class="lb-page__actions">
+        <a-button type="primary" @click="create">+ 新增配置</a-button>
+      </div>
     </div>
 
     <!-- 三种类型的机制完全不同,这一段决定管理员会不会配错。 -->
@@ -225,13 +233,15 @@ function kb(bytes: number) {
       </LbRowCard>
     </div>
 
+    <section v-else>
+    <LbSectionTitle title="全部配置" :count="`${items.length} 份`" />
+    <div class="lb-card lb-card--flush">
     <a-table
-      v-else
       :columns="columns"
       :data-source="items"
       :pagination="false"
       row-key="id"
-      size="middle"
+      size="small"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'kind'">
@@ -278,6 +288,8 @@ function kb(bytes: number) {
         </template>
       </template>
     </a-table>
+    </div>
+    </section>
 
     <SubscriptionProfileModal
       v-model:open="modalOpen"
@@ -316,7 +328,7 @@ function kb(bytes: number) {
   max-width: 720px;
   font-size: 12.5px;
   line-height: 1.75;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .sp__kinds {
@@ -327,9 +339,9 @@ function kb(bytes: number) {
 
 .sp__kind {
   padding: 12px 14px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 .sp__kind-head {
@@ -346,33 +358,33 @@ function kb(bytes: number) {
 
 .sp__kind-on {
   padding: 1px 6px;
-  background: #e9f5ee;
-  border: 1px solid #c3e3d0;
-  border-radius: 3px;
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-bg);
+  border-radius: var(--r-pill);
   font-size: 10.5px;
-  color: #1b7a4b;
+  color: var(--ok);
 }
 
 .sp__kind-off {
   padding: 1px 6px;
-  background: #f1f3f5;
-  border: 1px solid #dfe3e8;
-  border-radius: 3px;
+  background: var(--fill);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-pill);
   font-size: 10.5px;
-  color: #5c6672;
+  color: var(--text2);
 }
 
 .sp__kind-body {
   font-size: 11.5px;
   line-height: 1.75;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .sp__card {
   padding: 16px;
-  background: #fff;
-  border: 1px solid #e3e6ea;
-  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-radius: var(--r-card);
 }
 
 .sp__cards {
@@ -388,13 +400,13 @@ function kb(bytes: number) {
 
 .sp__cell-meta {
   font-size: 11.5px;
-  color: #6b7480;
+  color: var(--text3);
 }
 
 .sp__cell-desc {
   font-size: 11.5px;
   line-height: 1.7;
-  color: #576070;
+  color: var(--text2);
 }
 
 .sp__actions {

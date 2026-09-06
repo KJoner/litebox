@@ -29,6 +29,8 @@ V15 增加了主机流量(vnStat)与实时网卡曲线、nginx 转发的「指�
 V16 把一台机器的订阅地址从固定两栏变成地址池,每个入口按地址各配端口与订阅名。
 V17 增加了阿里云 CDT 主机:按账号轮询 CDT 用量、超阈值自动停实例、定时开关机、
 保活与推送 —— **这是面板第一处对机器做自动处置的地方**,只对显式选了停机的实例。
+V18 把管理后台与用户门户的**视觉层**换成 iOS 风格(纯白圆角卡片、胶囊、毛玻璃顶栏、
+浅 / 深两套主题),布局、路由、接口与文案一个字没动。
 **自建节点的落地协议到 V13 才第一次变长** —— 在此之前 V4~V12 一个字没加。
 现在是 VLESS + REALITY、Shadowsocks 2022、Mieru 与 Snell 四种,
 仍然只有这四种:那是我们自己要运维的东西,与登记别人配好的线路是两件事。
@@ -2533,6 +2535,65 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   `vite.config.ts` 里的 `dropWoffFallback` 插件负责剔除 `.woff` 回退:
   两份都打进去会白白多出 6.4MB,而 woff2 从 2016 年起全线支持。
 
+## iOS 风格视觉改版约束(V18)
+
+设计交接见 `docs/开发计划/v18/design_handoff_ios_restyle/`(README、tokens.css、page-map,
+`design/*.dc.html` 是可交互的设计参考稿)。**只改视觉**:布局结构、信息架构、路由、
+接口、状态逻辑、文案内容一律不动;唯一涉及「内容位置」的改动是把帮助文案收进 ⓘ。
+
+* **颜色只有两个来源,各管一头**:`styles/tokens.css` 的 CSS 变量给组件与 scoped CSS,
+  `theme/tokens.ts` 的 `palette.light / dark` 实值只给 `theme/antd.ts`。ConfigProvider
+  要按实值推导派生色(hover、disabled、边框浅一档),认不得 `var()`;而组件里写实值
+  就要为深色模式再写一份。`tokens.ts` 的 `color.*` 因此全是 `var(--xxx)` 引用,
+  键名与 V3 一致(`color.successBg`、`color.text3`),删掉的是 `text4` 与全部 `*Border`。
+  SVG 的 fill / stroke 属性同样收 `var()`;
+
+* **深色模式 = `<html data-theme>` + `antdTheme(mode)`,两边读同一个 store**
+  (`stores/theme.ts`,localStorage 持久化,首次跟随 `prefers-color-scheme`)。
+  只切其中一边的表现是 AntD 控件与页面底色一明一暗。`palette.dark` 里的品牌蓝与
+  语义色都比浅色版亮一档,那是设计定的值,不要从浅色版算;
+
+* **语义标签没有边框,浅底一律「语义色 12% alpha」(深色 18%)**,`LbStatusMeta`
+  因此没有 `bd` 字段。`--ok-bg` 这一类变量已经把 alpha 算好,组件不要再
+  `color-mix` 一遍;
+
+* **每页的帮助文案、脚注、副标题收进 `LbInfoTip`**(悬停显示、点击钉住、点空白关闭,
+  钉住是全局单例)。气泡 Teleport 到 body 按 fixed 定位 —— 指标条、表格卡、弹窗内容区
+  都是 `overflow: hidden`,留在原地会被裁掉一半;弹窗与抽屉自带 transform 动画,
+  动画期间会把 fixed 元素的参照系抢过去,只有挪到 body 下才稳;
+
+* **弹窗的 iOS 三栏头(取消 | 标题 | 保存)是 CSS 搬的,不是组件改的**
+  (`antd-tune.css`,靠 `:has()` 只对「有标题 + 底栏恰好两枚按钮」的弹窗生效)。
+  自定义底栏、三枚以上按钮、以及 danger 主按钮(`LbNameConfirm` / 危险确认)仍留在
+  底部当胶囊 —— 那几种搬上去会叠在标题上,或者让「删除」变成一行不起眼的蓝字。
+  所以**不要给标准两键弹窗再自己放一个 × 按钮**,三栏头已经把它藏了;
+
+* **表格列宽之和要压在 1120 以内**(1440 宽减去 232 侧栏与 64 内距只剩 1144)。
+  右侧固定的「操作」列在表格超宽时会盖住最后一列,而那一列在节点页是「本周期流量」、
+  在用户页是「到期时间」—— 正是最常看的数字。行内因此只留「主操作 + ···」,
+  「详情」进菜单;
+
+* **指标条是一张卡里的分隔栅格**(`.lb-metrics` + `LbMetricCard`),分隔线用
+  `box-shadow: 0 0 0 1px` 画,折行之后左右两端仍对得上;分组标题外置
+  (`LbSectionTitle`,19px / 700),表格卡自己 `padding: 0`;
+
+* **`.lb-filter` 的搜索框 / 下拉 chip / 开关规格是全局规则(base.css)**,不在
+  `LbFilterBar` 的 scoped 里:入口管理、外部代理直接用 `<div class="lb-filter">`
+  拼工具条,`:deep` 管不到它们。布尔筛选用小开关(`a-switch size="small"` +
+  `lb-filter__toggle`)不用 checkbox;
+
+* **字体走系统栈,不再加载 IBM Plex**;中文仍自托管 Noto Sans SC(400/500/700 分片)。
+  `--mono` 里补了 Consolas / Cascadia Mono —— Windows 上没有 SF Mono 与 Menlo,
+  Chrome 也不认 `ui-monospace`,不补会落到 Courier New;
+
+* **门户与后台仍是两套壳,共用同一套令牌与 lb 组件**:门户没有侧栏,顶栏 52px
+  毛玻璃 + 分段控件导航,`max-width: 960`;强制改密期间导航整个不渲染,
+  只剩「安全设置」;
+
+* `LbSparkline` 缺数据日仍传 `null`:折线用 `--text3` 虚线跨过、面积不填,
+  柱图用空心虚线柱。入场动画(`lb-draw` / `lb-growy`)在 `prefers-reduced-motion`
+  下由 base.css 统一归零,组件里不再各判一次。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -3086,5 +3147,25 @@ scratch 面板对着那台实例跑完了:建账号 → 测试 → 建节点 →
 巡检报告变 `NOT_APPLICABLE` + 原因、预警「云实例已停机:在面板上手动停机」)→
 手动开机(预警清空、EIP 不变)。阈值那条路把额度改到 1 GiB 验的:先 NOTIFY 只预警,
 改成 STOP 后一轮就停、同月第二轮不再停、额度改回后去重键释放。
+
+V18 iOS 风格视觉改版(约束见上面「iOS 风格视觉改版约束(V18)」,交接稿在
+`docs/开发计划/v18/design_handoff_ios_restyle/`):
+
+* Phase 49 令牌与壳 —— 已完成(`styles/tokens.css` 浅 / 深两组变量与关键帧、
+  `theme/tokens.ts` 的 `palette` + `var()` 引用、`antdTheme(mode)` 与 darkAlgorithm、
+  `stores/theme.ts`、`MainLayout` 胶囊侧栏 + 毛玻璃顶栏 + 主题切换、
+  `antd-tune.css` 重写:表格 / 弹窗三栏头 / 浮动抽屉 / 吐司横幅 / 分段控件)
+* Phase 50 lb 组件 —— 已完成(`LbInfoTip`、`LbSectionTitle`、`LbIcon` 三个新组件;
+  `LbStatusTag` 胶囊、`LbMetricCard` 指标格、`LbQuotaBar`、`LbFilterBar` / `LbBatchBar`、
+  `LbRowCard`、`LbEmptyState`、`LbCopyField`、`LbSparkline`、确认框与结果列表)
+* Phase 51 有稿六页 —— 已完成(登录、仪表盘方案 B、自建节点、节点详情概览、
+  用户管理、系统设置;用户表单 Sheet、用户详情浮动抽屉、进度弹窗)
+* Phase 52 按模式页与门户 —— 已完成(入口管理、外部代理、订阅配置、部署记录、
+  审计日志按模式 A;云账号面板、云实例卡;其余弹窗与面板只换色值;
+  门户壳 + 六页;剩余 `.vue` 的旧十六进制色统一映射到变量)
+
+对着 scratch 面板逐页截图核对过浅 / 深两套:登录、仪表盘、节点列表、节点详情、
+用户列表与抽屉、设置页、入口管理、外部代理、部署记录、门户登录 / 概览 / 安全设置。
+`vue-tsc` 与 `vite build` 通过。
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

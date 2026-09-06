@@ -11,6 +11,10 @@ import { Modal } from 'ant-design-vue'
  *
  * 为什么不把输入名称合进这里:一旦合并,重启这类可逆操作也要打字,
  * 管理员很快会变成无脑复制粘贴,真正不可逆的四个反而失去警示作用。
+ *
+ * V18:Sheet 规格(圆角 22、--shadow-lg,由 antd-tune.css 给 Modal.confirm),
+ * 影响范围是语义浅底圆角 14 的条,确认按钮是实底胶囊。颜色全走 CSS 变量,
+ * 深色模式下自动换。
  */
 export interface LbDangerConfirmOptions {
   title: string
@@ -35,6 +39,8 @@ export interface LbDangerConfirmOptions {
 
 export function lbDangerConfirm(o: LbDangerConfirmOptions) {
   const danger = (o.okType ?? 'danger') === 'danger'
+  const tone = danger ? 'var(--bad)' : 'var(--warn)'
+  const toneBg = danger ? 'var(--bad-bg)' : 'var(--warn-bg)'
 
   Modal.confirm({
     title: o.title,
@@ -45,32 +51,31 @@ export function lbDangerConfirm(o: LbDangerConfirmOptions) {
     // 危险确认打开时焦点落在「取消」,不落在破坏性主按钮。
     autoFocusButton: 'cancel',
     icon: null,
+    wrapClassName: 'lb-sheet--confirm',
     content: () =>
-      h('div', { style: 'display:flex;flex-direction:column;gap:10px' }, [
+      h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, [
         h(
           'div',
           {
-            style: danger
-              ? 'background:#FDECEA;border:1px solid #F3CFC9;border-radius:6px;padding:10px 11px'
-              : 'background:#FCF3E3;border:1px solid #EFDCB4;border-radius:6px;padding:10px 11px',
+            style: `background:${toneBg};border-radius:var(--r-group);padding:12px 14px`,
           },
           [
             h(
               'div',
               {
-                style: `font-size:11.5px;font-weight:600;margin-bottom:6px;color:${danger ? '#8E2117' : '#5C4405'}`,
+                style: `font-size:11.5px;font-weight:600;margin-bottom:4px;color:${tone}`,
               },
               '影响范围',
             ),
             h(
               'div',
-              { style: `font-size:11.5px;line-height:1.75;color:${danger ? '#8E2117' : '#5C4405'}` },
+              { style: 'font-size:12.5px;line-height:1.75;color:var(--text)' },
               o.impacts.map((t) => h('div', ['· ', ...emphasize(t)])),
             ),
           ],
         ),
         o.footer
-          ? h('div', { style: 'font-size:12px;line-height:1.7;color:#576070' }, emphasize(o.footer))
+          ? h('div', { style: 'font-size:12.5px;line-height:1.7;color:var(--text2)' }, emphasize(o.footer))
           : null,
       ]),
     onOk: o.onOk,
