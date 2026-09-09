@@ -797,6 +797,47 @@ export interface RealmFacts {
   state: string
 }
 
+/**
+ * 一类服务的现状(入口 Tab 的服务卡片)。
+ *
+ * state 只取 RUNNING / STOPPED / NOT_APPLICABLE:这一次能连上才有结果,
+ * 连不上是整个探测失败,不会落到某一个服务上。
+ * 卡片据此三选一:没装 → 「安装」;装了没跑 → 「启动」;在跑 → 「停止」。
+ */
+export interface ServiceStatus {
+  installed: boolean
+  version: string
+  /** 面板下发过的配置在不在节点上 —— 没有它「启动」就没有东西可启 */
+  config_present: boolean
+  state: ServiceState
+  detail: string
+}
+
+/** 一个 mita 实例(= 一个下发过的 Mieru 入口)的现状 */
+export interface MieruInstanceStatus {
+  inbound_id: number
+  display_name: string
+  state: ServiceState
+  detail: string
+}
+
+/**
+ * 一台机器上四类服务的现状,一次 SSH 问完。
+ *
+ * 与巡检(NodeHealth)是两回事:巡检按 deployed_* 只问"该跑的还在不在跑",
+ * 这里机器上有什么就报什么 —— 装了 realm 但一条规则都没配的机器,
+ * 巡检说「不适用」,这里说「已安装、没在跑」。
+ */
+export interface NodeServiceFacts {
+  checked_at: string
+  init_system: string
+  singbox: ServiceStatus
+  /** Mieru 逐实例给,不合成一个 —— 「2/3 在跑」里多出的那一截正是要人去救的 */
+  mieru: ServiceStatus & { instances: MieruInstanceStatus[] }
+  nginx: ServiceStatus & { facts: NginxFacts }
+  realm: ServiceStatus
+}
+
 /** 链式变更的编排结果:两台机器各一次部署 */
 export interface ChainApplyResult {
   /** 落地那一次部署。落地是外部代理时为 null */
@@ -2277,6 +2318,30 @@ export const api = {
     request<{ result: DeployResult; error?: string }>(`/api/nodes/${nodeID}/realm/deploy`, {
       method: 'POST',
     }),
+
+  /**
+   * 四类服务的现状,只读、一次 SSH。入口 Tab 打开时拉一次,「检查」再拉。
+   *
+   * 与仪表盘「不主动触发 SSH 采集」不冲突:那条针对的是每次刷新连一遍
+   * **全部**机器;这里是管理员点开**一台**机器的入口 Tab,而四张卡片
+   * 存在的意义就是这四个状态。
+   */
+  nodeServices: (nodeID: number) => request<NodeServiceFacts>(`/api/nodes/${nodeID}/services`),
+  /**
+   * 运维用的直接启停,不重新渲染配置。sing-box 的「重启」仍走 restartNode。
+   *
+   * 停止都是临时的:巡检看到服务定义在、进程没跑会把它拉起来 ——
+   * 这句话在每个确认框里都要写。
+   */
+  controlService: (
+    nodeID: number,
+    service: 'singbox' | 'nginx' | 'mieru',
+    op: 'start' | 'stop' | 'restart',
+  ) =>
+    request<{ result: ServiceOpResult; error?: string }>(
+      `/api/nodes/${nodeID}/${service}-${op}`,
+      { method: 'POST', body: {} },
+    ),
 
   // 链式出站是两台机器的复合操作:启用时先部署落地再部署中转主机,
   // 解除时顺序相反。顺序由后端保证,前端只负责把两次部署的结果都显示出来。

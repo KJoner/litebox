@@ -253,6 +253,17 @@ func (s *Server) Handler() http.Handler {
 			longOperation(s.handleInstallNginx))
 		authed.HandleFunc("POST /api/nodes/{id}/nginx-uninstall",
 			longOperation(s.handleUninstallNginx))
+		// 服务卡片(入口 Tab):一次只读探测 + 运维用的直接启停。
+		// 启停一律 longOperation:它们在改节点上的东西,ctx 必须与请求解绑。
+		authed.HandleFunc("GET /api/nodes/{id}/services", longOperation(s.handleNodeServiceFacts))
+		authed.HandleFunc("POST /api/nodes/{id}/singbox-start", longOperation(s.handleStartSingBox))
+		authed.HandleFunc("POST /api/nodes/{id}/singbox-stop", longOperation(s.handleStopSingBox))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-start", longOperation(s.handleStartNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-stop", longOperation(s.handleStopNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-restart", longOperation(s.handleRestartNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-start", longOperation(s.handleStartMieru))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-stop", longOperation(s.handleStopMieru))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-restart", longOperation(s.handleRestartMieru))
 		authed.HandleFunc("POST /api/mieru-inbounds/{id}/deploy",
 			longOperation(s.handleDeployMieru))
 		authed.HandleFunc("POST /api/mieru-inbounds/{id}/chain", s.handleSetMieruChain)
