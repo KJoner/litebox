@@ -722,3 +722,7 @@ func socks5Connect(conn net.Conn, host string, port int) error {
 	}
 	return nil
 }
+
+// StripANSI 是 stripANSI 的导出形式,给别的包往回带节点日志时用 ——
+// 启停服务失败时带回的 init 日志同样要进部署记录与浏览器。
+func StripANSI(s string) string { return stripANSI(s) }

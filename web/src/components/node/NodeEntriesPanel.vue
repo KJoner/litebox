@@ -8,13 +8,13 @@ import {
   type DeployResult,
   type AccessTier,
   type ExternalProxy,
-  type NginxFacts,
-  type RealmFacts,
   type Node,
   type MieruInbound,
   type NodeInbound,
   type NodeRelay,
   type NodeAddress,
+  type NodeServiceFacts,
+  type ServiceStatus,
   type InboundEndpointInput,
   type SingBoxChannel,
 } from '@/api/client'
@@ -30,6 +30,8 @@ import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
 import MieruChainModal from './MieruChainModal.vue'
 import NodeOpProgressModal from './NodeOpProgressModal.vue'
+import ServiceCard, { type ServiceCardAction, type ServiceCardModel } from './ServiceCard.vue'
+import { servicePhase, servicePhaseMeta, type ServicePhase } from './serviceState'
 import { confirmDeployNode, confirmRestartNode } from './nodeOps'
 import { sortByEntryOrder } from './entryOrder'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
@@ -108,10 +110,6 @@ const relays = ref<NodeRelay[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const running = ref('')
-const nginx = ref<NginxFacts | null>(null)
-const nginxError = ref('')
-const realm = ref<RealmFacts | null>(null)
-const realmError = ref('')
 const lastChain = ref<ChainApplyResult | null>(null)
 
 /**
@@ -126,19 +124,6 @@ const inbounds = computed(() => props.node.inbounds ?? [])
 // 都不一样。合并只发生在下面的 rows 里,也就是【展示】这一层。
 const mierus = computed(() => props.node.mieru_inbounds ?? [])
 const nodeLabel = computed(() => props.node.display_name || props.node.name)
-
-/**
- * 这台机器上装的是哪一支 sing-box。
- *
- * 显示出来而不是只在安装那一刻说一句:管理员半年后回到这个页面时,
- * 「为什么这台能选 Snell 那台不能」的答案必须就在眼前 ——
- * 否则他只会得出"面板有 bug"这个结论。
- */
-const channelTag = computed(() =>
-  props.node.singbox_channel === 'PREVIEW'
-    ? { text: '预览版 1.14', shape: 'dot' as const, fg: 'var(--warn)', bg: 'var(--warn-bg)' }
-    : { text: '正式版', shape: 'dot' as const, fg: 'var(--neutral)', bg: 'var(--neutral-bg)' },
-)
 
 async function loadTargets() {
   try {
@@ -583,14 +568,14 @@ function doUninstall() {
       const r = await api.uninstallNginx(props.node.id)
       opSteps.value = r.result.steps
       opError.value = r.error ?? ''
-      await checkNginx()
+      await loadServices()
     })
   } else if (kind === 'realm') {
     void runOp('卸载 realm 转发', '正在停止服务并清理文件', async () => {
       const r = await api.uninstallRealm(props.node.id)
       opSteps.value = r.result.steps
       opError.value = r.error ?? ''
-      await checkRealm()
+      await loadServices()
     })
   }
 }
@@ -779,9 +764,9 @@ function installNginx() {
     opSteps.value = r.result.steps
     opError.value = r.error ?? ''
     if (!r.error) {
-      opNote.value = '接下来点「下发转发配置」。它只 reload,在途连接一条不断。'
+      opNote.value = '接下来点「下发配置」。它只 reload,在途连接一条不断。'
     }
-    await checkNginx()
+    await loadServices()
   })
 }
 
@@ -795,31 +780,15 @@ function uninstallNginx() {
 // 这台机器上全部 realm 线路的在途连接都会断 —— 所以它们走 lbDangerConfirm,
 // 而 nginx 的下发停在普通确认档。
 
-/** 与 checkNginx 同理:手工触发的只读探测,不在打开面板时自动跑。 */
-async function checkRealm() {
-  running.value = '正在探测 realm'
-  emit('busy', running.value)
-  realmError.value = ''
-  try {
-    realm.value = await api.nodeRealm(props.node.id)
-  } catch (e) {
-    realm.value = null
-    realmError.value = e instanceof ApiError ? e.message : '探测失败'
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
-}
-
 function installRealm() {
   void runOp('安装 realm', '正在上传 realm 二进制', async () => {
     const r = await api.installRealm(props.node.id)
     opSteps.value = r.result.steps
     opError.value = r.error ?? ''
     if (!r.error) {
-      opNote.value = '接下来点「下发 realm 配置」。注意它是 restart,会断开这台机器上全部 realm 线路的在途连接。'
+      opNote.value = '接下来点「下发配置」。注意 realm 是 restart,会断开这台机器上全部 realm 线路的在途连接。'
     }
-    await checkRealm()
+    await loadServices()
   })
 }
 
@@ -862,7 +831,7 @@ function restartRealm() {
         const r = await api.restartRealm(props.node.id)
         opSteps.value = r.result.steps
         opError.value = r.error ?? ''
-        await checkRealm()
+        await loadServices()
       })
     },
   })
@@ -881,11 +850,439 @@ function stopRealm() {
         const r = await api.stopRealm(props.node.id)
         opSteps.value = r.result.steps
         opError.value = r.error ?? ''
-        await checkRealm()
+        await loadServices()
       })
     },
   })
 }
+
+/**
+ * 启动一个停着的 realm。底下走的是 restart(realm 没有单独的 start 路径,
+ * 而 restart 对一个没跑的服务就是 start),但**不弹危险确认**:
+ * 它没在跑,没有任何在途连接可以被断掉。
+ */
+function startRealm() {
+  void runOp('启动 realm', '正在启动并确认状态', async () => {
+    const r = await api.restartRealm(props.node.id)
+    opSteps.value = r.result.steps
+    opError.value = r.error ?? ''
+    await loadServices()
+  })
+}
+
+// ---------------------------------------------------------------- 服务卡片
+//
+// 四类服务各一张卡片,三层固定:名称 + 状态 / 随状态变化的大按钮 /
+// 下发配置 · 检查 · 卸载。长相在 ServiceCard.vue,这里只回答
+// "每颗按钮做什么、现在能不能点、点了会断谁"。
+
+/**
+ * 四类服务的现状,一次 SSH 问完。
+ *
+ * **打开面板时拉一次**,与 nginx / realm 原来那两个手工探测不同。
+ * 那时的理由是"管理员多半只是来看一眼规则列表";而卡片存在的意义就是
+ * 这四个状态 —— 一张写着「未检查」的卡片等于没有。与仪表盘「不主动触发
+ * SSH 采集」也不冲突:那条针对的是每次刷新连一遍**全部**机器,
+ * 这里是管理员点开**一台**机器的入口 Tab,一条会话。
+ *
+ * 不抬 busy:结果落在卡片上,管理员中途关掉抽屉什么都不会丢。
+ */
+const services = ref<NodeServiceFacts | null>(null)
+const servicesError = ref('')
+const servicesChecking = ref(false)
+
+async function loadServices() {
+  servicesChecking.value = true
+  servicesError.value = ''
+  try {
+    services.value = await api.nodeServices(props.node.id)
+  } catch (e) {
+    // 连不上时把旧结果也清掉:留着的话卡片上是几分钟前的状态,
+    // 而那正是管理员最容易照着去操作的东西。
+    services.value = null
+    servicesError.value = e instanceof ApiError ? e.message : '探测失败'
+  } finally {
+    servicesChecking.value = false
+  }
+}
+
+/** 检查期间与有操作在跑时一律不能点 —— 两者在后端都要排节点锁。 */
+const cardBusy = computed(() => !!running.value || servicesChecking.value)
+
+function phaseOf(st: ServiceStatus | null): ServicePhase {
+  return servicePhase(st, servicesError.value)
+}
+
+function metaFor(
+  phase: ServicePhase,
+  st: ServiceStatus | null,
+  extra: { suffix?: string; partial?: boolean } = {},
+) {
+  return servicePhaseMeta(phase, st, { checking: servicesChecking.value, ...extra })
+}
+
+/** 现状行的几段用 · 连起来,空段跳过 —— init 的原话可以是空的,尾巴上挂一个孤零零的 · 很扎眼。 */
+function joinDetail(...parts: (string | undefined)[]): string {
+  return parts.filter((x) => !!x && x.trim()).join(' · ')
+}
+
+/** 还没探测出来时大按钮位置放一颗禁用的占位,免得「安装」闪一下变成「停止」。 */
+const pendingPrimary: ServiceCardAction = {
+  label: '检查中…', disabled: '正在探测这台机器上的服务', onClick: () => {},
+}
+
+const checkAction: ServiceCardAction = { label: '检查', onClick: () => void loadServices() }
+
+// ---------- sing-box ----------
+
+function startSingBox() {
+  void runOp('启动 sing-box', '正在启动服务并确认状态', async () => {
+    const r = await api.controlService(props.node.id, 'singbox', 'start')
+    opSteps.value = r.result.steps
+    opError.value = r.error ?? ''
+    await loadServices()
+  })
+}
+
+function stopSingBox() {
+  lbDangerConfirm({
+    title: `停止 ${nodeLabel.value} 上的 sing-box?`,
+    impacts: [
+      `这台机器上全部 ${inbounds.value.length} 个 sing-box 入口的在线连接立刻断开,直到再次「启动」。`,
+      '**停止是临时的**:巡检(自动恢复开着时)看到服务定义在、进程没跑,会把它拉起来。' +
+        '想长期停掉请停用入口或卸载 sing-box。',
+      '配置、二进制与用户凭据都留在节点上,不同步流量 —— 停之前未落库的那一段计数会丢。',
+      'Mieru 入口与 nginx / realm 转发不受影响。',
+    ],
+    okText: '停止 sing-box',
+    onOk: () => {
+      void runOp('停止 sing-box', '正在停止服务', async () => {
+        const r = await api.controlService(props.node.id, 'singbox', 'stop')
+        opSteps.value = r.result.steps
+        opError.value = r.error ?? ''
+        await loadServices()
+      })
+    },
+  })
+}
+
+const singBoxCard = computed<ServiceCardModel>(() => {
+  const st = services.value?.singbox ?? null
+  const phase = phaseOf(st)
+  const relay = isRelayHost.value
+  // 通道写进现状行:管理员半年后回到这个页面时,「为什么这台能选 Snell
+  // 那台不能」的答案必须就在眼前 —— 否则他只会得出"面板有 bug"。
+  const channel = props.node.singbox_channel === 'PREVIEW' ? '预览版 1.14' : '正式版'
+  const version = st?.version || props.node.singbox_version
+  let detail = ''
+  if (phase === 'NOT_INSTALLED') detail = '还没安装'
+  else if (relay) detail = joinDetail(version || '已安装', '仅二进制,转发拨测时跑几秒')
+  else if (st) detail = joinDetail(version || '已安装', channel, st.detail)
+  else if (version) detail = joinDetail(version, channel)
+
+  const installMenu = [
+    { label: '安装正式版', onClick: () => installSingBox('STABLE') },
+    { label: '安装预览版(1.14,Snell 入口需要)', onClick: confirmInstallPreview },
+  ]
+  const fresh = phase === 'NOT_INSTALLED'
+  const install: ServiceCardAction = relay
+    ? {
+        label: fresh ? '安装(仅二进制)' : '重新安装(仅二进制)',
+        primary: fresh,
+        onClick: () => installSingBox('STABLE'),
+      }
+    : {
+        label: fresh ? '安装' : '重新安装',
+        primary: fresh,
+        onClick: () => installSingBox('STABLE'),
+        menu: installMenu,
+      }
+
+  let primary: ServiceCardAction[]
+  if (phase === 'UNKNOWN') primary = [pendingPrimary]
+  else if (relay || phase === 'NOT_INSTALLED' || phase === 'UNREACHABLE') primary = [install]
+  else if (phase === 'RUNNING') {
+    primary = [
+      { label: '停止', danger: true, onClick: stopSingBox },
+      { label: '重启', onClick: restartSingBox },
+    ]
+  } else {
+    primary = [
+      {
+        label: '启动',
+        primary: true,
+        onClick: startSingBox,
+        disabled: st && !st.config_present ? '这台机器上还没有 sing-box 配置 —— 先「下发配置」' : '',
+      },
+    ]
+  }
+  return {
+    key: 'singbox',
+    title: 'sing-box',
+    tip: relay
+      ? '中转机上不装服务,这份二进制只在转发拨测时跑几秒 —— 没有启停与下发。'
+      : '下发与重启都会重启服务,这台机器上全部 sing-box 入口的在线连接都会断开。' +
+        '「下发配置」会先强制同步流量,「重启」不会。' +
+        '停止是临时的:巡检开着时会把它拉起来,想长期停掉请停用入口或卸载。',
+    status: relay && phase === 'STOPPED' ? metaFor(phase, null) : metaFor(phase, st),
+    detail,
+    primary,
+    actions: [
+      {
+        label: '下发配置',
+        onClick: deploySingBox,
+        disabled: relay ? '中转机上没有 sing-box 配置' : '',
+      },
+      checkAction,
+      { label: '卸载', danger: true, onClick: uninstallSingBox },
+    ],
+  }
+})
+
+// ---------- Mieru ----------
+
+/** 下发过的实例才有服务定义,启停对它们生效;确认框里逐个点名。 */
+function mieruInstanceNames(): string[] {
+  return (services.value?.mieru.instances ?? []).map((i) => i.display_name)
+}
+
+function startMieruAll() {
+  void runOp('启动全部 Mieru 实例', '正在逐个拉起 mita 实例并确认代理状态', async () => {
+    const r = await api.controlService(props.node.id, 'mieru', 'start')
+    opSteps.value = r.result.steps
+    opError.value = r.error ?? ''
+    await loadServices()
+  })
+}
+
+function controlMieruAllConfirmed(op: 'stop' | 'restart') {
+  const names = mieruInstanceNames()
+  const verb = op === 'stop' ? '停止' : '重启'
+  lbDangerConfirm({
+    title: `${verb} ${nodeLabel.value} 上全部 Mieru 实例?`,
+    impacts: [
+      `影响 ${names.length} 个实例:${names.join('、')} —— 它们的在线连接全部断开。`,
+      op === 'stop'
+        ? '**停止是临时的**:巡检(自动恢复开着时)会把它们拉起来。想长期停掉请停用入口或卸载 Mieru。'
+        : '不重新渲染配置:节点上跑的仍是上一次下发的那份。改了入口要在那一行「下发」。',
+      '只想动其中一个入口的话,用列表里那一行的「下发」—— 一个入口一个实例,互不影响。',
+      'sing-box 与 nginx / realm 转发不受影响。',
+    ],
+    okText: `${verb}全部实例`,
+    onOk: () => {
+      void runOp(`${verb}全部 Mieru 实例`, `正在逐个${verb}`, async () => {
+        const r = await api.controlService(props.node.id, 'mieru', op)
+        opSteps.value = r.result.steps
+        opError.value = r.error ?? ''
+        await loadServices()
+      })
+    },
+  })
+}
+
+const mieruCard = computed<ServiceCardModel>(() => {
+  const st = services.value?.mieru ?? null
+  const inst = st?.instances ?? []
+  const runningCount = inst.filter((i) => i.state === 'RUNNING').length
+  // 后端只在**全部**实例都在跑时才给 RUNNING;卡片上部分在跑要显示成
+  // 「运行中 1/3」并给出停止 / 重启 —— 重启全部正是救回那一个的办法。
+  const partial = inst.length > 0 && runningCount > 0 && runningCount < inst.length
+  let phase = phaseOf(st)
+  if (phase === 'STOPPED' && partial) phase = 'RUNNING'
+
+  let detail = ''
+  if (phase === 'NOT_INSTALLED') detail = '还没安装'
+  else if (st) {
+    detail = joinDetail(
+      `mita ${st.version || ''}`.trim(),
+      inst.length ? `${runningCount}/${inst.length} 个实例在跑` : '还没有下发过的入口',
+    )
+  }
+
+  const fresh = phase === 'NOT_INSTALLED'
+  let primary: ServiceCardAction[]
+  if (phase === 'UNKNOWN') primary = [pendingPrimary]
+  else if (fresh || phase === 'UNREACHABLE' || inst.length === 0) {
+    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh, onClick: installMieru }]
+  } else if (phase === 'RUNNING') {
+    primary = [
+      { label: '停止全部', danger: true, onClick: () => controlMieruAllConfirmed('stop') },
+      { label: '重启全部', onClick: () => controlMieruAllConfirmed('restart') },
+    ]
+  } else {
+    primary = [{ label: '启动全部', primary: true, onClick: startMieruAll }]
+  }
+  return {
+    key: 'mieru',
+    title: 'Mieru',
+    tip:
+      '服务端是 mita,与 sing-box 是两个进程。一个入口一个 mita 实例,' +
+      '下发在列表的每一行上、各下各的,重启一个不影响其他;' +
+      '这里的启动 / 停止对这台机器上全部实例生效。「卸载」摘掉的是全部实例。',
+    status: metaFor(phase, st, {
+      suffix: inst.length ? ` ${runningCount}/${inst.length}` : '',
+      partial,
+    }),
+    detail,
+    primary,
+    actions: [
+      {
+        label: '下发配置',
+        onClick: () => {},
+        disabled: 'Mieru 逐入口下发:按钮在下面列表的每一行上',
+      },
+      checkAction,
+      { label: '卸载', danger: true, onClick: uninstallMieru },
+    ],
+  }
+})
+
+// ---------- nginx ----------
+
+function startNginx() {
+  void runOp('启动 nginx', '正在启动实例并确认状态', async () => {
+    const r = await api.controlService(props.node.id, 'nginx', 'start')
+    opSteps.value = r.result.steps
+    opError.value = r.error ?? ''
+    await loadServices()
+  })
+}
+
+/**
+ * nginx 的停止与重启都断在途连接,与它「下发只 reload」那一档不同 ——
+ * 所以这两个走 lbDangerConfirm,而下发停在普通确认档。
+ */
+function controlNginxConfirmed(op: 'stop' | 'restart') {
+  const verb = op === 'stop' ? '停止' : '重启'
+  const count = relays.value.filter((r) => r.engine !== 'REALM').length
+  lbDangerConfirm({
+    title: `${verb} ${nodeLabel.value} 上的 nginx 转发?`,
+    impacts: [
+      `这台机器上全部 ${count} 条 nginx 转发线路的在途连接立刻断开。`,
+      op === 'stop'
+        ? '**停止是临时的**:巡检(自动恢复开着时)看到它没在跑会把它拉起来。想长期停掉请停用规则或卸载。'
+        : '改了转发规则不需要重启 ——「下发配置」只 reload,在途连接一条不断。重启只给 reload 都不认的时候用。',
+      '**节点自带的 nginx 一个字不动**,面板管的是独立实例 litebox-nginx。',
+      'sing-box、Mieru 入口与 realm 转发不受影响。',
+    ],
+    okText: `${verb} nginx`,
+    onOk: () => {
+      void runOp(`${verb} nginx`, `正在${verb}实例`, async () => {
+        const r = await api.controlService(props.node.id, 'nginx', op)
+        opSteps.value = r.result.steps
+        opError.value = r.error ?? ''
+        await loadServices()
+      })
+    },
+  })
+}
+
+const nginxCard = computed<ServiceCardModel>(() => {
+  const st = services.value?.nginx ?? null
+  const phase = phaseOf(st)
+  let detail = ''
+  if (phase === 'NOT_INSTALLED') detail = '还没安装,下发时也会自动装'
+  else if (st) {
+    const f = st.facts
+    const stream = f.stream_built_in
+      ? 'stream 已编译进二进制'
+      : f.stream_available
+        ? 'stream 动态模块'
+        : `缺 stream 模块(装 ${f.missing_package || '对应的包'})`
+    detail = joinDetail(f.version || '已安装', stream, st.config_present ? '' : '还没下发过转发配置')
+  }
+  const fresh = phase === 'NOT_INSTALLED'
+  let primary: ServiceCardAction[]
+  if (phase === 'UNKNOWN') primary = [pendingPrimary]
+  else if (fresh || phase === 'UNREACHABLE') {
+    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh, onClick: installNginx }]
+  } else if (phase === 'RUNNING') {
+    primary = [
+      { label: '停止', danger: true, onClick: () => controlNginxConfirmed('stop') },
+      { label: '重启', onClick: () => controlNginxConfirmed('restart') },
+    ]
+  } else {
+    primary = [
+      {
+        label: '启动',
+        primary: true,
+        onClick: startNginx,
+        disabled: st && !st.config_present ? '还没下发过转发配置 —— 先「下发配置」' : '',
+      },
+    ]
+  }
+  return {
+    key: 'nginx',
+    title: 'nginx 转发',
+    tip:
+      '下发只 reload,在途连接一条不断,不需要挑时机。「停止」与「重启」会断开全部转发线路的' +
+      '在途连接;停止是临时的,巡检会把它拉起来。「卸载」只摘掉面板托管的实例,' +
+      '系统自带的 nginx 不动。缺 stream 模块在 Debian 与 Alpine 上都是默认情况,下发时会自动装。',
+    status: metaFor(phase, st),
+    detail,
+    primary,
+    actions: [
+      { label: '下发配置', onClick: deployNow },
+      checkAction,
+      { label: '卸载', danger: true, onClick: uninstallNginx },
+    ],
+  }
+})
+
+// ---------- realm ----------
+
+const realmCard = computed<ServiceCardModel>(() => {
+  const st = services.value?.realm ?? null
+  const phase = phaseOf(st)
+  let detail = ''
+  if (phase === 'NOT_INSTALLED') detail = '还没安装,下发时不会自动装(要传一个 6MB 的二进制)'
+  else if (st) {
+    detail = joinDetail(st.version || '已安装', st.config_present ? '已下发过配置' : '还没下发过配置', st.detail)
+  }
+  const fresh = phase === 'NOT_INSTALLED'
+  let primary: ServiceCardAction[]
+  if (phase === 'UNKNOWN') primary = [pendingPrimary]
+  else if (fresh || phase === 'UNREACHABLE') {
+    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh, onClick: installRealm }]
+  } else if (phase === 'RUNNING') {
+    primary = [
+      { label: '停止', danger: true, onClick: stopRealm },
+      { label: '重启', onClick: restartRealm },
+    ]
+  } else {
+    primary = [
+      {
+        label: '启动',
+        primary: true,
+        onClick: startRealm,
+        disabled: st && !st.config_present ? '还没下发过 realm 配置 —— 先「下发配置」' : '',
+      },
+    ]
+  }
+  return {
+    key: 'realm',
+    title: 'realm 转发',
+    tip:
+      'realm 没有 reload:下发与重启都会断开这台机器上全部 realm 线路的在途连接,要挑时机。' +
+      '与 nginx 的区别:二进制由面板下发(不依赖发行版的包)、同时搬 UDP。' +
+      '停止是临时的,巡检会把它拉起来。',
+    status: metaFor(phase, st),
+    detail,
+    primary,
+    actions: [
+      { label: '下发配置', onClick: deployRealmNow },
+      checkAction,
+      { label: '卸载', danger: true, onClick: uninstallRealm },
+    ],
+  }
+})
+
+/** 中转机上没有 sing-box 服务与 Mieru —— 前者留一张只有安装 / 卸载的卡,后者整个不出现。 */
+const serviceCards = computed<ServiceCardModel[]>(() =>
+  isRelayHost.value
+    ? [singBoxCard.value, nginxCard.value, realmCard.value]
+    : [singBoxCard.value, mieruCard.value, nginxCard.value, realmCard.value],
+)
 
 const mieruChainOpen = ref(false)
 const mieruChainTarget = ref<MieruInbound | null>(null)
@@ -1017,27 +1414,6 @@ const form = ref({
   enabled: true,
   public_remark: '',
 })
-
-/**
- * nginx 现状是**手工触发**的只读探测。
- *
- * 不在打开面板时自动跑:那要连一次 SSH,而管理员多半只是来看一眼规则列表。
- * 与「仪表盘节点卡片不主动触发 SSH 采集」是同一条道理。
- */
-async function checkNginx() {
-  running.value = '正在探测 nginx'
-  emit('busy', running.value)
-  nginxError.value = ''
-  try {
-    nginx.value = await api.nodeNginx(props.node.id)
-  } catch (e) {
-    nginx.value = null
-    nginxError.value = e instanceof ApiError ? e.message : '探测失败'
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
-}
 
 // V16:中转规则的订阅地址条目(单端口)。nodeAddresses 是这台机器的地址池。
 const nodeAddresses = ref<NodeAddress[]>([])
@@ -1196,6 +1572,7 @@ function deployNow() {
 
 onMounted(async () => {
   load()
+  void loadServices()
   await loadTargets()
 })
 </script>
@@ -1206,132 +1583,37 @@ onMounted(async () => {
       <span class="nr__title">入口</span>
       <span class="nr__note">这台机器对外提供的入口。用户连的是这里的端口。</span>
       <span v-if="running" class="nr__running">{{ running }}…</span>
-    </div>
-
-    <!-- 按钮按服务分行,一行一类。
-         混在一排的话,「部署配置」(重启 sing-box、踢掉全部 sing-box 入口的
-         在线连接)、「下发」(只重启一个 mita 实例)与「下发转发配置」
-         (只 reload,一条在途连接都不断)会长得一样重,
-         而这三件事该不该挑时机完全不同。 -->
-    <div v-if="!isRelayHost" class="nr__ops">
-      <span class="nr__kind">sing-box</span>
-      <a-button size="small" type="primary" :disabled="!!running" @click="openCreateInbound">
-        新增入口
-      </a-button>
+      <span class="nr__spacer" />
+      <!-- 四类入口一个「新增」入口。主体点的是这台机器最常见的那一类
+           (落地机是 sing-box 入口、中转机是 nginx 转发),其余在菜单里。 -->
       <a-dropdown-button
         size="small"
+        type="primary"
         :disabled="!!running"
-        @click="installSingBox('STABLE')"
+        @click="isRelayHost ? openCreate('NGINX') : openCreateInbound()"
       >
-        安装
+        {{ isRelayHost ? '新增转发入口' : '新增入口' }}
         <template #overlay>
           <a-menu>
-            <a-menu-item @click="installSingBox('STABLE')">安装正式版</a-menu-item>
-            <a-menu-item @click="confirmInstallPreview">
-              安装预览版(1.14,Snell 入口需要)
-            </a-menu-item>
+            <a-menu-item v-if="!isRelayHost" @click="openCreateInbound">sing-box 入口</a-menu-item>
+            <a-menu-item v-if="!isRelayHost" @click="openCreateMieru">Mieru 入口</a-menu-item>
+            <a-menu-item @click="openCreate('NGINX')">nginx 转发入口</a-menu-item>
+            <a-menu-item @click="openCreate('REALM')">realm 转发入口</a-menu-item>
           </a-menu>
         </template>
       </a-dropdown-button>
-      <a-button size="small" :disabled="!!running" @click="deploySingBox">下发配置</a-button>
-      <a-button size="small" :disabled="!!running" @click="restartSingBox">重启</a-button>
-      <a-button size="small" danger :disabled="!!running" @click="uninstallSingBox">卸载</a-button>
-      <span class="nr__note">
-        <LbStatusTag :meta="channelTag" />
-        下发与重启都会重启服务,这台机器上<b>全部 sing-box 入口</b>的在线连接都会断开。
-        「下发配置」会先强制同步流量,「重启」不会。
-      </span>
-    </div>
-    <!-- Mieru 单独一行:服务端是 mita,与 sing-box 是两个进程、两套服务定义,
-         下发也是逐入口各下各的 —— 每个入口一个 mita 实例。 -->
-    <div v-if="!isRelayHost" class="nr__ops">
-      <span class="nr__kind">Mieru</span>
-      <a-button size="small" :disabled="!!running" @click="openCreateMieru">新增 Mieru 入口</a-button>
-      <a-button size="small" :disabled="!!running" @click="installMieru">安装</a-button>
-      <a-button size="small" danger :disabled="!!running" @click="uninstallMieru">卸载</a-button>
-      <span class="nr__note">
-        <b>下发在每一行上,各下各的</b> —— 一个入口一个 mita 实例,重启一个不影响其他。
-        「卸载」摘掉的是这台机器上全部实例。
-      </span>
-    </div>
-    <div v-else class="nr__ops">
-      <span class="nr__kind">sing-box</span>
-      <!-- 中转机上只放二进制,通道对它没有意义:那台机器上没有配置,
-           这份二进制只在转发拨测时跑几秒。所以不给它那个下拉。 -->
-      <a-button size="small" :disabled="!!running" @click="installSingBox('STABLE')">
-        安装(仅二进制)
-      </a-button>
-      <a-button size="small" danger :disabled="!!running" @click="uninstallSingBox">卸载</a-button>
-      <!-- 中转机上不装服务:一个没有配置的 sing-box 只会反复崩溃重启,
-           而 supervise-daemon 会让它一直重试。二进制要留 ——
-           转发规则的健康检查要用它做真实拨测,只跑那几秒。 -->
-      <span class="nr__note">中转机上不装服务,这份二进制只在转发拨测时跑几秒。</span>
-    </div>
-    <div class="nr__ops">
-      <span class="nr__kind">nginx 转发</span>
-      <a-button size="small" :disabled="!!running" @click="openCreate('NGINX')">新增转发入口</a-button>
-      <a-button size="small" :disabled="!!running" @click="installNginx">安装</a-button>
-      <a-button size="small" :loading="!!running" @click="checkNginx">检查</a-button>
-      <a-button size="small" :loading="!!running" @click="deployNow">下发转发配置</a-button>
-      <a-button size="small" danger :disabled="!!running" @click="uninstallNginx">卸载</a-button>
-      <span class="nr__note">
-        下发只 reload,在途连接一条不断 —— 不需要挑时机。「卸载」会中断全部转发线路。
-      </span>
-    </div>
-    <!-- realm(V15)单独一行:它是面板下发的单个二进制、独立的服务,
-         而且**没有 reload** —— 下发与重启都会断开在途连接,与 nginx 那一行
-         的摩擦不同档,合在一起会让管理员对「这一下要不要挑时机」失去判断。 -->
-    <div class="nr__ops">
-      <span class="nr__kind">realm 转发</span>
-      <a-button size="small" :disabled="!!running" @click="openCreate('REALM')">新增 realm 转发</a-button>
-      <a-button size="small" :disabled="!!running" @click="installRealm">安装</a-button>
-      <a-button size="small" :loading="!!running" @click="checkRealm">检查</a-button>
-      <a-button size="small" :disabled="!!running" @click="deployRealmNow">下发 realm 配置</a-button>
-      <a-button size="small" :disabled="!!running" @click="restartRealm">重启</a-button>
-      <a-button size="small" :disabled="!!running" @click="stopRealm">停止</a-button>
-      <a-button size="small" danger :disabled="!!running" @click="uninstallRealm">卸载</a-button>
-      <span class="nr__note">
-        realm 没有 reload:<b>下发与重启都会断开这台机器上全部 realm 线路的在途连接</b>,要挑时机。
-        与 nginx 的区别:二进制由面板下发(不依赖发行版的包)、同时搬 UDP。
-      </span>
     </div>
 
-    <!-- nginx 现状。缺 stream 模块在两个发行版上都是默认情况,
-         而报错只说 unknown directive "stream",不提缺哪个包。 -->
-    <div v-if="nginxError" class="nr__warn">探测 nginx 失败:{{ nginxError }}</div>
-    <div v-else-if="nginx" class="nr__nginx">
-      <template v-if="!nginx.installed">
-        这台机器上还没有 nginx。下发时会自动安装
-        <b class="lb-mono">nginx</b> 与 stream 模块。
-      </template>
-      <template v-else-if="!nginx.stream_available">
-        <b>nginx 缺少 stream 模块,当前无法转发。</b>
-        下发时会自动安装
-        <b class="lb-mono">{{ nginx.missing_package || '对应的 stream 模块包' }}</b
-        >。装了 nginx 却没有 stream 是这两个发行版的默认情况,而 nginx 只会报
-        <span class="lb-mono">unknown directive "stream"</span>,不会提缺哪个包。
-      </template>
-      <template v-else>
-        {{ nginx.version }} · stream
-        {{ nginx.stream_built_in ? '已编译进二进制' : '动态模块' }}
-        <span v-if="!nginx.stream_built_in" class="lb-mono">
-          {{ nginx.stream_module_path }}
-        </span>
-      </template>
+    <!-- 四类服务各一张卡片,三层固定:名称 + 状态 / 安装·启动·停止 /
+         下发配置 · 检查 · 卸载。分四张而不是混在一排:「下发配置」在 sing-box
+         那张上重启服务、踢掉全部入口的在线连接,在 nginx 那张上只 reload、
+         一条在途连接都不断 —— 而这三件事该不该挑时机完全不同。 -->
+    <div v-if="servicesError" class="nr__warn">
+      探测服务失败:{{ servicesError }} —— 下面四张卡片上的状态此刻不可信,
+      连接恢复后点任意一张的「检查」。
     </div>
-
-    <div v-if="realmError" class="nr__warn">探测 realm 失败:{{ realmError }}</div>
-    <div v-else-if="realm" class="nr__nginx">
-      <template v-if="!realm.installed">
-        这台机器上还没有 realm。点「安装」由面板上传二进制(约 6MB),
-        下发时不会自动装 —— 传一个二进制该由你显式决定。
-      </template>
-      <template v-else>
-        {{ realm.version }} ·
-        {{ realm.config_present ? '已下发过配置' : '还没下发过配置' }} ·
-        {{ realm.running ? '在跑' : '没在跑' }}
-        <span class="lb-mono">{{ realm.state }}</span>
-      </template>
+    <div class="nr__svc">
+      <ServiceCard v-for="c in serviceCards" :key="c.key" :card="c" :busy="cardBusy" />
     </div>
 
     <div v-if="loadError" class="nr__warn">{{ loadError }}</div>
@@ -1759,21 +2041,19 @@ onMounted(async () => {
   border-radius: 16px;
   margin-bottom: 12px;
 }
-.nr__head,
-.nr__ops {
+.nr__head {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-/* 一类操作一行。两类挤在一排的话,「部署配置」与「下发转发配置」
-   会长得一样重,而前者重启服务、后者只 reload。 */
-.nr__ops {
-  padding: 6px 8px;
-  border: 1px solid var(--sep);
-  border-radius: var(--r-group);
-  background: #fafbfc;
+/* 四张服务卡片并排。230 是底排「下发配置 / 检查 / 卸载」三颗不换行的下限;
+   1120 的内容宽里正好放四张,窄一点就两两一行,手机上一张一行。 */
+.nr__svc {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
 }
 
 .nr__cards {
@@ -1861,10 +2141,6 @@ onMounted(async () => {
 .nr__warn {
   font-size: 12px;
   color: var(--bad);
-}
-.nr__nginx {
-  font-size: 12px;
-  line-height: 1.6;
 }
 .nr__sub {
   font-size: 12px;

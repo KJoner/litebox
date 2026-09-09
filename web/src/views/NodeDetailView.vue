@@ -39,9 +39,11 @@ import {
   configStatusMeta,
   lbDangerConfirm,
   type LbPoint,
+  type LbStatusMeta,
 } from '@/components/lb'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
 import { confirmDeployNode } from '@/components/node/nodeOps'
+import { inboundProtocolMeta } from '@/components/node/inboundOps'
 import { useNarrow } from '@/composables/useNarrow'
 import { color, threshold, usageColor } from '@/theme/tokens'
 
@@ -350,6 +352,23 @@ function mieruPending(m: MieruInbound) {
     m.deployed_listen_port_start !== m.listen_port_start ||
     m.deployed_listen_port_end !== m.listen_port_end
   )
+}
+
+/**
+ * Mieru 入口子卡片头上的标签,与 sing-box 入口的 inboundProtocolMeta 同构:
+ * 显示【已经生效】的传输层,与期望值不同时明写「A → B 待下发」。
+ */
+function mieruTransportMeta(m: MieruInbound): LbStatusMeta {
+  if (!m.deployed_transport) {
+    return { text: '未下发', shape: 'ring', fg: color.neutral, bg: color.neutralBg }
+  }
+  const pending = m.deployed_transport !== m.transport || mieruPending(m)
+  return {
+    text: pending ? `${m.deployed_transport} 待下发` : m.deployed_transport,
+    shape: pending ? 'triangle' : 'check',
+    fg: pending ? color.warning : color.success,
+    bg: pending ? color.warningBg : color.successBg,
+  }
 }
 
 /**
@@ -1515,217 +1534,6 @@ const needsPortForward = computed(() =>
               </div>
             </section>
 
-            <!-- 落地协议、握手目标、TFO 全是【入口】的属性,一台机器上
-                 可以有好几组。中转机上一个入口都没有,这一块整个不出现 ——
-                 渲染一份从来没有生效过的配置看起来像是配好了。 -->
-            <section v-if="!isRelay" class="nd__card">
-              <div class="nd__card-head">
-                <span class="nd__card-head-title">入口与配置版本</span>
-                <a class="nd__card-link" @click="tab = 'entries'">去「入口」管理 ›</a>
-              </div>
-              <div class="nd__card-body">
-                <!-- 判据要把 Mieru 一起算上:只有 Mieru 入口的机器上用户是连得上的,
-                     而「谁都连不上」在那种机器上是错的 —— 一句错误的告警
-                     会让管理员去修一台本来就好好的机器。 -->
-                <div v-if="!inbounds.length && !mierus.length" class="nd__card-note">
-                  这台机器上一个入口都没有 —— 服务会正常运行,但谁都连不上。
-                </div>
-                <div v-else-if="!inbounds.length" class="nd__card-note">
-                  这台机器上只有 Mieru 入口,没有 sing-box 入口。
-                </div>
-                <div v-for="i in inbounds" :key="i.id" class="nd__kv">
-                  <!-- 「期望」与「节点上生效」分两行,不合成一行。
-                       合起来只能显示其中一个:显示期望值会让管理员以为切换已经
-                       完成(而节点上还是旧协议),显示生效值又看不出他刚才改过。 -->
-                  <div class="nd__kv-wide">
-                    <span>入口</span>
-                    <b>{{ i.display_name }} <span class="lb-mono">{{ i.tag }}</span></b>
-                  </div>
-                  <div><span>期望协议</span><b>{{ PROTOCOL_LABEL[i.protocol] }}</b></div>
-                  <div>
-                    <span>节点上生效</span>
-                    <b
-                      :style="{
-                        color:
-                          i.deployed_protocol && i.deployed_protocol !== i.protocol
-                            ? color.warning
-                            : undefined,
-                      }"
-                    >
-                      {{ i.deployed_protocol ? PROTOCOL_LABEL[i.deployed_protocol] : '从未部署' }}
-                    </b>
-                  </div>
-                  <!-- 不计流量要在这里说出来:这个入口的流量既不进用户额度,
-                       也不进上面「流量」Tab 的代理流量 —— 不写的话,那张图上
-                       少的那一截没有任何解释。 -->
-                  <div v-if="i.unmetered || i.deployed_unmetered" class="nd__kv-wide">
-                    <span>流量计量</span>
-                    <b :style="{ color: color.warning }">
-                      {{
-                        i.unmetered && i.deployed_unmetered
-                          ? '不计流量 —— 不计入任何用户额度,也不计入这台机器的周期用量'
-                          : i.unmetered
-                            ? '不计流量(待部署,节点上仍在计量)'
-                            : '按用户计量(待部署,节点上仍是不计流量)'
-                      }}
-                    </b>
-                  </div>
-                  <template v-if="i.protocol === 'SHADOWSOCKS'">
-                    <div class="nd__kv-wide">
-                      <span>加密方法</span>
-                      <b class="lb-mono">{{ i.ss_method || '—' }}</b>
-                    </div>
-                  </template>
-                  <!-- Snell 不用 REALITY,那几行一律不渲染 ——
-                       显示一个"握手目标:未设置"会让人以为还有一步没做,
-                       而这个协议里根本没有那一步。 -->
-                  <template v-else-if="i.protocol === 'SNELL'">
-                    <div>
-                      <span>Snell 版本</span>
-                      <b class="lb-mono">v{{ i.snell_version || '—' }}</b>
-                    </div>
-                    <div>
-                      <span>{{ i.snell_version === 5 ? '混淆' : '流量整形' }}</span>
-                      <b class="lb-mono">
-                        {{
-                          i.snell_version === 5
-                            ? i.snell_obfs_mode || 'none'
-                            : i.snell_v6_mode || 'default'
-                        }}
-                      </b>
-                    </div>
-                    <div v-if="i.snell_version === 5 && i.snell_obfs_mode !== 'none'">
-                      <span>伪装 Host</span>
-                      <b class="lb-mono">{{ i.snell_obfs_host || '—' }}</b>
-                    </div>
-                    <div class="nd__kv-wide">
-                      <span>凭据模式</span>
-                      <b :style="{ color: i.snell_shared_psk ? color.warning : undefined }">
-                        {{
-                          i.snell_shared_psk
-                            ? '共享 psk —— 无分用户流量,撤销要换 psk'
-                            : '逐用户 userkey'
-                        }}
-                      </b>
-                    </div>
-                    <div class="nd__kv-wide">
-                      <span>可用客户端</span>
-                      <b>
-                        {{
-                          i.snell_shared_psk
-                            ? 'sing-box 1.14+ / Surge / Clash · mihomo'
-                            : 'sing-box 1.14+ / Surge'
-                        }}
-                        —— 两种模式都不进 URI 订阅
-                      </b>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div>
-                      <span>握手目标</span>
-                      <b class="lb-mono">
-                        {{ i.reality_dest || '未设置'
-                        }}<template v-if="i.reality_dest">:{{ i.reality_dest_port }}</template>
-                      </b>
-                    </div>
-                    <div>
-                      <span>最大 TLS 记录</span>
-                      <b
-                        class="lb-mono"
-                        :style="{
-                          color: i.handshake_max_record_size > 8192 ? color.danger : undefined,
-                        }"
-                      >
-                        {{ i.handshake_max_record_size || '未实测' }} / 8192
-                      </b>
-                    </div>
-                    <div class="nd__kv-wide">
-                      <span>上次实测</span>
-                      <b><LbTimeText :value="i.handshake_checked_at" empty="从未实测" /></b>
-                    </div>
-                  </template>
-                  <!-- 与协议一样分两行。TFO 必须两端一致才有意义,而"改了没部署"
-                       的那段时间里订阅下发的是旧值 —— 只显示一个的话,
-                       管理员看到「已开启」会以为客户端那边也已经在用了。 -->
-                  <div><span>TCP Fast Open</span><b>{{ i.tcp_fast_open ? '已开启' : '未开启' }}</b></div>
-                  <div>
-                    <span>节点上生效</span>
-                    <b
-                      :style="{
-                        color:
-                          i.tcp_fast_open !== i.deployed_tcp_fast_open ? color.warning : undefined,
-                      }"
-                    >
-                      {{ i.deployed_tcp_fast_open ? '已开启' : '未开启' }}
-                    </b>
-                  </div>
-                </div>
-                <!-- Mieru 入口单独列。它们不是 sing-box 的入站:服务端是 mita,
-                     另一个进程、另一套服务定义、逐入口各自下发 ——
-                     混在上面那一段里会让"配置版本 rev N"看起来也管着它们。 -->
-                <div v-for="m in mierus" :key="`m${m.id}`" class="nd__kv">
-                  <div class="nd__kv-wide">
-                    <span>Mieru 入口</span>
-                    <b>{{ m.display_name }}</b>
-                  </div>
-                  <div>
-                    <span>期望端口段</span>
-                    <b class="lb-mono">{{ portRangeText(m.listen_port_start, m.listen_port_end) }}</b>
-                  </div>
-                  <div>
-                    <span>节点上生效</span>
-                    <b
-                      class="lb-mono"
-                      :style="{ color: mieruPending(m) ? color.warning : undefined }"
-                    >
-                      {{
-                        m.deployed_transport
-                          ? portRangeText(m.deployed_listen_port_start, m.deployed_listen_port_end)
-                          : '从未下发'
-                      }}
-                    </b>
-                  </div>
-                  <div><span>期望传输层</span><b class="lb-mono">{{ m.transport }}</b></div>
-                  <div>
-                    <span>节点上生效</span>
-                    <b
-                      class="lb-mono"
-                      :style="{
-                        color:
-                          m.deployed_transport && m.deployed_transport !== m.transport
-                            ? color.warning
-                            : undefined,
-                      }"
-                    >
-                      {{ m.deployed_transport || '从未下发' }}
-                    </b>
-                  </div>
-                  <div class="nd__kv-wide">
-                    <span>出口</span>
-                    <b>{{ m.chain_target_kind ? '经本机 sing-box 转一跳到落地' : '本机直连' }}</b>
-                  </div>
-                </div>
-                <!-- sing-box 的配置版本。这台机器上没有 sing-box 时整段不出现 ——
-                     显示「rev 0 / 从未部署」会催着管理员去部署一份空配置。 -->
-                <div v-if="hasSingBox" class="nd__kv">
-                  <div><span>配置版本</span><b class="lb-mono">rev {{ node.config_revision }}</b></div>
-                  <div>
-                    <span>已部署配置</span>
-                    <!-- 判空要看原值,不能靠 shortHash 的返回值:它对空串返回的是
-                         「—」而不是空,`|| '从未部署'` 永远走不到。而「—」在本项目里
-                         的含义是「读取失败」,与「这台机器还没部署过」正好是两回事。 -->
-                    <b class="lb-mono" :title="node.deployed_config_sha256">
-                      {{ node.deployed_config_sha256 ? shortHash(node.deployed_config_sha256) : '从未部署' }}
-                    </b>
-                  </div>
-                </div>
-              </div>
-              <div v-if="protocolMismatch" class="nd__card-foot">
-                有入口改了协议但还没部署。<strong>节点上仍在运行旧协议,订阅里下发的也是它</strong>
-                —— 现在的用户不会断线。部署之后才切换,届时那个入口的用户都要重新拉一次订阅。
-              </div>
-            </section>
-
             <section class="nd__card">
               <div class="nd__card-head">
                 <span class="nd__card-head-title">
@@ -1861,6 +1669,228 @@ const needsPortForward = computed(() =>
               </div>
             </section>
           </div>
+
+          <!-- 落地协议、握手目标、TFO 全是【入口】的属性,一台机器上
+               可以有好几组。中转机上一个入口都没有,这一块整个不出现 ——
+               渲染一份从来没有生效过的配置看起来像是配好了。
+
+               **这一张单独占一整行,不进上面的网格。** 它的高度随入口数增长,
+               而另外三张基本是定高的 —— 挤在同一个网格里,入口一多这一列就
+               拖着旁边那张一起变成一条长白块。每个入口一块自己的子卡片,
+               块与块之间靠底色与间距分开,而不是几十行键值排成一列。 -->
+          <section v-if="!isRelay" class="nd__card nd__card--wide">
+            <div class="nd__card-head">
+              <span class="nd__card-head-title">入口与配置版本</span>
+              <span class="nd__card-head-side">
+                <!-- sing-box 的配置版本是整台机器的属性,放在头部。没有 sing-box 时
+                     不出现 —— 显示「rev 0 / 从未部署」会催着管理员去部署一份空配置。
+                     判空要看原值,不能靠 shortHash 的返回值:它对空串返回的是「—」,
+                     而「—」在本项目里的含义是「读取失败」,与「还没部署过」是两回事。 -->
+                <span v-if="hasSingBox" class="nd__card-note lb-mono" :title="node.deployed_config_sha256">
+                  rev {{ node.config_revision }} ·
+                  {{ node.deployed_config_sha256 ? `已部署 ${shortHash(node.deployed_config_sha256)}` : '从未部署' }}
+                </span>
+                <a class="nd__card-link" @click="tab = 'entries'">去「入口」管理 ›</a>
+              </span>
+            </div>
+            <div class="nd__card-body">
+                <!-- 判据要把 Mieru 一起算上:只有 Mieru 入口的机器上用户是连得上的,
+                     而「谁都连不上」在那种机器上是错的 —— 一句错误的告警
+                     会让管理员去修一台本来就好好的机器。 -->
+              <div v-if="!inbounds.length && !mierus.length" class="nd__card-note">
+                这台机器上一个入口都没有 —— 服务会正常运行,但谁都连不上。
+              </div>
+              <div v-else-if="!inbounds.length" class="nd__card-note">
+                这台机器上只有 Mieru 入口,没有 sing-box 入口。
+              </div>
+              <div class="nd__ibs">
+              <div v-for="i in inbounds" :key="i.id" class="nd__ib">
+                <div class="nd__ib-head">
+                  <span class="nd__ib-name">{{ i.display_name }}</span>
+                  <span class="nd__ib-tag lb-mono">{{ i.tag }}</span>
+                  <!-- 标签显示的是【已经生效】的协议,与入口列表同一个函数:
+                       改协议到部署成功之间的窗口里,用户实际连的还是旧的。 -->
+                  <LbStatusTag :meta="inboundProtocolMeta(i)" />
+                </div>
+                <div class="nd__kv nd__ib-kv">
+                  <!-- 「期望」与「节点上生效」分两行,不合成一行。
+                       合起来只能显示其中一个:显示期望值会让管理员以为切换已经
+                       完成(而节点上还是旧协议),显示生效值又看不出他刚才改过。 -->
+                  <div><span>期望协议</span><b>{{ PROTOCOL_LABEL[i.protocol] }}</b></div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      :style="{
+                        color:
+                          i.deployed_protocol && i.deployed_protocol !== i.protocol
+                            ? color.warning
+                            : undefined,
+                      }"
+                    >
+                      {{ i.deployed_protocol ? PROTOCOL_LABEL[i.deployed_protocol] : '从未部署' }}
+                    </b>
+                  </div>
+                  <!-- 不计流量要在这里说出来:这个入口的流量既不进用户额度,
+                       也不进上面「流量」Tab 的代理流量 —— 不写的话,那张图上
+                       少的那一截没有任何解释。 -->
+                  <div v-if="i.unmetered || i.deployed_unmetered" class="nd__kv-wide">
+                    <span>流量计量</span>
+                    <b :style="{ color: color.warning }">
+                      {{
+                        i.unmetered && i.deployed_unmetered
+                          ? '不计流量 —— 不计入任何用户额度,也不计入这台机器的周期用量'
+                          : i.unmetered
+                            ? '不计流量(待部署,节点上仍在计量)'
+                            : '按用户计量(待部署,节点上仍是不计流量)'
+                      }}
+                    </b>
+                  </div>
+                  <template v-if="i.protocol === 'SHADOWSOCKS'">
+                    <div class="nd__kv-wide">
+                      <span>加密方法</span>
+                      <b class="lb-mono">{{ i.ss_method || '—' }}</b>
+                    </div>
+                  </template>
+                  <!-- Snell 不用 REALITY,那几行一律不渲染 ——
+                       显示一个"握手目标:未设置"会让人以为还有一步没做,
+                       而这个协议里根本没有那一步。 -->
+                  <template v-else-if="i.protocol === 'SNELL'">
+                    <div>
+                      <span>Snell 版本</span>
+                      <b class="lb-mono">v{{ i.snell_version || '—' }}</b>
+                    </div>
+                    <div>
+                      <span>{{ i.snell_version === 5 ? '混淆' : '流量整形' }}</span>
+                      <b class="lb-mono">
+                        {{
+                          i.snell_version === 5
+                            ? i.snell_obfs_mode || 'none'
+                            : i.snell_v6_mode || 'default'
+                        }}
+                      </b>
+                    </div>
+                    <div v-if="i.snell_version === 5 && i.snell_obfs_mode !== 'none'">
+                      <span>伪装 Host</span>
+                      <b class="lb-mono">{{ i.snell_obfs_host || '—' }}</b>
+                    </div>
+                    <div class="nd__kv-wide">
+                      <span>凭据模式</span>
+                      <b :style="{ color: i.snell_shared_psk ? color.warning : undefined }">
+                        {{
+                          i.snell_shared_psk
+                            ? '共享 psk —— 无分用户流量,撤销要换 psk'
+                            : '逐用户 userkey'
+                        }}
+                      </b>
+                    </div>
+                    <div class="nd__kv-wide">
+                      <span>可用客户端</span>
+                      <b>
+                        {{
+                          i.snell_shared_psk
+                            ? 'sing-box 1.14+ / Surge / Clash · mihomo'
+                            : 'sing-box 1.14+ / Surge'
+                        }}
+                        —— 两种模式都不进 URI 订阅
+                      </b>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div>
+                      <span>握手目标</span>
+                      <b class="lb-mono">
+                        {{ i.reality_dest || '未设置'
+                        }}<template v-if="i.reality_dest">:{{ i.reality_dest_port }}</template>
+                      </b>
+                    </div>
+                    <div>
+                      <span>最大 TLS 记录</span>
+                      <b
+                        class="lb-mono"
+                        :style="{
+                          color: i.handshake_max_record_size > 8192 ? color.danger : undefined,
+                        }"
+                      >
+                        {{ i.handshake_max_record_size || '未实测' }} / 8192
+                      </b>
+                    </div>
+                    <div class="nd__kv-wide">
+                      <span>上次实测</span>
+                      <b><LbTimeText :value="i.handshake_checked_at" empty="从未实测" /></b>
+                    </div>
+                  </template>
+                  <!-- 与协议一样分两行。TFO 必须两端一致才有意义,而"改了没部署"
+                       的那段时间里订阅下发的是旧值 —— 只显示一个的话,
+                       管理员看到「已开启」会以为客户端那边也已经在用了。 -->
+                  <div><span>TCP Fast Open</span><b>{{ i.tcp_fast_open ? '已开启' : '未开启' }}</b></div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      :style="{
+                        color:
+                          i.tcp_fast_open !== i.deployed_tcp_fast_open ? color.warning : undefined,
+                      }"
+                    >
+                      {{ i.deployed_tcp_fast_open ? '已开启' : '未开启' }}
+                    </b>
+                  </div>
+                </div>
+              </div>
+              <!-- Mieru 入口同样一块一个。它们不是 sing-box 的入站:服务端是 mita,
+                   另一个进程、另一套服务定义、逐入口各自下发 ——
+                   头上的「Mieru」种类标记就是为了不让人以为 rev N 也管着它们。 -->
+              <div v-for="m in mierus" :key="`m${m.id}`" class="nd__ib">
+                <div class="nd__ib-head">
+                  <span class="nd__ib-kind">Mieru</span>
+                  <span class="nd__ib-name">{{ m.display_name }}</span>
+                  <LbStatusTag :meta="mieruTransportMeta(m)" />
+                </div>
+                <div class="nd__kv nd__ib-kv">
+                  <div>
+                    <span>期望端口段</span>
+                    <b class="lb-mono">{{ portRangeText(m.listen_port_start, m.listen_port_end) }}</b>
+                  </div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      class="lb-mono"
+                      :style="{ color: mieruPending(m) ? color.warning : undefined }"
+                    >
+                      {{
+                        m.deployed_transport
+                          ? portRangeText(m.deployed_listen_port_start, m.deployed_listen_port_end)
+                          : '从未下发'
+                      }}
+                    </b>
+                  </div>
+                  <div><span>期望传输层</span><b class="lb-mono">{{ m.transport }}</b></div>
+                  <div>
+                    <span>节点上生效</span>
+                    <b
+                      class="lb-mono"
+                      :style="{
+                        color:
+                          m.deployed_transport && m.deployed_transport !== m.transport
+                            ? color.warning
+                            : undefined,
+                      }"
+                    >
+                      {{ m.deployed_transport || '从未下发' }}
+                    </b>
+                  </div>
+                  <div class="nd__kv-wide">
+                    <span>出口</span>
+                    <b>{{ m.chain_target_kind ? '经本机 sing-box 转一跳到落地' : '本机直连' }}</b>
+                  </div>
+                </div>
+              </div>
+              </div>
+            </div>
+            <div v-if="protocolMismatch" class="nd__card-foot">
+              有入口改了协议但还没部署。<strong>节点上仍在运行旧协议,订阅里下发的也是它</strong>
+              —— 现在的用户不会断线。部署之后才切换,届时那个入口的用户都要重新拉一次订阅。
+            </div>
+          </section>
         </a-tab-pane>
 
         <a-tab-pane key="metrics" tab="资源">
@@ -2469,11 +2499,73 @@ const needsPortForward = computed(() =>
   color: var(--bad);
 }
 
+/* 上面三张(连接与端口 / 本周期流量 / 资源,有云实例时四张)基本定高,
+   340 的下限让它们在 1120 的内容宽里排成一行;入口那一张单独占一整行,
+   高度随入口数走,不再拖着旁边的卡片一起变长。 */
 .nd__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 16px;
-  align-items: start;
+}
+
+.nd__card--wide {
+  margin-top: 16px;
+}
+
+.nd__card-head-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* 入口子卡片:一个入口一块,--surface2 底、圆角 14,三块一行。
+   块与块之间靠底色与间距分开 —— 原来几十行键值排成一列,
+   第二个入口从哪里开始要靠数行。 */
+.nd__ibs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.nd__ib {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 14px 14px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+}
+
+.nd__ib-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nd__ib-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.nd__ib-tag {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+/* 种类标记,中性色:它说的是"这是哪一类入口",不是状态。 */
+.nd__ib-kind {
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.nd__ib-kv {
+  gap: 10px 16px;
 }
 
 .nd__card {

@@ -118,3 +118,91 @@ func (s *Server) handleStopRealm(w http.ResponseWriter, r *http.Request) {
 			return s.nodes.StopRealm(r.Context(), id)
 		})
 }
+
+// 启停(V19 入口 Tab 的服务卡片)。sing-box 的「重启」仍走 node.restart。
+//
+// 停止都是临时的:巡检看到服务定义在、进程没跑会把它拉起来。
+// 这句话写在前端的确认框里,这里只负责做与记。
+const (
+	actionSingBoxStart = "node.singbox_start"
+	actionSingBoxStop  = "node.singbox_stop"
+	actionNginxStart   = "node.nginx_start"
+	actionNginxStop    = "node.nginx_stop"
+	actionNginxRestart = "node.nginx_restart"
+	actionMieruStart   = "node.mieru_start"
+	actionMieruStop    = "node.mieru_stop"
+	actionMieruRestart = "node.mieru_restart"
+)
+
+func (s *Server) handleStartSingBox(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionSingBoxStart, "启动 sing-box 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlSingBox(r.Context(), id, node.ServiceOpStart)
+		})
+}
+
+func (s *Server) handleStopSingBox(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionSingBoxStop, "停止 sing-box 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlSingBox(r.Context(), id, node.ServiceOpStop)
+		})
+}
+
+func (s *Server) handleStartNginx(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionNginxStart, "启动 nginx 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlNginx(r.Context(), id, node.ServiceOpStart)
+		})
+}
+
+func (s *Server) handleStopNginx(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionNginxStop, "停止 nginx 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlNginx(r.Context(), id, node.ServiceOpStop)
+		})
+}
+
+func (s *Server) handleRestartNginx(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionNginxRestart, "重启 nginx 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlNginx(r.Context(), id, node.ServiceOpRestart)
+		})
+}
+
+func (s *Server) handleStartMieru(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionMieruStart, "启动 Mieru 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlMieruAll(r.Context(), id, node.ServiceOpStart)
+		})
+}
+
+func (s *Server) handleStopMieru(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionMieruStop, "停止 Mieru 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlMieruAll(r.Context(), id, node.ServiceOpStop)
+		})
+}
+
+func (s *Server) handleRestartMieru(w http.ResponseWriter, r *http.Request) {
+	s.serviceOp(w, r, actionMieruRestart, "重启 Mieru 失败",
+		func(id int64) (node.ServiceOpResult, error) {
+			return s.nodes.ControlMieruAll(r.Context(), id, node.ServiceOpRestart)
+		})
+}
+
+// handleNodeServiceFacts 是「入口」Tab 四张服务卡片的数据来源:只读,一次 SSH。
+//
+// 与 /nginx、/realm 那两个只读探测并列而不是取代它们:这一个把四类一起问,
+// 卡片要的正是"同一时刻的四个答案"。
+func (s *Server) handleNodeServiceFacts(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	facts, err := s.nodes.ProbeServices(r.Context(), id)
+	if err != nil {
+		s.writeNodeError(w, err, "探测节点服务失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, facts)
+}
