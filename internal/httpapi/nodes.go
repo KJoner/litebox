@@ -90,6 +90,13 @@ type nodeView struct {
 	// Cloud 是这台机器绑定的云实例(V17),没绑定时是 null —— 前端据此决定
 	// 要不要显示「云实例」那一块,不显示一个全是空值的卡片。
 	Cloud *cloudNodeView `json:"cloud"`
+
+	// UsesCustomKey 为真表示这个节点单配了一把私钥,而不是用面板专用密钥。
+	// 私钥内容从不回显,但"用的是哪一把"要让管理员看得见 —— 编辑表单据此
+	// 提示"当前:单配私钥",并给出"改用面板专用密钥"的选项。一把误贴、
+	// 解不开的私钥同样会让这里是 true(它能解密、只是不是合法私钥),
+	// 那恰恰是需要那个选项去救的情形。
+	UsesCustomKey bool `json:"uses_custom_key"`
 }
 
 // protocolOption 是入站协议下拉框里的一项。
@@ -126,6 +133,7 @@ func newNodeView(n *node.Node, status node.NodeConfigStatus) nodeView {
 		UDPTimeout:         singbox.UDPTimeoutFor(n.MemTotalMB),
 		SubscriptionHost:   subscription.SubscriptionIPv4(n.Host, n.SubIPv4Address),
 		AvailableProtocols: availableProtocols(n.SingBoxChannel),
+		UsesCustomKey:      n.SSHKey != "",
 	}
 }
 
@@ -373,6 +381,9 @@ type updateNodeRequest struct {
 	SSHUser        string `json:"ssh_user"`
 	// SSHKey 留空表示不更换私钥。
 	SSHKey string `json:"ssh_key"`
+	// ClearSSHKey 为真表示清掉本节点单配的私钥、改用面板专用密钥(救急用,
+	// 见 store.UpdateParams.ClearSSHKey)。SSHKey 非空时它被忽略。
+	ClearSSHKey bool `json:"clear_ssh_key"`
 	// APIPort 是这台机器上 V2Ray API 的回环端口,全部入站共用一个。
 	// 代理端口、协议、REALITY 与 TFO 已经是【入站】的属性,走 /inbounds 接口改。
 	APIPort int `json:"api_port"`
@@ -440,6 +451,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		SSHPort:             req.SSHPort,
 		SSHUser:             strings.TrimSpace(req.SSHUser),
 		SSHKey:              req.SSHKey,
+		ClearSSHKey:         req.ClearSSHKey,
 		APIPort:             req.APIPort,
 		SortOrder:           req.SortOrder,
 		SubscriptionEnabled: req.SubscriptionEnabled,

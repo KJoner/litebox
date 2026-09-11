@@ -167,6 +167,38 @@ func Dial(ctx context.Context, target Target, timeout time.Duration) (*Client, e
 
 // authMethods 组装认证方式:先公钥后口令。
 //
+// ValidatePrivateKey 判断一段文本是不是面板真的能用的私钥:能解析,且不带口令。
+//
+// 放在写入路径上(新建 / 编辑节点)而不是等到连接时:一把解不开的私钥被静默
+// 存进库之后,面板每一次操作(测试 SSH、探测、算配置差异)都会失败,而报错
+// 是同一句 `ssh: no key found` —— 它指向的是私钥内容,可管理员在表单上看到的
+// 是一个空框(私钥从不回显),于是只能对着"节点连不上"从头猜。生产上撞到过。
+//
+// `ssh: no key found` 的真实来源几乎都不是"密钥丢了":误把【公钥】(.pub,一行
+// ssh-ed25519/ssh-rsa 开头)或 PuTTY 的 .ppk 贴了进来、复制时被截断、整段被
+// 贴成了一行 —— 全都得到这同一句。带口令的私钥则是另一回事:面板无人值守,
+// 输不了口令,存进去同样每次都失败,所以一并在这里挡掉。空串合法:它表示
+// "这个节点用面板专用密钥",是新节点的常态。
+func ValidatePrivateKey(pemText string) error {
+	if strings.TrimSpace(pemText) == "" {
+		return nil
+	}
+	_, err := ssh.ParsePrivateKey([]byte(pemText))
+	if err == nil {
+		return nil
+	}
+	var missing *ssh.PassphraseMissingError
+	if errors.As(err, &missing) {
+		return errors.New("这把 SSH 私钥带口令,而面板无人值守、无法在连接时输入口令。" +
+			"请改用一把不带口令的私钥,或留空以改用面板专用密钥")
+	}
+	return fmt.Errorf("这不是一把合法的 SSH 私钥(%w)。"+
+		"常见原因:误把【公钥】(.pub 内容,一行 ssh-ed25519 / ssh-rsa 开头)"+
+		"或 PuTTY 的 .ppk 贴了进来,又或者复制时被截断、被贴成了一行。"+
+		"请粘贴完整的 PEM 私钥(从 -----BEGIN ... PRIVATE KEY----- 到 -----END ... PRIVATE KEY-----);"+
+		"留空则改用面板专用密钥", err)
+}
+
 // 口令同时注册 password 与 keyboard-interactive 两种方法 ——
 // 相当一部分 sshd 只开了后者(PAM 走 keyboard-interactive),
 // 只注册 password 会在那些机器上直接认证失败,而报错看起来像密码错了。

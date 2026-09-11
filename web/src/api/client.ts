@@ -693,6 +693,13 @@ export interface Node {
    * 那一块,不显示一个全是空值的卡片。只有 GET /api/nodes 与 GET /api/nodes/{id} 带它。
    */
   cloud?: CloudNodeView | null
+  /**
+   * 这个节点单配了私钥(true)还是用面板专用密钥(false)。私钥内容从不回显,
+   * 但编辑表单要据此提示"当前用的是哪一把",并在单配私钥时给出
+   * "改用面板专用密钥"的选项 —— 一把误贴、解不开的私钥同样是 true,
+   * 那正是需要那个选项去救的情形。
+   */
+  uses_custom_key?: boolean
   created_at: string
   updated_at: string
   /**

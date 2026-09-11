@@ -15,7 +15,11 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 )
 
-const testSSHKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key-for-tests\n-----END OPENSSH PRIVATE KEY-----"
+// 一把真正能被 ssh.ParsePrivateKey 解析的 ed25519 私钥(仅用于测试)。
+// 从前这里是一段占位文本,但节点写入路径现在会校验私钥能不能解析
+// (误贴公钥、被截断都会得到 `ssh: no key found`,静默存下会让面板
+// 每次操作都失败),占位文本过不了那道校验。这把是离线生成的一次性密钥。
+const testSSHKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\nc2gtZWQyNTUxOQAAACCNZxfMwrUd/GyMTYrGPAHeHGrjmfrgfNGGUshddaAJuAAA\nAIheayUgXmslIAAAAAtzc2gtZWQyNTUxOQAAACCNZxfMwrUd/GyMTYrGPAHeHGrj\nmfrgfNGGUshddaAJuAAAAEACKrMM8uUxygo8FWUFg5O68GpptVrOekzFI8VPfN5q\nRo1nF8zCtR38bIxNisY8Ad4cauOZ+uB80YZSyF11oAm4AAAAAAECAwQF\n-----END OPENSSH PRIVATE KEY-----\n"
 
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
@@ -638,7 +642,8 @@ func TestUpdateNodeKeepsSSHKeyWhenBlank(t *testing.T) {
 		t.Fatal("留空私钥时原私钥被清掉了")
 	}
 
-	const newKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nrotated\n-----END OPENSSH PRIVATE KEY-----"
+	// 换钥要换成另一把【合法】的私钥:写入路径现在会校验,占位文本过不了。
+	const newKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\nc2gtZWQyNTUxOQAAACCfjuGQkT+N5nlnDzjr8K4+VsFrYaCwRXw14IaWc4Q3fwAA\nAIhwL1BpcC9QaQAAAAtzc2gtZWQyNTUxOQAAACCfjuGQkT+N5nlnDzjr8K4+VsFr\nYaCwRXw14IaWc4Q3fwAAAEDM8ZFxSUxKV5gxMzk05OjpqoxEpR0dSLyNQAU/I3QF\nd5+O4ZCRP43meWcPOOvwrj5WwWthoLBFfDXghpZzhDd/AAAAAAECAwQF\n-----END OPENSSH PRIVATE KEY-----\n"
 	updated, effect, err := store.Update(t.Context(), n.ID, UpdateParams{
 		Name: n.Name, Host: n.Host, SSHPort: n.SSHPort, SSHUser: n.SSHUser,
 		SSHKey: newKey, APIPort: n.APIPort,
