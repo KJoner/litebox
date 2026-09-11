@@ -110,11 +110,7 @@ func (s *Service) ensureSingBoxBinary(ctx context.Context, n *Node) (string, err
 			"请先在「入口」Tab 里点 sing-box 那一行的「安装」",
 			binaryBlockReason(s.binaries == nil, n.Arch == ""))
 	}
-	// 装这台机器【当前记着的】那一支。一台还没装过 sing-box 的机器上
-	// 它是正式版,而那正是对的:回环 socks 入站与 Snell 无关,
-	// 出口那一跳不需要预览版。悄悄给它装预览版的话,这台机器会多出
-	// +8MB 常驻内存,而管理员从来没有选过。
-	res, err := s.InstallBinary(ctx, n.ID, n.SingBoxChannel)
+	res, err := s.InstallBinary(ctx, n.ID)
 	if err != nil {
 		return "", fmt.Errorf("自动安装 sing-box 失败: %w", err)
 	}

@@ -8,17 +8,6 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 )
 
-// setChannel 直接改库里那一列。
-//
-// 生产路径上它只由 InstallBinary 写入(那一步要连节点),所以测试里
-// 只能绕过去 —— 但绕的是"怎么写进去",不是"写进去之后谁读它"。
-func setChannel(t *testing.T, store *Store, nodeID int64, c SingBoxChannel) {
-	t.Helper()
-	if err := store.SaveSingBoxChannel(t.Context(), nodeID, c); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func snellInboundParams(port int) InboundParams {
 	return InboundParams{
 		DisplayName:  "东京 Snell",
@@ -28,34 +17,69 @@ func snellInboundParams(port int) InboundParams {
 	}
 }
 
-// 正式版的机器上建不了 Snell 入口。
+// 装着 1.13 的机器上建不了 Snell 入口,把入口改成 Snell 也不行。
 //
 // **拦在保存那一刻**,不是等部署。不拦的话这条路径是:入口保存成功 →
 // 界面写着"待部署" → 管理员点下发 → 十几秒后 sing-box check 报
 // unknown inbound type: snell → 部署失败并回滚。那句话准确但没有方向,
-// 它不会提"这台机器装的是正式版"。
-func TestSnellNeedsPreviewChannel(t *testing.T) {
+// 它不会提"这台机器上的 sing-box 是 1.13"。面板升级之后、重新安装之前,
+// 每一台机器都是这样。
+func TestSnellNeedsSingBox114(t *testing.T) {
 	store, _ := newTestStore(t)
 	n, err := store.Create(t.Context(), defaultCreateParams())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.SingBoxChannel != ChannelStable {
-		t.Fatalf("新建节点的通道是 %q,应当是正式版", n.SingBoxChannel)
+	probe := func(version string) {
+		t.Helper()
+		if err := store.SaveProbe(t.Context(), n.ID, "amd64", version,
+			RequiredBuildTag, 457, true); err != nil {
+			t.Fatal(err)
+		}
 	}
 
+	probe("v1.13.15-litebox")
 	_, err = store.CreateInbound(t.Context(), n.ID, snellInboundParams(28443))
-	if !errors.Is(err, ErrChannelMismatch) {
-		t.Fatalf("正式版机器上建 Snell 入口应当被拒,实际:%v", err)
+	if !errors.Is(err, ErrSingBoxTooOld) {
+		t.Fatalf("1.13 的机器上建 Snell 入口应当被拒,实际:%v", err)
 	}
-	if !strings.Contains(err.Error(), "预览版") {
-		t.Errorf("错误信息没告诉管理员该做什么:%v", err)
+	if !strings.Contains(err.Error(), "重新安装") || !strings.Contains(err.Error(), "v1.13.15-litebox") {
+		t.Errorf("错误信息没说清装的是哪一版、该做什么:%v", err)
+	}
+	// 改协议成 Snell 走的是另一条路径(UpdateInbound),同样要拦。
+	vless := only(t, n)
+	p := inboundParamsOf(vless)
+	p.Protocol = string(singbox.ProtocolSnell)
+	p.SnellVersion = singbox.SnellVersion6
+	if _, _, err := store.UpdateInbound(t.Context(), vless.ID, p); !errors.Is(err, ErrSingBoxTooOld) {
+		t.Fatalf("1.13 的机器上把入口改成 Snell 应当被拒,实际:%v", err)
 	}
 
-	setChannel(t, store, n.ID, ChannelPreview)
+	// V14 装的预览版(rc)与 1.14.0 正式版都认得 Snell。
+	for i, version := range []string{"v1.14.0-rc.1-litebox", "v1.14.0-litebox"} {
+		probe(version)
+		if _, err := store.CreateInbound(t.Context(), n.ID, snellInboundParams(28444+i)); err != nil {
+			t.Fatalf("%s 的机器上建 Snell 入口失败:%v", version, err)
+		}
+	}
+}
+
+// 还没装 sing-box 的机器上可以先建 Snell 入口。
+//
+// 面板只分发一支,这台机器接下来装上去的只会是它;真要装一个认不得 Snell 的
+// 二进制,安装那一步会在换上去之前拦下(checkBinarySupportsInbounds)。
+func TestSnellAllowedBeforeSingBoxIsInstalled(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.SingBoxVersion != "" {
+		t.Fatalf("新建节点的版本是 %q,应当为空", n.SingBoxVersion)
+	}
 	in, err := store.CreateInbound(t.Context(), n.ID, snellInboundParams(28443))
 	if err != nil {
-		t.Fatalf("预览版机器上建 Snell 入口失败:%v", err)
+		t.Fatalf("还没装 sing-box 的机器上建 Snell 入口失败:%v", err)
 	}
 	if in.Protocol != singbox.ProtocolSnell {
 		t.Errorf("协议是 %q", in.Protocol)
@@ -85,65 +109,6 @@ func TestEveryInboundGetsASnellPSK(t *testing.T) {
 	}
 }
 
-// 有 Snell 入口时装不回正式版。
-//
-// 这一条与上面那一条是同一件事的两个方向。少了它,管理员点一次
-// 「安装(正式版)」,这台机器的整份配置从那一刻起就渲染不出来了 ——
-// 而他看到的第一个现象是下一次下发失败并回滚。
-func TestInstallingStableIsBlockedBySnellInbound(t *testing.T) {
-	store, _ := newTestStore(t)
-	n, err := store.Create(t.Context(), defaultCreateParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	setChannel(t, store, n.ID, ChannelPreview)
-	snell, err := store.CreateInbound(t.Context(), n.ID, snellInboundParams(28443))
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err = store.Get(t.Context(), n.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	svc := &Service{}
-	if err := svc.checkChannelDowngrade(t.Context(), n, ChannelStable); !errors.Is(err, ErrChannelMismatch) {
-		t.Fatalf("有 Snell 入口时装正式版应当被拒,实际:%v", err)
-	}
-	// 反方向永远放行:预览版是正式版的超集。
-	if err := svc.checkChannelDowngrade(t.Context(), n, ChannelPreview); err != nil {
-		t.Errorf("装预览版不该被拦:%v", err)
-	}
-	// 入口改成别的协议之后就能装回去了 —— 错误信息里承诺的正是这一条。
-	p := snellParamsOf(snell)
-	p.Protocol = string(singbox.ProtocolShadowsocks)
-	if _, _, err := store.UpdateInbound(t.Context(), snell.ID, p); err != nil {
-		t.Fatal(err)
-	}
-	n, _ = store.Get(t.Context(), n.ID)
-	if err := svc.checkChannelDowngrade(t.Context(), n, ChannelStable); err != nil {
-		t.Errorf("改成 Shadowsocks 之后仍然拦着:%v", err)
-	}
-}
-
-// 卸载之后通道回到正式版。
-//
-// 机器上已经没有 sing-box 了,库里还写着"预览版"就是在说一件不成立的事,
-// 而下一次不带参数的「安装」会沿用它 —— 装上一支管理员没有选过的版本。
-func TestUninstallResetsChannel(t *testing.T) {
-	store, _ := newTestStore(t)
-	n, err := store.Create(t.Context(), defaultCreateParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	setChannel(t, store, n.ID, ChannelPreview)
-	setChannel(t, store, n.ID, ChannelStable)
-	n, _ = store.Get(t.Context(), n.ID)
-	if n.SingBoxChannel != ChannelStable {
-		t.Errorf("通道是 %q", n.SingBoxChannel)
-	}
-}
-
 // 改 Snell 的三项参数要重新部署,改混淆 Host 不用。
 //
 // 后者只影响客户端配置(服务端根本没有这个字段)—— 为它重启 sing-box
@@ -154,7 +119,6 @@ func TestSnellFieldsPickTheRightEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 
 	// **每个用例各建各的入口。** 共用一个的话,第一个用例把版本从 5 改成 6,
 	// 后面两个关于混淆的前提就没了(混淆是版本 5 专有的),
@@ -238,7 +202,6 @@ func TestOmittedSnellVersionKeepsCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 	in, err := store.CreateInbound(t.Context(), n.ID, snellInboundParams(28443))
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +229,6 @@ func TestSwitchingProtocolClearsSnellParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 	p := snellInboundParams(28443)
 	p.SnellVersion = singbox.SnellVersion5
 	p.SnellObfsMode = string(singbox.SnellObfsHTTP)
@@ -301,7 +263,6 @@ func TestSnellInboundHasNoHandshakeDest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 	in, err := store.CreateInbound(t.Context(), n.ID, snellInboundParams(28443))
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +297,6 @@ func TestSharedSnellRejectsVersion6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 
 	p := snellInboundParams(28443)
 	p.SnellVersion = singbox.SnellVersion6
@@ -365,7 +325,6 @@ func TestSwitchingCredentialModeNeedsDeployAndIsAudited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 	p := snellInboundParams(28443)
 	p.SnellVersion = singbox.SnellVersion5
 	in, err := store.CreateInbound(t.Context(), n.ID, p)
@@ -398,7 +357,6 @@ func TestSwitchingProtocolClearsSharedFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 	p := snellInboundParams(28443)
 	p.SnellVersion = singbox.SnellVersion5
 	p.SnellSharedPSK = true
@@ -431,7 +389,6 @@ func TestSharedInboundsForNodeUsesDeployedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setChannel(t, store, n.ID, ChannelPreview)
 	p := snellInboundParams(28443)
 	p.SnellVersion = singbox.SnellVersion5
 	p.SnellSharedPSK = true

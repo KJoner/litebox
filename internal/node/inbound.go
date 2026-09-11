@@ -397,12 +397,12 @@ func (s *Store) CreateInbound(ctx context.Context, nodeID int64, p InboundParams
 func (s *Store) createInboundTx(
 	ctx context.Context, tx *sql.Tx, nodeID int64, p InboundParams,
 ) (int64, error) {
-	var role, nodeName, displayName, ipv6, channel string
+	var role, nodeName, displayName, ipv6, singBoxVersion string
 	var apiPort int
 	err := tx.QueryRowContext(ctx,
-		`SELECT role, name, display_name, api_port, ipv6_address, singbox_channel
+		`SELECT role, name, display_name, api_port, ipv6_address, singbox_version
 		   FROM nodes WHERE id = ? AND deleted_at IS NULL`,
-		nodeID).Scan(&role, &nodeName, &displayName, &apiPort, &ipv6, &channel)
+		nodeID).Scan(&role, &nodeName, &displayName, &apiPort, &ipv6, &singBoxVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -416,7 +416,7 @@ func (s *Store) createInboundTx(
 	if err := normalizeInboundParams(&p, displayName); err != nil {
 		return 0, err
 	}
-	if err := checkChannelSupportsProtocol(SingBoxChannel(channel), p.Protocol); err != nil {
+	if err := checkSingBoxSupportsProtocol(singBoxVersion, p.Protocol); err != nil {
 		return 0, err
 	}
 	clearIPv6PortWithoutAddress(ipv6, &p.IPv6PublicPort)
@@ -542,10 +542,10 @@ func (s *Store) UpdateInbound(
 		return nil, InboundEffect{}, err
 	}
 	var apiPort int
-	var ipv6, channel string
+	var ipv6, singBoxVersion string
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT api_port, ipv6_address, singbox_channel FROM nodes WHERE id = ?`,
-		cur.NodeID).Scan(&apiPort, &ipv6, &channel); err != nil {
+		`SELECT api_port, ipv6_address, singbox_version FROM nodes WHERE id = ?`,
+		cur.NodeID).Scan(&apiPort, &ipv6, &singBoxVersion); err != nil {
 		return nil, InboundEffect{}, err
 	}
 	// 版本留 0 表示保持原值 —— 编辑表单在非 Snell 协议下根本不渲染这一栏,
@@ -556,7 +556,7 @@ func (s *Store) UpdateInbound(
 	if err := normalizeInboundParams(&p, cur.DisplayName); err != nil {
 		return nil, InboundEffect{}, err
 	}
-	if err := checkChannelSupportsProtocol(SingBoxChannel(channel), p.Protocol); err != nil {
+	if err := checkSingBoxSupportsProtocol(singBoxVersion, p.Protocol); err != nil {
 		return nil, InboundEffect{}, err
 	}
 	clearIPv6PortWithoutAddress(ipv6, &p.IPv6PublicPort)

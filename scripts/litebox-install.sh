@@ -177,38 +177,26 @@ BIN="bin/litebox-linux-$ARCH"
 [ -f "$BIN" ] || die "未生成 $BIN"
 ok "$BIN($(du -h "$BIN" | cut -f1))"
 
+# 已有的构建只在【版本对得上】时才跳过。只看文件在不在的话,升级面板的人会
+# 一直分发上一次构建的那一版 —— 节点上装的仍是旧版,而 Snell 这类要新版本的
+# 入站在那些机器上建不了。版本号从 build-singbox.sh 里那一行读,不在这里再写一遍。
+WANT_SINGBOX="$(sed -n 's/^SINGBOX_VERSION="\${SINGBOX_VERSION:-\([^}]*\)}"$/\1/p' scripts/build-singbox.sh)"
+HAVE_SINGBOX="$(sed -n 's/.*"singbox_version": *"\([^"]*\)".*/\1/p' assets/singbox/build-metadata.json 2>/dev/null || true)"
+SINGBOX_UPGRADED=0
 if [ "${SKIP_SINGBOX:-0}" = "1" ]; then
     warn "已跳过 sing-box 构建。节点安装前需要自行执行 bash scripts/build-singbox.sh"
-elif ls assets/singbox/sing-box-linux-* >/dev/null 2>&1; then
-    ok "已有节点用 sing-box,跳过构建(要重建请删掉 assets/singbox/ 后重跑)"
+elif ls assets/singbox/sing-box-linux-* >/dev/null 2>&1 &&
+    [ -n "$WANT_SINGBOX" ] && [ "$HAVE_SINGBOX" = "$WANT_SINGBOX" ]; then
+    ok "已有节点用 sing-box $HAVE_SINGBOX,跳过构建(要重建请删掉 assets/singbox/ 后重跑)"
 else
-    log "构建节点用的 sing-box(带 with_v2ray_api 标签,较慢)"
+    if ls assets/singbox/sing-box-linux-* >/dev/null 2>&1; then
+        log "已有的 sing-box 是 ${HAVE_SINGBOX:-旧版本},重新构建 ${WANT_SINGBOX}(较慢)"
+        SINGBOX_UPGRADED=1
+    else
+        log "构建节点用的 sing-box ${WANT_SINGBOX}(带 with_v2ray_api 标签,较慢)"
+    fi
     bash scripts/build-singbox.sh
     ok "sing-box 已构建"
-fi
-
-# 预览版 sing-box(1.14)。**只有要用 Snell 入口才需要。**
-#
-# 默认不构建:它是上游的 rc,绝大多数机器不会用它,而多编译一次要几分钟。
-# 没有它面板只是不提供「安装预览版」那个选项,VLESS / Shadowsocks / Mieru
-# 一切照旧。
-#
-# **已经装过面板的机器,后来想加 Snell,重跑一次这个脚本并带上
-# WITH_SNELL=1 就行** —— 它会补构建预览版并拷到 $INSTALL_DIR,
-# 主控那一侧不用改任何配置(两支放同一个目录,binary_dir 已经指着它)。
-if [ "${WITH_SNELL:-0}" = "1" ]; then
-    if ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
-        ok "已有预览版 sing-box,跳过构建(要重建请删掉 assets/singbox/sing-box-preview-* 后重跑)"
-    else
-        log "构建预览版 sing-box(1.14,Snell 入口需要,较慢)"
-        bash -c 'SINGBOX_CHANNEL=preview bash scripts/build-singbox.sh'
-        ok "预览版 sing-box 已构建"
-    fi
-elif ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
-    # 上次带 WITH_SNELL=1 装过,这次没带 —— 别把它悄悄扔掉:
-    # 那会让一台正在跑 Snell 入口的机器,在下一次「重新安装」时
-    # 拿不到预览版二进制,而管理员只是重跑了一遍安装脚本。
-    ok "已有预览版 sing-box(上次构建的),保留"
 fi
 
 # mita/mieru 不自己构建,拉上游 release 的原样二进制(约 13MB,很快)。
@@ -264,14 +252,10 @@ if ls assets/singbox/sing-box-linux-* >/dev/null 2>&1; then
     cp -f assets/singbox/sing-box-linux-* "$INSTALL_DIR/assets/singbox/"
     ok "节点用 sing-box 已就位"
 fi
-# 预览版单独拷:通配符不能合成一个 —— sing-box-linux-* 匹配不到
-# sing-box-preview-linux-*,而反过来会把两支都算进上面那个判断里,
-# 于是"只有预览版"的机器会被当成"正式版已就位"。
-if ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
-    install -d -m 0755 "$INSTALL_DIR/assets/singbox"
-    cp -f assets/singbox/sing-box-preview-linux-* "$INSTALL_DIR/assets/singbox/"
-    ok "预览版 sing-box 已就位(节点上可以装它,然后建 Snell 入口)"
-fi
+# V14 的预览版通道已撤掉(1.14 正式版本身就带 Snell),面板不再读
+# sing-box-preview-linux-*。旧版面板留下的那几个文件各三十几 MB,顺手删掉 ——
+# 留着只会让人以为它们还有用。
+rm -f "$INSTALL_DIR"/assets/singbox/sing-box-preview-linux-* 2>/dev/null || true
 if ls assets/mieru/mita-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/mieru"
     # mieru 客户端也要:Mieru 入口的部署健康检查要用它做一次真实拨测,
@@ -340,12 +324,12 @@ cat <<EOF
   再次执行本脚本即为升级(会先自动备份数据库)。
 EOF
 
-if [ "${WITH_SNELL:-0}" != "1" ] && ! ls assets/singbox/sing-box-preview-linux-* >/dev/null 2>&1; then
-    cat <<'EOF'
+if [ "$SINGBOX_UPGRADED" = "1" ]; then
+    cat <<EOF
 
-  想用 Snell 入口的话,重跑一次本脚本并带上 WITH_SNELL=1 —— 它会额外构建
-  预览版 sing-box(1.14,Snell 是那一版才有的入站)。装完之后在节点详情的
-  「入口」Tab 里,sing-box 那一行的「安装」按钮会多出「安装预览版」这一项。
-  一台机器只装一支,那台机器上全部 sing-box 入口都跑在它上面。
+  节点用的 sing-box 换成了 ${WANT_SINGBOX},但已经装在节点上的仍是之前那一版。
+  在每台机器的「入口」Tab 里,sing-box 卡片「重启」旁的下拉 →「重新安装」,
+  再下发一次配置(会断开那台机器上全部入口的在线连接)。
+  卡片上写着「可升级」的就是还没换的。
 EOF
 fi

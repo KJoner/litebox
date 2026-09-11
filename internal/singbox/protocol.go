@@ -21,8 +21,8 @@ type Protocol string
 const (
 	ProtocolVLESSReality Protocol = "VLESS_REALITY"
 	ProtocolShadowsocks  Protocol = "SHADOWSOCKS"
-	// ProtocolSnell 只在装了预览版二进制的机器上可选(V14)——
-	// sing-box 的 snell 入站要 1.14 才有。这条限制由 node 层把关:
+	// ProtocolSnell 要节点上的 sing-box ≥ 1.14(V14)—— snell 入站是那一版才有的。
+	// 这条限制由 node 层按探测到的版本把关(见 MinVersion):
 	// 渲染期发现不了它,只有部署时 sing-box check 会报
 	// "unknown inbound type: snell",而那时错误落在部署记录里。
 	ProtocolSnell Protocol = "SNELL"
@@ -54,16 +54,24 @@ func (p Protocol) Label() string {
 	}
 }
 
-// NeedsPreview 表示这个协议要求节点上装的是预览版 sing-box。
+// snellMinVersion 是第一个有 snell 入站的 sing-box。
+var snellMinVersion = Version{Major: 1, Minor: 14}
+
+// MinVersion 是节点上的 sing-box 至少要多新才认得这个入站;needs 为假表示没有要求。
 //
-// 只有 Snell 是 —— VLESS 与 Shadowsocks 在正式版与预览版上渲染出的配置
+// 只有 Snell 有 —— VLESS 与 Shadowsocks 在 1.13 与 1.14 上渲染出的配置
 // 逐字节相同,实测两边都跑得起来(V14 技术验证 §2)。
 //
-// 判据写在协议上而不是散在各处:切通道、建入口、改协议三个地方都要问
+// 判据写在协议上而不是散在各处:建入口、改协议、换二进制三个地方都要问
 // 同一个问题,各写一遍的话漏掉其中一个的表现是配置渲染出来了、
 // 部署到一半 sing-box check 失败并回滚,而报错是一句
-// "unknown inbound type: snell" —— 它不会提"这台机器装的是正式版"。
-func (p Protocol) NeedsPreview() bool { return p == ProtocolSnell }
+// "unknown inbound type: snell" —— 它不会提"这台机器上的 sing-box 太旧"。
+func (p Protocol) MinVersion() (min Version, needs bool) {
+	if p == ProtocolSnell {
+		return snellMinVersion, true
+	}
+	return Version{}, false
+}
 
 // LegacyInboundTag 返回 V8 之前那一版按协议现算的入站标签。
 //

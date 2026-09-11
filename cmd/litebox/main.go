@@ -463,15 +463,14 @@ func cmdServe(args []string) error {
 		"请先执行 scripts/fetch-mieru.sh 拉取")
 
 	nodeService := node.NewService(node.ServiceOptions{
-		Store:           nodeStore,
-		Pool:            pool,
-		Deployer:        deployer,
-		DeployStore:     deployment.NewStore(db),
-		Users:           userStore,
-		Binaries:        node.NewDirBinaryProvider(cfg.Node.BinaryDir),
-		PreviewBinaries: node.NewPreviewBinaryProvider(cfg.Node.BinaryDir),
-		MieruBinaries:   mieruBinaries,
-		MieruClients:    mieruClients,
+		Store:         nodeStore,
+		Pool:          pool,
+		Deployer:      deployer,
+		DeployStore:   deployment.NewStore(db),
+		Users:         userStore,
+		Binaries:      node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		MieruBinaries: mieruBinaries,
+		MieruClients:  mieruClients,
 		RealmBinaries: node.NewNamedBinaryProvider(cfg.Node.RealmBinaryDir, "realm",
 			"请先执行 scripts/fetch-realm.sh 拉取"),
 		// 引导成功后顺带装 vnStat:失败只记进引导结果,不让创建节点失败。

@@ -104,13 +104,6 @@ type Node struct {
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`
-	// SingBoxChannel 是这台机器上装的 sing-box 属于哪一支(V14)。
-	//
-	// **它由安装动作写入,描述的是事实而不是期望** —— 见 SingBoxChannel
-	// 的注释。Snell 入口只在 PREVIEW 上能建,而反过来:有 Snell 入口时
-	// 装回正式版会被拦住,不然那台机器的整份配置从下一次部署起就渲染不出来
-	// (sing-box check 报 unknown inbound type,部署失败并回滚)。
-	SingBoxChannel SingBoxChannel `json:"singbox_channel"`
 	// MemTotalMB 由探测写入,0 表示还没探测过。它只用来算入站的 udp_timeout ——
 	// 不读 node_metrics 的最新采样:那个值每五分钟变一次、还能整个关掉,
 	// 配置哈希会跟着抖,「已同步」与「待部署」两个状态来回跳。
@@ -164,11 +157,15 @@ func NewStore(db *sql.DB, cipher *crypto.Cipher) *Store {
 // REALITY、SS、TFO、链式)。它们的数据已经搬进 node_inbounds,留在 nodes 上
 // 只是为了不重建这张全库被引用最多的表 —— 谁把它们加回这里,就等于
 // 让同一件事有两个来源,而两个来源迟早分叉。
+//
+// singbox_channel(迁移 0029)同样冻结:V14 的预览版通道撤掉之后面板只分发一支,
+// 「这台机器能不能建 Snell」改由 singbox_version 回答(见 ErrSingBoxTooOld)。
+// 刻意不 DROP,理由与上面一样。
 const nodeColumns = `n.id, n.name, n.display_name, n.host, n.sub_ipv4_address, n.ipv6_address,
 	n.ssh_port, n.ssh_user,
 	n.ssh_key_encrypted, n.ssh_host_key,
 	n.api_port, n.role, n.config_in_ram,
-	n.arch, n.singbox_version, n.singbox_build_tags, n.singbox_channel, n.mem_total_mb,
+	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
 	n.traffic_billing_mode,
@@ -186,7 +183,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		&n.ID, &n.Name, &n.DisplayName, &n.Host, &n.SubIPv4Address, &n.IPv6Address,
 		&n.SSHPort, &n.SSHUser, &sshKeyEnc, &n.HostKey,
 		&n.APIPort, &n.Role, &n.ConfigInRAM,
-		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.SingBoxChannel, &n.MemTotalMB,
+		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
 		&n.TrafficBillingMode,
@@ -1203,15 +1200,15 @@ func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
-// SaveSingBoxChannel 记录这台机器上装的是哪一支 sing-box(V14)。
+// ClearSingBoxVersion 在卸载 sing-box 之后清掉版本号与构建标签。
 //
-// **只由 InstallBinary 与 Uninstall 调用。** 它描述的是"机器上那个文件
-// 是哪一版",不是一个可以单独编辑的设置 —— 让它变成表单里的一栏,
-// 就会出现"库里写着预览版、机器上是正式版"的状态,而那个状态下
-// Snell 入口保存得进去、部署到一半失败并回滚。
-func (s *Store) SaveSingBoxChannel(ctx context.Context, id int64, channel SingBoxChannel) error {
+// 探测找不到 sing-box 时本来就会写空串,这里只是不等下一次探测:版本号是
+// 「这台机器能不能建 Snell 入口」的依据(ErrSingBoxTooOld),卸掉之后还留着
+// 一个 1.13 的版本号,会让一台已经没有 sing-box 的机器继续拦着 Snell ——
+// 而下一次装上去的只会是面板现在分发的那一支。
+func (s *Store) ClearSingBoxVersion(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE nodes SET singbox_channel = ?, updated_at = ? WHERE id = ?`,
-		string(channel), time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE nodes SET singbox_version = '', singbox_build_tags = '', updated_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), id)
 	return err
 }

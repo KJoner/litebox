@@ -261,8 +261,8 @@ async function pickDest(server: string) {
 /**
  * 这台机器上能选哪几种协议。
  *
- * **渲染后端给的列表,不自己按 singbox_channel 判。** 判据只能有一处实现,
- * 各写一遍的话,某天多一种只在预览版里的协议,这个下拉框会漏掉它,
+ * **渲染后端给的列表,不自己拿 singbox_version 比。** 判据只能有一处实现,
+ * 各写一遍的话,某天多一种要求更新版本的协议,这个下拉框会漏掉它,
  * 而后端明明支持 —— 与「周期重置日只渲染后端给的 next_reset_at」同一条规矩。
  *
  * 后端没带这个字段时(比如从别的接口拿到的 Node)回落到两种通用协议:
@@ -292,7 +292,8 @@ watch(
 )
 
 /**
- * 这台机器上装的是正式版,所以 Snell 选不了。
+ * 这台机器上的 sing-box 还是 1.14 之前的版本(面板升级后还没重新安装),
+ * 所以 Snell 选不了。
  *
  * **不把 Snell 摆出来再置灰** —— 置灰的选项要配一句解释,而那句解释在
  * 单选按钮里没有地方放;管理员看到一个灰的 Snell,只会去猜是不是自己
@@ -418,9 +419,9 @@ async function doSave() {
           </a-radio-button>
         </a-radio-group>
         <div v-if="snellUnavailable" class="ifm__hint">
-          这台机器上装的是<b>正式版 sing-box</b>,所以没有 Snell —— 那个入站要
-          sing-box 1.14,而 1.14 目前只有预览版。要用它:在「入口」Tab 的 sing-box
-          那一行重新安装并选预览版,然后下发一次配置(会重启 sing-box,
+          这台机器上的 sing-box 是 <b class="lb-mono">{{ node.singbox_version }}</b>,没有 Snell ——
+          那个入站要 sing-box 1.14 及以上。要用它:在「入口」Tab 的 sing-box 卡片上
+          重新安装(在「重启」或「启动」旁的下拉里),然后下发一次配置(会重启 sing-box,
           这台机器上<b>全部入口</b>的在线连接都会断开一次)。
         </div>
         <div v-if="protocolSwitchBlocked" class="ifm__warn">{{ protocolSwitchBlocked }}</div>

@@ -140,11 +140,19 @@ func SingBoxClientConfig(entries []Entry, mixedPort int) ([]byte, error) {
 
 	cfg := map[string]any{
 		"log": map[string]any{"level": "info", "timestamp": true},
+		// **DNS 服务器用 1.12 起的新格式(type + server)。** 旧格式
+		// ("address": "https://…")在 1.12 弃用、1.14 移除,而且移除得很彻底:
+		// 装了 1.14 客户端的用户导入这份配置,decode 阶段就 FATAL,
+		// 一个节点都用不了 —— 而面板这边订阅照常生成、看起来一切正常。
+		// 代价是 1.12 之前的客户端认不得新格式;两种写法没有交集,只能选一边,
+		// 而 1.12 已经发布一年多,各平台客户端都会自动更新。
 		"dns": map[string]any{
 			"servers": []any{
 				// 远端 DNS 走代理,避免本地 DNS 污染导致解析到错误地址。
-				map[string]any{"tag": "remote", "address": "https://1.1.1.1/dns-query", "detour": tagSelect},
-				map[string]any{"tag": "local", "address": "223.5.5.5", "detour": tagDirect},
+				map[string]any{"type": "https", "tag": "remote", "server": "1.1.1.1", "detour": tagSelect},
+				// 新格式不写 detour 就是直连拨号(旧格式默认走默认出站)——
+				// 这正是 local 要的,不必再指向 direct 出站。
+				map[string]any{"type": "udp", "tag": "local", "server": "223.5.5.5"},
 			},
 			"final":    "remote",
 			"strategy": "prefer_ipv4",
@@ -167,6 +175,10 @@ func SingBoxClientConfig(entries []Entry, mixedPort int) ([]byte, error) {
 			},
 			"final":                 tagSelect,
 			"auto_detect_interface": true,
+			// 节点地址是域名(动态 DNS)时拿 local 去解析。不写的话 1.12+ 客户端
+			// 退回旧行为并告警,而旧行为用的是默认 DNS 服务器 remote —— 它要经
+			// 「节点选择」出去,解析节点自己的地址就绕成了一个圈。
+			"default_domain_resolver": "local",
 		},
 	}
 	return json.MarshalIndent(cfg, "", "  ")

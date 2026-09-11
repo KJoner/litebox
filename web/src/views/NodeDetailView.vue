@@ -1500,16 +1500,9 @@ const needsPortForward = computed(() =>
                     </b>
                   </div>
                   <div><span>架构</span><b class="lb-mono">{{ node.arch || '未探测' }}</b></div>
-                  <!-- 版本号后面挂上通道。光有版本号也能推出来,但那要求
-                       看的人记得 1.14 是预览版 —— 而「这台为什么能选 Snell、
-                       那台为什么不能」的答案必须就在眼前。 -->
                   <div>
                     <span>sing-box</span>
-                    <b class="lb-mono">
-                      {{ node.singbox_version || '未安装'
-                      }}<template v-if="node.singbox_version && node.singbox_channel === 'PREVIEW'">
-                        · 预览版</template>
-                    </b>
+                    <b class="lb-mono">{{ node.singbox_version || '未安装' }}</b>
                   </div>
                   <!-- 内存与它推出来的 UDP 超时挨在一起。分开的话,一台机器
                        探测完突然变成「待部署」而管理员看不出是什么改了。
