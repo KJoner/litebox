@@ -2780,6 +2780,23 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   行(带文件名与行号)、Match 块、authorized_keys 里公钥那一行前面的
   `restrict` / `no-port-forwarding`。少了文件名与行号,管理员只能挨个翻;
 
+* **节点单配的 SSH 私钥必须在【写入时】校验能不能解析,而且要有办法清掉退回面板密钥**
+  (`sshx.ValidatePrivateKey`,`store.UpdateParams.ClearSSHKey`)。生产上撞到过:一把
+  解不开的私钥被静默存进 `ssh_key_encrypted`,之后测试 SSH、探测、算配置差异**全部**
+  失败,报的是同一句 `ssh: no key found`,而管理员在表单上看到的是一个空框(私钥从不
+  回显)—— 方向从一开始就错了。`ssh: no key found` 的真实来源几乎都不是"密钥丢了":
+  误把【公钥】(.pub,一行 ssh-ed25519 开头)或 PuTTY 的 .ppk 贴进了私钥栏、复制时被
+  截断、被贴成了一行,全都得到这同一句;带口令的私钥则是面板无人值守输不了口令。
+  两处一起改才够:**Create 与 Update 都校验**(误贴的东西当场被拒,错误落在表单上而不是
+  十几秒后的某个操作里);而且**"留空=保持不变"让这把坏私钥清不掉、退不回面板密钥**,
+  那个节点就此卡死 —— 所以 `ClearSSHKey` 是一个显式标记,不能复用"留空即清空"
+  (留空本来就表示保持)。清除会置 `SSHChanged`(连接池里那条旧密钥的连接要丢),
+  接口上 `uses_custom_key` 让表单看得出"当前用的是哪一把"。前提是面板公钥已装进节点的
+  authorized_keys(引导时会装)—— 清掉单配私钥后走的正是它。真机(sh-ml,154.88.65.6)
+  复现并验证:注入坏私钥→三处都报 `no key found`→勾"改用面板专用密钥"→test-ssh 立刻
+  连上。**测试夹具 `testSSHKey` 从占位文本换成了一把真 ed25519 私钥** —— 占位文本
+  过不了新的校验;
+
 * **引导时打开口令登录是管理员勾选的(默认勾),不是面板的需要**
   (`node/sshpassword.go`,`BootstrapOptions.EnablePasswordLogin`)。面板引导之后只用
   面板密钥;加这一步只为一个场景 —— 云镜像默认 `PermitRootLogin prohibit-password` 或

@@ -107,6 +107,8 @@ const blank = {
   ssh_port: 22,
   ssh_user: 'root',
   ssh_key: '',
+  // 编辑态勾上表示清掉本节点单配的私钥、退回面板专用密钥(救急用)。
+  clear_ssh_key: false,
   root_password: '',
   // 引导时顺带打开 sshd 的口令登录(见后端 sshpassword.go)。默认勾:
   // 用户建节点时手里往往只有服务商给的 root 口令,而云镜像默认拒绝 root 口令登录。
@@ -476,7 +478,9 @@ async function doSubmit() {
       traffic_billing_mode: form.traffic_billing_mode,
       ssh_port: form.ssh_port,
       ssh_user: form.ssh_user,
-      ssh_key: form.ssh_key,
+      // 勾了"改用面板专用密钥"时不再发新私钥 —— 后端在 SSHKey 非空时会忽略清除标记。
+      ssh_key: form.clear_ssh_key ? '' : form.ssh_key,
+      clear_ssh_key: form.clear_ssh_key,
       api_port: form.api_port,
       sort_order: form.sort_order,
       subscription_enabled: form.subscription_enabled,
@@ -485,6 +489,7 @@ async function doSubmit() {
     })
     await saveCloud(id)
     form.ssh_key = ''
+    form.clear_ssh_key = false
     close()
     emit('saved', id)
 
@@ -885,14 +890,35 @@ async function doSubmit() {
         </a-form-item>
       </template>
 
-      <LbSensitiveField
-        v-else
-        v-model:value="form.ssh_key"
-        label="SSH 私钥"
-        mode="edit"
-        multiline
-        help="用面板专用密钥的节点请一直留空;填入新私钥则给这个节点单独换一把。编辑态永不回显,空框不代表密钥丢了。"
-      />
+      <template v-else>
+        <a-form-item label="SSH 私钥">
+          <div class="nf__help" style="margin-top: 0">
+            当前:<strong>{{ props.node?.uses_custom_key ? '本节点单配的私钥' : '面板专用密钥' }}</strong>。
+            <template v-if="props.node?.uses_custom_key">
+              这把私钥若解不开(填错、误贴了公钥),面板每次操作都会报
+              <code class="lb-mono">ssh: no key found</code> —— 勾下面这项退回面板专用密钥,
+              引导时装进节点的那把公钥就能重新接管。
+            </template>
+          </div>
+        </a-form-item>
+
+        <a-form-item v-if="props.node?.uses_custom_key">
+          <a-checkbox v-model:checked="form.clear_ssh_key">改用面板专用密钥(清除本节点单配的私钥)</a-checkbox>
+          <div class="nf__help">
+            清除之后这个节点走面板专用密钥(设置页那把)。前提是它的公钥已经装进了节点的
+            authorized_keys —— 引导时会自动装,没装过的先在节点详情里点「重新引导」。
+          </div>
+        </a-form-item>
+
+        <LbSensitiveField
+          v-if="!form.clear_ssh_key"
+          v-model:value="form.ssh_key"
+          label="更换为新的单配私钥"
+          mode="edit"
+          multiline
+          help="用面板专用密钥的节点请一直留空;填入新私钥则给这个节点单独换一把。填错会被当场拒绝,不会像以前那样悄悄存下。编辑态永不回显,空框不代表密钥丢了。"
+        />
+      </template>
 
       <!-- 端口、协议与 TFO 只在【新增】时出现:那是这台机器的第一个入口。
            建好之后它们各自成行,在节点详情的「入口」面板里改 ——

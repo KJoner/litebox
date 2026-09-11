@@ -11,6 +11,7 @@ import (
 
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/singbox"
+	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/traffic"
 )
 
@@ -288,9 +289,15 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 
 	// 空私钥直接存空串而不是加密后的空串:读取侧用"是否为空"判断
 	// 该节点是否用面板密钥,加密后的空串不为空,会被当成一把解不开的私钥。
+	//
+	// 存之前先校验能不能解析。绕过这一步的话,一把误贴的公钥会被静默存下,
+	// 之后每次操作都报同一句 `ssh: no key found`,而管理员在表单上看到的是空框。
 	sshKeyEnc := ""
 	var err error
 	if p.SSHKey != "" {
+		if err = sshx.ValidatePrivateKey(p.SSHKey); err != nil {
+			return nil, err
+		}
 		if sshKeyEnc, err = s.cipher.Encrypt(p.SSHKey); err != nil {
 			return nil, fmt.Errorf("加密 SSH 私钥: %w", err)
 		}
@@ -623,7 +630,17 @@ type UpdateParams struct {
 	IPv6Address    string
 	SSHPort        int
 	SSHUser        string
-	SSHKey         string
+	// SSHKey 非空表示给这个节点换一把单配私钥;为空表示保持原私钥不变
+	// —— 私钥从不回显给前端,前端也就无法把原值提交回来。
+	SSHKey string
+	// ClearSSHKey 为真表示清掉这个节点单配的私钥,改用面板专用密钥。
+	//
+	// 单独一个标记而不是"留空即清空":留空本来就有"保持不变"的含义,
+	// 两者不能共用一个空串。它存在的唯一理由是救急 —— 一把误贴进来、
+	// 解不开的私钥会让面板每次操作都失败,而"留空=保持"让这把坏私钥
+	// **清不掉、退不回面板密钥**,那个节点就此卡死。SSHKey 非空时它被忽略
+	// (换新私钥的意图更明确)。
+	ClearSSHKey bool
 	// APIPort 是这台机器上 V2Ray API 的回环端口,全部入站共用一个。
 	APIPort int
 
@@ -733,11 +750,24 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		return nil, effect, errors.New("维护说明不能超过 128 个字符")
 	}
 
+	// 三种状态:换新私钥 / 清掉退回面板密钥 / 保持不变。
+	// changeKey 为真时才动 ssh_key_encrypted 那一列(见下面的 SQL)。
 	sshKeyEnc := ""
-	if p.SSHKey != "" {
+	changeKey := false
+	switch {
+	case p.SSHKey != "":
+		// 换新私钥。存之前先校验 —— 误贴的公钥不能再被静默存下,
+		// 那正是让这个节点走到"每次操作都 ssh: no key found"的原因。
+		if err = sshx.ValidatePrivateKey(p.SSHKey); err != nil {
+			return nil, effect, err
+		}
 		if sshKeyEnc, err = s.cipher.Encrypt(p.SSHKey); err != nil {
 			return nil, effect, fmt.Errorf("加密 SSH 私钥: %w", err)
 		}
+		changeKey = true
+	case p.ClearSSHKey:
+		// 清掉单配私钥,退回面板专用密钥。sshKeyEnc 保持空串。
+		changeKey = true
 	}
 
 	track := func(label string, changed bool, from, to any) {
@@ -769,14 +799,18 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 	// 重置日只在按月重置时有意义,不重置时改它没有任何效果,写进审计只会造成误解。
 	track("每月重置日", p.TrafficResetCycle == string(traffic.CycleMonthly) &&
 		old.TrafficResetDay != p.TrafficResetDay, old.TrafficResetDay, p.TrafficResetDay)
-	if sshKeyEnc != "" {
+	if p.SSHKey != "" {
 		effect.Changes = append(effect.Changes, "已更换 SSH 私钥")
+	} else if p.ClearSSHKey {
+		effect.Changes = append(effect.Changes, "已改用面板专用密钥")
 	}
 
 	// IPv6 不在这里:它不参与 SSH,连接池里的连接仍然有效。
 	// 把它算进来会在每次改 IPv6 时白白断掉一条已建立的长连接(建连约 1.3 秒)。
+	// changeKey 涵盖"换新私钥"与"退回面板密钥"两种,都要重连:
+	// 连接池里那条是用旧密钥建的,不丢掉后续操作仍走它。
 	effect.SSHChanged = old.Host != p.Host || old.SSHPort != p.SSHPort ||
-		old.SSHUser != p.SSHUser || sshKeyEnc != ""
+		old.SSHUser != p.SSHUser || changeKey
 	// 只有进入节点配置的字段才需要重新部署。公网端口与节点名只影响订阅内容,
 	// 主机地址只影响 SSH 与订阅,改了它们重启 sing-box 没有意义。
 	//
@@ -813,7 +847,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		   SET name = ?, display_name = ?, host = ?,
 		       sub_ipv4_address = ?, ipv6_address = ?,
 		       ssh_port = ?, ssh_user = ?,
-		       ssh_key_encrypted = CASE WHEN ? = '' THEN ssh_key_encrypted ELSE ? END,
+		       ssh_key_encrypted = CASE WHEN ? THEN ? ELSE ssh_key_encrypted END,
 		       api_port = ?,
 		       sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, maintenance_message = ?,
@@ -823,7 +857,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		 WHERE id = ? AND deleted_at IS NULL`,
 		p.Name, p.DisplayName, p.Host, p.SubIPv4Address, p.IPv6Address,
 		p.SSHPort, p.SSHUser,
-		sshKeyEnc, sshKeyEnc,
+		changeKey, sshKeyEnc,
 		p.APIPort,
 		p.SortOrder, subEnabled,
 		p.PublicRemark, p.MaintenanceMessage,

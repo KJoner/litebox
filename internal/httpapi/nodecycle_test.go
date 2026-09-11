@@ -8,7 +8,9 @@ import (
 )
 
 // ssh_key 非空即可跳过接入引导 —— 引导会真的去连主机,HTTP 层测试不需要。
-const testSSHKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key-for-tests\n-----END OPENSSH PRIVATE KEY-----"
+// 一把真正能被 ssh.ParsePrivateKey 解析的 ed25519 私钥(仅用于测试)。
+// 节点写入路径现在会校验私钥能不能解析,占位文本过不了那道校验。
+const testSSHKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\nc2gtZWQyNTUxOQAAACCNZxfMwrUd/GyMTYrGPAHeHGrjmfrgfNGGUshddaAJuAAA\nAIheayUgXmslIAAAAAtzc2gtZWQyNTUxOQAAACCNZxfMwrUd/GyMTYrGPAHeHGrj\nmfrgfNGGUshddaAJuAAAAEACKrMM8uUxygo8FWUFg5O68GpptVrOekzFI8VPfN5q\nRo1nF8zCtR38bIxNisY8Ad4cauOZ+uB80YZSyF11oAm4AAAAAAECAwQF\n-----END OPENSSH PRIVATE KEY-----\n"
 
 // createNode 走真实接口建节点。
 func (e *testEnv) createNode(t *testing.T, body map[string]any) (map[string]any, *http.Response) {
