@@ -342,7 +342,7 @@ func TestClashRendersWithoutNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "url: https://x/sub/T" {
+	if out != "url: https://x/sub/T?format=clash" {
 		t.Errorf("渲染结果 = %q", out)
 	}
 }

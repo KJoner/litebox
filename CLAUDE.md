@@ -1526,6 +1526,17 @@ IPv6 从「机器填了地址就无条件给每个入口加一条」变成「入
   会让管理员顺手加一个 `$(clash_proxies)` 就过了,而那个写死的地址还在。
   检查在**去掉注释的正文**上做,理由与占位符不在注释里展开一样;
 
+* **`$(clash_sub_url)` 指向 `?format=clash`,不再是 `$(sub_url)` 的别名。**
+  它的用途就是 `proxy-providers` 的 url,而通用订阅是分享链接的列表 —— 共享凭据的 Snell
+  这类没有分享链接的线路在那条路上根本不存在:门户、模板、订阅三处都正常,只有用 Clash
+  模板的用户少了那几条,而管理员在入口表单上看到的是「Clash / mihomo 可用」。**生产上撞到过。**
+  mihomo 的 http provider 读得了一份完整配置里的 `proxies`(其余键忽略),所以现有模板
+  一个字不用改。**代价是两条路不等价**:这一侧的 proxy 按字段重建、不透传上游的 `raw_uri`,
+  翻不成 mihomo proxy 的外部代理(认不出的混淆插件之类)会从 provider 里退出;
+  逐用户凭据的 Snell 两条路上都没有。想要原来那条路的模板改用 `$(sub_url)`。
+  URL 由 `ProfileContext.ClashSubURL()` 从 `SubURL` 派生,不另存一个字段 ——
+  ProfileContext 有好几处构造,分开存的话迟早有一处忘了填,provider 的 url 就成了空串;
+
 * **YAML 的缩进是语法的一部分**,展开时必须逐行加前缀,不能像 JSON 那样只靠
   一个 prefix 参数。节点名一律经 `yaml.Marshal` 生成而不是拼字符串:
   以 `-` 开头或带冒号、井号的展示名在 YAML 里都有语法含义,直接拼进去
