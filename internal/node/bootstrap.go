@@ -27,8 +27,26 @@ type BootstrapResult struct {
 	// PubkeyAuthFixed 为真表示这台机器原先关着公钥认证,引导过程中面板把它打开了。
 	// 单独一个字段而不是只写进 Detail:这是面板在别人的机器上改了 sshd 配置,
 	// 审计里必须能按字段查到,而不是去正则匹配一句中文。
-	PubkeyAuthFixed bool   `json:"pubkey_auth_fixed"`
-	Detail          string `json:"detail"`
+	PubkeyAuthFixed bool `json:"pubkey_auth_fixed"`
+	// PasswordAuthFixed 为真表示这台机器原先不接受口令登录,引导过程中面板
+	// 按管理员的选择把它打开了(见 sshpassword.go)。同样单独一个字段:
+	// 这是面板放宽了别人机器的安全策略,审计里必须能按字段查到。
+	PasswordAuthFixed bool `json:"password_auth_fixed"`
+	// PasswordAuthError 是「打开口令登录」这一步的失败原因,为空表示没失败
+	// (没勾选也是空)。它**不让引导失败**:公钥已装好并验证过,面板连得上
+	// 这台机器,"口令登录没开成"不该改变那个答案。
+	PasswordAuthError string `json:"password_auth_error,omitempty"`
+	Detail            string `json:"detail"`
+}
+
+// BootstrapOptions 是一次引导的输入。
+type BootstrapOptions struct {
+	// Password 非空:用一次性 root 口令登录;为空:用主控本机上的私钥。
+	Password string
+	// EnablePasswordLogin 为真时,公钥装好之后顺带确认节点允许口令登录,
+	// 不允许就打开它。由前端勾选(默认勾),接口上不传就是不做 ——
+	// 放宽别人机器的安全策略,默认值要落在保守的那一边。
+	EnablePasswordLogin bool
 }
 
 // 家目录必须是干净的绝对路径。这个值来自远端 $HOME,虽然只有 root 能改,
@@ -45,8 +63,9 @@ var safeHomePattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]*$`)
 // 装完之后必须用面板密钥真连一次做验证。只写不验的话,
 // sshd 配了 AuthorizedKeysFile 到别处、或家目录权限不对导致公钥被忽略这类问题,
 // 要等到第一次部署才暴露,而那时管理员已经以为节点接好了。
-func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) (BootstrapResult, error) {
+func (s *Service) Bootstrap(ctx context.Context, nodeID int64, opts BootstrapOptions) (BootstrapResult, error) {
 	result := BootstrapResult{NodeID: nodeID}
+	password := opts.Password
 
 	n, err := s.store.Get(ctx, nodeID)
 	if err != nil {
@@ -79,12 +98,16 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 	// 管理员照着设置页把公钥手工贴进了 authorized_keys。不先试这一下,
 	// 一台只允许密钥登录、又已经手工装好公钥的机器会走进死胡同 ——
 	// 口令登录被 sshd 拒,主控本机又没有能登它的私钥,而其实它本来就能连上。
-	panelKeyErr := s.tryPanelKey(ctx, nodeID, n, panelKey.PrivateKeyPEM, pinHostKey)
+	panelClient, panelKeyErr := s.tryPanelKey(ctx, nodeID, n, panelKey.PrivateKeyPEM, pinHostKey)
 	switch {
 	case panelKeyErr == nil:
+		defer panelClient.Close()
 		result.Method = "panel-key"
 		result.AlreadyPresent = true
 		result.Detail = "面板密钥已经能登录 " + who + ",无需重新装公钥。"
+		// 「重新引导」常常就是为了这一步来的:机器早就接好了,只是口令登录
+		// 还关着。所以这条早退路径同样要做,不然勾了也没反应。
+		s.finishPasswordLogin(ctx, &result, panelClient, n.SSHUser, opts)
 		return result, nil
 	case errors.Is(panelKeyErr, sshx.ErrHostKeyMismatch):
 		// 主机密钥对不上时后面几条路也都会撞在同一堵墙上,而且这是需要人判断的安全事件,
@@ -189,6 +212,11 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 		result.Detail = strings.TrimSpace(result.Detail + " 面板公钥已写入并验证通过。")
 	}
 
+	// 顺带打开口令登录(按管理员的选择)。放在公钥验证**之后**:它是附带的,
+	// 而且改的是 sshd 配置 —— 面板密钥这条路必须先站稳,万一这一步把
+	// sshd 配置写坏要回滚,靠的是一条已经验证过的连接。
+	s.finishPasswordLogin(ctx, &result, verifyClient, n.SSHUser, opts)
+
 	// 顺带装 vnStat(V15):创建节点是"这台机器归面板管了"的那一刻,
 	// 主机流量从这一刻开始记才完整。**失败只记进结果,不让引导失败**——
 	// 引导要回答的是"面板连不连得上",装不上一个统计包不该改变那个答案。
@@ -204,7 +232,8 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 	return result, nil
 }
 
-// tryPanelKey 用面板密钥试连一次。返回 nil 表示这个节点已经不需要引导了。
+// tryPanelKey 用面板密钥试连一次。返回的错误为 nil 表示这个节点已经不需要
+// 引导了,那时连接交给调用方(它还要拿这条连接做顺带的事),由调用方关闭。
 //
 // 失败原因必须原样返回给调用方 —— 它是后续所有错误提示里最有信息量的一段:
 // "no supported methods remain" 是公钥没装,"connection refused" 是端口或防火墙,
@@ -212,7 +241,7 @@ func (s *Service) Bootstrap(ctx context.Context, nodeID int64, password string) 
 func (s *Service) tryPanelKey(
 	ctx context.Context, nodeID int64, n *Node, privateKey string,
 	pinHostKey func(string) error,
-) error {
+) (*sshx.Client, error) {
 	client, err := sshx.Dial(ctx, sshx.Target{
 		Host:          n.Host,
 		Port:          n.SSHPort,
@@ -222,16 +251,51 @@ func (s *Service) tryPanelKey(
 		OnHostKey:     pinHostKey,
 	}, s.dialTimeout())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer client.Close()
 
 	if _, err := client.RunCheck(ctx, sshx.NewCommand("true")); err != nil {
-		return err
+		client.Close()
+		return nil, err
 	}
 	// 池里可能还缓存着引导前那条失败的连接,丢掉它。
 	s.pool.Invalidate(nodeID)
-	return nil
+	return client, nil
+}
+
+// finishPasswordLogin 把「顺带打开口令登录」的结果并进引导结果。
+//
+// 本次就是用口令登进来的时候一个字都不动:sshd 刚刚接受了这个口令,
+// 那本身就是最可靠的证据,再去读 sshd -T 只会在 Match Address 这类
+// 不带地址就算不出来的块上得出错误结论,然后白写一份 drop-in。
+//
+// 失败只记进结果,不让引导失败:引导要回答的是"面板连不连得上",
+// 而那个问题在走到这里之前已经有了肯定的答案。
+func (s *Service) finishPasswordLogin(
+	ctx context.Context, result *BootstrapResult, client *sshx.Client, sshUser string, opts BootstrapOptions,
+) {
+	if !opts.EnablePasswordLogin {
+		return
+	}
+	if result.Method == "password" {
+		result.Detail = strings.TrimSpace(result.Detail + " 口令登录本来就可用(本次引导就是用它登录的),未改动 sshd 配置。")
+		return
+	}
+	fix, err := s.enablePasswordLogin(ctx, client, sshUser)
+	if err != nil {
+		// 完整错误(含节点上采到的诊断)放在单独的字段里,Detail 只留第一行:
+		// Detail 是给人一眼扫的那句话,而诊断有十几行。不用 firstLine ——
+		// 它的后缀指向部署记录,而引导结果不进部署记录,只进审计。
+		result.PasswordAuthError = err.Error()
+		summary := err.Error()
+		if i := strings.IndexAny(summary, "\r\n"); i >= 0 {
+			summary = strings.TrimSpace(summary[:i])
+		}
+		result.Detail = strings.TrimSpace(result.Detail + " 口令登录没能打开(不影响接入):" + summary)
+		return
+	}
+	result.PasswordAuthFixed = fix.Changed
+	result.Detail = strings.TrimSpace(result.Detail + " " + fix.Detail + "。")
 }
 
 func methodLabel(method string) string {
@@ -251,9 +315,10 @@ func explainAuthFailure(err error, method string) string {
 		return ""
 	}
 	if method == "password" {
-		return "。节点不接受口令登录,多半是 sshd 里 PasswordAuthentication 设成了 no。" +
-			"改用「主控本机私钥」,或先手工把面板公钥追加到节点的 ~/.ssh/authorized_keys" +
-			"(公钥见「设置」页)再点一次「重新引导」"
+		return "。节点不接受口令登录,多半是 sshd 里 PasswordAuthentication 设成了 no," +
+			"或 PermitRootLogin 是 prohibit-password(Debian 云镜像的默认值)。" +
+			"改用「主控本机私钥」引导 —— 勾着「顺带打开口令登录」的话,引导会把它打开,下次这个口令就能用;" +
+			"或先手工把面板公钥追加到节点的 ~/.ssh/authorized_keys(公钥见「设置」页)再点一次「重新引导」"
 	}
 	return "。节点不接受这几把私钥。确认其中至少一把能登录该节点,或改填节点密码," +
 		"或先手工把面板公钥追加到节点的 ~/.ssh/authorized_keys(公钥见「设置」页)再点一次「重新引导」"

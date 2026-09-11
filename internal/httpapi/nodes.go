@@ -209,6 +209,11 @@ type createNodeRequest struct {
 	// RootPassword 是节点的登录口令,只用于把面板公钥装进节点的那一次连接,
 	// 用完即弃,不落库也不写日志。留空则改用主控本机上的私钥去装。
 	RootPassword string `json:"root_password"`
+	// EnablePasswordLogin 为真时引导顺带确认节点允许口令登录,不允许就打开它
+	// (PasswordAuthentication yes,登录用户是 root 时再加 PermitRootLogin yes)。
+	// 不传就是不做:这是放宽别人机器的安全策略,默认值落在保守的那一边,
+	// 表单上默认勾选。
+	EnablePasswordLogin bool `json:"enable_password_login"`
 }
 
 func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +272,9 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	// 节点留在 PENDING,详情页可以单独重试引导。
 	response := map[string]any{"node": n}
 	if req.SSHKey == "" {
-		result, bootErr := s.nodes.Bootstrap(r.Context(), n.ID, req.RootPassword)
+		result, bootErr := s.nodes.Bootstrap(r.Context(), n.ID, node.BootstrapOptions{
+			Password: req.RootPassword, EnablePasswordLogin: req.EnablePasswordLogin,
+		})
 		s.audit.Record(r.Context(), audit.Entry{
 			AdminUserID: &admin.ID, Action: actionNodeBootstrap,
 			TargetType: "node", TargetID: strconv.FormatInt(n.ID, 10),
@@ -294,11 +301,22 @@ func bootstrapDetail(result node.BootstrapResult, err error) string {
 	if result.PubkeyAuthFixed {
 		detail = "【已为该节点打开 sshd 公钥认证】" + detail
 	}
+	// 口令登录同理,而且更要紧:那不是面板自己需要的,是放宽了这台机器的策略。
+	if result.PasswordAuthFixed {
+		detail = "【已为该节点打开 sshd 口令登录】" + detail
+	}
+	// 没开成时把完整原因(含节点上采到的诊断)一起记进审计:Detail 里只有第一行,
+	// 而排查「为什么面板改不动」要的正是后面那十几行 —— 是哪个文件排在我们前面。
+	if result.PasswordAuthError != "" {
+		detail += "\n口令登录没能打开的完整原因:" + result.PasswordAuthError
+	}
 	return detail
 }
 
 type bootstrapNodeRequest struct {
 	RootPassword string `json:"root_password"`
+	// EnablePasswordLogin 与 createNodeRequest 里的同名字段含义相同。
+	EnablePasswordLogin bool `json:"enable_password_login"`
 }
 
 // handleBootstrapNode 单独重试节点接入引导。
@@ -314,7 +332,9 @@ func (s *Server) handleBootstrapNode(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
-	result, err := s.nodes.Bootstrap(r.Context(), id, req.RootPassword)
+	result, err := s.nodes.Bootstrap(r.Context(), id, node.BootstrapOptions{
+		Password: req.RootPassword, EnablePasswordLogin: req.EnablePasswordLogin,
+	})
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeBootstrap,
 		TargetType: "node", TargetID: strconv.FormatInt(id, 10),

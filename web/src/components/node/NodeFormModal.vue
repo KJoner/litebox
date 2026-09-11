@@ -19,6 +19,7 @@ import { LbSensitiveField } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from '@/components/user/quota'
 import { formatUTCTime } from '@/utils/format'
 import AddressListEditor from './AddressListEditor.vue'
+import { bootstrapNotes } from './bootstrapNotes'
 import { CLOUD_REGIONS } from '@/components/cloud/cloudMeta'
 
 type AddrRow = { id?: number; address: string }
@@ -107,6 +108,9 @@ const blank = {
   ssh_user: 'root',
   ssh_key: '',
   root_password: '',
+  // 引导时顺带打开 sshd 的口令登录(见后端 sshpassword.go)。默认勾:
+  // 用户建节点时手里往往只有服务商给的 root 口令,而云镜像默认拒绝 root 口令登录。
+  enable_password_login: true,
   proxy_port: 443,
   listen_port: 0,
   api_port: 28080,
@@ -403,6 +407,8 @@ async function doSubmit() {
         // 接入方式决定后端走哪条引导路径。两者不能一起发过去。
         ssh_key: accessMode.value === 'manual' ? form.ssh_key : '',
         root_password: accessMode.value === 'password' ? form.root_password : '',
+        // 手工指定私钥时后端根本不引导,这个开关没有意义。
+        enable_password_login: accessMode.value !== 'manual' && form.enable_password_login,
       })
       // 口令与私钥只在这一次请求里用到,立刻从表单状态里抹掉。
       form.root_password = ''
@@ -432,19 +438,20 @@ async function doSubmit() {
           content: `${result.bootstrap_error}\n\n节点记录已保留。处理好之后在节点详情里点「重新引导」重试,不要重新创建节点。`,
           okText: '知道了',
         })
-      } else if (result.bootstrap?.pubkey_auth_fixed) {
-        // 面板改了这台机器的 sshd_config,不能只发一句一闪而过的成功提示。
-        Modal.info({
-          title: '节点已创建,并打开了它的 SSH 公钥认证',
-          width: 560,
-          content:
-            '这台机器原先关闭了公钥认证(PubkeyAuthentication no),而面板此后只用公钥登录、' +
-            '不保存口令。已在节点上写入一份配置把它打开并 reload 了 sshd,原有配置行一行没删。\n\n' +
-            '接下来依次执行「探测」和「安装 sing-box」。',
-          okText: '知道了',
-        })
       } else {
-        message.success('节点已创建,公钥已装好。接下来依次执行「探测」和「安装 sing-box」')
+        const notes = bootstrapNotes(result.bootstrap)
+        if (notes.length) {
+          // 面板改了这台机器的 sshd_config(或者试过没改成),不能只发一句一闪而过的成功提示。
+          const open = result.bootstrap?.password_auth_error ? Modal.warning : Modal.info
+          open({
+            title: '节点已创建,公钥已装好',
+            width: 600,
+            content: notes.join('\n\n') + '\n\n接下来依次执行「探测」和「安装 sing-box」。',
+            okText: '知道了',
+          })
+        } else {
+          message.success('节点已创建,公钥已装好。接下来依次执行「探测」和「安装 sing-box」')
+        }
       }
       await saveCloud(result.node.id)
       emit('saved', result.node.id)
@@ -863,6 +870,19 @@ async function doSubmit() {
           required
           help="给这个节点单配一把私钥,用主密钥加密后存储,不会再次显示。"
         />
+
+        <!-- 手工指定私钥时后端不引导,这个开关没有意义,整个不出现。 -->
+        <a-form-item v-if="accessMode !== 'manual'">
+          <a-checkbox v-model:checked="form.enable_password_login">
+            引导时顺带打开节点的 SSH 口令登录
+          </a-checkbox>
+          <div class="nf__help">
+            装好公钥之后,若节点的 sshd 不接受口令登录(PasswordAuthentication no,或 root 的
+            PermitRootLogin 是 prohibit-password —— 云镜像的常见默认),面板写一份排在最前面的配置把它打开并
+            reload sshd,原有的行一行不删。面板自己不需要它,这是为了让你手里那个 root 口令下次还能用。
+            本次就是用口令登录的话什么都不改;没开成不影响接入。
+          </div>
+        </a-form-item>
       </template>
 
       <LbSensitiveField
