@@ -117,7 +117,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now litebox-backup.timer
 | sing-box | 订阅地址加 `?format=sing-box`,或用面板里配好的配置文件订阅 |
 | v2rayN / NekoBox | 直接填订阅地址 |
 | Shadowrocket | 订阅地址直接加;配置文件另在「配置」里加 |
-| Clash / mihomo | 用配置文件订阅(模板里的 `proxy-providers` 会自动指向该用户的订阅) |
+| Clash / mihomo | 用配置文件订阅(模板里 `proxy-providers` 的 `$(clash_sub_url)` 会指向该用户的 Clash 原生订阅) |
 
 ```
 GET /sub/{token}                  # 通用 base64

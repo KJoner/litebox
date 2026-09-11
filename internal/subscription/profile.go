@@ -86,9 +86,10 @@ var Placeholders = []Placeholder{
 		Kinds:       allKinds,
 	},
 	{
-		Name:        PlaceholderClashSubURL,
-		Description: "同 sub_url,Clash 模板里的别名(proxy-providers 的 url)",
-		Kinds:       []Kind{KindClash},
+		Name: PlaceholderClashSubURL,
+		Description: "该用户的 Clash 原生订阅(?format=clash),proxy-providers 的 url 用它 —— " +
+			"比 sub_url 多出没有分享链接的线路(如共享凭据的 Snell)",
+		Kinds: []Kind{KindClash},
 	},
 	{
 		Name:        PlaceholderUserCode,
@@ -514,6 +515,21 @@ type ProfileContext struct {
 	Entries []Entry
 }
 
+// ClashSubURL 是该用户的 Clash 原生订阅链接,$(clash_sub_url) 展开成它。
+//
+// **它不再是 $(sub_url) 的别名。** 那一条是分享链接的列表,而有些线路压根
+// 没有通用的分享链接(共享凭据的 Snell),在那条路上它们不存在 —— 用
+// proxy-providers 拉它的 Clash 模板就少了那几条,而门户、模板、订阅三处
+// 都不报错,管理员在入口表单上看到的还是「Clash / mihomo 可用」。
+// mihomo 的 http provider 读得了一份完整配置里的 proxies(其余键忽略),
+// 所以指向 ?format=clash 就够了,现有模板一个字不用改。
+//
+// 从 SubURL 派生而不是另存一个字段:ProfileContext 有好几处构造,两个值
+// 分开存的话迟早有一处忘了填,表现是 provider 的 url 成了空串、一条节点都拉不到。
+func (c ProfileContext) ClashSubURL() string {
+	return c.SubURL + "?format=" + string(FormatClash)
+}
+
 // LandingKeywordCN / LandingKeywordEN 判定一个条目是不是「落地」节点。
 //
 // **写死在代码里,不做成可配置项。** Clash 模板里的 filter 正则是管理员自己写的,
@@ -579,8 +595,10 @@ func renderPlaceholder(
 	}
 
 	switch seg.name {
-	case PlaceholderSubURL, PlaceholderClashSubURL:
+	case PlaceholderSubURL:
 		return ctx.SubURL, nil
+	case PlaceholderClashSubURL:
+		return ctx.ClashSubURL(), nil
 	case PlaceholderUserCode:
 		return ctx.UserCode, nil
 	case PlaceholderSingBoxOutbounds:
