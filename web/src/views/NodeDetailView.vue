@@ -44,6 +44,7 @@ import {
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
 import { confirmDeployNode } from '@/components/node/nodeOps'
 import { inboundProtocolMeta } from '@/components/node/inboundOps'
+import { bootstrapNotes } from '@/components/node/bootstrapNotes'
 import { useNarrow } from '@/composables/useNarrow'
 import { color, threshold, usageColor } from '@/theme/tokens'
 
@@ -763,28 +764,31 @@ async function doNameConfirm() {
 
 const bootstrapOpen = ref(false)
 const bootstrapPassword = ref('')
+// 与新建节点表单里的同名开关一个意思。默认勾:「重新引导」最常见的动机之一
+// 正是"机器早就接好了,只是口令登录还关着"。
+const bootstrapEnablePassword = ref(true)
 
 async function doBootstrap() {
   const id = nodeId.value!
   const password = bootstrapPassword.value
+  const enablePassword = bootstrapEnablePassword.value
   bootstrapOpen.value = false
   // 口令用完立刻抹掉,不留在组件状态里,也不进日志与审计详情。
   bootstrapPassword.value = ''
 
   running.value = '重新引导'
   try {
-    const r = await api.bootstrapNode(id, password)
-    if (r.pubkey_auth_fixed) {
+    const r = await api.bootstrapNode(id, password, enablePassword)
+    const notes = bootstrapNotes(r)
+    if (notes.length) {
       // 用 Modal 而不是 message:面板改了这台机器的 sshd_config,
       // 那不是一句一闪而过的成功提示能承载的 —— 管理员需要知道机器上
       // 多了一份配置,以后自己去看那个文件时才不会以为被人动过手脚。
-      Modal.info({
-        title: '面板公钥已装入,并打开了节点的公钥认证',
-        width: 560,
-        content:
-          '这台机器原先关闭了 SSH 公钥认证(PubkeyAuthentication no),' +
-          '而面板此后只用公钥登录,不保存口令。已在节点上写入一份配置把它打开并 reload 了 sshd。' +
-          '原有的配置行一行没删,主配置若被改过会留一份带时间戳的备份。',
+      const open = r.password_auth_error ? Modal.warning : Modal.info
+      open({
+        title: r.already_present ? '节点上已有面板公钥,连接正常' : '面板公钥已装入并验证通过',
+        width: 600,
+        content: notes.join('\n\n'),
         okText: '知道了',
       })
     } else {
@@ -1035,6 +1039,7 @@ const needsPortForward = computed(() =>
                   @click="
                     () => {
                       bootstrapPassword = ''
+                      bootstrapEnablePassword = true
                       bootstrapOpen = true
                     }
                   "
@@ -2156,12 +2161,20 @@ const needsPortForward = computed(() =>
   >
     <p class="nd__boot-note">
       用节点口令登录一次,把面板公钥重新装进 <code class="lb-mono">authorized_keys</code>。
-      已有的 sing-box 与配置不受影响。
+      已有的 sing-box 与配置不受影响。留空则改用主控本机的私钥;面板密钥本来就能登录时不重新装。
     </p>
     <a-form layout="vertical">
-      <a-form-item label="节点登录密码" required>
+      <a-form-item label="节点登录密码">
         <a-input-password v-model:value="bootstrapPassword" autocomplete="new-password" />
         <div class="nd__boot-help">用完即弃:不保存、不写日志、不进审计详情。</div>
+      </a-form-item>
+      <a-form-item>
+        <a-checkbox v-model:checked="bootstrapEnablePassword">顺带打开节点的 SSH 口令登录</a-checkbox>
+        <div class="nd__boot-help">
+          节点的 sshd 不接受口令登录时(PasswordAuthentication no,或 root 的 PermitRootLogin 是
+          prohibit-password),写一份排在最前面的配置把它打开并 reload sshd,原有的行一行不删。
+          本次就是用口令登录的话什么都不改;没开成不影响接入。
+        </div>
       </a-form-item>
     </a-form>
   </a-modal>

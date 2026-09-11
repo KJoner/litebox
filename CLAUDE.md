@@ -2780,6 +2780,22 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   行(带文件名与行号)、Match 块、authorized_keys 里公钥那一行前面的
   `restrict` / `no-port-forwarding`。少了文件名与行号,管理员只能挨个翻;
 
+* **引导时打开口令登录是管理员勾选的(默认勾),不是面板的需要**
+  (`node/sshpassword.go`,`BootstrapOptions.EnablePasswordLogin`)。面板引导之后只用
+  面板密钥;加这一步只为一个场景 —— 云镜像默认 `PermitRootLogin prohibit-password` 或
+  `PasswordAuthentication no`,管理员手里只有服务商给的 root 口令,用「主控本机私钥」
+  引导进去之后顺手把口令登录打开,下次那个口令才能用。三条与另外两处 sshd 修改不同的规矩:
+  **PermitRootLogin 只在登录用户是 root 时才写**(少写则 root 照样登不进、sshd 的报错
+  一字不差;多写则是一处与本次引导无关的放宽);**判据不是实测,是 `sshd -T -C user=`
+  读回的生效值** —— 面板手上没有口令(有的话本次就是用口令登进来的,那时一个字都不改),
+  界面上要把这一点说出来;**失败不让引导失败**,只进 `password_auth_error` 与审计 ——
+  公钥已装好并验证过,「面板连不连得上」这个问题已经有了肯定的答案。
+  `sshdFix.keywords` 因此从一个词变成列表:两个关键字里任何一个排在 Include 之前,
+  drop-in 就不再管用,`TestPasswordPlanStopsAtEitherKeyword` 钉着。接口上不传
+  `enable_password_login` 就是不做 —— 放宽别人机器的安全策略,默认值落在保守的那一边。
+  真机(djj-ph,Alpine / OpenSSH 10.3)上三条路都验过:压不住时写入→读回仍是 no→回滚并
+  带回「谁排在我们前面」;能压住时写入后用一个纯口令客户端真的登进去了;本来就开着时一个字不改;
+
 * **`ProbeResult` 的 `Problems` 与 `Warnings` 不可混用。** 前者决定 `Usable()`,
   而 `Usable()` 会把节点状态写成 OFFLINE;TCP 转发被禁属于「能跑,但面板某些
   功能用不了」,归 Warnings。混进 Problems 会让管理员在代理完全正常时

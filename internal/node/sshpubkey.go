@@ -33,10 +33,10 @@ const (
 )
 
 var pubkeyFix = sshdFix{
-	keyword: "pubkeyauthentication",
-	dropIn:  pubkeyDropInPath,
-	marker:  pubkeyMarker,
-	block:   pubkeyBlock,
+	keywords: []string{"pubkeyauthentication"},
+	dropIn:   pubkeyDropInPath,
+	marker:   pubkeyMarker,
+	block:    pubkeyBlock,
 }
 
 // PubkeyAuthResult 是一次"公钥登录不上"的诊断与修复结果。

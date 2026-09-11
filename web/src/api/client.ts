@@ -890,6 +890,14 @@ export interface BootstrapResult {
    * 越出"往 authorized_keys 追加一行"范围的动作。
    */
   pubkey_auth_fixed: boolean
+  /**
+   * 该节点原先不接受口令登录,引导过程中面板按管理员的勾选把它打开了
+   * (PasswordAuthentication yes,root 再加 PermitRootLogin yes)。
+   * 这是放宽了别人机器的安全策略,界面上必须单独说出来。
+   */
+  password_auth_fixed: boolean
+  /** 「顺带打开口令登录」那一步的失败原因;它不让引导失败,所以只是一个附带字段。 */
+  password_auth_error?: string
   detail: string
 }
 
@@ -2054,10 +2062,10 @@ export const api = {
   node: (id: number) => request<Node>(`/api/nodes/${id}`),
   createNode: (body: Record<string, unknown>) =>
     request<CreateNodeResult>('/api/nodes', { method: 'POST', body }),
-  bootstrapNode: (id: number, rootPassword: string) =>
+  bootstrapNode: (id: number, rootPassword: string, enablePasswordLogin: boolean) =>
     request<BootstrapResult>(`/api/nodes/${id}/bootstrap`, {
       method: 'POST',
-      body: { root_password: rootPassword },
+      body: { root_password: rootPassword, enable_password_login: enablePasswordLogin },
     }),
   uninstallNode: (id: number) =>
     request<{ message: string }>(`/api/nodes/${id}/uninstall`, { method: 'POST' }),

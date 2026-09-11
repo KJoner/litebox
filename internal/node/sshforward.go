@@ -308,9 +308,11 @@ func planForwardingConfig(original string) (target, content string) {
 // 各写一遍的话,以后修好其中一处的 Include 判定而漏掉另一处 ——
 // 表现是文件写对了、sshd -t 通过、reload 成功,而那一项照样没生效。
 type sshdFix struct {
-	// keyword 是这一项的关键字(小写)。撞上它就说明前面已经有人设过,
-	// 那时 drop-in 不再管用 —— OpenSSH 取首次出现的值。
-	keyword string
+	// keywords 是这一项涉及的关键字(小写)。撞上其中任何一个就说明前面已经
+	// 有人设过,那时 drop-in 不再管用 —— OpenSSH 取首次出现的值。
+	// 是一个列表而不是一个词:口令登录那一项要同时写 PasswordAuthentication
+	// 与 PermitRootLogin,两个里任何一个被排在 Include 之前都会让 drop-in 失效。
+	keywords []string
 	// dropIn 是 drop-in 那条路要写的文件。
 	dropIn string
 	// marker 是幂等标记,用于认出"这段是面板写的"。
@@ -320,10 +322,20 @@ type sshdFix struct {
 }
 
 var forwardingFix = sshdFix{
-	keyword: "allowtcpforwarding",
-	dropIn:  dropInPath,
-	marker:  forwardMarker,
-	block:   forwardBlock,
+	keywords: []string{"allowtcpforwarding"},
+	dropIn:   dropInPath,
+	marker:   forwardMarker,
+	block:    forwardBlock,
+}
+
+// hasKeyword 判断一行的首个词是不是这一项的关键字之一。
+func (f sshdFix) hasKeyword(word string) bool {
+	for _, k := range f.keywords {
+		if k == word {
+			return true
+		}
+	}
+	return false
 }
 
 // planSSHDConfig 决定把配置写到哪里、写什么。
@@ -366,14 +378,15 @@ func dropInIsIncluded(original string, fix sshdFix) bool {
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
-		switch strings.ToLower(fields[0]) {
-		case "include":
+		word := strings.ToLower(fields[0])
+		switch {
+		case word == "include":
 			for _, pattern := range fields[1:] {
 				if includeCovers(pattern, fix.dropIn) {
 					return true
 				}
 			}
-		case fix.keyword, "match":
+		case word == "match", fix.hasKeyword(word):
 			// 撞上 Match 也算输:Match 之后的 Include 只对该分支生效。
 			return false
 		}
