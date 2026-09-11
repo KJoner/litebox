@@ -186,9 +186,9 @@ func (e *integrationEnv) ssRequest(t *testing.T, revision int64, users []singbox
 
 // snellRequest 把同一台节点改成 Snell 的部署请求。
 //
-// **前置条件比另外两种多一条:节点上装的必须是预览版 sing-box。**
-// 装着正式版时这次部署会在 check 那一步失败,报
-// `unknown inbound type: snell` —— 那正是 node.checkChannelSupportsProtocol
+// **前置条件比另外两种多一条:节点上的 sing-box 必须 ≥ 1.14。**
+// 装着 1.13 时这次部署会在 check 那一步失败,报
+// `unknown inbound type: snell` —— 那正是 node.checkSingBoxSupportsProtocol
 // 要拦在保存入口时的东西,而这里跑的是它下面那一层。
 func (e *integrationEnv) snellRequest(
 	t *testing.T, revision int64, users []singbox.User, version int, obfs singbox.SnellObfsMode,

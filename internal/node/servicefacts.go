@@ -35,6 +35,19 @@ type ServiceStatus struct {
 	Detail string `json:"detail"`
 }
 
+// SingBoxStatus 在 ServiceStatus 之上多回答一件事:节点上这个二进制
+// 是不是面板现在分发的那一个。
+type SingBoxStatus struct {
+	ServiceStatus
+	// Upgradable 为真表示两边不是同一个文件(按 SHA-256 比),点「重新安装」
+	// 会把它换掉 —— 面板升级了 sing-box 而这台机器还没重新安装过,就是这样。
+	//
+	// 比哈希而不是比版本号:面板手上只有文件本身,它是哪一版要在节点上跑一次
+	// 才知道;而"点一下会不会换东西"这个问题,哈希答得最准。面板本地没有
+	// 这一架构的二进制、或者节点上没装时恒为假 —— 没有依据的"可升级"比不说更糟。
+	Upgradable bool `json:"upgradable"`
+}
+
 // MieruInstanceStatus 是一个 mita 实例(= 一个下发过的 Mieru 入口)的现状。
 type MieruInstanceStatus struct {
 	InboundID   int64        `json:"inbound_id"`
@@ -64,7 +77,7 @@ type NginxStatus struct {
 type ServiceFacts struct {
 	CheckedAt  time.Time     `json:"checked_at"`
 	InitSystem string        `json:"init_system"`
-	SingBox    ServiceStatus `json:"singbox"`
+	SingBox    SingBoxStatus `json:"singbox"`
 	Mieru      MieruStatus   `json:"mieru"`
 	Nginx      NginxStatus   `json:"nginx"`
 	Realm      ServiceStatus `json:"realm"`
@@ -89,15 +102,19 @@ func (s *Service) ProbeServices(ctx context.Context, nodeID int64) (ServiceFacts
 	// 按这台机器自己的设置取路径 —— 配置进了内存文件系统之后拿默认布局
 	// 去问 config.json 会问错文件,报成「没有配置」。
 	layout := s.layout.WithConfigInRAM(n.ConfigInRAM)
+	bundled := s.bundledSingBoxSHA256(n.Arch)
 	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		res, err := client.Run(ctx, sshx.NewCommand("sh", "-c", serviceProbeScript(layout)))
 		if err != nil {
 			return fmt.Errorf("探测服务: %w", err)
 		}
 		probe := parseServiceProbe(res.Stdout)
-		facts.SingBox = ServiceStatus{
-			Installed: probe.singbox, Version: probe.singboxVersion,
-			ConfigPresent: probe.singboxConfig, State: ServiceNotApplicable,
+		facts.SingBox = SingBoxStatus{
+			ServiceStatus: ServiceStatus{
+				Installed: probe.singbox, Version: probe.singboxVersion,
+				ConfigPresent: probe.singboxConfig, State: ServiceNotApplicable,
+			},
+			Upgradable: upgradable(probe.singbox, probe.singboxSHA256, bundled),
 		}
 		facts.Mieru.ServiceStatus = ServiceStatus{
 			Installed: probe.mita, Version: probe.mitaVersion, State: ServiceNotApplicable,
@@ -240,17 +257,43 @@ func (s *Service) ProbeServices(ctx context.Context, nodeID int64) (ServiceFacts
 	return facts, err
 }
 
+// bundledSingBoxSHA256 是面板现在分发的那个 sing-box 的哈希;拿不到时为空,
+// 那时卡片不说"可升级"。
+//
+// 走一个可选接口而不是加进 BinaryProvider:只有从目录读文件的那一种
+// 答得出来,测试里的假实现不必为此多长一个方法。
+func (s *Service) bundledSingBoxSHA256(arch string) string {
+	h, ok := s.binaries.(interface{ SHA256(string) (string, error) })
+	if !ok || arch == "" {
+		return ""
+	}
+	sum, err := h.SHA256(arch)
+	if err != nil {
+		return ""
+	}
+	return sum
+}
+
+// upgradable 是「节点上的二进制与面板现在分发的不是同一个」。任何一边不知道时为假。
+func upgradable(installed bool, onNode, bundled string) bool {
+	return installed && onNode != "" && bundled != "" && !strings.EqualFold(onNode, bundled)
+}
+
 // serviceProbeScript 一条 shell 里把三个二进制与四份配置的"在不在"问掉。
 //
 // 逐个 client.Run 每次都是一条新的 SSH 通道(约 157ms),七样东西
 // 分七次问要一秒多;而这几样只是 test 与 --version,合成一条脚本
 // 一次就够。nginx 走它自己那份探测脚本 —— 它要找 stream 模块,不是一句 test。
+//
+// sing-box 那一行多算一次 sha256sum:读一遍 36MB 的文件,1C 的小鸡上
+// 零点几秒,换来的是「这台机器还没换成面板分发的那一版」一眼可见。
 func serviceProbeScript(layout deployment.Layout) string {
 	q := sshx.ShellQuote
 	return strings.Join([]string{
 		"set -u",
-		fmt.Sprintf(`if [ -x %s ]; then echo singbox=1; echo "singbox_version=$(%s version 2>/dev/null | head -n 1)"; else echo singbox=0; fi`,
-			q(layout.BinaryPath), q(layout.BinaryPath)),
+		fmt.Sprintf(`if [ -x %s ]; then echo singbox=1; echo "singbox_version=$(%s version 2>/dev/null | head -n 1)"; `+
+			`echo "singbox_sha256=$(sha256sum %s 2>/dev/null | cut -d' ' -f1)"; else echo singbox=0; fi`,
+			q(layout.BinaryPath), q(layout.BinaryPath), q(layout.BinaryPath)),
 		fmt.Sprintf(`[ -f %s ] && echo singbox_config=1`, q(layout.ConfigPath())),
 		fmt.Sprintf(`if [ -x %s ]; then echo mita=1; echo "mita_version=$(%s version 2>/dev/null | head -n 1)"; else echo mita=0; fi`,
 			q(layout.MieruBinaryPath()), q(layout.MieruBinaryPath())),
@@ -266,6 +309,7 @@ func serviceProbeScript(layout deployment.Layout) string {
 type serviceProbe struct {
 	singbox        bool
 	singboxVersion string
+	singboxSHA256  string
 	singboxConfig  bool
 	mita           bool
 	mitaVersion    string
@@ -292,6 +336,8 @@ func parseServiceProbe(out string) serviceProbe {
 			// `sing-box version` 的第一行是 "sing-box version v1.13.15-litebox",
 			// 与探测里 parseVersionOutput 取的是同一段。
 			p.singboxVersion = firstLine(strings.TrimPrefix(value, "sing-box version "), 64)
+		case "singbox_sha256":
+			p.singboxSHA256 = value
 		case "singbox_config":
 			p.singboxConfig = value == "1"
 		case "mita":

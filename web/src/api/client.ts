@@ -202,17 +202,6 @@ export type NodeBillingMode = 'EGRESS' | 'BOTH'
  */
 export type NodeProtocol = 'VLESS_REALITY' | 'SHADOWSOCKS' | 'SNELL'
 
-/**
- * 这台机器上装的是哪一支 sing-box(V14)。
- *
- * **它描述的是事实,不是期望** —— 由「安装」写入,由「卸载」清回 STABLE,
- * 没有第三条路径会改它。所以界面上它出现在 sing-box 那一行的状态里,
- * 而不是节点编辑表单的某一栏:做成可编辑的设置会多出一个
- * 「想要预览版、装的还是正式版」的状态,而那个状态下 Snell 入口
- * 保存得进去、部署到一半失败并回滚。
- */
-export type SingBoxChannel = 'STABLE' | 'PREVIEW'
-
 /** Snell 的服务端版本。5 走 HTTP/TLS 混淆,6 走流量整形。 */
 export type SnellVersion = 5 | 6
 export type SnellObfsMode = '' | 'none' | 'http' | 'tls'
@@ -653,10 +642,12 @@ export interface Node {
   /** 配置与备份放在内存文件系统里,磁盘上不留。机器重启后靠巡检重新下发 */
   config_in_ram: boolean
   arch: string
+  /**
+   * 探测与安装时在节点上读出来的版本,空串表示没装或还没探测过。
+   * 这台机器能建哪些协议由后端按它算好(available_protocols),前端不自己比。
+   */
   singbox_version: string
   singbox_build_tags: string
-  /** 这台机器上装的是哪一支 sing-box。Snell 入口只在 PREVIEW 上能建。 */
-  singbox_channel: SingBoxChannel
   /**
    * 探测到的节点内存,0 表示还没探测过。
    *
@@ -678,12 +669,11 @@ export interface Node {
    */
   udp_timeout: string
   /**
-   * 这台机器【现在】能建的入站协议,后端按 singbox_channel 算好。
+   * 这台机器【现在】能建的入站协议,后端按 singbox_version 算好。
    *
-   * 前端渲染这个列表,**不自己写 `channel === 'PREVIEW' ? ... : ...`** ——
-   * 判据只能有一处实现,各写一遍的话,某天多一种只在预览版里的协议,
-   * 这个下拉框会漏掉它而后端明明支持。与 udp_timeout、subscription_host
-   * 是同一条规矩。
+   * 前端渲染这个列表,**不自己比版本号** —— 判据只能有一处实现,
+   * 各写一遍的话,某天多一种要求更新版本的协议,这个下拉框会漏掉它
+   * 而后端明明支持。与 udp_timeout、subscription_host 是同一条规矩。
    *
    * 只有 GET /api/nodes 与 GET /api/nodes/{id} 会带上它。
    */
@@ -838,7 +828,11 @@ export interface MieruInstanceStatus {
 export interface NodeServiceFacts {
   checked_at: string
   init_system: string
-  singbox: ServiceStatus
+  /**
+   * upgradable:节点上的二进制与面板现在分发的不是同一个(按 SHA-256 比),
+   * 点「重新安装」会换掉它。任何一边不知道时为 false。
+   */
+  singbox: ServiceStatus & { upgradable: boolean }
   /** Mieru 逐实例给,不合成一个 —— 「2/3 在跑」里多出的那一截正是要人去救的 */
   mieru: ServiceStatus & { instances: MieruInstanceStatus[] }
   nginx: ServiceStatus & { facts: NginxFacts }
@@ -2090,17 +2084,20 @@ export const api = {
     ),
   probeNode: (id: number) => request<ProbeResult>(`/api/nodes/${id}/probe`, { method: 'POST' }),
   /**
-   * 安装 sing-box。channel 不传表示"沿用这台机器现在那一支"。
-   *
-   * **不默认成正式版**:那会让一台已经在跑预览版的机器,在管理员点了
-   * 一次不带参数的「重新安装」之后被悄悄降回正式版 —— 而它上面的
-   * Snell 入口从那一刻起就渲染不出配置了。
+   * 安装 sing-box。面板只分发一支,已经装过的机器上再点就是换成这一版。
    */
-  installNode: (id: number, channel?: SingBoxChannel) =>
+  installNode: (id: number) =>
     request<{
       binary_path: string
       binary_sha256: string
       service_name: string
+      /** 装完之后在节点上读出来的版本 */
+      version: string
+      /**
+       * false 表示节点上已经是同一个二进制,什么都没换。true 而服务正在跑时,
+       * 跑着的仍是旧的那一个,要等它下一次启动(下发、重启都算)才换过去。
+       */
+      uploaded: boolean
       init_system: string
       installed: boolean
       detail: string
@@ -2111,12 +2108,7 @@ export const api = {
         config_path: string
         detail: string
       }
-      /** 这次装上去的那一支 */
-      singbox_channel: SingBoxChannel
-    }>(
-      `/api/nodes/${id}/install`,
-      { method: 'POST', body: channel ? { singbox_channel: channel } : undefined },
-    ),
+    }>(`/api/nodes/${id}/install`, { method: 'POST' }),
   /**
    * 从这台机器的出口实测一个握手目标。**只检测,不写入。**
    *

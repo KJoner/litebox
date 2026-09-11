@@ -16,6 +16,7 @@ func TestParseServiceProbeReadsEveryKey(t *testing.T) {
 	out := strings.Join([]string{
 		"singbox=1",
 		"singbox_version=sing-box version v1.13.15-litebox",
+		"singbox_sha256=01e25a04c517a7b5ba318360156003dae8fb28307c8fc2607f4bbb3ecb66b199",
 		"singbox_config=1",
 		"mita=1",
 		"mita_version=v3.20.0",
@@ -36,6 +37,35 @@ func TestParseServiceProbeReadsEveryKey(t *testing.T) {
 	}
 	if p.mitaVersion != "v3.20.0" || p.realmVersion != "realm 2.7.0" {
 		t.Fatalf("mita/realm 版本 = %q / %q", p.mitaVersion, p.realmVersion)
+	}
+	if p.singboxSHA256 != "01e25a04c517a7b5ba318360156003dae8fb28307c8fc2607f4bbb3ecb66b199" {
+		t.Fatalf("singbox 哈希 = %q", p.singboxSHA256)
+	}
+}
+
+// 「可升级」只在两边都知道、而且确实不一样时才说。
+//
+// 面板本地没有这一架构的二进制,或者节点上的 sha256sum 没输出(极简镜像),
+// 都不能说成"可升级" —— 没有依据的提示会让管理员去重装一台本来就是新版的机器。
+func TestUpgradableNeedsBothSides(t *testing.T) {
+	const a, b = "aaaa", "bbbb"
+	cases := []struct {
+		name      string
+		installed bool
+		onNode    string
+		bundled   string
+		want      bool
+	}{
+		{"不一样", true, a, b, true},
+		{"一样(大小写不同也算一样)", true, "AAAA", a, false},
+		{"面板本地没有二进制", true, a, "", false},
+		{"节点上算不出哈希", true, "", b, false},
+		{"没装", false, a, b, false},
+	}
+	for _, tc := range cases {
+		if got := upgradable(tc.installed, tc.onNode, tc.bundled); got != tc.want {
+			t.Errorf("%s:upgradable = %v,期望 %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -63,7 +93,7 @@ func TestServiceProbeScriptFollowsConfigInRAM(t *testing.T) {
 	}
 	// 每一个探测键都要出现在脚本里,否则解析器认得而脚本从不输出,
 	// 那一项就永远是"没有"。
-	for _, key := range []string{"singbox=", "singbox_version=", "singbox_config=",
+	for _, key := range []string{"singbox=", "singbox_version=", "singbox_sha256=", "singbox_config=",
 		"mita=", "mita_version=", "realm=", "realm_version=", "realm_config=", "nginx_config="} {
 		if !strings.Contains(script, key) {
 			t.Fatalf("脚本里没有 %q", key)

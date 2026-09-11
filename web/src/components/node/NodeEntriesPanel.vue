@@ -16,7 +16,6 @@ import {
   type NodeServiceFacts,
   type ServiceStatus,
   type InboundEndpointInput,
-  type SingBoxChannel,
 } from '@/api/client'
 import {
   LbNameConfirm,
@@ -648,21 +647,25 @@ function closeOp(v: boolean) {
 // ---------- sing-box ----------
 
 /**
- * 装哪一支。
+ * 安装或重新安装 sing-box。面板只分发一支(V14 的预览版通道已撤掉),
+ * 已经装过的机器上点它,就是换成面板现在分发的那一版。
  *
- * **通道由这个动作写入,不是节点表单里的一栏** —— 它描述的是"机器上那个
- * 文件是哪一版",做成可编辑的设置就会多出一个「想要预览版、装的还是
- * 正式版」的状态,而那个状态下 Snell 入口保存得进去、部署到一半失败并回滚。
+ * phase 只用来挑结尾那句话:在跑的机器上换了二进制,要说清"跑着的还是旧的
+ * 那一个"—— 不说的话,管理员会以为点完这一下就升级好了,而那台机器要到
+ * 下一次启动才真的换过去。
  */
-function installSingBox(channel: SingBoxChannel) {
-  const preview = channel === 'PREVIEW'
-  const label = preview ? '预览版' : '正式版'
-  void runOp(`安装 sing-box(${label})`, '正在上传二进制并写入服务定义', async () => {
-    const r = await api.installNode(props.node.id, channel)
+function installSingBox(phase: ServicePhase) {
+  const relay = isRelayHost.value
+  const title = phase === 'NOT_INSTALLED' ? '安装 sing-box' : '重新安装 sing-box'
+  void runOp(title, '正在上传二进制并写入服务定义', async () => {
+    const r = await api.installNode(props.node.id)
+    const version = r.version || '版本未知'
     opSteps.value = [
-      `二进制已就位:${r.binary_path}(${label})`,
-      `服务定义:${r.service_name}(${r.init_system})`,
+      r.uploaded
+        ? `二进制已就位:${r.binary_path}(${version})`
+        : `节点上已经是同一个二进制(${version}),没有重新上传`,
     ]
+    if (r.service_name) opSteps.value.push(`服务定义:${r.service_name}(${r.init_system})`)
     // 改了别人机器上的 sshd 就必须说出来,而且要说清改了什么、
     // 用的是 reload 还是 restart。悄悄改完再报一句"安装完成"是不能接受的。
     if (r.tcp_forwarding?.changed) {
@@ -673,39 +676,15 @@ function installSingBox(channel: SingBoxChannel) {
           '用 reload 而不是 restart,没有断开任何已有连接。',
       )
     }
-    opNote.value = preview
-      ? '二进制换了,但**服务还在跑旧的那一个**——要点一次「下发配置」' +
-        '重启 sing-box 才真的切过去。之后新增入口时就能选 Snell 了。'
-      : '接下来点「下发配置」把这台机器的入口配置推上去。'
-  })
-}
-
-/**
- * 切到预览版之前先把代价说清楚。
- *
- * 装正式版不弹这个:那是默认的、也是绝大多数机器该待的地方。
- * 而"换一个预览版的二进制上去"是管理员要为这台机器单独做的决定。
- */
-function confirmInstallPreview() {
-  lbDangerConfirm({
-    title: `在 ${nodeLabel.value} 上装预览版 sing-box?`,
-    okType: 'primary',
-    okText: '装预览版',
-    impacts: [
-      '预览版是上游的 **rc / beta**,不是打了 tag 的正式版。',
-      '**Snell 入口只能建在装了预览版的机器上** —— 这是装它的唯一理由。',
-      '同一份配置下实测常驻内存 **30.4MB**(正式版 22.4MB),128MB 的机器要留意。',
-      'VLESS 与 Shadowsocks 入口**照常工作,配置一个字节都不用改** ——' +
-        '实测正式版渲染出来的配置在预览版上跑起来零告警。',
-      '装完之后要再点一次「下发配置」重启 sing-box 才真的换过去,' +
-        '那一下会断开这台机器上**全部入口**的在线连接。',
-    ],
-    footer:
-      '想换回正式版:先把这台机器上的 Snell 入口删掉或改成别的协议,再点「安装(正式版)」。' +
-      '留着 Snell 入口装回去会被拦下 —— 那台机器的整份配置会渲染不出来。',
-    onOk: () => {
-      void installSingBox('PREVIEW')
-    },
+    if (relay || !r.uploaded) opNote.value = ''
+    else if (phase === 'RUNNING')
+      opNote.value =
+        '二进制换了,但正在跑的 sing-box 还是旧的那一个(换文件不影响运行中的进程)——' +
+        '要等它下一次启动才真的换过去:点一次「下发配置」或「重启」,' +
+        '那一下会断开这台机器上全部入口的在线连接。'
+    else opNote.value = '接下来点「下发配置」把这台机器的入口配置推上去。'
+    // 换没换、换成了哪一版,卡片上的「可升级」要跟着变。
+    await loadServices()
   })
 }
 
@@ -970,33 +949,33 @@ const singBoxCard = computed<ServiceCardModel>(() => {
   const st = services.value?.singbox ?? null
   const phase = phaseOf(st)
   const relay = isRelayHost.value
-  // 通道写进现状行:管理员半年后回到这个页面时,「为什么这台能选 Snell
-  // 那台不能」的答案必须就在眼前 —— 否则他只会得出"面板有 bug"。
-  const channel = props.node.singbox_channel === 'PREVIEW' ? '预览版 1.14' : '正式版'
+  // 版本号写进现状行:「为什么这台能选 Snell、那台不能」的答案就是它 ——
+  // 面板升级之后还没重新安装的机器上跑的仍是旧版。「可升级」按哈希比
+  // (节点上的文件 ≠ 面板现在分发的那一个),不按版本号猜。
   const version = st?.version || props.node.singbox_version
+  const upgrade = st?.upgradable ? '可升级' : ''
   let detail = ''
   if (phase === 'NOT_INSTALLED') detail = '还没安装'
-  else if (relay) detail = joinDetail(version || '已安装', '仅二进制,转发拨测时跑几秒')
-  else if (st) detail = joinDetail(version || '已安装', channel, st.detail)
-  else if (version) detail = joinDetail(version, channel)
+  else if (relay) detail = joinDetail(version || '已安装', upgrade, '仅二进制,转发拨测时跑几秒')
+  else if (st) detail = joinDetail(version || '已安装', upgrade, st.detail)
+  else if (version) detail = version
 
-  const installMenu = [
-    { label: '安装正式版', onClick: () => installSingBox('STABLE') },
-    { label: '安装预览版(1.14,Snell 入口需要)', onClick: confirmInstallPreview },
-  ]
   const fresh = phase === 'NOT_INSTALLED'
-  const install: ServiceCardAction = relay
-    ? {
-        label: fresh ? '安装(仅二进制)' : '重新安装(仅二进制)',
-        primary: fresh,
-        onClick: () => installSingBox('STABLE'),
-      }
-    : {
-        label: fresh ? '安装' : '重新安装',
-        primary: fresh,
-        onClick: () => installSingBox('STABLE'),
-        menu: installMenu,
-      }
+  const install: ServiceCardAction = {
+    label: relay ? (fresh ? '安装(仅二进制)' : '重新安装(仅二进制)') : fresh ? '安装' : '重新安装',
+    primary: fresh,
+    onClick: () => installSingBox(phase),
+  }
+  // 装着的机器上,重新安装挂在大按钮的下拉里。V19 刚做出来时它只在「没装」
+  // 那一格出现,在跑的机器上找不到 —— 而面板换了 sing-box 版本之后,
+  // 要换二进制的恰恰是这些在跑的机器;只能先卸载的话,节点上的配置与备份
+  // 会跟着删掉。
+  const reinstallMenu = [
+    {
+      label: st?.upgradable ? '升级:换成面板分发的二进制' : '重新安装(换成面板分发的二进制)',
+      onClick: () => installSingBox(phase),
+    },
+  ]
 
   let primary: ServiceCardAction[]
   if (phase === 'UNKNOWN') primary = [pendingPrimary]
@@ -1004,7 +983,7 @@ const singBoxCard = computed<ServiceCardModel>(() => {
   else if (phase === 'RUNNING') {
     primary = [
       { label: '停止', danger: true, onClick: stopSingBox },
-      { label: '重启', onClick: restartSingBox },
+      { label: '重启', onClick: restartSingBox, menu: reinstallMenu },
     ]
   } else {
     primary = [
@@ -1013,6 +992,7 @@ const singBoxCard = computed<ServiceCardModel>(() => {
         primary: true,
         onClick: startSingBox,
         disabled: st && !st.config_present ? '这台机器上还没有 sing-box 配置 —— 先「下发配置」' : '',
+        menu: reinstallMenu,
       },
     ]
   }
@@ -1023,7 +1003,9 @@ const singBoxCard = computed<ServiceCardModel>(() => {
       ? '中转机上不装服务,这份二进制只在转发拨测时跑几秒 —— 没有启停与下发。'
       : '下发与重启都会重启服务,这台机器上全部 sing-box 入口的在线连接都会断开。' +
         '「下发配置」会先强制同步流量,「重启」不会。' +
-        '停止是临时的:巡检开着时会把它拉起来,想长期停掉请停用入口或卸载。',
+        '停止是临时的:巡检开着时会把它拉起来,想长期停掉请停用入口或卸载。' +
+        '重新安装在「重启」「启动」旁的下拉里:面板换了 sing-box 版本之后用它换掉二进制,' +
+        '换完要等下一次启动才生效。',
     status: relay && phase === 'STOPPED' ? metaFor(phase, null) : metaFor(phase, st),
     detail,
     primary,
