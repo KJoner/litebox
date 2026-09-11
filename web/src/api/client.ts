@@ -1959,7 +1959,7 @@ export const profileKindLabel: Record<ProfileKind, string> = {
 export const profileKindHint: Record<ProfileKind, string> = {
   SINGBOX: '整份配置里就是节点本身,导入后不需要再单独加节点订阅',
   CLASH: '配置里的 proxy-providers 自己去拉节点,面板只替换其中的订阅地址',
-  SHADOWROCKET: '只有规则,节点要另外用「通用订阅」地址添加',
+  SHADOWROCKET: '只有规则,节点要另外用「Clash 配置」地址添加(通用订阅里没有 Snell)',
 }
 
 export interface SubscriptionProfile {

@@ -44,7 +44,7 @@ const formats = computed(() => {
     {
       key: 'base64',
       name: '通用订阅',
-      apps: 'v2rayN · Shadowrocket 等',
+      apps: 'v2rayN 等 · 小火箭请用下面的 Clash 配置',
       url: d.url_base64,
       primary: true,
     },
@@ -53,10 +53,14 @@ const formats = computed(() => {
     // 两者不是同一份东西的两种包装:通用订阅是分享链接的列表,而**有些线路
     // 没有通用的分享链接**,在那条路上它们压根不存在 —— 用户看到的是节点数
     // 比别人少,而没有任何提示。这句差别要写在 apps 里,不然没人会换。
+    //
+    // 小火箭也列在这一条:它认 Clash 格式的订阅,而 Snell 这类线路只在这一条上有
+    // (没有任何客户端认得的 snell:// 分享链接)。原来小火箭写在通用订阅那一行,
+    // 用它的人照着导进去,少了那几条线路,还以为是小火箭不支持。
     {
       key: 'clash',
       name: 'Clash 配置',
-      apps: 'Clash Meta · mihomo · Clash Verge 等,部分线路只有这一种能用',
+      apps: 'Clash Meta · mihomo · Clash Verge · 小火箭 等,部分线路只有这一种能用',
       url: d.url_clash,
       primary: false,
     },
@@ -237,10 +241,12 @@ function regenerate() {
           <!--
             小火箭把「配置」与「节点」分成两处,这是它最容易卡住人的地方:
             只导了配置会发现一个节点都没有,而界面上没有任何提示。
+            节点那一步用 Clash 配置而不是通用订阅 —— 后者少几条线路,见 formats 的注释。
           -->
           <div v-if="profiles.some((p) => p.kind === 'SHADOWROCKET')" class="ps__note">
             用<strong>小火箭</strong>的话要做两次:配置文件在「配置」里添加,
-            节点用上面的<strong>通用订阅</strong>地址在首页添加。少做一步就会发现没有节点可选。
+            节点用上面的<strong>Clash 配置</strong>地址在首页添加(类型选 Subscribe)。
+            少做一步就会发现没有节点可选;用通用订阅的话会少几条线路。
           </div>
         </div>
       </section>
