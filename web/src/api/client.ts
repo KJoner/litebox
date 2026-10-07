@@ -1477,13 +1477,51 @@ export interface UserNodeTraffic {
   total: number
 }
 
+/** 区间统计的实际范围(V20)。 */
+export interface UserTrafficRange {
+  from: string
+  to: string
+  granularity: 'hour' | 'day'
+  source: 'ledger' | 'daily'
+  /** 最近一条入账的时间,空串表示从没入过账 */
+  updated_at: string
+}
+
+export interface UserTrafficTotal {
+  uplink: number
+  downlink: number
+  total: number
+}
+
+export interface UserNodeRange {
+  node_id: number
+  node_name: string
+  node_sort_order: number
+  deleted: boolean
+  uplink: number
+  downlink: number
+  total: number
+}
+
+export interface UserNodeNoData {
+  node_id: number
+  node_name: string
+  reason: 'no_records' | 'collect_failed'
+  detail?: string
+}
+
 export interface UserTraffic {
+  /** 区间统计(V20):合计、趋势、按节点明细都只看这一段 */
+  range: UserTrafficRange
+  total: UserTrafficTotal
+  series: TrafficSeriesPoint[]
+  no_data: UserNodeNoData[]
   user_code: string
   used_uplink: number
   used_downlink: number
   used_total: number
   quota_bytes: number
-  by_node: UserNodeTraffic[]
+  by_node: UserNodeRange[]
   daily: DailyPoint[]
 }
 
@@ -2263,8 +2301,11 @@ export const api = {
     request<ProxyUser>(`/api/users/${id}/regenerate-snell-key`, { method: 'POST' }),
   regenerateSubToken: (id: number) =>
     request<ProxyUser>(`/api/users/${id}/regenerate-sub-token`, { method: 'POST' }),
-  userTraffic: (id: number, days = 30) =>
-    request<UserTraffic>(`/api/users/${id}/traffic`, { query: { days } }),
+  /** 区间 [from, to) 为 RFC3339;两者都不传时按 days 回落。 */
+  userTraffic: (id: number, opts: { days?: number; from?: string; to?: string } = {}) =>
+    request<UserTraffic>(`/api/users/${id}/traffic`, {
+      query: { days: opts.from ? undefined : (opts.days ?? 30), from: opts.from, to: opts.to },
+    }),
 
   // 节点
   nodes: () => request<{ items: Node[] }>('/api/nodes'),

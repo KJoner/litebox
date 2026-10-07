@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/traffic"
 )
 
 const actionTrafficSync = "traffic.sync"
@@ -34,7 +36,12 @@ func (s *Server) handleSyncNodeTraffic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleUserTraffic 返回某用户的流量明细:按节点分布 + 每日趋势。
+// handleUserTraffic 返回某用户在一个时间区间内的流量:合计、趋势、按节点明细(V20)。
+//
+// 区间由 from / to(RFC3339,左闭右开)给出;旧调用方只传 days 时回落到
+// [现在 - days 天, 现在)。三块数据来自同一次查询、同一个来源,区间一致。
+// 额度那一侧(used_* / quota_bytes)与区间无关,分开命名、照常返回 ——
+// 查历史区间不改变用户额度、重置时间与累计账本。
 func (s *Server) handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.userIDFromPath(w, r)
 	if !ok {
@@ -45,19 +52,35 @@ func (s *Server) handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 		s.writeUserError(w, err, "查询用户失败")
 		return
 	}
-
-	byNode, err := s.traffic.UserByNode(r.Context(), u.UserCode)
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	rng, err := traffic.ParseRange(r.URL.Query().Get("from"), r.URL.Query().Get("to"), days, time.Now())
 	if err != nil {
-		s.logger.Error("查询用户节点流量失败", "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	report, err := s.traffic.UserRange(r.Context(), u.UserCode, u.ID, rng)
+	if err != nil {
+		s.logger.Error("查询用户区间流量失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
-	daily, err := s.traffic.UserDaily(r.Context(), u.UserCode, days)
-	if err != nil {
-		s.logger.Error("查询用户每日流量失败", "error", err)
-		writeError(w, http.StatusInternalServerError, "服务器内部错误")
-		return
+	// 「无记录」里再分出「采集失败」:调度器最近一轮在那台机器上失败了,
+	// 那段时间的用量不是零,是没采到 —— 两者在账本里长得一模一样,只有调度器知道。
+	if s.scheduler != nil {
+		_, failing := s.scheduler.Status()
+		for i := range report.NoData {
+			if msg, ok := failing[report.NoData[i].NodeID]; ok {
+				report.NoData[i].Reason = "collect_failed"
+				report.NoData[i].Detail = msg
+			}
+		}
+	}
+	// daily 保留给旧调用方:按日粒度时与 series 同源,按小时时为空。
+	daily := make([]traffic.DailyPoint, 0)
+	if report.Range.Granularity == traffic.GranularityDay {
+		for _, p := range report.Series {
+			daily = append(daily, traffic.DailyPoint{Day: p.At[:10], Uplink: p.Uplink, Downlink: p.Downlink, Total: p.Total})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -66,7 +89,11 @@ func (s *Server) handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 		"used_downlink": u.UsedDownlink,
 		"used_total":    u.UsedTotal(),
 		"quota_bytes":   u.QuotaBytes,
-		"by_node":       byNode,
+		"range":         report.Range,
+		"total":         report.Total,
+		"series":        report.Series,
+		"by_node":       report.ByNode,
+		"no_data":       report.NoData,
 		"daily":         daily,
 	})
 }
