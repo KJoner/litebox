@@ -44,7 +44,8 @@ import {
   type LbPoint,
   type LbStatusMeta,
 } from '@/components/lb'
-import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
+import { configState, isPreChange, needsDeploy, nodeBadges } from '@/components/lb/derive'
+import { expiryStatusMeta, expiryText } from '@/components/expiry/expiryMeta'
 import { confirmDeployNode } from '@/components/node/nodeOps'
 import { inboundProtocolMeta } from '@/components/node/inboundOps'
 import { bootstrapNotes } from '@/components/node/bootstrapNotes'
@@ -106,6 +107,12 @@ function syncTabToRoute(key: unknown) {
   // replace 而不是 push:切 Tab 不该在浏览器历史里堆一层,
   // 否则连点五个 Tab 之后要按五次后退才回得到列表。
   router.replace({ name: 'node-detail', params: { id: String(nodeId.value), tab: String(key) } })
+}
+
+/** 页面内部跳 Tab 也要同步地址:v-model 只在用户点 Tab 时触发 @change。 */
+function goTab(key: (typeof TABS)[number]) {
+  tab.value = key
+  syncTabToRoute(key)
 }
 
 /** 编辑表单由本页托管 —— 抽屉时期它挂在列表页上,而现在列表页不再知道谁被打开了。 */
@@ -862,6 +869,24 @@ const formatRate = (v: number) => `${formatBytes(v)}/s`
 
 const runMeta = computed(() => (node.value ? nodeBadges(node.value, latest.value?.collected_at) : []))
 
+/** 到期提醒的最近一次结果,一句话。阶段码按「提前几天 / 已到期」翻译,渠道原样。 */
+const lastNoticeText = computed(() => {
+  const n = node.value?.expiry?.last_notice
+  if (!n) return '还没发过'
+  const stage = n.stage === 'OVERDUE' ? '已到期' : /^D\d+$/.test(n.stage) ? `提前 ${n.stage.slice(1)} 天` : n.stage
+  const via = n.channel ? ` · ${n.channel}` : ''
+  switch (n.status) {
+    case 'SENT':
+      return `${stage}${via} · ${formatUTCTime(n.sent_at)}`
+    case 'FAILED':
+      return `${stage}${via} · 发送失败${n.last_error ? `:${n.last_error}` : ''}`
+    case 'PENDING':
+      return `${stage}${via} · 排队中`
+    default:
+      return `${stage}${via} · 已取消`
+  }
+})
+
 /** 最近一次部署失败时的顶部横幅。失败原因要提到第一屏,不能埋在 Tab 里。 */
 const failureBanner = computed(() => {
   const d = deployments.value[0]
@@ -977,11 +1002,18 @@ const needsPortForward = computed(() =>
       <span class="nd__back-chevron">‹</span>自建节点
     </RouterLink>
 
+    <!-- 顶部只放四样:内部名称、编号、状态标签、主操作(V20)。
+         地址、端口、订阅名称这些都在概览的「身份与地址」里 —— 标题下面
+         原来那一行把六样东西用「·」串起来,排查时要先在里面数到第几段。 -->
     <div class="nd__bar">
       <div class="nd__head">
         <div class="nd__title">
-          <h1 class="nd__name">{{ node?.display_name || node?.name || '节点详情' }}</h1>
+          <h1 class="nd__name">{{ node?.name || '节点详情' }}</h1>
           <template v-if="node">
+            <span class="nd__sort lb-tabular" title="编号 = 排序号,决定订阅与门户里的先后;在列表里点击可改">
+              #{{ node.sort_order }}
+            </span>
+            <span v-if="node.role === 'RELAY'" class="lb-chip">中转</span>
             <LbStatusTag kind="node" :status="node.status" />
             <!-- rev 只在这台机器确实有 sing-box 配置时才有意义。
                  「不适用 rev 0」读起来像"版本号是 0",而真相是
@@ -990,43 +1022,26 @@ const needsPortForward = computed(() =>
               :meta="configStatusMeta[configState(node)]"
               :suffix="configState(node) === 'NOT_APPLICABLE' ? '' : `rev ${node.config_revision}`"
             />
+            <LbStatusTag v-for="(b, i) in runMeta" :key="i" :meta="b" />
+            <span v-if="node.maintenance_message" class="nd__maint">{{ node.maintenance_message }}</span>
             <!-- 等级在「入口」里按条设置(迁移 0020),机器上没有这一栏。
                  在标题旁边显示一个机器级的等级,会让人以为它管着整台机器。 -->
           </template>
         </div>
-        <div v-if="node" class="nd__sub lb-tabular">
-          {{ node.name }} · <span class="lb-mono">{{ node.host }}</span>
-          <!-- 中转角色没有自己的入站,那三个端口在库里是 0,写出来只会让人
-               以为配漏了。客户端连的端口在「入口」里,一条规则一个。 -->
-          <!-- 写明「端口」二字:多入站之后这里是一串数字,不标的话
-               它看起来像是版本号或者别的什么。 -->
-          <template v-if="node.role !== 'RELAY'">
-            · 端口 {{ portSummary || '无(一个入口都没有)' }}
-          </template>
-          · SSH {{ node.ssh_port }}
-          <!-- 订阅地址与管理地址不同时必须显式说出来:上面那个地址是面板连的,
-               不是用户连的,而两者长得一样合理 —— 排查"用户连不上"时
-               照着管理地址去 telnet 会得到一个与故障无关的结论。 -->
-          <template v-if="node.sub_ipv4_address"> · 订阅 {{ node.sub_ipv4_address }}</template>
-          <!-- 带端口显示 IPv6 必须加方括号:2a02:…::1:9443 分不清哪一段是端口。 -->
-          <template v-if="node.ipv6_address"> · IPv6 [{{ node.ipv6_address }}]</template>
-        </div>
       </div>
 
       <div v-if="node" class="nd__actions">
-        <!-- 库里的配置已经在节点上生效时不做成主按钮:那一下点下去只会白白
-             重启一次 sing-box、断掉全部在线连接,换回一模一样的配置。 -->
-        <!-- 中转机上没有 sing-box 配置可部署 —— 那一下点下去只会得到一句
-             「中转角色的节点没有 sing-box 配置」。它要下发的是 nginx 转发,
-             而那在「入口」里,连摩擦档次都不同(只 reload,不断连接)。 -->
-        <!-- 「部署」与「安装 sing-box」在【入口】Tab 里 —— 部署下发的正是那一屏
+        <!-- 正在跑什么必须写出来。只有按钮上一个小转圈的话,管理员会以为没点上
+             而反复点,也不明白为什么这时候点别处关不掉弹窗。放在顶栏:
+             只读检查分散在三个 Tab 里,而这一句要在哪个 Tab 都看得见。 -->
+        <span v-if="running" class="nd__tools-running">{{ running }}中…&nbsp;结果会弹窗显示</span>
+        <!-- 「部署」与「安装 sing-box」在【入口与转发】Tab 里 —— 部署下发的正是那一屏
              上列着的东西,而按钮离它要改的对象越远,就越难判断这一下会影响谁。
-             这里只留一个跳过去的入口,并把「该部署了」这件事说出来。 -->
-        <a-button
-          :type="needsDeploy(node) ? 'primary' : 'default'"
-          @click="tab = 'entries'"
-        >
-          {{ needsDeploy(node) ? '待部署 · 去入口' : '入口与部署' }}
+             这里只留一个跳过去的入口,并把「该部署了」这件事说出来。
+             库里的配置已经在节点上生效时不做成主按钮:那一下点下去只会白白
+             重启一次 sing-box、断掉全部在线连接,换回一模一样的配置。 -->
+        <a-button :type="needsDeploy(node) ? 'primary' : 'default'" @click="goTab('entries')">
+          {{ needsDeploy(node) ? '待部署 · 去入口' : '入口与转发' }}
         </a-button>
         <a-dropdown placement="bottomRight">
           <a-button class="lb-btn-circle nd__more" :aria-label="`${node.name} 的更多操作`" title="更多操作">
@@ -1037,7 +1052,7 @@ const needsPortForward = computed(() =>
                (sing-box、每个 Mieru 入口一个 mita、nginx),它们的
                影响面差得很远 —— 放在这个顶栏里只能写一句放之四海而皆准的
                确认文案,而管理员恰恰要靠那句话判断这一下要不要挑时机。
-               它们都在「入口」Tab 里,离它们要改的东西最近。 -->
+               它们都在「入口与转发」Tab 里,离它们要改的东西最近。 -->
           <template #overlay>
             <a-menu>
               <a-menu-item-group title="这台机器">
@@ -1093,130 +1108,14 @@ const needsPortForward = computed(() =>
             {{ failureBanner.rollback }} —— 节点当前运行的是回滚后的配置,用户未受影响。
           </div>
           <div class="nd__fail-acts">
-            <a-button size="small" class="lb-btn-ghost" @click="tab = 'deploys'">查看完整步骤</a-button>
+            <a-button size="small" class="lb-btn-ghost" @click="goTab('deploys')">查看完整步骤</a-button>
             <a-button size="small" class="lb-btn-ghost" @click="doDiff">配置比对</a-button>
           </div>
         </div>
       </div>
 
-      <div v-if="runMeta.length" class="nd__badges">
-        <LbStatusTag v-for="(b, i) in runMeta" :key="i" :meta="b" />
-        <span v-if="node.maintenance_message" class="nd__maint">
-          {{ node.maintenance_message }}
-        </span>
-      </div>
-
-      <!-- 服务巡检。与上面那排状态是两回事:那些说的是"上次探测能不能连上、
-           上次部署成不成功",这一行说的是"此刻还能不能服务用户"。
-           一台 ONLINE 的机器完全可能跑着一个已经死掉的 sing-box。 -->
-      <div class="lb-grid-2 nd__strip">
-      <div v-if="health" class="lb-card lb-card--sm nd__health">
-        <span class="nd__health-label">
-          服务巡检
-          <LbInfoTip
-            :width="320"
-            text="与上面的运行状态是两回事:那里说的是上次探测与上次部署,这里说的是此刻还能不能服务用户。「连不上」= SSH 都不通,服务是死是活并不知道;「没在跑」= 服务定义在、进程确实没跑。"
-          />
-        </span>
-        <template v-if="node.role !== 'RELAY'">
-          <span class="nd__health-item" :title="health.singbox_detail">
-            sing-box
-            <LbStatusTag kind="service" :status="health.singbox" small />
-          </span>
-        </template>
-        <span class="nd__health-item" :title="health.nginx_detail">
-          nginx 转发
-          <LbStatusTag kind="service" :status="health.nginx" small />
-        </span>
-        <span
-          v-if="health.realm && health.realm !== 'NOT_APPLICABLE'"
-          class="nd__health-item"
-          :title="health.realm_detail"
-        >
-          realm 转发
-          <LbStatusTag kind="service" :status="health.realm" small />
-        </span>
-        <!-- **每个 Mieru 入口一行,点名。** 一个入口一个 mita 实例,
-             它们各自独立地跑与崩 —— 合成一个状态的话,挂了哪一个看不出来,
-             而要去救的也只是其中一个。 -->
-        <span
-          v-for="m in health.mieru ?? []"
-          :key="m.inbound_id"
-          class="nd__health-item"
-          :title="m.detail"
-        >
-          {{ m.display_name }}
-          <LbStatusTag kind="service" :status="m.state" small />
-        </span>
-        <span v-if="health.recovered" class="nd__health-note nd__health-note--ok">
-          面板刚刚自动把它拉起来了
-        </span>
-        <span v-else-if="health.recover_error" class="nd__health-note nd__health-note--bad">
-          自动恢复失败:{{ health.recover_error }}
-        </span>
-        <span class="nd__health-time">{{ formatUTCTime(health.checked_at) }}</span>
-      </div>
-
-      <!-- 只读检查常驻工具条。这一排都不改动节点状态。 -->
-      <div class="lb-card lb-card--sm nd__tools">
-        <span class="nd__tools-label">
-          只读检查
-          <LbInfoTip text="这一排都不改动节点状态,结果一律弹窗呈现。点错了最坏结果是白等几秒。" :width="260" />
-        </span>
-        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '测试 SSH'" @click="doTestSSH">测试 SSH</a-button>
-        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '探测'" @click="doProbe">探测</a-button>
-        <!-- 比对配置、扫描握手目标、同步流量在中转机上都没有对应的东西:
-             它上面没有 sing-box 配置、不用 REALITY、也没有计数器。
-             留着只会让人点一下换回一句报错。 -->
-        <a-button
-          v-if="!isRelay"
-          size="small"
-          class="lb-btn-ghost lb-btn-ghost--text"
-          :loading="running === '比对配置'"
-          @click="doDiff"
-        >
-          比对配置
-        </a-button>
-        <!-- 「扫描握手目标」搬进了 sing-box 入口的新增/编辑弹窗。
-             它是**入口级**的:同机两个 REALITY 入站可以指向不同的目标,
-             而 8192 字节的记录上限是那个域名的属性、不是这台机器的属性。
-             留在这一排的话,扫完还要再挑一次"写到哪个入口上" ——
-             而悄悄挑一个写进去正是这类操作最容易出的错。 -->
-        <a-button
-          v-if="!isRelay"
-          size="small"
-          class="lb-btn-ghost lb-btn-ghost--text"
-          :loading="running === '同步流量'"
-          @click="doSyncTraffic"
-        >
-          同步流量
-        </a-button>
-        <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '采集资源'" @click="doCollectMetrics">
-          采集资源
-        </a-button>
-        <!-- 「转发」按钮去掉了:这台机器的入口(sing-box 与 nginx 转发)
-             统一在下面的「入口」Tab 里管,那是一个要增删改的列表,
-             不是一次看完就走的检查 —— 放进这一排会让两类东西长得一样。 -->
-        <!-- 这一下只是算方案并与当前值对比,不写节点。要不要应用在面板里另点。 -->
-        <a-button
-          size="small"
-          class="lb-btn-ghost lb-btn-ghost--text"
-          :loading="running === 'TCP 调优检查'"
-          title="按这台机器的内存现算一份内核参数方案,先看后应用"
-          @click="doTuning"
-        >
-          TCP 调优
-        </a-button>
-        <!-- 正在跑什么必须写出来。只有按钮上一个小转圈的话,管理员会以为没点上
-             而反复点,也不明白为什么这时候点别处关不掉抽屉。 -->
-        <span v-if="running" class="nd__tools-running">
-          {{ running }}中…&nbsp;结果会弹窗显示
-        </span>
-      </div>
-      </div>
-
       <!-- 只读动作的结果一律弹窗呈现。
-           探测会写回三四个字段,一条吐司交付不了;而铺在工具条下方会把 Tab
+           探测会写回三四个字段,一条吐司交付不了;而铺在卡片下方会把 Tab
            整个推下去 —— 结果是看完就走的东西,不该占常驻内容的位置。
            一个弹窗装全部四种:同一时刻只可能有一种结果,分成四个弹窗
            只是把同一份开关状态抄四遍。
@@ -1289,7 +1188,7 @@ const needsPortForward = computed(() =>
             <div>
               <span>mita</span>
               <b class="lb-mono" :style="{ color: probe.mita_version ? undefined : color.warning }">
-                {{ probe.mita_version || '未安装 —— 去「入口」Tab 点「安装」' }}
+                {{ probe.mita_version || '未安装 —— 去「入口与转发」Tab 点「安装」' }}
               </b>
             </div>
             <div>
@@ -1392,7 +1291,7 @@ const needsPortForward = computed(() =>
             </div>
           </div>
           <div class="nd__panel-note">
-            Mieru 的下发在「入口」Tab 的每一行上,各下各的 —— 重启一个实例
+            Mieru 的下发在「入口与转发」Tab 的每一行上,各下各的 —— 重启一个实例
             不影响同机的其他入口,也不影响 sing-box。
           </div>
         </template>
@@ -1409,282 +1308,252 @@ const needsPortForward = computed(() =>
       />
       </a-modal>
 
+      <!-- 五个 Tab 按职责分(V20):概览回答「这是哪台机器、还正不正常、什么时候续费」,
+           入口与转发回答「对外开了哪些口子」,流量与资源各管一类数字,
+           部署与记录回答「配置是不是已经在节点上生效、历史上发生过什么」。
+           原来的「只读检查」工具条拆开跟着各自的数据走:同步流量在流量 Tab、
+           采集资源在资源 Tab、比对配置在部署 Tab —— 按钮离它要影响的数字越近,
+           越不用先想"我要找的那个按钮在哪一排"。 -->
       <a-tabs v-model:activeKey="tab" size="small" @change="syncTabToRoute">
         <a-tab-pane key="overview" tab="概览">
           <div class="nd__grid">
             <section class="nd__card">
-              <div class="nd__card-head"><span class="nd__card-head-title">连接与端口</span></div>
+              <div class="nd__card-head">
+                <span class="nd__card-head-title">身份与地址</span>
+                <a class="nd__card-link" @click="editOpen = true">编辑节点 ›</a>
+              </div>
               <div class="nd__card-body">
                 <div class="nd__kv">
-                  <div>
-                    <span>SSH{{ hostIsDomain ? '(域名,每次操作前重新解析)' : '' }}</span>
+                  <div><span>内部名称</span><b>{{ node.name }}</b></div>
+                  <div><span>订阅名称</span><b>{{ node.display_name || '—' }}</b></div>
+                  <div><span>编号(排序号)</span><b class="lb-tabular">#{{ node.sort_order }}</b></div>
+                  <div><span>角色</span><b>{{ isRelay ? '中转主机(不跑 sing-box)' : '落地节点' }}</b></div>
+                  <!-- 管理通道是面板连的地址,订阅地址是用户连的 —— 两者长得一样合理,
+                       而排查"用户连不上"时照着管理地址去 telnet 会得到一个与故障无关的结论。
+                       所以三行挨在一起、各自标明是谁用的。 -->
+                  <div class="nd__kv-wide">
+                    <span>管理通道{{ hostIsDomain ? '(域名,每次操作前重新解析)' : '' }}</span>
                     <b class="lb-mono">{{ node.ssh_user }}@{{ node.host }}:{{ node.ssh_port }}</b>
                   </div>
-                  <!-- 中转机上没有 sing-box 入站,这三个端口在库里就是 0。
-                       显示「公网 0 → 主机 0」会让排查的人以为服务没起来,
-                       而真实情况是这台机器上根本没有这个概念 ——
-                       客户端连的端口在「入口」里,一条转发规则一个。 -->
-                  <template v-if="!isRelay">
-                    <div v-for="i in inbounds" :key="i.id">
-                      <span>{{ i.display_name }}</span>
-                      <b class="lb-mono">
-                        公网 {{ i.public_port || i.listen_port }} → 主机 {{ i.listen_port }}
-                      </b>
-                    </div>
-                    <!-- Mieru 的端口是一**段**,与上面那些不是一回事:
-                         客户端会在整段里跳,那是这个协议的主要抗封锁特性。
-                         不并进上面的循环 —— 「公网 X → 主机 Y」那个形状
-                         表达不了一个号码段。 -->
-                    <div v-for="m in mierus" :key="`mp${m.id}`">
-                      <span>{{ m.display_name }}</span>
-                      <b class="lb-mono">
-                        {{ portRangeText(m.listen_port_start, m.listen_port_end) }}
-                        <template v-if="m.public_port_start">
-                          → 公网 {{ portRangeText(m.public_port_start, m.public_port_end) }}
-                        </template>
-                      </b>
-                    </div>
-                    <!-- **判据要把 Mieru 算上。** 只有 Mieru 入口的机器上
-                         用户是连得上的,而「一个都没有」在那种机器上是错的 ——
-                         它会让管理员去加一个他并不需要的 sing-box 入口。 -->
-                    <div v-if="!inbounds.length && !mierus.length">
-                      <span>入口</span>
-                      <b><a @click="tab = 'entries'">一个都没有 —— 去「入口」加一条</a></b>
-                    </div>
-                    <!-- API 端口是 sing-box 的统计接口。这台机器上没有
-                         sing-box 时它指向一个谁都没在听的号码 ——
-                         显示出来会让排查的人以为该去查为什么连不上。 -->
-                    <div v-if="hasSingBox">
-                      <span>API 端口</span><b class="lb-mono">{{ node.api_port }} 仅回环</b>
-                    </div>
-                    <div class="nd__kv-wide nd__ram">
-                      <a-switch
-                        :checked="node.config_in_ram"
-                        :loading="configRAMBusy"
-                        :disabled="node.role === 'RELAY' || !!running"
-                        @change="(v: unknown) => toggleConfigRAM(v === true)"
-                      />
-                      <span class="nd__ram-text">
-                        <span class="nd__ram-title">
-                          配置不落盘
-                          <LbInfoTip
-                            :width="320"
-                            :text="
-                              node.role === 'RELAY'
-                                ? '中转主机上没有 sing-box 配置,这一项不适用。'
-                                : node.config_in_ram
-                                  ? '磁盘上没有配置与备份 —— 快照、镜像、商家手里的旧硬盘上都拿不到。代价:机器重启后 sing-box 起不来,要等巡检重新下发。'
-                                  : '配置里有这台机器全部入口的用户凭据,以及它链出去的落地账号。改成不落盘可以让磁盘上一个字节都不留;代价是机器重启后 sing-box 起不来,要等巡检重新下发。'
-                            "
-                          />
-                        </span>
-                        <span class="nd__ram-state">
-                          当前:{{ node.config_in_ram ? '内存(/run/litebox,磁盘不留)' : '磁盘(/opt/litebox)' }}
-                        </span>
-                      </span>
-                    </div>
-                  </template>
-                  <div v-else>
-                    <span>入口</span>
-                    <b><a @click="tab = 'entries'">见「入口」</a></b>
-                  </div>
-                  <!-- 订阅 IPv4 与 IPv6 挨在一起:它们回答的是同一个问题
-                       (用户连的是哪个地址),而管理地址在上面那一行。
-                       分开放的话,一台"管理地址与订阅地址不同"的机器
-                       要在两处之间来回看才拼得出全貌。 -->
                   <div>
                     <span>订阅 IPv4</span>
                     <b class="lb-mono">
-                      {{ node.subscription_host }}(端口按入口设置)
+                      {{ node.subscription_host }}
                       <template v-if="!node.sub_ipv4_address">— 跟随管理地址</template>
                     </b>
                   </div>
                   <div>
                     <span>IPv6</span>
                     <b class="lb-mono">
-                      <template v-if="node.ipv6_address">
-                        [{{ node.ipv6_address }}](端口按入口设置)
-                      </template>
+                      <template v-if="node.ipv6_address">[{{ node.ipv6_address }}]</template>
                       <template v-else>未配置(订阅中只有 IPv4 条目)</template>
                     </b>
                   </div>
                   <div><span>架构</span><b class="lb-mono">{{ node.arch || '未探测' }}</b></div>
                   <div>
-                    <span>sing-box</span>
-                    <b class="lb-mono">{{ node.singbox_version || '未安装' }}</b>
-                  </div>
-                  <!-- 内存与它推出来的 UDP 超时挨在一起。分开的话,一台机器
-                       探测完突然变成「待部署」而管理员看不出是什么改了。
-                       超时值取后端给的,不在前端按内存自己推。 -->
-                  <div>
                     <span>内存</span>
                     <b class="lb-mono">{{ node.mem_total_mb ? node.mem_total_mb + ' MB' : '未探测' }}</b>
                   </div>
-                  <div v-if="!isRelay">
-                    <span>UDP 会话超时</span>
-                    <b class="lb-mono">
-                      {{ node.udp_timeout || 'sing-box 默认 5m' }}
-                      <template v-if="node.udp_timeout">(按内存压短)</template>
-                    </b>
-                  </div>
-                  <div class="nd__kv-wide">
-                    <span>构建标签</span>
-                    <b class="lb-mono lb-ellipsis" :title="node.singbox_build_tags">
-                      {{ node.singbox_build_tags || '—' }}
+                  <template v-if="!isRelay">
+                    <div>
+                      <span>sing-box</span>
+                      <b class="lb-mono">{{ node.singbox_version || '未安装' }}</b>
+                    </div>
+                    <!-- 内存与它推出来的 UDP 超时挨在一起。分开的话,一台机器
+                         探测完突然变成「待部署」而管理员看不出是什么改了。
+                         超时值取后端给的,不在前端按内存自己推。 -->
+                    <div>
+                      <span>UDP 会话超时</span>
+                      <b class="lb-mono">
+                        {{ node.udp_timeout || 'sing-box 默认 5m' }}
+                        <template v-if="node.udp_timeout">(按内存压短)</template>
+                      </b>
+                    </div>
+                    <div class="nd__kv-wide">
+                      <span>构建标签</span>
+                      <b class="lb-mono lb-ellipsis" :title="node.singbox_build_tags">
+                        {{ node.singbox_build_tags || '—' }}
+                      </b>
+                    </div>
+                  </template>
+                  <!-- 改过管理地址的机器要把那一刻写出来:它之前的巡检结果与资源采样
+                       说的都是旧机器,而曲线上看不出哪里是分界。 -->
+                  <div v-if="node.host_changed_at" class="nd__kv-wide">
+                    <span>管理地址变更</span>
+                    <b>
+                      {{ formatUTCTime(node.host_changed_at) }}
+                      —— 在此之前的巡检与采样说的是旧机器
+                      <template v-if="node.ssh_verify_state === 'PENDING'">;新地址还没验证过,点「全面重检」</template>
                     </b>
                   </div>
                 </div>
               </div>
-              <div v-if="needsPortForward" class="nd__card-foot">
-                有入口的公网端口与主机端口不同 —— 需自行配置端口转发,
-                面板只让 sing-box 监听主机端口。
-              </div>
+              <div v-if="node.public_remark" class="nd__card-foot">对用户显示的备注:{{ node.public_remark }}</div>
             </section>
 
             <section class="nd__card">
               <div class="nd__card-head">
                 <span class="nd__card-head-title">
-                  本周期流量
+                  到期 / 续费
                   <LbInfoTip
-                    v-if="cycle"
                     :width="320"
-                    :text="
-                      '额度只做统计与预警,不会停止 sing-box、不禁用节点,也不改订阅开关。' +
-                      (cycle.billing_factor > 1
-                        ? '这台机器按进出合计计费:一次用户下载在网卡上要走两趟(从源站收一份、再发给客户端一份),所以主机口径约是代理转发量的两倍。额度填的就是 VPS 商给的数字。'
-                        : '这台机器按出站计费,与 sing-box 的计数 1:1。若你的 VPS 是进出合计计费,到编辑里把「计费口径」改成双向。') +
-                      '换算不含 TCP/IP 头、重传,以及系统更新、SSH 这些不走代理的流量,实际账单通常还要再高几个百分点。'
-                    "
+                    text="商家账单的到期时间,与「流量」里的周期重置时间是两回事。面板只提醒、不代为扣款;「自动续费」登记的是商家那边已经开着的状态,到期前照样提醒,好确认它真的续上了。"
                   />
                 </span>
-                <span v-if="cycle" class="nd__card-note">
-                  {{
-                    cycle.reset_cycle === 'MONTHLY'
-                      ? `每月 ${cycle.reset_day} 日 00:00 UTC 重置`
-                      : '不重置,统计创建以来的累计流量'
-                  }}
+                <a class="nd__card-link" @click="expiryOpen = true">续费 / 修改 ›</a>
+              </div>
+              <div class="nd__card-body">
+                <div v-if="!node.expiry || node.expiry.state === 'UNSET'" class="nd__card-note nd__expiry-empty">
+                  <span>还没登记商家到期时间 —— 登记后到期前会按系统设置的提前天数推送提醒。</span>
+                  <a-button size="small" @click="expiryOpen = true">登记到期时间</a-button>
+                </div>
+                <div v-else class="nd__kv">
+                  <div><span>状态</span><b><LbStatusTag :meta="expiryStatusMeta(node.expiry)" /></b></div>
+                  <div><span>到期时间</span><b class="lb-tabular">{{ expiryText(node.expiry) }}</b></div>
+                  <div>
+                    <span>商家</span>
+                    <b>
+                      <a v-if="node.expiry.vendor_url" :href="node.expiry.vendor_url" target="_blank" rel="noopener">
+                        {{ node.expiry.vendor_name || node.expiry.vendor_url }}
+                      </a>
+                      <template v-else>{{ node.expiry.vendor_name || '—' }}</template>
+                    </b>
+                  </div>
+                  <div>
+                    <span>商家自动续费</span>
+                    <b>{{ node.expiry.auto_renew ? '已开启(到期仍会提醒确认)' : '未开启' }}</b>
+                  </div>
+                  <div>
+                    <span>到期提醒</span>
+                    <b>
+                      {{
+                        !node.expiry.reminder_enabled
+                          ? '已关闭'
+                          : node.expiry.lead_days.length
+                            ? `提前 ${node.expiry.lead_days.join(' / ')} 天`
+                            : '按系统设置的提前天数'
+                      }}
+                    </b>
+                  </div>
+                  <div><span>上次提醒</span><b>{{ lastNoticeText }}</b></div>
+                  <div v-if="node.expiry.note" class="nd__kv-wide"><span>备注</span><b>{{ node.expiry.note }}</b></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 服务巡检与上面标题旁那排状态是两回事:那些说的是"上次探测能不能连上、
+                 上次部署成不成功",这一张说的是"此刻还能不能服务用户"。
+                 一台 ONLINE 的机器完全可能跑着一个已经死掉的 sing-box。
+                 只读检查里与"这台机器通不通、是什么"有关的三个放在这里,
+                 其余跟着各自的数据走(同步流量在流量 Tab,采集资源在资源 Tab,
+                 比对配置在部署 Tab)。 -->
+            <section class="nd__card nd__card--span">
+              <div class="nd__card-head">
+                <span class="nd__card-head-title">
+                  服务现状
+                  <LbInfoTip
+                    :width="320"
+                    text="「连不上」= SSH 都不通,服务是死是活并不知道,可能只是机器在重启;「没在跑」= 服务定义在、进程确实没跑,巡检(开着自动恢复时)会去拉起它。每个 Mieru 入口一个实例,逐个列出。"
+                  />
+                </span>
+                <span class="nd__card-head-side">
+                  <span v-if="health" class="nd__card-note">
+                    巡检于 {{ formatUTCTime(health.checked_at) }}
+                    <template v-if="isPreChange(node, health.checked_at)">
+                      · 那时管理地址还没改,结果说的是旧机器
+                    </template>
+                  </span>
+                  <a class="nd__card-link" @click="goTab('entries')">服务卡片与启停 ›</a>
                 </span>
               </div>
               <div class="nd__card-body">
-                <!-- 「不计」与「读不到」必须分开。后者带重试按钮,
-                     而前者重试一万次也不会有数字。 -->
-                <div v-if="!metered" class="nd__card-note">
-                  {{ notMeteredReason || '中转主机,面板不计流量' }}
+                <div v-if="!health" class="nd__card-note">
+                  巡检还没跑到这台机器,或者服务巡检未启用。服务此刻在不在跑,去「入口与转发」的服务卡片上点「检查」。
                 </div>
-                <LbEmptyState
-                  v-else-if="trafficError"
-                  variant="error"
-                  title="流量数据暂时读不到"
-                  @retry="reload"
-                />
-                <template v-else-if="cycle">
-                  <LbQuotaBar
-                    :used-bytes="cycle.used_bytes"
-                    :quota-bytes="cycle.quota_bytes"
-                    :warning-level="cycle.warning_level"
-                    size="md"
-                  />
-                  <div class="nd__kv">
-                    <!-- 两个口径都摆出来。只给折算值的话,管理员对不上 sing-box 的
-                         数字;只给原值的话,又对不上 VPS 商的账单。 -->
-                    <div>
-                      <span>代理转发(sing-box 计数)</span>
-                      <b class="lb-mono">{{ formatBytes(cycle.proxy_bytes) }}</b>
-                    </div>
-                    <div>
-                      <span>主机口径{{ cycle.billing_factor > 1 ? `(双向 ×${cycle.billing_factor})` : '(出站 ×1)' }}</span>
-                      <b class="lb-mono">{{ formatBytes(cycle.used_bytes) }}</b>
-                    </div>
-                    <div><span>上行</span><b class="lb-mono">{{ formatBytes(cycle.uplink_bytes) }}</b></div>
-                    <div><span>下行</span><b class="lb-mono">{{ formatBytes(cycle.downlink_bytes) }}</b></div>
-                    <div>
-                      <span>剩余</span>
-                      <!-- 不限量时后端给 null,不能当 0 用 —— 那会画成「剩余 0」。 -->
-                      <b class="lb-mono">
-                        {{ cycle.remaining_bytes === null ? '不限量' : formatBytes(cycle.remaining_bytes) }}
-                      </b>
-                    </div>
-                    <div>
-                      <span>周期起点</span>
-                      <b><LbTimeText :value="cycle.period_start" mode="cycle" /></b>
-                    </div>
-                    <div class="nd__kv-wide">
-                      <span>下次重置</span>
-                      <b>
-                        <LbTimeText v-if="cycle.next_reset_at" :value="cycle.next_reset_at" mode="cycle" />
-                        <template v-else>不重置</template>
-                      </b>
-                    </div>
-                  </div>
-                </template>
+                <div v-else class="nd__health">
+                  <span v-if="node.role !== 'RELAY'" class="nd__health-item" :title="health.singbox_detail">
+                    sing-box
+                    <LbStatusTag kind="service" :status="health.singbox" />
+                  </span>
+                  <span class="nd__health-item" :title="health.nginx_detail">
+                    nginx 转发
+                    <LbStatusTag kind="service" :status="health.nginx" />
+                  </span>
+                  <span
+                    v-if="health.realm && health.realm !== 'NOT_APPLICABLE'"
+                    class="nd__health-item"
+                    :title="health.realm_detail"
+                  >
+                    realm 转发
+                    <LbStatusTag kind="service" :status="health.realm" />
+                  </span>
+                  <!-- **每个 Mieru 入口一行,点名。** 一个入口一个 mita 实例,
+                       它们各自独立地跑与崩 —— 合成一个状态的话,挂了哪一个看不出来,
+                       而要去救的也只是其中一个。 -->
+                  <span
+                    v-for="m in health.mieru ?? []"
+                    :key="m.inbound_id"
+                    class="nd__health-item"
+                    :title="m.detail"
+                  >
+                    {{ m.display_name }}
+                    <LbStatusTag kind="service" :status="m.state" />
+                  </span>
+                  <span v-if="health.recovered" class="nd__health-note nd__health-note--ok">
+                    面板刚刚自动把它拉起来了
+                  </span>
+                  <span v-else-if="health.recover_error" class="nd__health-note nd__health-note--bad">
+                    自动恢复失败:{{ health.recover_error }}
+                  </span>
+                </div>
+
+                <!-- 这一排都不改动节点状态,结果一律弹窗呈现。点错了最坏结果是白等几秒。 -->
+                <div class="nd__toolrow">
+                  <span class="nd__tools-label">只读检查</span>
+                  <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '测试 SSH'" :disabled="!!running && running !== '测试 SSH'" @click="doTestSSH">测试 SSH</a-button>
+                  <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :loading="running === '探测'" :disabled="!!running && running !== '探测'" @click="doProbe">探测</a-button>
+                  <!-- 这一下只是算方案并与当前值对比,不写节点。要不要应用在面板里另点。 -->
+                  <a-button
+                    size="small"
+                    class="lb-btn-ghost lb-btn-ghost--text"
+                    :loading="running === 'TCP 调优检查'"
+                    :disabled="!!running && running !== 'TCP 调优检查'"
+                    title="按这台机器的内存现算一份内核参数方案,先看后应用"
+                    @click="doTuning"
+                  >
+                    TCP 调优
+                  </a-button>
+                  <!-- 全面重检会改动面板里的记录(探测写档案、采集写样本),但不动节点,
+                       所以放在这一排的末尾而不是「⋯」里。 -->
+                  <a-button size="small" class="lb-btn-ghost lb-btn-ghost--text" :disabled="!!running" @click="node && recheck.start(node)">
+                    全面重检
+                  </a-button>
+                </div>
               </div>
             </section>
 
             <!-- 云实例(V17):只对绑了阿里云实例的机器显示。用量是账号级的,卡片里写明。 -->
             <CloudInstanceCard v-if="node.cloud" :node="node" @changed="reload" />
-
-            <section class="nd__card">
-              <div class="nd__card-head">
-                <span class="nd__card-head-title">
-                  资源
-                  <LbInfoTip
-                    :width="280"
-                    :text="`阈值 ${threshold.usageWarn}% 转黄、${threshold.usageDanger}% 转红。128MB 的机器内存曲线本来就贴着高位走,阈值定低了会天天报警。采样间隔 5 分钟。`"
-                  />
-                </span>
-                <span v-if="latest" class="nd__card-note">
-                  采样 <LbTimeText :value="latest.collected_at" /> · 间隔 5 分钟
-                </span>
-              </div>
-              <div class="nd__card-body">
-                <!-- 这是空态不是错误态:采集是可选能力,配置里能关掉。 -->
-                <LbEmptyState
-                  v-if="!latest"
-                  variant="empty"
-                  title="还没有采样"
-                  description="采集按固定间隔在后台进行,也可以点上面的「采集资源」立刻取一次。"
-                />
-                <div v-else class="nd__usage">
-                  <div v-for="u in [
-                    { label: 'CPU', pct: latest.cpu_percent, sub: `负载 ${latest.load1.toFixed(2)}` },
-                    {
-                      label: '内存',
-                      pct: memPercent(latest),
-                      sub: `${formatBytes(latest.mem_used_kb * 1024)} / ${formatBytes(latest.mem_total_kb * 1024)}`,
-                    },
-                    {
-                      label: '磁盘',
-                      pct: diskPercent(latest),
-                      sub: `${formatBytes(latest.disk_used_kb * 1024)} / ${formatBytes(latest.disk_total_kb * 1024)}`,
-                    },
-                  ]" :key="u.label" class="nd__usage-row">
-                    <span class="nd__usage-label">{{ u.label }}</span>
-                    <span class="nd__usage-mid">
-                      <span class="nd__usage-track">
-                        <span
-                          class="nd__usage-fill"
-                          :style="{ width: Math.min(u.pct, 100) + '%', background: usageColor(u.pct) }"
-                        />
-                      </span>
-                      <span class="lb-tabular nd__usage-sub">{{ u.sub }}</span>
-                    </span>
-                    <span class="lb-tabular nd__usage-pct" :style="{ color: usageColor(u.pct) }">
-                      {{ u.pct.toFixed(0) }}%
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </section>
           </div>
+        </a-tab-pane>
+
+        <a-tab-pane key="entries" tab="入口与转发">
+          <NodeEntriesPanel
+            :key="node.id"
+            :node="node"
+            :tiers="tiers"
+            @busy="(label) => (running = label)"
+            @changed="reload"
+          />
 
           <!-- 落地协议、握手目标、TFO 全是【入口】的属性,一台机器上
                可以有好几组。中转机上一个入口都没有,这一块整个不出现 ——
                渲染一份从来没有生效过的配置看起来像是配好了。
 
-               **这一张单独占一整行,不进上面的网格。** 它的高度随入口数增长,
-               而另外三张基本是定高的 —— 挤在同一个网格里,入口一多这一列就
-               拖着旁边那张一起变成一条长白块。每个入口一块自己的子卡片,
-               块与块之间靠底色与间距分开,而不是几十行键值排成一列。 -->
+               放在入口列表下面:它回答的是「每个入口节点上生效的是什么」,
+               与上面那张可增删改的列表是同一批对象的两个视角。
+               每个入口一块自己的子卡片,块与块之间靠底色与间距分开,
+               而不是几十行键值排成一列。 -->
           <section v-if="!isRelay" class="nd__card nd__card--wide">
             <div class="nd__card-head">
               <span class="nd__card-head-title">入口与配置版本</span>
@@ -1696,8 +1565,14 @@ const needsPortForward = computed(() =>
                 <span v-if="hasSingBox" class="nd__card-note lb-mono" :title="node.deployed_config_sha256">
                   rev {{ node.config_revision }} ·
                   {{ node.deployed_config_sha256 ? `已部署 ${shortHash(node.deployed_config_sha256)}` : '从未部署' }}
+                  <!-- API 端口是 sing-box 的统计接口,只回环;这台机器上没有
+                       sing-box 时它指向一个谁都没在听的号码 —— 显示出来会让排查的人
+                       以为该去查为什么连不上。 -->
+                  · API {{ node.api_port }} 仅回环
                 </span>
-                <a class="nd__card-link" @click="tab = 'entries'">去「入口」管理 ›</a>
+                <!-- 写的是【公网端口】—— 那是用户实际要连的号码。NAT 机器上两者不同,
+                     而那正是排查「连不上」时第一个要看的东西。Mieru 的端口段也在里面。 -->
+                <span class="nd__card-note lb-mono">端口 {{ portSummary || '无' }}</span>
               </span>
             </div>
             <div class="nd__card-body">
@@ -1720,6 +1595,15 @@ const needsPortForward = computed(() =>
                   <LbStatusTag :meta="inboundProtocolMeta(i)" />
                 </div>
                 <div class="nd__kv nd__ib-kv">
+                  <!-- 公网端口与监听端口相同时只写一个号码。写成「公网 443 → 主机 443」
+                       是把同一个数字说两遍,而那正好会让人以为这台机器上配了端口转发。 -->
+                  <div class="nd__kv-wide">
+                    <span>端口</span>
+                    <b class="lb-mono">
+                      <template v-if="(i.public_port || i.listen_port) === i.listen_port">{{ i.listen_port }}</template>
+                      <template v-else>公网 {{ i.public_port }} → 主机 {{ i.listen_port }}</template>
+                    </b>
+                  </div>
                   <!-- 「期望」与「节点上生效」分两行,不合成一行。
                        合起来只能显示其中一个:显示期望值会让管理员以为切换已经
                        完成(而节点上还是旧协议),显示生效值又看不出他刚才改过。 -->
@@ -1738,7 +1622,7 @@ const needsPortForward = computed(() =>
                     </b>
                   </div>
                   <!-- 不计流量要在这里说出来:这个入口的流量既不进用户额度,
-                       也不进上面「流量」Tab 的代理流量 —— 不写的话,那张图上
+                       也不进「流量」Tab 的代理流量 —— 不写的话,那张图上
                        少的那一截没有任何解释。 -->
                   <div v-if="i.unmetered || i.deployed_unmetered" class="nd__kv-wide">
                     <span>流量计量</span>
@@ -1853,9 +1737,16 @@ const needsPortForward = computed(() =>
                   <LbStatusTag :meta="mieruTransportMeta(m)" />
                 </div>
                 <div class="nd__kv nd__ib-kv">
+                  <!-- Mieru 的端口是一**段**,客户端会在整段里跳,那是这个协议的
+                       主要抗封锁特性;公网段与监听段可以是两个不相干的号码段。 -->
                   <div>
                     <span>期望端口段</span>
-                    <b class="lb-mono">{{ portRangeText(m.listen_port_start, m.listen_port_end) }}</b>
+                    <b class="lb-mono">
+                      {{ portRangeText(m.listen_port_start, m.listen_port_end) }}
+                      <template v-if="m.public_port_start">
+                        → 公网 {{ portRangeText(m.public_port_start, m.public_port_end) }}
+                      </template>
+                    </b>
                   </div>
                   <div>
                     <span>节点上生效</span>
@@ -1897,95 +1788,109 @@ const needsPortForward = computed(() =>
               有入口改了协议但还没部署。<strong>节点上仍在运行旧协议,订阅里下发的也是它</strong>
               —— 现在的用户不会断线。部署之后才切换,届时那个入口的用户都要重新拉一次订阅。
             </div>
+            <div v-else-if="needsPortForward" class="nd__card-foot">
+              有入口的公网端口与主机端口不同 —— 需自行配置端口转发,
+              面板只让 sing-box 监听主机端口。
+            </div>
           </section>
         </a-tab-pane>
 
-        <a-tab-pane key="metrics" tab="资源">
-          <div class="nd__range">
-            <a-segmented
-              v-model:value="metricsHours"
-              :options="[
-                { label: '6h', value: 6 },
-                { label: '24h', value: 24 },
-                { label: '72h', value: 72 },
-                { label: '168h', value: 168 },
-              ]"
-              size="small"
-            />
-            <span class="nd__card-note">只读库中已有采样,不主动触发 SSH 采集</span>
-          </div>
-          <LbEmptyState
-            v-if="metricsHistory.length === 0"
-            variant="empty"
-            title="这段时间没有采样"
-            description="采集间隔默认 5 分钟,保留 7 天。也可以点上面的「采集资源」立刻取一次。"
-          />
-          <template v-else>
-            <!-- 百分比类固定纵轴上限 100:不固定的话 3% 的曲线会被拉满整张图,
-                 看起来像 CPU 打满了。 -->
-            <div class="nd__chart">
-              <div class="nd__chart-title">CPU</div>
-              <MetricsChart
-                :labels="metricLabels"
-                :series="cpuSeries"
-                :format="formatPercent"
-                :max-override="100"
-              />
-            </div>
-            <div class="nd__chart">
-              <div class="nd__chart-title">内存</div>
-              <MetricsChart
-                :labels="metricLabels"
-                :series="memSeries"
-                :format="formatPercent"
-                :max-override="100"
-              />
-            </div>
-            <div class="nd__chart">
-              <div class="nd__chart-title">网速</div>
-              <MetricsChart :labels="metricLabels" :series="netSeries" :format="formatRate" />
-            </div>
-          </template>
-        </a-tab-pane>
-
-        <a-tab-pane key="deploys" tab="部署历史">
-          <LbEmptyState
-            v-if="deployments.length === 0"
-            variant="empty"
-            title="还没有部署记录"
-            description="执行第一次部署后,这里会记录每一步的结果。"
-          />
-          <a-table
-            v-else
-            :columns="deployColumns"
-            :data-source="deployments"
-            row-key="id"
-            size="small"
-            :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
-            :expand-row-by-click="true"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'rev'">
-                <span class="lb-mono">{{ record.revision }}</span>
-              </template>
-              <template v-else-if="column.key === 'status'">
-                <LbStatusTag kind="deploy" :status="record.status" />
-              </template>
-              <template v-else-if="column.key === 'time'">
-                <LbTimeText :value="record.started_at" mode="both" />
-              </template>
-              <template v-else-if="column.key === 'cost'">
-                <span class="lb-mono">{{ durationOf(record) }}</span>
-              </template>
-            </template>
-            <template #expandedRowRender="{ record }">
-              <DeployStepList :record="record" />
-            </template>
-          </a-table>
-        </a-tab-pane>
-
         <a-tab-pane key="traffic" tab="流量">
-          <!-- 实时曲线在最上面。只在这个 Tab 打开时读,2 分钟没操作就停 ——
+          <!-- 同步流量跟着它要影响的数字走:点完之后变的正是下面这几张。 -->
+          <div v-if="!isRelay" class="nd__range">
+            <a-button
+              size="small"
+              :loading="running === '同步流量'"
+              :disabled="!!running && running !== '同步流量'"
+              @click="doSyncTraffic"
+            >
+              同步流量
+            </a-button>
+            <span class="nd__card-note">
+              立刻读一次 sing-box 与每个 Mieru 实例的计数器并入账,顺带拉一次 vnStat;定时同步照常进行。
+            </span>
+          </div>
+
+          <section class="nd__card nd__card--block">
+            <div class="nd__card-head">
+              <span class="nd__card-head-title">
+                本周期流量
+                <LbInfoTip
+                  v-if="cycle"
+                  :width="320"
+                  :text="
+                    '额度只做统计与预警,不会停止 sing-box、不禁用节点,也不改订阅开关。' +
+                    (cycle.billing_factor > 1
+                      ? '这台机器按进出合计计费:一次用户下载在网卡上要走两趟(从源站收一份、再发给客户端一份),所以主机口径约是代理转发量的两倍。额度填的就是 VPS 商给的数字。'
+                      : '这台机器按出站计费,与 sing-box 的计数 1:1。若你的 VPS 是进出合计计费,到编辑里把「计费口径」改成双向。') +
+                    '换算不含 TCP/IP 头、重传,以及系统更新、SSH 这些不走代理的流量,实际账单通常还要再高几个百分点。'
+                  "
+                />
+              </span>
+              <span v-if="cycle" class="nd__card-note">
+                {{
+                  cycle.reset_cycle === 'MONTHLY'
+                    ? `每月 ${cycle.reset_day} 日 00:00 UTC 重置`
+                    : '不重置,统计创建以来的累计流量'
+                }}
+              </span>
+            </div>
+            <div class="nd__card-body">
+              <!-- 「不计」与「读不到」必须分开。后者带重试按钮,
+                   而前者重试一万次也不会有数字。 -->
+              <div v-if="!metered" class="nd__card-note">
+                {{ notMeteredReason || '中转主机,面板不计流量' }}
+              </div>
+              <LbEmptyState
+                v-else-if="trafficError"
+                variant="error"
+                title="流量数据暂时读不到"
+                @retry="reload"
+              />
+              <template v-else-if="cycle">
+                <LbQuotaBar
+                  :used-bytes="cycle.used_bytes"
+                  :quota-bytes="cycle.quota_bytes"
+                  :warning-level="cycle.warning_level"
+                  size="md"
+                />
+                <div class="nd__kv">
+                  <!-- 两个口径都摆出来。只给折算值的话,管理员对不上 sing-box 的
+                       数字;只给原值的话,又对不上 VPS 商的账单。 -->
+                  <div>
+                    <span>代理转发(sing-box 计数)</span>
+                    <b class="lb-mono">{{ formatBytes(cycle.proxy_bytes) }}</b>
+                  </div>
+                  <div>
+                    <span>主机口径{{ cycle.billing_factor > 1 ? `(双向 ×${cycle.billing_factor})` : '(出站 ×1)' }}</span>
+                    <b class="lb-mono">{{ formatBytes(cycle.used_bytes) }}</b>
+                  </div>
+                  <div><span>上行</span><b class="lb-mono">{{ formatBytes(cycle.uplink_bytes) }}</b></div>
+                  <div><span>下行</span><b class="lb-mono">{{ formatBytes(cycle.downlink_bytes) }}</b></div>
+                  <div>
+                    <span>剩余</span>
+                    <!-- 不限量时后端给 null,不能当 0 用 —— 那会画成「剩余 0」。 -->
+                    <b class="lb-mono">
+                      {{ cycle.remaining_bytes === null ? '不限量' : formatBytes(cycle.remaining_bytes) }}
+                    </b>
+                  </div>
+                  <div>
+                    <span>周期起点</span>
+                    <b><LbTimeText :value="cycle.period_start" mode="cycle" /></b>
+                  </div>
+                  <div class="nd__kv-wide">
+                    <span>下次重置</span>
+                    <b>
+                      <LbTimeText v-if="cycle.next_reset_at" :value="cycle.next_reset_at" mode="cycle" />
+                      <template v-else>不重置</template>
+                    </b>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <!-- 实时曲线。只在这个 Tab 打开时读,2 分钟没操作就停 ——
                一个忘了关的标签页不该每 2 秒占一次节点锁。 -->
           <div class="nd__chart">
             <div class="nd__chart-title">
@@ -2094,14 +1999,215 @@ const needsPortForward = computed(() =>
           </template>
         </a-tab-pane>
 
-        <a-tab-pane key="entries" tab="入口">
-          <NodeEntriesPanel
-            :key="node.id"
-            :node="node"
-            :tiers="tiers"
-            @busy="(label) => (running = label)"
-            @changed="reload"
+        <a-tab-pane key="metrics" tab="资源">
+          <section class="nd__card nd__card--block">
+            <div class="nd__card-head">
+              <span class="nd__card-head-title">
+                当前资源
+                <LbInfoTip
+                  :width="280"
+                  :text="`阈值 ${threshold.usageWarn}% 转黄、${threshold.usageDanger}% 转红。128MB 的机器内存曲线本来就贴着高位走,阈值定低了会天天报警。采样间隔 5 分钟。`"
+                />
+              </span>
+              <span class="nd__card-head-side">
+                <span v-if="latest" class="nd__card-note">
+                  采样 <LbTimeText :value="latest.collected_at" /> · 间隔 5 分钟
+                </span>
+                <!-- 采集跟着它要刷新的数字走。打开页面不主动采:那是一条 SSH 会话,
+                     128MB 的小鸡上这笔开销比它提供的"实时"更值得在意。 -->
+                <a-button
+                  size="small"
+                  :loading="running === '采集资源'"
+                  :disabled="!!running && running !== '采集资源'"
+                  @click="doCollectMetrics"
+                >
+                  采集资源
+                </a-button>
+              </span>
+            </div>
+            <div class="nd__card-body">
+              <!-- 这是空态不是错误态:采集是可选能力,配置里能关掉。 -->
+              <LbEmptyState
+                v-if="!latest"
+                variant="empty"
+                title="还没有采样"
+                description="采集按固定间隔在后台进行,也可以点右上角的「采集资源」立刻取一次。"
+              />
+              <div v-else class="nd__usage">
+                <div v-for="u in [
+                  { label: 'CPU', pct: latest.cpu_percent, sub: `负载 ${latest.load1.toFixed(2)}` },
+                  {
+                    label: '内存',
+                    pct: memPercent(latest),
+                    sub: `${formatBytes(latest.mem_used_kb * 1024)} / ${formatBytes(latest.mem_total_kb * 1024)}`,
+                  },
+                  {
+                    label: '磁盘',
+                    pct: diskPercent(latest),
+                    sub: `${formatBytes(latest.disk_used_kb * 1024)} / ${formatBytes(latest.disk_total_kb * 1024)}`,
+                  },
+                ]" :key="u.label" class="nd__usage-row">
+                  <span class="nd__usage-label">{{ u.label }}</span>
+                  <span class="nd__usage-mid">
+                    <span class="nd__usage-track">
+                      <span
+                        class="nd__usage-fill"
+                        :style="{ width: Math.min(u.pct, 100) + '%', background: usageColor(u.pct) }"
+                      />
+                    </span>
+                    <span class="lb-tabular nd__usage-sub">{{ u.sub }}</span>
+                  </span>
+                  <span class="lb-tabular nd__usage-pct" :style="{ color: usageColor(u.pct) }">
+                    {{ u.pct.toFixed(0) }}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="nd__range">
+            <a-segmented
+              v-model:value="metricsHours"
+              :options="[
+                { label: '6h', value: 6 },
+                { label: '24h', value: 24 },
+                { label: '72h', value: 72 },
+                { label: '168h', value: 168 },
+              ]"
+              size="small"
+            />
+            <span class="nd__card-note">只读库中已有采样,不主动触发 SSH 采集 · 横轴按时间等距,采样中断处留空不连线</span>
+          </div>
+          <LbEmptyState
+            v-if="metricsHistory.length === 0"
+            variant="empty"
+            title="这段时间没有采样"
+            description="采集间隔默认 5 分钟,保留 7 天。也可以点上面的「采集资源」立刻取一次。"
           />
+          <template v-else>
+            <!-- CPU 与内存并排:两者都是百分比、同一条横轴,并排才看得出
+                 「内存涨的时候 CPU 有没有跟着涨」。网速单位不同、曲线两条,独占一行。
+                 百分比类固定纵轴上限 100:不固定的话 3% 的曲线会被拉满整张图,
+                 看起来像 CPU 打满了。 -->
+            <div class="nd__charts-2">
+              <div class="nd__chart">
+                <div class="nd__chart-title">CPU</div>
+                <MetricsChart
+                  :labels="metricLabels"
+                  :series="cpuSeries"
+                  :format="formatPercent"
+                  :max-override="100"
+                />
+              </div>
+              <div class="nd__chart">
+                <div class="nd__chart-title">内存</div>
+                <MetricsChart
+                  :labels="metricLabels"
+                  :series="memSeries"
+                  :format="formatPercent"
+                  :max-override="100"
+                />
+              </div>
+            </div>
+            <div class="nd__chart">
+              <div class="nd__chart-title">网速</div>
+              <MetricsChart :labels="metricLabels" :series="netSeries" :format="formatRate" />
+            </div>
+          </template>
+        </a-tab-pane>
+
+        <a-tab-pane key="deploys" tab="部署与记录">
+          <div class="nd__range">
+            <!-- 比对配置、扫描握手目标、同步流量在中转机上都没有对应的东西:
+                 它上面没有 sing-box 配置、不用 REALITY、也没有计数器。
+                 留着只会让人点一下换回一句报错。 -->
+            <a-button
+              v-if="!isRelay"
+              size="small"
+              :loading="running === '比对配置'"
+              :disabled="!!running && running !== '比对配置'"
+              @click="doDiff"
+            >
+              比对配置
+            </a-button>
+            <a-button v-if="!isRelay" size="small" :type="needsDeploy(node) ? 'primary' : 'default'" @click="goTab('entries')">
+              {{ needsDeploy(node) ? '待部署 · 去入口下发' : '去入口下发' }}
+            </a-button>
+            <span class="nd__card-note">
+              比对只读节点上的配置、不改动它;下发在「入口与转发」里,按服务各下各的。
+            </span>
+          </div>
+
+          <!-- 配置存放位置放在这里:它决定的是"部署把配置写到哪里"。 -->
+          <section v-if="!isRelay" class="nd__card nd__card--block">
+            <div class="nd__card-head">
+              <span class="nd__card-head-title">配置存放</span>
+              <span class="nd__card-note">
+                当前:{{ node.config_in_ram ? '内存(/run/litebox,磁盘不留)' : '磁盘(/opt/litebox)' }}
+              </span>
+            </div>
+            <div class="nd__card-body">
+              <div class="nd__ram">
+                <a-switch
+                  :checked="node.config_in_ram"
+                  :loading="configRAMBusy"
+                  :disabled="!!running"
+                  @change="(v: unknown) => toggleConfigRAM(v === true)"
+                />
+                <span class="nd__ram-text">
+                  <span class="nd__ram-title">
+                    配置不落盘
+                    <LbInfoTip
+                      :width="320"
+                      :text="
+                        node.config_in_ram
+                          ? '磁盘上没有配置与备份 —— 快照、镜像、商家手里的旧硬盘上都拿不到。代价:机器重启后 sing-box 起不来,要等巡检重新下发。'
+                          : '配置里有这台机器全部入口的用户凭据,以及它链出去的落地账号。改成不落盘可以让磁盘上一个字节都不留;代价是机器重启后 sing-box 起不来,要等巡检重新下发。'
+                      "
+                    />
+                  </span>
+                  <span class="nd__ram-state">
+                    切换会重装服务定义并重新部署一次(重启 sing-box);失败自动退回原位置并清掉新位置的配置。
+                  </span>
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <div class="nd__chart-title nd__records-title">部署记录</div>
+          <LbEmptyState
+            v-if="deployments.length === 0"
+            variant="empty"
+            title="还没有部署记录"
+            description="执行第一次部署后,这里会记录每一步的结果。"
+          />
+          <a-table
+            v-else
+            :columns="deployColumns"
+            :data-source="deployments"
+            row-key="id"
+            size="small"
+            :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
+            :expand-row-by-click="true"
+          >
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'rev'">
+                <span class="lb-mono">{{ record.revision }}</span>
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <LbStatusTag kind="deploy" :status="record.status" />
+              </template>
+              <template v-else-if="column.key === 'time'">
+                <LbTimeText :value="record.started_at" mode="both" />
+              </template>
+              <template v-else-if="column.key === 'cost'">
+                <span class="lb-mono">{{ durationOf(record) }}</span>
+              </template>
+            </template>
+            <template #expandedRowRender="{ record }">
+              <DeployStepList :record="record" />
+            </template>
+          </a-table>
         </a-tab-pane>
       </a-tabs>
     </template>
@@ -2372,11 +2478,52 @@ const needsPortForward = computed(() =>
   font-variant-numeric: tabular-nums;
 }
 
-.nd__badges {
+.nd__sort {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text3);
+}
+
+/* 概览网格里横跨整行的卡片(服务现状)。 */
+.nd__card--span {
+  grid-column: 1 / -1;
+}
+
+/* Tab 里单独成块的卡片:与下面的图表 / 表格之间留一档。 */
+.nd__card--block {
+  margin-bottom: 16px;
+}
+
+.nd__toolrow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sep2);
+}
+
+.nd__expiry-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* CPU 与内存并排,窄屏折成一列。 */
+.nd__charts-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.nd__charts-2 .nd__chart {
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.nd__records-title {
+  margin-bottom: 10px;
 }
 
 .nd__maint {
@@ -2839,6 +2986,9 @@ const needsPortForward = computed(() =>
     grid-template-columns: 1fr;
   }
   .nd__grid {
+    grid-template-columns: 1fr;
+  }
+  .nd__charts-2 {
     grid-template-columns: 1fr;
   }
   .nd__card-head {

@@ -1170,6 +1170,23 @@ func (s *Store) SetEnabled(ctx context.Context, id int64, enabled bool) error {
 	return err
 }
 
+// SetSortOrder 只改排序号(V20 列表上的「编号」可就地编辑)。
+//
+// 不走通用的 Update:那条路要带全部字段,而这里改的只是订阅与门户里的先后,
+// 不进节点配置、不部署、不标脏。
+func (s *Store) SetSortOrder(ctx context.Context, id int64, sortOrder int) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE nodes SET sort_order = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		sortOrder, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Delete 软删除节点。
 //
 // 同时给名称加上删除标记:name 列有 UNIQUE 约束且不区分是否已删除,

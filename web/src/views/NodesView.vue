@@ -5,8 +5,6 @@ import { message } from 'ant-design-vue'
 import {
   api,
   ApiError,
-  PROTOCOL_LABEL,
-  PROTOCOL_SHORT,
   type AccessTier,
   type Node,
   type NodeHealth,
@@ -18,6 +16,14 @@ import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
 import { useNodeRecheck } from '@/components/node/useNodeRecheck'
+import { summarizeHealth, type HealthSummary } from '@/components/node/healthSummary'
+import { confirmDeployNode } from '@/components/node/nodeOps'
+import {
+  expiryFilterOptions,
+  expiryStatusMeta,
+  matchExpiryFilter,
+  type ExpiryFilter,
+} from '@/components/expiry/expiryMeta'
 import {
   LbBatchBar,
   LbCopyField,
@@ -31,25 +37,27 @@ import {
   LbRowCard,
   LbSectionTitle,
   LbStatusTag,
-  LbTimeText,
   configStatusMeta,
   lbDangerConfirm,
   type LbResultItem,
 } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
-import { cloudStatusMeta } from '@/components/cloud/cloudMeta'
 import { usePagination } from '@/composables/usePagination'
 import { configState, needsDeploy, nodeBadges } from '@/components/lb/derive'
-import { daysUntil, formatBytes, formatUTCDay } from '@/utils/format'
-import { threshold } from '@/theme/tokens'
+import { daysUntil, formatBytes, formatDate, formatUTCDay, formatUTCTime } from '@/utils/format'
 
 /**
- * 节点列表。与用户列表最大的差别是**运行状态与配置状态分两列**:
- * 节点只有一个 status 枚举,DEPLOY_FAILED 与 ONLINE 互斥地挤在同一格 ——
- * 一台在跑旧配置、部署失败的机器只显示「部署失败」,看不出它其实还在服务用户。
+ * 节点列表(V20 精简版)。
  *
- * 配置状态取后端字段,不在列表里逐行调 config-diff:那个接口要连 SSH 读
- * 节点上的实际配置,10 台机器就是 10 条 SSH 会话。
+ * 打开这一页要能一眼回答六件事:哪台机器、什么地址、是否正常、用了多少流量、
+ * 何时重置、何时续费。所以默认列只留:编号 / 节点 / 管理 IP / 服务巡检 / 本周期流量 /
+ * 到期时间 / 操作。原来独立的「运行」「配置」「云实例」「最后同步」四列去掉了 ——
+ * 运行与配置状态挪到节点名旁边(**仍是两个独立标签**,一台在跑旧配置、上次部署失败的
+ * 机器合成一个标签就看不出它其实还在服务用户);云实例停机、流量同步失败这类重要异常
+ * 进「服务巡检」的摘要,不随删列消失。
+ *
+ * 名称区只显示内部名称:订阅名称、协议、端口、转发关系都在详情的对应分组里。
+ * 搜索仍然按内部名称、订阅名称与地址找 —— 用户报障时给的往往是订阅名或地址。
  */
 const narrow = useNarrow()
 const nodes = ref<Node[]>([])
@@ -62,14 +70,9 @@ const cycles = ref<Record<number, NodeCycleUsage>>({})
 const cycleError = ref(false)
 const metrics = ref<Record<number, NodeMetrics>>({})
 const metricsError = ref(false)
+/** 流量同步最近一轮在哪些机器上失败了(进巡检摘要的异常徽标)。 */
+const syncErrors = ref<Record<number, string>>({})
 
-/**
- * 详情改成整页,列表这边只负责跳过去。
- *
- * 抽屉时期这里存着「当前打开的是哪个节点」,而那份状态要和抽屉里的加载、
- * 编辑表单、错误兜底一起维护 —— 整页之后它归详情页自己,列表页不再知道
- * 谁被打开了,也就不会有两处不同步的可能。
- */
 const router = useRouter()
 
 function openDetail(id: number, tab?: string) {
@@ -84,6 +87,7 @@ const blankFilters = {
   run: undefined as string | undefined,
   config: undefined as NodeConfigState | undefined,
   tierID: undefined as number | undefined,
+  expiry: 'ALL' as ExpiryFilter,
   subOff: false,
 }
 const filters = reactive({ ...blankFilters })
@@ -94,6 +98,7 @@ const activeFilterCount = computed(
     (filters.run !== undefined ? 1 : 0) +
     (filters.config !== undefined ? 1 : 0) +
     (filters.tierID !== undefined ? 1 : 0) +
+    (filters.expiry !== 'ALL' ? 1 : 0) +
     (filters.subOff ? 1 : 0),
 )
 
@@ -106,7 +111,8 @@ const visible = computed(() =>
     .filter((n) => {
       const kw = filters.keyword.trim().toLowerCase()
       if (kw) {
-        // 订阅地址也要能搜到:用户报障时给的是它,而管理员手上只有这个搜索框。
+        // 列表上不再常驻展示订阅名称与地址,但它们必须仍然搜得到:
+        // 用户报障时给的是订阅名或地址,而管理员手上只有这个搜索框。
         const hay = [n.name, n.display_name, n.host, n.sub_ipv4_address, n.ipv6_address]
           .join(' ')
           .toLowerCase()
@@ -114,21 +120,19 @@ const visible = computed(() =>
       }
       if (filters.run !== undefined && n.status !== filters.run) return false
       if (filters.config !== undefined && configState(n) !== filters.config) return false
-      // 按等级筛的是【入口】:一台机器上可以既有普通组入口又有 VIP 入口,
-      // 只要有一个命中就把这台机器留下 —— 否则筛出来的是一份空列表,
-      // 而管理员会以为那一档一个节点都没有。
       if (
         filters.tierID !== undefined &&
         !(n.inbounds ?? []).some((i) => i.access_tier_id === filters.tierID)
       ) {
         return false
       }
+      if (!matchExpiryFilter(n.expiry, filters.expiry)) return false
       if (filters.subOff && n.subscription_enabled) return false
       return true
     })
-    // 与订阅、门户同一个顺序:排序值升序,相同则按 id。后端 List 已经这样排了,
-    // 这里再排一遍是因为管理员改完排序值就该立刻在这一页看到位置变化 ——
-    // 而列表在 load() 之前还是旧顺序。id 兜底不能省:全部留 0 时没有兜底就是不稳定排序。
+    // 与订阅、门户同一个顺序:排序值升序,相同则按 id。改完排序值到下一次 load()
+    // 之间列表还是旧顺序,所以这里再排一遍;id 兜底不能省 —— 全部留 0 时没有兜底
+    // 就是不稳定排序。
     .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id),
 )
 
@@ -150,6 +154,7 @@ const stats = computed(() => ({
   total: nodes.value.length,
   pending: nodes.value.filter((n) => needsDeploy(n)).length,
   subOff: nodes.value.filter((n) => !n.subscription_enabled).length,
+  expiring: nodes.value.filter((n) => n.expiry?.state === 'SOON' || n.expiry?.state === 'OVERDUE').length,
   cycleUsed: Object.values(cycles.value).reduce((s, c) => s + c.used_bytes, 0),
 }))
 
@@ -157,7 +162,6 @@ const metricState = computed(() =>
   loadError.value ? 'error' : loading.value ? 'loading' : nodes.value.length ? 'ready' : 'empty',
 )
 
-/** 头部一句话摘要:几台机器、几台在线,再点出待部署与停发订阅。 */
 const summaryLine = computed(() => {
   if (loadError.value) return '节点列表读取失败。'
   if (loading.value && !nodes.value.length) return '正在读取节点…'
@@ -167,6 +171,7 @@ const summaryLine = computed(() => {
   const tails: string[] = []
   if (s.pending) tails.push(`${s.pending} 台待部署`)
   if (s.subOff) tails.push(`${s.subOff} 台已停发订阅`)
+  if (s.expiring) tails.push(`${s.expiring} 台即将到期或已到期`)
   return tails.length ? `${head}${tails.join(',')}。` : head
 })
 
@@ -216,6 +221,10 @@ function loadColumns() {
       metrics.value = {}
       metricsError.value = true
     })
+  api
+    .trafficStatus()
+    .then((r) => (syncErrors.value = Object.fromEntries(r.failing_nodes.map((f) => [f.node_id, f.error]))))
+    .catch(() => (syncErrors.value = {}))
 }
 
 onMounted(async () => {
@@ -258,10 +267,7 @@ async function run(id: number, label: string, fn: () => Promise<unknown>, ok: st
   }
 }
 
-/**
- * 行主操作随状态变,只留一个。管理员打开这一页永远是为了处理某台机器的某件事,
- * 让他先读完六个等重的文字链再自己判断该点哪个,是把分诊工作推给了他。
- */
+/** 行主操作随状态变,只留一个。 */
 type NodeAction = 'deploy' | 'testSSH' | 'resumeSub' | 'probe' | 'detail'
 
 function primaryAction(n: Node): NodeAction {
@@ -269,7 +275,7 @@ function primaryAction(n: Node): NodeAction {
   if (n.status === 'DISABLED') return 'detail'
   if (!n.subscription_enabled) return 'resumeSub'
   if (needsDeploy(n)) return 'deploy'
-  if (!n.singbox_version) return 'probe'
+  if (!n.singbox_version && n.role !== 'RELAY') return 'probe'
   return 'detail'
 }
 
@@ -301,26 +307,26 @@ function runPrimary(n: Node) {
   }
 }
 
-/** 部署是可逆的(有自动回滚),所以是危险确认档而不是输入名称档。 */
+/** 影响清单只有 nodeOps.confirmDeployNode 一份,入口页与详情页用的也是它。 */
 function confirmDeploy(n: Node) {
-  lbDangerConfirm({
-    title: `部署到 ${n.display_name || n.name}?`,
-    okText: '部署',
-    okType: 'primary',
-    impacts: [
-      '会重启 sing-box,断开这台机器上全部在线连接',
-      '部署前会强制同步一次流量,未落库的计数不会丢',
-      '健康检查不通过时自动回滚到上一版本',
-    ],
-    footer: '部署一旦发出就在节点上跑,关掉页面不会取消它。',
-    onOk: () => run(n.id, '部署', () => api.deployNode(n.id), '部署已执行,详情见部署记录'),
+  confirmDeployNode(n, () => {
+    void run(
+      n.id,
+      '部署',
+      async () => {
+        const r = await api.deployNode(n.id)
+        if (r.status !== 'SUCCESS') throw new ApiError(0, r.error_message || '部署未成功,详情见部署记录')
+        if (r.unchanged) message.info('配置已一致,没有重启服务')
+      },
+      '部署已完成,详情见部署记录',
+    )
   })
 }
 
 function confirmToggle(n: Node) {
   const enable = n.status === 'DISABLED'
   lbDangerConfirm({
-    title: enable ? `启用节点 ${n.display_name || n.name}` : `禁用节点 ${n.display_name || n.name}?`,
+    title: enable ? `启用节点 ${n.name}` : `禁用节点 ${n.name}?`,
     okText: enable ? '启用' : '禁用',
     okType: enable ? 'primary' : 'danger',
     impacts: enable
@@ -329,6 +335,7 @@ function confirmToggle(n: Node) {
           '整个节点停用,不再出现在任何人的订阅里',
           '节点上的 sing-box 不会被停掉,已连上的客户端仍可能继续用',
           '与「停发订阅」不同 —— 后者只是不进新订阅,节点照常参与管理',
+          '商家到期提醒照常发:节点停用不代表商家停止收费',
         ],
     onOk: () =>
       run(
@@ -338,6 +345,32 @@ function confirmToggle(n: Node) {
         enable ? '已启用' : '已禁用,该节点不再出现在用户订阅中',
       ),
   })
+}
+
+// ---------- 编号(排序号)就地编辑 ----------
+
+const sortEditID = ref<number | null>(null)
+const sortEditValue = ref(0)
+
+function startSortEdit(n: Node) {
+  sortEditID.value = n.id
+  sortEditValue.value = n.sort_order
+}
+
+async function commitSortEdit() {
+  const id = sortEditID.value
+  if (id === null) return
+  sortEditID.value = null
+  const value = Math.max(0, Math.round(Number(sortEditValue.value) || 0))
+  const n = nodes.value.find((x) => x.id === id)
+  if (!n || n.sort_order === value) return
+  try {
+    await api.setNodeSortOrder(id, value)
+    n.sort_order = value
+    message.success(`排序号已改为 ${value},订阅与门户里的先后随之变化`)
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '修改排序号失败')
+  }
 }
 
 // ---------- 批量 ----------
@@ -350,18 +383,16 @@ const batchRunning = ref(false)
 async function runBatch(title: string, fn: (n: Node) => Promise<unknown>) {
   const targets = nodes.value.filter((n) => selected.value.includes(n.id))
   batchTitle.value = title
-  batchItems.value = targets.map((n) => ({ id: n.id, name: n.display_name || n.name }))
+  batchItems.value = targets.map((n) => ({ id: n.id, name: n.name }))
   batchOpen.value = true
   batchRunning.value = true
-
-  // 逐个执行,中途失败不中止剩余的。已成功的不会回滚 —— 批量不是事务。
   for (let i = 0; i < targets.length; i++) {
     try {
-      await fn(targets[i])
-      batchItems.value[i] = { ...batchItems.value[i], ok: true, detail: '已完成' }
+      await fn(targets[i]!)
+      batchItems.value[i] = { ...batchItems.value[i]!, ok: true, detail: '已完成' }
     } catch (err) {
       batchItems.value[i] = {
-        ...batchItems.value[i],
+        ...batchItems.value[i]!,
         ok: false,
         detail: err instanceof ApiError ? err.message : '失败',
       }
@@ -378,9 +409,9 @@ function confirmBatchDeploy() {
     okText: '批量部署',
     okType: 'primary',
     impacts: [
-      '每台机器的 sing-box 都会重启,断开其上全部在线连接',
-      '逐个执行,失败不影响其余',
-      '已成功的不会回滚 —— 批量操作不是事务',
+      '每台先做前置检查并自动补齐缺失条件;配置已一致且服务在跑的机器不重启',
+      '有变更的机器会重启 sing-box,断开其上全部在线连接',
+      '逐个执行,失败不影响其余;已成功的不会回滚 —— 批量操作不是事务',
     ],
     onOk: () => runBatch('批量部署', (n) => api.deployNode(n.id)),
   })
@@ -389,14 +420,14 @@ function confirmBatchDeploy() {
 async function retryOne(item: LbResultItem) {
   const idx = batchItems.value.findIndex((i) => i.id === item.id)
   if (idx < 0) return
-  batchItems.value[idx] = { ...batchItems.value[idx], ok: undefined, detail: '重试中' }
+  batchItems.value[idx] = { ...batchItems.value[idx]!, ok: undefined, detail: '重试中' }
   batchItems.value = [...batchItems.value]
   try {
     await api.deployNode(Number(item.id))
-    batchItems.value[idx] = { ...batchItems.value[idx], ok: true, detail: '已完成' }
+    batchItems.value[idx] = { ...batchItems.value[idx]!, ok: true, detail: '已完成' }
   } catch (err) {
     batchItems.value[idx] = {
-      ...batchItems.value[idx],
+      ...batchItems.value[idx]!,
       ok: false,
       detail: err instanceof ApiError ? err.message : '失败',
     }
@@ -405,18 +436,8 @@ async function retryOne(item: LbResultItem) {
   await load()
 }
 
-// ---------- 列 ----------
+// ---------- 服务巡检 ----------
 
-// 节点列左固定、操作列右固定:768–1279 中间那一档要横向滚动,
-// 不固定的话滚动之后既看不出这是哪台机器,也够不着操作按钮。
-
-/**
- * 服务巡检结果,按节点 ID 索引。
- *
- * 与「运行状态」分成两列:那一列答的是"上次探测能不能连上、上次部署成不成功",
- * 这一列答的是"此刻 sing-box / nginx 还在不在跑"。一台 ONLINE 的机器完全可能
- * 跑着一个已经死掉的 sing-box —— 挤在一格里就再也看不出这件事了。
- */
 const health = ref<Record<number, NodeHealth>>({})
 const healthEnabled = ref(true)
 const healthError = ref('')
@@ -431,8 +452,6 @@ async function loadHealth() {
     for (const h of r.items) map[h.node_id] = h
     health.value = map
   } catch (err) {
-    // **列级失败不升级成整表失败。** 只让这一列显示「—」,
-    // 并在表格上方说出来 —— 否则一整列的「—」看起来像所有机器都挂了。
     health.value = {}
     healthError.value = err instanceof ApiError ? err.message : '巡检结果读取失败'
   }
@@ -453,148 +472,63 @@ async function runHealthNow() {
   }
 }
 
+function healthOf(n: Node): HealthSummary {
+  return summarizeHealth(n, health.value[n.id], { syncError: syncErrors.value[n.id], cloud: n.cloud ?? null })
+}
+
+// ---------- 列 ----------
+
 // 列宽之和控制在 1120 以内:1440 宽的屏幕减去侧栏与内距正好剩 1144,
-// 再宽一点右侧固定列就会盖住「本周期流量」—— 那是这一页最常看的数字。
+// 再宽一点右侧固定列就会盖住「到期时间」。
 const columns = [
-  { title: '节点', key: 'node', width: 230, fixed: 'left' as const },
-  { title: '运行', key: 'run', width: 130 },
-  { title: '配置', key: 'config', width: 135 },
-  { title: '服务巡检', key: 'health', width: 130 },
-  { title: '云实例', key: 'cloud', width: 90 },
-  { title: '最后同步', key: 'sync', width: 92 },
-  { title: '本周期流量', key: 'cycle', width: 170 },
-  { title: '操作', key: 'actions', width: 110, fixed: 'right' as const },
+  { title: '编号', key: 'sort', width: 64, fixed: 'left' as const },
+  { title: '节点', key: 'node', width: 250, fixed: 'left' as const },
+  { title: '管理 IP', key: 'host', width: 176 },
+  { title: '服务巡检', key: 'health', width: 146 },
+  { title: '本周期流量', key: 'cycle', width: 180 },
+  { title: '到期时间', key: 'expiry', width: 150 },
+  { title: '操作', key: 'actions', width: 112, fixed: 'right' as const },
 ]
 
 /**
- * 「本周期流量」后面跟的重置日。
- *
- * 只渲染后端算好的 next_reset_at,不在前端按 reset_day 自己推一遍 ——
- * 周期边界只有 traffic.CalculateNodePeriod 一处实现(重置日 31 在二月要落到
- * 当月最后一天而不是顺延)。各算各的会让列表说「9 月 1 日」、详情说
- * 「8 月 31 日」,两边都不报错,管理员只能靠猜。
+ * 「本周期流量」第二行:重置时间或「不重置」。
+ * 只渲染后端给的 next_reset_at,不在前端按 reset_day 自己推。
  */
 function cycleResetText(id: number): string {
   const c = cycles.value[id]
   if (!c) return ''
-  // 不重置的节点这一列是「创建以来的累计」,不是某个周期内的量 —— 表头写的是
-  // 「本周期流量」,不说明的话看起来像本月用了这么多。
   if (!c.next_reset_at) return '不重置 · 累计至今'
   const left = daysUntil(c.next_reset_at)
   const tail = left === null ? '' : left <= 0 ? ' · 今天' : ` · ${left} 天后`
-  return `${formatUTCDay(c.next_reset_at)} 00:00 UTC 重置${tail}`
+  return `${formatUTCDay(c.next_reset_at)} 重置${tail}`
 }
 
-/**
- * 双向计费的节点要标出来。这一列的数字已经被后端 ×2 折算过,
- * 不标的话它和相邻那台出站计费的机器看起来是同一个口径 —— 而两者差一倍。
- */
-function billingNote(id: number): string {
+/** 计费口径的说明收进提示,不再常驻一行。数值口径一个字没变。 */
+function cycleTitle(id: number): string {
   const c = cycles.value[id]
-  if (!c || c.billing_factor <= 1) return ''
-  return `双向计费 ×${c.billing_factor} · 代理转发 ${formatBytes(c.proxy_bytes)}`
+  if (!c) return ''
+  const base = c.billing_factor > 1
+    ? `按商家的双向计费口径折算(×${c.billing_factor}),sing-box 原始计数 ${formatBytes(c.proxy_bytes)}`
+    : '按出站计费口径,与 sing-box 计数 1:1'
+  return `${base};重置时间按 UTC 00:00`
 }
 
-/**
- * 列表里的协议标记。多入站之后一台机器上可以有好几种,这里做去重汇总。
- *
- * 取【已部署】的协议:列表回答的是「这台机器现在是什么样」,而
- * deployed_protocol 才是节点上真正在跑的那个。用期望值的话,改完协议
- * 还没部署的那段时间里,列表说 SS2022、用户订阅里却仍是 vless://。
- *
- * 从未部署过的入口回落到期望值并加问号 —— 那个入口在节点上还不存在。
- */
-function protocolShort(n: Node): string {
-  const seen = new Set<string>()
-  for (const i of n.inbounds ?? []) {
-    seen.add(i.deployed_protocol ? PROTOCOL_SHORT[i.deployed_protocol] : PROTOCOL_SHORT[i.protocol] + '?')
+async function copyHost(host: string) {
+  try {
+    await navigator.clipboard.writeText(host)
+    message.success('已复制管理地址')
+  } catch {
+    message.error('复制失败,请手动选中复制')
   }
-  // Mieru 入口也要数进来:漏掉的话,一台只有 Mieru 入口的机器在列表里
-  // 显示「无入口」,而它其实好好地在服务用户。
-  if ((n.mieru_inbounds ?? []).length) seen.add('Mieru')
-  return [...seen].join(' / ') || '无入口'
 }
 
-function protocolTitle(n: Node): string {
-  const list = n.inbounds ?? []
-  if (!list.length) {
-    return '这台机器上一个入口都没有 —— sing-box 会正常运行,但谁都连不上'
-  }
-  return list
-    .map((i) => {
-      if (!i.deployed_protocol) {
-        return `${i.display_name}:尚未部署过,部署后将使用 ${PROTOCOL_LABEL[i.protocol]}`
-      }
-      const running = PROTOCOL_LABEL[i.deployed_protocol]
-      if (i.deployed_protocol === i.protocol) {
-        return `${i.display_name}:正在运行 ${running},订阅里下发的也是它`
-      }
-      // 期望与生效不一致 —— 这正是「改了协议还没部署」。必须说全,
-      // 只显示其中一个会让管理员以为切换已经完成。
-      return `${i.display_name}:正在运行 ${running};已改为 ${PROTOCOL_LABEL[i.protocol]},部署后生效`
-    })
-    .join('；')
+function expiryCell(n: Node): { date: string; auto: boolean } {
+  const e = n.expiry
+  if (!e || !e.expires_at) return { date: '', auto: false }
+  return { date: formatDate(e.expires_at), auto: e.auto_renew }
 }
 
-/**
- * 列表里的端口摘要。一台机器上的入口可能有好几个,逐个列全。
- *
- * 写的是【公网端口】——那是用户实际要连的号码。主机监听端口与它不同时
- * 一并写出来:NAT 机器上两者的差别正是排查「连不上」时第一个要看的东西。
- */
-function portSummary(n: Node): string {
-  const parts = (n.inbounds ?? []).map((i) => {
-    const pub = i.public_port || i.listen_port
-    return pub === i.listen_port ? `${pub}` : `${pub}→${i.listen_port}`
-  })
-  // Mieru 的端口是一段而不是一个数 —— 写成起止,单端口时只写一个号码。
-  for (const m of n.mieru_inbounds ?? []) {
-    parts.push(
-      m.listen_port_start === m.listen_port_end
-        ? `${m.listen_port_start}`
-        : `${m.listen_port_start}-${m.listen_port_end}`,
-    )
-  }
-  return parts.length ? parts.join(' ') : '无入口'
-}
-
-/**
- * 这台机器上入口的访问等级,去重。
- *
- * 等级已经降到入口(迁移 0020),一台机器上完全可以既有对所有人开放的入口、
- * 又有只给 VIP 的入口 —— 只显示其中一个会让人以为整台机器都是那一档。
- */
-function tierSummary(n: Node): string {
-  if (n.role === 'RELAY') return '转发规则各自设定'
-  const names = [
-    ...new Set([
-      ...(n.inbounds ?? []).map((i) => i.access_tier_name),
-      ...(n.mieru_inbounds ?? []).map((m) => m.access_tier_name),
-    ]),
-  ]
-  return names.length ? names.join(' / ') : '无入口'
-}
-
-/** 这台机器上有没有入口的出口指向别处(链式中转)。 */
-function hasChain(n: Node): boolean {
-  return (n.inbounds ?? []).some((i) => i.chain_target_kind !== '')
-}
-
-/**
- * 详情抽屉渲染出错时的兜底。
- *
- * Vue 在渲染期抛错会卸载出错组件的子树,而 a-drawer 的遮罩是另一个 DOM 节点,
- * 会原样留在屏幕上 —— 管理员看到的是「详情页没了、屏幕一片灰」,不知道发生了
- * 什么,也只能靠点遮罩脱身。已经踩过一次:探测成功时后端把 problems 发成 null,
- * 模板里 `problems.length` 当场抛 TypeError。
- *
- * 这里把抽屉关掉并说出原因。不 return false —— 错误仍要冒泡到控制台,
- * 否则下次排查时什么线索都没有。
- */
 onErrorCaptured((err) => {
-  // 详情已经不在这个页面里了,这里只兜住列表自身的渲染错误 ——
-  // 比如某个字段被后端发成了 null,而模板拿它当数组用。
-  // 不 return false:错误仍要冒泡到控制台,否则下次排查时什么线索都没有。
   message.error(`节点列表渲染失败:${err instanceof Error ? err.message : String(err)}`)
 })
 
@@ -610,8 +544,8 @@ const keyOpen = ref(false)
         <h1 class="lb-page__title">
           <span>自建节点</span>
           <LbInfoTip
-            text="按排序值升序,与订阅、门户同序。一台机器只承载一个节点 —— 两个节点指向同一台机器会互相覆盖配置。SSH 与部署一律走 IPv4。"
-            :width="320"
+            text="按编号(排序号)升序,与订阅、门户同序;编号可以点击就地修改。一台机器只承载一个节点 —— 两个节点指向同一台机器会互相覆盖配置。SSH 与部署一律走 IPv4。协议、端口、订阅名称与转发关系在详情里。"
+            :width="340"
           />
         </h1>
         <div class="lb-page__summary">{{ summaryLine }}</div>
@@ -619,8 +553,6 @@ const keyOpen = ref(false)
       <div class="lb-page__actions">
         <a-button @click="keyOpen = true">SSH 公钥</a-button>
         <a-button :loading="loading" @click="load">刷新</a-button>
-        <!-- 立刻巡检一轮。它可能顺带触发自动恢复,所以要几秒到十几秒;
-             不放在「刷新」里 —— 刷新是纯读,而这一下会去连每一台机器。 -->
         <a-button :loading="runningHealth" @click="runHealthNow">立即巡检</a-button>
         <a-button type="primary" @click="openCreate">+ 添加节点</a-button>
       </div>
@@ -641,15 +573,15 @@ const keyOpen = ref(false)
           <span v-else>配置都已同步</span>
         </template>
       </LbMetricCard>
-      <LbMetricCard label="停发订阅" :state="metricState" :value="stats.subOff">
+      <LbMetricCard label="即将到期 / 已到期" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
         <template #foot>
-          <a v-if="stats.subOff" class="nv__link" @click="filters.subOff = true">筛选 ›</a>
-          <span v-else>全部在订阅里</span>
+          <a v-if="stats.expiring" class="nv__link" @click="filters.expiry = 'SOON'">筛选 ›</a>
+          <span v-else>没有要续费的</span>
         </template>
       </LbMetricCard>
       <LbMetricCard
         label="本周期流量合计"
-        tip="按各节点自己的周期边界与计费口径汇总。双向计费的机器已 ×2 折算;中转主机不计。"
+        tip="按各节点自己的周期边界与计费口径汇总。双向计费的机器已按口径折算;中转主机不计。"
         :state="cycleError ? 'error' : metricState"
         :value="formatBytes(stats.cycleUsed).split(' ')[0]"
         :unit="formatBytes(stats.cycleUsed).split(' ')[1]"
@@ -657,7 +589,6 @@ const keyOpen = ref(false)
       />
     </section>
 
-    <!-- 列级降级要显式说出来:一整列的「—」看起来像所有机器都挂了。 -->
     <a-alert
       v-if="healthError && !loadError"
       type="warning"
@@ -668,15 +599,12 @@ const keyOpen = ref(false)
         <a-button size="small" @click="loadHealth">只重试这一列</a-button>
       </template>
     </a-alert>
-    <!-- 巡检整个没启用是另一回事:那不是"读不到",是"根本没在查"。
-         显示成一样的话,管理员会去重试一个永远不会有结果的接口。 -->
     <a-alert
       v-else-if="!healthEnabled && !loadError"
       type="info"
       show-icon
       message="服务巡检未启用 —— 没有人在定期检查 sing-box / nginx 还在不在跑"
     />
-
     <a-alert
       v-if="(cycleError || metricsError) && !loadError"
       type="warning"
@@ -697,368 +625,321 @@ const keyOpen = ref(false)
     <section>
       <LbSectionTitle title="全部节点" :count="`${visible.length} / ${nodes.length} 台`" />
       <div class="lb-card lb-card--flush">
-      <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
-        <a-input v-model:value="filters.keyword" placeholder="名称 / 展示名称 / IP" allow-clear>
-          <template #prefix><LbIcon name="search" :size="14" /></template>
-        </a-input>
-        <a-select v-model:value="filters.run" placeholder="运行状态" allow-clear style="width: 130px">
-          <a-select-option value="ONLINE">运行中</a-select-option>
-          <a-select-option value="OFFLINE">离线</a-select-option>
-          <a-select-option value="DEPLOY_FAILED">部署失败</a-select-option>
-          <a-select-option value="PENDING">待初始化</a-select-option>
-          <a-select-option value="DISABLED">已禁用</a-select-option>
-        </a-select>
-        <a-select v-model:value="filters.config" placeholder="配置状态" allow-clear style="width: 130px">
-          <a-select-option value="IN_SYNC">已同步</a-select-option>
-          <a-select-option value="PENDING">待部署</a-select-option>
-          <a-select-option value="DEPLOY_FAILED">部署失败</a-select-option>
-          <a-select-option value="NEVER_DEPLOYED">未部署</a-select-option>
-          <a-select-option value="UNKNOWN">未知</a-select-option>
-        </a-select>
-        <a-select v-model:value="filters.tierID" placeholder="访问等级" allow-clear style="width: 120px">
-          <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
-        </a-select>
-        <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.subOff }">
-          <a-switch v-model:checked="filters.subOff" size="small" />
-          仅停发订阅
-        </label>
-      </LbFilterBar>
+        <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
+          <a-input v-model:value="filters.keyword" placeholder="内部名称 / 订阅名称 / 地址" allow-clear>
+            <template #prefix><LbIcon name="search" :size="14" /></template>
+          </a-input>
+          <a-select v-model:value="filters.run" placeholder="运行状态" allow-clear style="width: 120px">
+            <a-select-option value="ONLINE">运行中</a-select-option>
+            <a-select-option value="OFFLINE">离线</a-select-option>
+            <a-select-option value="DEPLOY_FAILED">部署失败</a-select-option>
+            <a-select-option value="PENDING">待初始化</a-select-option>
+            <a-select-option value="DISABLED">已禁用</a-select-option>
+          </a-select>
+          <a-select v-model:value="filters.config" placeholder="配置状态" allow-clear style="width: 120px">
+            <a-select-option value="IN_SYNC">已同步</a-select-option>
+            <a-select-option value="PENDING">待部署</a-select-option>
+            <a-select-option value="DEPLOY_FAILED">部署失败</a-select-option>
+            <a-select-option value="NEVER_DEPLOYED">未部署</a-select-option>
+            <a-select-option value="UNKNOWN">未知</a-select-option>
+          </a-select>
+          <a-select v-model:value="filters.tierID" placeholder="访问等级" allow-clear style="width: 110px">
+            <a-select-option v-for="t in tiers" :key="t.id" :value="t.id">{{ t.name }}</a-select-option>
+          </a-select>
+          <a-select v-model:value="filters.expiry" style="width: 140px">
+            <a-select-option v-for="o in expiryFilterOptions" :key="o.value" :value="o.value">{{ o.label }}</a-select-option>
+          </a-select>
+          <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': filters.subOff }">
+            <a-switch v-model:checked="filters.subOff" size="small" />
+            仅停发订阅
+          </label>
+        </LbFilterBar>
 
-      <LbBatchBar
-        :selected-count="selected.length"
-        :filtered-total="visible.length"
-        :total="nodes.length"
-        unit="台"
-        @clear="selected = []"
-      >
-        <a-button size="small" type="primary" @click="confirmBatchDeploy">批量部署</a-button>
-        <a-button size="small" @click="runBatch('批量同步流量', (n) => api.syncNodeTraffic(n.id))">
-          同步流量
-        </a-button>
-      </LbBatchBar>
+        <LbBatchBar
+          :selected-count="selected.length"
+          :filtered-total="visible.length"
+          :total="nodes.length"
+          unit="台"
+          @clear="selected = []"
+        >
+          <a-button size="small" type="primary" @click="confirmBatchDeploy">批量部署</a-button>
+          <a-button size="small" @click="runBatch('批量同步流量', (n) => api.syncNodeTraffic(n.id))">
+            同步流量
+          </a-button>
+        </LbBatchBar>
 
-      <LbEmptyState
-        v-if="loadError"
-        variant="error"
-        :title="loadError.message"
-        description="不显示「暂无数据」—— 那会被读成一台机器都没有。"
-        :http-status="loadError.status"
-        :occurred-at="loadError.at"
-        @retry="load"
-      />
-      <LbEmptyState
-        v-else-if="!loading && nodes.length === 0"
-        variant="empty"
-        title="还没有节点"
-        description="添加第一台 VPS,然后依次执行探测、安装、部署。用户需要节点才能使用。"
-      >
-        <template #action>
-          <a-button type="primary" size="small" @click="openCreate">添加节点</a-button>
-        </template>
-      </LbEmptyState>
-      <LbEmptyState
-        v-else-if="!loading && visible.length === 0"
-        variant="filtered"
-        title="没有符合条件的节点"
-        :description="`当前有 ${activeFilterCount} 项筛选生效,${nodes.length} 台机器被筛掉。`"
-        @clear="clearFilters"
-      />
-
-      <!-- <768 整表换卡片:横向滚动会把「操作」列推到屏幕外。 -->
-      <div v-else-if="narrow" class="nv__cards">
-        <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
-          <template #head>
-            <a class="nv__card-name" @click="openDetail(n.id)">{{ n.display_name || n.name }}</a>
-            <span class="nv__meta lb-tabular">#{{ n.sort_order }}</span>
-            <span v-if="n.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
-            <LbStatusTag kind="node" :status="n.status" />
-          </template>
-
-          <div class="nv__host lb-tabular">
-            <template v-if="n.role !== 'RELAY'">
-              <span class="nv__proto" :title="protocolTitle(n)">{{ protocolShort(n) }}</span>
-              {{ n.host }} · 端口 {{ portSummary(n) }} · {{ tierSummary(n) }}
-              <!-- 只在两者不同时才写出来:相同的话再列一遍只是噪音。
-                   而不同时必须写 —— 上面那个地址是面板连的,不是用户连的,
-                   两者长得一样合理,排查时照着它去测会得到与故障无关的结论。 -->
-              <template v-if="n.sub_ipv4_address"> · 订阅 {{ n.sub_ipv4_address }}</template>
-              <template v-if="n.ipv6_address"> · IPv6</template>
-            </template>
-            <!-- 中转机没有自己的协议与代理端口,渲染出来只会让人以为配漏了。 -->
-            <template v-else>
-              {{ n.host }} · 端口见转发规则
-              <template v-if="n.sub_ipv4_address"> · 订阅 {{ n.sub_ipv4_address }}</template>
-            </template>
-          </div>
-          <div v-if="hasChain(n)" class="nv__host">出口经中转</div>
-          <div class="nv__stack nv__stack--row">
-            <LbStatusTag
-              :meta="configStatusMeta[configState(n)]"
-              :suffix="`rev ${n.config_revision}`"
-            />
-            <LbStatusTag
-              v-for="(b, i) in nodeBadges(n, metrics[n.id]?.collected_at)"
-              :key="i"
-              :meta="b"
-            />
-          </div>
-          <div v-if="n.maintenance_message" class="nv__card-maint">{{ n.maintenance_message }}</div>
-          <div v-if="n.cloud" class="nv__stack nv__stack--row">
-            <span class="nv__reset">云实例</span>
-            <LbStatusTag :meta="cloudStatusMeta(n.cloud)" />
-          </div>
-          <!-- 中转机上跑的是 nginx,它不接统计接口,面板在那台机器上
-               拿不到任何计数。这里写明「不计流量」而不是画一条 0 的进度条 ——
-               0 与「真的没用过」长得一模一样,那是最容易骗到管理员的一种失败。 -->
-          <div v-if="n.role === 'RELAY'" class="nv__reset">中转主机,面板不计流量</div>
-          <LbQuotaBar
-            v-else
-            :used-bytes="cycles[n.id]?.used_bytes ?? null"
-            :quota-bytes="cycles[n.id]?.quota_bytes ?? n.traffic_quota_bytes"
-            :warning-level="cycles[n.id]?.warning_level"
-          />
-          <div v-if="billingNote(n.id)" class="nv__reset">{{ billingNote(n.id) }}</div>
-          <div v-if="cycleResetText(n.id)" class="nv__reset">{{ cycleResetText(n.id) }}</div>
-          <div class="nv__host">
-            最后同步
-            <LbTimeText
-              :value="n.last_heartbeat_at"
-              :warn-after-ms="threshold.metricsStaleMs"
-              :danger-after-ms="threshold.metricsStaleMs * 6"
-            />
-          </div>
-
-          <template #foot>
-            <a-button
-              :type="primaryAction(n) === 'detail' ? 'default' : 'primary'"
-              :loading="!!busy[n.id]"
-              @click="runPrimary(n)"
-            >
-              {{ actionLabel[primaryAction(n)] }}
-            </a-button>
-            <a-dropdown v-if="primaryAction(n) !== 'detail'" placement="topRight">
-              <a-button
-                class="lb-touch-target"
-                :aria-label="`${n.display_name || n.name} 的更多操作`"
-              >
-                <LbIcon name="more" :size="16" />
-              </a-button>
-              <template #overlay>
-                <a-menu>
-                  <a-menu-item @click="openDetail(n.id)">详情</a-menu-item>
-                  <a-menu-item @click="openEdit(n)">编辑节点</a-menu-item>
-                  <a-menu-item @click="confirmDeploy(n)">部署</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </template>
-        </LbRowCard>
-
-        <a-pagination
-          v-if="visible.length > pager.pageSize.value"
-          v-model:current="pager.current.value"
-          :page-size="pager.pageSize.value"
-          :total="visible.length"
-          :show-size-changer="false"
-          simple
-          class="nv__pager"
+        <LbEmptyState
+          v-if="loadError"
+          variant="error"
+          :title="loadError.message"
+          description="不显示「暂无数据」—— 那会被读成一台机器都没有。"
+          :http-status="loadError.status"
+          :occurred-at="loadError.at"
+          @retry="load"
         />
-      </div>
-
-      <a-table
-        v-else
-        :columns="columns"
-        :data-source="visible"
-        :loading="loading"
-        :row-selection="rowSelection"
-        :pagination="pager.options.value"
-        row-key="id"
-        size="small"
-        :scroll="{ x: 1090 }"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'node'">
-            <!-- 排序值直接写出来。它决定订阅与门户里的先后,不显示的话
-                 管理员改了值也看不出改到了第几位。 -->
-            <div class="nv__name-row">
-              <a class="nv__name" @click="openDetail(record.id)">{{ record.display_name || record.name }}</a>
-              <!-- 内部名称与排序值都列:管理员按内部名称找机器,用户报的是展示名称;
-                   排序值决定订阅与门户里的先后,不显示的话改了值也看不出改到了第几位。 -->
-              <span class="nv__meta lb-tabular" :title="`排序值 ${record.sort_order} —— 数值小的排在订阅与门户前面`">
-                <template v-if="record.display_name !== record.name">{{ record.name }} · </template>#{{ record.sort_order }}
-              </span>
-              <!-- 中转主机与落地节点在同一份列表里混着,而它们几乎没有共同点:
-                   中转上没有 sing-box、没有协议与端口、也没有任何流量数字。
-                   不标出来的话,管理员会对着一台中转机找它的协议为什么是空的。 -->
-              <span v-if="record.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
-              <span
-                v-if="hasChain(record)"
-                class="lb-chip nv__chip"
-                title="这台机器的出口指向别处(链式中转)。订阅内容不受影响。"
-                >经中转出网</span
-              >
-            </div>
-            <div class="nv__host lb-tabular">
-              <!-- 协议放在地址前面。同一份列表里两种协议混着,不标的话
-                   管理员分不出哪台机器的订阅条目是 ss:// —— 而排查
-                   「某个客户端连不上」时那正是第一个要知道的事。 -->
-              <template v-if="record.role !== 'RELAY'">
-                <span class="nv__proto" :title="protocolTitle(record)">{{ protocolShort(record) }}</span>
-                <span class="lb-mono">{{ record.host }}</span> · 端口 {{ portSummary(record) }}
-              </template>
-              <!-- 中转机没有自己的协议与代理端口:那些列在库里是 0 /
-                   保持默认值,渲染出来只会让人以为配漏了。
-                   客户端连的端口在「转发」面板里,一条规则一个。 -->
-              <template v-else><span class="lb-mono">{{ record.host }}</span> · 端口见转发规则</template>
-              <!-- 订阅地址与管理地址不同时才写出来,理由同上。 -->
-              <template v-if="record.sub_ipv4_address"> · 订阅 {{ record.sub_ipv4_address }}</template>
-              <!-- 端口与 IPv4 不同时才写出来:相同的话再列一遍只是噪音。 -->
-              <template v-if="record.ipv6_address"> · IPv6</template>
-            </div>
+        <LbEmptyState
+          v-else-if="!loading && nodes.length === 0"
+          variant="empty"
+          title="还没有节点"
+          description="添加第一台 VPS,然后依次执行探测、安装、部署。用户需要节点才能使用。"
+        >
+          <template #action>
+            <a-button type="primary" size="small" @click="openCreate">添加节点</a-button>
           </template>
+        </LbEmptyState>
+        <LbEmptyState
+          v-else-if="!loading && visible.length === 0"
+          variant="filtered"
+          title="没有符合条件的节点"
+          :description="`当前有 ${activeFilterCount} 项筛选生效,${nodes.length} 台机器被筛掉。`"
+          @clear="clearFilters"
+        />
 
-          <!-- 云实例(V17):只有绑了阿里云实例的机器有;其余显示短横,不留空白格。 -->
-          <template v-else-if="column.key === 'cloud'">
-            <LbStatusTag v-if="record.cloud" :meta="cloudStatusMeta(record.cloud)" small />
-            <span v-else class="nv__reset">—</span>
-          </template>
+        <!-- <768 整表换卡片:横向滚动会把「操作」列推到屏幕外。信息优先级与桌面一致。 -->
+        <div v-else-if="narrow" class="nv__cards">
+          <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
+            <template #head>
+              <span class="nv__meta lb-tabular">#{{ n.sort_order }}</span>
+              <a class="nv__card-name" @click="openDetail(n.id)">{{ n.name }}</a>
+              <span v-if="n.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
+              <LbStatusTag kind="node" :status="n.status" />
+            </template>
 
-          <template v-else-if="column.key === 'health'">
-            <div v-if="health[record.id]" class="nv__stack">
-              <span v-if="record.role !== 'RELAY'" class="nv__hitem">
-                <span class="nv__hname">sing-box</span>
-                <LbStatusTag kind="service" :status="health[record.id].singbox" small />
-              </span>
-              <span
-                v-if="health[record.id].nginx !== 'NOT_APPLICABLE'"
-                class="nv__hitem"
-              >
-                <span class="nv__hname">nginx</span>
-                <LbStatusTag kind="service" :status="health[record.id].nginx" small />
-              </span>
-              <span
-                v-if="health[record.id].realm && health[record.id].realm !== 'NOT_APPLICABLE'"
-                class="nv__hitem"
-              >
-                <span class="nv__hname">realm</span>
-                <LbStatusTag kind="service" :status="health[record.id].realm" small />
-              </span>
-              <!-- **逐实例列出来并点名。** 一台机器上可以有好几个 Mieru 入口,
-                   合成一行的话,挂了哪一个看不出来 —— 而它们是各自独立的进程,
-                   要去救的也只是其中一个。 -->
-              <span
-                v-for="m in health[record.id].mieru ?? []"
-                :key="m.inbound_id"
-                class="nv__hitem"
-              >
-                <span class="nv__hname lb-ellipsis" :title="m.display_name">{{ m.display_name }}</span>
-                <LbStatusTag kind="service" :status="m.state" small />
-              </span>
-              <span v-if="health[record.id].recover_error" class="nv__hfail">
-                自动恢复失败
-              </span>
-              <span v-else-if="health[record.id].recovered" class="nv__hok">已自动拉起</span>
+            <div class="nv__stack nv__stack--row">
+              <LbStatusTag :meta="configStatusMeta[configState(n)]" :suffix="configState(n) === 'NOT_APPLICABLE' ? '' : `rev ${n.config_revision}`" />
+              <LbStatusTag v-for="(b, i) in nodeBadges(n, metrics[n.id]?.collected_at)" :key="i" :meta="b" />
             </div>
-            <!-- 读不到时显示「—」,不显示 0 也不显示「正常」 ——
-                 读不到和真的正常长得一模一样,那是最容易骗到人的一种失败。 -->
-            <span v-else class="nv__dash">—</span>
-          </template>
-
-          <template v-else-if="column.key === 'run'">
-            <div class="nv__stack">
-              <LbStatusTag kind="node" :status="record.status" />
-              <LbStatusTag
-                v-for="(b, i) in nodeBadges(record, metrics[record.id]?.collected_at)"
-                :key="i"
-                :meta="b"
+            <div class="nv__host lb-mono">
+              {{ n.host }}
+              <a class="nv__copy" @click="copyHost(n.host)">复制</a>
+            </div>
+            <div class="nv__stack nv__stack--row">
+              <span class="nv__reset">巡检</span>
+              <LbStatusTag :meta="healthOf(n).meta" />
+              <LbStatusTag v-for="(b, i) in healthOf(n).badges" :key="`b${i}`" :meta="b" />
+            </div>
+            <div v-if="n.maintenance_message" class="nv__card-maint">{{ n.maintenance_message }}</div>
+            <div v-if="n.role === 'RELAY'" class="nv__reset">中转主机,面板不计流量</div>
+            <template v-else>
+              <LbQuotaBar
+                :used-bytes="cycles[n.id]?.used_bytes ?? null"
+                :quota-bytes="cycles[n.id]?.quota_bytes ?? n.traffic_quota_bytes"
+                :warning-level="cycles[n.id]?.warning_level"
               />
-              <span v-if="record.maintenance_message" class="nv__maint" :title="record.maintenance_message">
-                {{ record.maintenance_message }}
-              </span>
-              <span v-if="busy[record.id]" class="nv__busy">{{ busy[record.id] }}中…</span>
+              <div v-if="cycleResetText(n.id)" class="nv__reset" :title="cycleTitle(n.id)">{{ cycleResetText(n.id) }}</div>
+            </template>
+            <div class="nv__stack nv__stack--row">
+              <span class="nv__reset">到期</span>
+              <a class="nv__expiry" @click="expiryTarget = n">
+                <LbStatusTag :meta="expiryStatusMeta(n.expiry)" />
+                <span v-if="expiryCell(n).date" class="nv__reset">{{ expiryCell(n).date }}</span>
+                <span v-if="expiryCell(n).auto" class="lb-chip nv__chip">自动续费</span>
+              </a>
             </div>
-          </template>
 
-          <template v-else-if="column.key === 'config'">
-            <LbStatusTag
-              :meta="configStatusMeta[configState(record)]"
-              :suffix="`rev ${record.config_revision}`"
-            />
-            <div class="nv__tier">{{ tierSummary(record) }}</div>
-          </template>
-
-          <template v-else-if="column.key === 'sync'">
-            <LbTimeText
-              :value="record.last_heartbeat_at"
-              :warn-after-ms="threshold.metricsStaleMs"
-              :danger-after-ms="threshold.metricsStaleMs * 6"
-            />
-          </template>
-
-          <template v-else-if="column.key === 'cycle'">
-            <!-- 理由同上:中转主机没有任何计数,写明比画一条 0 更诚实。 -->
-            <div v-if="record.role === 'RELAY'" class="nv__reset">中转主机,面板不计流量</div>
-            <LbQuotaBar
-              v-else
-              :used-bytes="cycles[record.id]?.used_bytes ?? null"
-              :quota-bytes="cycles[record.id]?.quota_bytes ?? record.traffic_quota_bytes"
-              :warning-level="cycles[record.id]?.warning_level"
-            />
-            <div v-if="billingNote(record.id)" class="nv__reset">{{ billingNote(record.id) }}</div>
-            <div v-if="cycleResetText(record.id)" class="nv__reset">
-              {{ cycleResetText(record.id) }}
-            </div>
-          </template>
-
-          <template v-else-if="column.key === 'actions'">
-            <div class="nv__actions">
+            <template #foot>
               <a-button
-                size="small"
-                :type="primaryAction(record) === 'detail' ? 'default' : 'primary'"
-                :class="{ 'lb-btn-ghost': primaryAction(record) === 'detail' }"
-                :loading="!!busy[record.id]"
-                @click="runPrimary(record)"
+                :type="primaryAction(n) === 'detail' ? 'default' : 'primary'"
+                :loading="!!busy[n.id]"
+                @click="runPrimary(n)"
               >
-                {{ actionLabel[primaryAction(record)] }}
+                {{ actionLabel[primaryAction(n)] }}
               </a-button>
-              <a-dropdown placement="bottomRight">
-                <a-button
-                  size="small"
-                  class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text"
-                  :aria-label="`${record.display_name || record.name} 的更多操作`"
-                  :title="`${record.display_name || record.name} 的更多操作`"
-                >
+              <a-dropdown placement="topRight">
+                <a-button class="lb-touch-target" :aria-label="`${n.name} 的更多操作`">
                   <LbIcon name="more" :size="16" />
                 </a-button>
                 <template #overlay>
                   <a-menu>
-                    <a-menu-item v-if="primaryAction(record) !== 'detail'" @click="openDetail(record.id)">详情</a-menu-item>
-                    <a-menu-item @click="openEdit(record)">编辑节点</a-menu-item>
-                    <a-menu-item @click="expiryTarget = record">续费 / 修改到期时间</a-menu-item>
-                    <a-menu-item @click="recheck.start(record)">全面重检</a-menu-item>
-                    <a-menu-item @click="run(record.id, '探测', () => api.probeNode(record.id), '探测完成')">
-                      探测
-                    </a-menu-item>
-                    <a-menu-item
-                      @click="run(record.id, '同步流量', () => api.syncNodeTraffic(record.id), '流量已同步')"
-                    >
-                      同步流量
-                    </a-menu-item>
-                    <a-menu-item @click="confirmDeploy(record)">部署</a-menu-item>
-                    <a-menu-divider />
-                    <a-menu-item :danger="record.status !== 'DISABLED'" @click="confirmToggle(record)">
-                      {{ record.status === 'DISABLED' ? '启用节点' : '禁用节点' }}
-                    </a-menu-item>
-                    <!-- 删除、卸载、重置主机密钥这三个不可逆的在详情页的危险区,
-                         那里才有空间把「删记录不动机器」和「动机器不删记录」说清楚。 -->
-                    <a-menu-item @click="openDetail(record.id)">更多操作(详情页)</a-menu-item>
+                    <a-menu-item @click="openDetail(n.id)">详情</a-menu-item>
+                    <a-menu-item @click="openEdit(n)">编辑节点</a-menu-item>
+                    <a-menu-item @click="expiryTarget = n">续费 / 修改到期时间</a-menu-item>
+                    <a-menu-item @click="confirmDeploy(n)">部署</a-menu-item>
                   </a-menu>
                 </template>
               </a-dropdown>
-            </div>
+            </template>
+          </LbRowCard>
+
+          <a-pagination
+            v-if="visible.length > pager.pageSize.value"
+            v-model:current="pager.current.value"
+            :page-size="pager.pageSize.value"
+            :total="visible.length"
+            :show-size-changer="false"
+            simple
+            class="nv__pager"
+          />
+        </div>
+
+        <a-table
+          v-else
+          :columns="columns"
+          :data-source="visible"
+          :loading="loading"
+          :row-selection="rowSelection"
+          :pagination="pager.options.value"
+          row-key="id"
+          size="small"
+          :scroll="{ x: 1080 }"
+        >
+          <template #bodyCell="{ column, record }">
+            <!-- 编号 = 业务排序号(不是数据库主键),点击就地改。 -->
+            <template v-if="column.key === 'sort'">
+              <a-input-number
+                v-if="sortEditID === record.id"
+                v-model:value="sortEditValue"
+                size="small"
+                :min="0"
+                :max="1000000"
+                :controls="false"
+                style="width: 56px"
+                autofocus
+                @press-enter="commitSortEdit"
+                @blur="commitSortEdit"
+              />
+              <a
+                v-else
+                class="nv__sort lb-tabular"
+                title="排序号,决定订阅与门户里的先后;点击修改"
+                @click="startSortEdit(record)"
+              >
+                #{{ record.sort_order }}
+              </a>
+            </template>
+
+            <template v-else-if="column.key === 'node'">
+              <div class="nv__name-row">
+                <a class="nv__name" @click="openDetail(record.id)">{{ record.name }}</a>
+                <span v-if="record.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
+              </div>
+              <!-- 运行状态与配置状态仍是两个独立标签,只是从两列挪到名字旁边。 -->
+              <div class="nv__stack nv__stack--row nv__tags">
+                <LbStatusTag kind="node" :status="record.status" />
+                <LbStatusTag
+                  :meta="configStatusMeta[configState(record)]"
+                  :suffix="configState(record) === 'NOT_APPLICABLE' ? '' : `rev ${record.config_revision}`"
+                />
+                <LbStatusTag
+                  v-for="(b, i) in nodeBadges(record, metrics[record.id]?.collected_at)"
+                  :key="i"
+                  :meta="b"
+                />
+                <span v-if="record.maintenance_message" class="nv__maint" :title="record.maintenance_message">
+                  {{ record.maintenance_message }}
+                </span>
+                <span v-if="busy[record.id]" class="nv__busy">{{ busy[record.id] }}中…</span>
+              </div>
+            </template>
+
+            <template v-else-if="column.key === 'host'">
+              <span class="nv__hostcell">
+                <span class="lb-mono nv__hosttext" :title="record.host">{{ record.host }}</span>
+                <a-button
+                  size="small"
+                  class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text nv__copybtn"
+                  :aria-label="`复制 ${record.host}`"
+                  title="复制管理地址"
+                  @click="copyHost(record.host)"
+                >
+                  <LbIcon name="copy" :size="13" />
+                </a-button>
+              </span>
+            </template>
+
+            <template v-else-if="column.key === 'health'">
+              <a-popover placement="bottomLeft" :mouse-enter-delay="0.2">
+                <template #content>
+                  <div class="nv__hpop">
+                    <div v-if="!healthOf(record).items.length && !healthOf(record).badges.length" class="nv__reset">
+                      这台机器上没有面板托管的服务要查,或者巡检还没跑到它。
+                    </div>
+                    <div v-for="it in healthOf(record).items" :key="it.name" class="nv__hitem" :title="it.detail">
+                      <span class="nv__hname">{{ it.name }}</span>
+                      <LbStatusTag kind="service" :status="it.state" />
+                    </div>
+                    <div v-for="(b, i) in healthOf(record).badges" :key="`b${i}`" class="nv__hitem">
+                      <LbStatusTag :meta="b" />
+                    </div>
+                    <div v-if="healthOf(record).checkedAt" class="nv__reset">
+                      巡检于 {{ formatUTCTime(healthOf(record).checkedAt) }}
+                      <template v-if="healthOf(record).preChange">—— 那时管理地址还没改,结果说的是旧机器</template>
+                    </div>
+                  </div>
+                </template>
+                <div class="nv__stack">
+                  <LbStatusTag :meta="healthOf(record).meta" />
+                  <LbStatusTag v-for="(b, i) in healthOf(record).badges.slice(0, 2)" :key="i" :meta="b" />
+                </div>
+              </a-popover>
+            </template>
+
+            <template v-else-if="column.key === 'cycle'">
+              <div v-if="record.role === 'RELAY'" class="nv__reset">中转主机,面板不计流量</div>
+              <template v-else>
+                <div :title="cycleTitle(record.id)">
+                  <LbQuotaBar
+                    :used-bytes="cycles[record.id]?.used_bytes ?? null"
+                    :quota-bytes="cycles[record.id]?.quota_bytes ?? record.traffic_quota_bytes"
+                    :warning-level="cycles[record.id]?.warning_level"
+                  />
+                </div>
+                <div v-if="cycleResetText(record.id)" class="nv__reset">{{ cycleResetText(record.id) }}</div>
+              </template>
+            </template>
+
+            <!-- 供应商到期,与流量重置时间分开两列,互不混用。 -->
+            <template v-else-if="column.key === 'expiry'">
+              <a class="nv__expiry" title="续费 / 修改到期时间" @click="expiryTarget = record">
+                <LbStatusTag :meta="expiryStatusMeta(record.expiry)" />
+                <span v-if="expiryCell(record).date" class="nv__reset lb-tabular">{{ expiryCell(record).date }}</span>
+                <span v-if="expiryCell(record).auto" class="lb-chip nv__chip" title="已登记商家自动续费:面板不代为扣款,到期仍会提醒">自动续费</span>
+              </a>
+            </template>
+
+            <template v-else-if="column.key === 'actions'">
+              <div class="nv__actions">
+                <a-button
+                  size="small"
+                  :type="primaryAction(record) === 'detail' ? 'default' : 'primary'"
+                  :class="{ 'lb-btn-ghost': primaryAction(record) === 'detail' }"
+                  :loading="!!busy[record.id]"
+                  @click="runPrimary(record)"
+                >
+                  {{ actionLabel[primaryAction(record)] }}
+                </a-button>
+                <a-dropdown placement="bottomRight">
+                  <a-button
+                    size="small"
+                    class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text"
+                    :aria-label="`${record.name} 的更多操作`"
+                    :title="`${record.name} 的更多操作`"
+                  >
+                    <LbIcon name="more" :size="16" />
+                  </a-button>
+                  <template #overlay>
+                    <a-menu>
+                      <a-menu-item v-if="primaryAction(record) !== 'detail'" @click="openDetail(record.id)">详情</a-menu-item>
+                      <a-menu-item @click="openEdit(record)">编辑节点</a-menu-item>
+                      <a-menu-item @click="expiryTarget = record">续费 / 修改到期时间</a-menu-item>
+                      <a-menu-item @click="recheck.start(record)">全面重检</a-menu-item>
+                      <a-menu-item @click="run(record.id, '探测', () => api.probeNode(record.id), '探测完成')">探测</a-menu-item>
+                      <a-menu-item @click="run(record.id, '同步流量', () => api.syncNodeTraffic(record.id), '流量已同步')">
+                        同步流量
+                      </a-menu-item>
+                      <a-menu-item @click="confirmDeploy(record)">部署</a-menu-item>
+                      <a-menu-divider />
+                      <a-menu-item :danger="record.status !== 'DISABLED'" @click="confirmToggle(record)">
+                        {{ record.status === 'DISABLED' ? '启用节点' : '禁用节点' }}
+                      </a-menu-item>
+                      <a-menu-item @click="openDetail(record.id)">更多操作(详情页)</a-menu-item>
+                    </a-menu>
+                  </template>
+                </a-dropdown>
+              </div>
+            </template>
           </template>
-        </template>
-      </a-table>
+        </a-table>
       </div>
     </section>
 
@@ -1070,8 +951,6 @@ const keyOpen = ref(false)
       @saved="
         (id) => {
           load()
-          // 新建之后直接进详情页:接下来要做的探测、安装、部署全在那里,
-          // 留在列表上等于让人再点一次。
           if (!editing) openDetail(id)
         }
       "
@@ -1093,7 +972,7 @@ const keyOpen = ref(false)
       :open="true"
       kind="NODE"
       :object-id="expiryTarget.id"
-      :name="expiryTarget.display_name || expiryTarget.name"
+      :name="expiryTarget.name"
       @update:open="(v) => { if (!v) expiryTarget = null }"
       @changed="load"
     />
@@ -1106,7 +985,6 @@ const keyOpen = ref(false)
       <LbCopyField :value="panelKey || '(尚未生成 —— 首次连接节点时自动生成)'" />
     </a-modal>
 
-    <!-- 执行中不可关闭:部署一旦发出就在节点上跑,关掉弹窗不会取消它。 -->
     <a-modal
       v-model:open="batchOpen"
       :title="batchTitle"
@@ -1146,6 +1024,21 @@ const keyOpen = ref(false)
   color: var(--brand);
 }
 
+.nv__tags {
+  margin-top: 4px;
+}
+
+.nv__sort {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text2);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.nv__sort:hover {
+  color: var(--brand);
+}
+
 .nv__meta {
   font-size: 11.5px;
   color: var(--text3);
@@ -1163,41 +1056,44 @@ const keyOpen = ref(false)
   flex-wrap: wrap;
   margin-top: 3px;
   font-size: 12px;
-  color: var(--text3);
-}
-
-/* 协议标记。用中性底色而不是彩色 —— 协议不是状态,没有好坏之分,
-   给它上色会跟旁边真正表达状态的那几个 LbStatusTag 抢注意力。 */
-.nv__proto {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 5px;
-  background: var(--fill);
   color: var(--text2);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 18px;
+}
+.nv__copy {
+  font-size: 11.5px;
 }
 
-.nv__hitem {
+.nv__hostcell {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.nv__hosttext {
+  font-size: 12.5px;
+  color: var(--text);
+}
+.nv__copybtn {
+  opacity: 0.6;
+}
+.nv__copybtn:hover {
+  opacity: 1;
+}
+
+.nv__hpop {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+  min-width: 200px;
+}
+.nv__hitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 .nv__hname {
-  font-size: 12px;
-  color: var(--text3);
-}
-.nv__hfail {
-  font-size: 11.5px;
-  color: var(--bad);
-}
-.nv__hok {
-  font-size: 11.5px;
-  color: var(--ok);
-}
-.nv__dash {
-  color: var(--text3);
+  font-size: 12.5px;
+  color: var(--text2);
 }
 
 .nv__stack {
@@ -1206,11 +1102,19 @@ const keyOpen = ref(false)
   align-items: flex-start;
   gap: 4px;
 }
-
 .nv__stack--row {
   flex-direction: row;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+
+.nv__expiry {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  color: inherit;
 }
 
 .nv__cards {
@@ -1252,14 +1156,8 @@ const keyOpen = ref(false)
   color: var(--brand);
 }
 
-.nv__tier {
-  margin-top: 4px;
-  font-size: 11.5px;
-  color: var(--text3);
-}
-
 .nv__reset {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 11.5px;
   color: var(--text3);
 }
@@ -1289,11 +1187,6 @@ const keyOpen = ref(false)
 .nv__batch-foot {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
-}
-
-/* 「最后同步」这类时间列不折行。 */
-.nv :deep(.ant-table-cell .lb-time) {
-  white-space: nowrap;
+  margin-top: 14px;
 }
 </style>
