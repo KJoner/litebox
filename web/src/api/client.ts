@@ -2327,6 +2327,9 @@ export const api = {
     request<NodeRecheckResult>(`/api/nodes/${id}/recheck`, { method: 'POST' }),
   deleteNode: (id: number) =>
     request<{ message: string }>(`/api/nodes/${id}`, { method: 'DELETE' }),
+  /** 就地改排序号(列表「编号」列,V20)。只影响订阅与门户里的先后。 */
+  setNodeSortOrder: (id: number, sortOrder: number) =>
+    request<{ sort_order: number }>(`/api/nodes/${id}/sort-order`, { method: 'PUT', body: { sort_order: sortOrder } }),
   setNodeEnabled: (id: number, enabled: boolean) =>
     request<{ message: string }>(`/api/nodes/${id}/enabled`, { method: 'POST', body: { enabled } }),
   testNodeSSH: (id: number) =>

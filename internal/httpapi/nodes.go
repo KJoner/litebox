@@ -639,6 +639,37 @@ type setEnabledRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
+// handleSetNodeSortOrder 就地改排序号(V20 列表的「编号」列)。只影响订阅与门户里的先后。
+func (s *Server) handleSetNodeSortOrder(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		SortOrder int `json:"sort_order"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if req.SortOrder < 0 || req.SortOrder > 1000000 {
+		writeError(w, http.StatusBadRequest, "排序号必须是 0 ~ 1000000 的整数")
+		return
+	}
+	if err := s.nodes.Store().SetSortOrder(r.Context(), id, req.SortOrder); err != nil {
+		s.writeNodeError(w, err, "修改排序号失败")
+		return
+	}
+	admin := adminFromContext(r.Context())
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionNodeUpdate,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail:   fmt.Sprintf("排序号改为 %d", req.SortOrder),
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"sort_order": req.SortOrder})
+}
+
 func (s *Server) handleSetNodeEnabled(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.nodeIDFromPath(w, r)
 	if !ok {

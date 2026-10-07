@@ -199,6 +199,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("PUT /api/nodes/{id}", s.handleUpdateNode)
 		authed.HandleFunc("DELETE /api/nodes/{id}", s.handleDeleteNode)
 		authed.HandleFunc("POST /api/nodes/{id}/enabled", s.handleSetNodeEnabled)
+		authed.HandleFunc("PUT /api/nodes/{id}/sort-order", s.handleSetNodeSortOrder)
 		authed.HandleFunc("POST /api/nodes/{id}/test-ssh", s.handleTestNodeSSH)
 		// 管理地址变更后的全面重检(V20),只读:连接、转发、服务、配置、端口、采集。
 		authed.HandleFunc("POST /api/nodes/{id}/recheck", longOperation(s.handleRecheckNode))
