@@ -10,9 +10,10 @@ import {
   type AuditLog,
   type Node,
   type ProxyUser,
+  type UserNodeRange,
   type UserTraffic,
 } from '@/api/client'
-import { formatBytes, formatTime } from '@/utils/format'
+import { formatBytes, formatTime, formatUTCDay } from '@/utils/format'
 import { checkLoginUsername, checkPassword } from '@/utils/validate'
 import {
   LbCopyField,
@@ -105,13 +106,7 @@ function loadSections(u: ProxyUser) {
   adjustError.value = false
   logError.value = false
 
-  api
-    .userTraffic(u.id, 30)
-    .then((t) => (traffic.value = t))
-    .catch(() => {
-      traffic.value = null
-      trafficError.value = true
-    })
+  void loadTraffic(u.id)
   api
     .userAdjustments(u.id, 50)
     .then((r) => (adjustments.value = r.items))
@@ -202,17 +197,173 @@ function formatUTC(iso: string): string {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`
 }
 
-/** 缺失的日子传 null,不补 0 —— 补 0 会把「那天没同步」画成「那天没人用」。 */
-const dailyPoints = computed<LbPoint[]>(() => {
-  const byDay = new Map(traffic.value?.daily.map((d) => [d.day, d.total]) ?? [])
+// ---------- 流量:时间区间、排序与筛选(V20) ----------
+
+/**
+ * 一个区间同时作用于区间总量、上传 / 下载、趋势图与按节点明细 —— 它们来自后端
+ * 同一次查询。快捷范围按 UTC 日切(账本的日桶就是 UTC 日),自定义起止按本机时间填、
+ * 转成 UTC 发给后端。粒度由后端按区间长度定(≤ 3 天按小时,更长且对齐按日),
+ * 前端只按它返回的 granularity 铺时间轴,缺桶传 null,不补 0、不插值。
+ */
+type RangePreset = 'today' | 'yesterday' | '7d' | '30d' | 'this_month' | 'last_month' | 'custom'
+const presetOptions: { value: RangePreset; label: string }[] = [
+  { value: 'today', label: '今天' },
+  { value: 'yesterday', label: '昨天' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' },
+  { value: 'this_month', label: '本月' },
+  { value: 'last_month', label: '上月' },
+  { value: 'custom', label: '自定义' },
+]
+const rangePreset = ref<RangePreset>('30d')
+const customFrom = ref('')
+const customTo = ref('')
+const trafficLoading = ref(false)
+const rangeError = ref('')
+
+function presetRange(p: RangePreset): { from: string; to: string } | null {
+  const now = new Date()
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const day = 86400000
+  const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  switch (p) {
+    case 'today':
+      return { from: iso(dayStart), to: iso(dayStart + day) }
+    case 'yesterday':
+      return { from: iso(dayStart - day), to: iso(dayStart) }
+    case '7d':
+      return { from: iso(dayStart - 6 * day), to: iso(dayStart + day) }
+    case '30d':
+      return { from: iso(dayStart - 29 * day), to: iso(dayStart + day) }
+    case 'this_month':
+      return {
+        from: iso(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+        to: iso(dayStart + day),
+      }
+    case 'last_month':
+      return {
+        from: iso(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)),
+        to: iso(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+      }
+    default: {
+      if (!customFrom.value || !customTo.value) return null
+      const f = new Date(customFrom.value)
+      const t = new Date(customTo.value)
+      if (Number.isNaN(f.getTime()) || Number.isNaN(t.getTime())) return null
+      return { from: iso(f.getTime()), to: iso(t.getTime()) }
+    }
+  }
+}
+
+/** 快速切换范围时旧请求不得覆盖新结果:只认最后一次发出的那一个。 */
+let trafficSeq = 0
+
+async function loadTraffic(id = props.userId) {
+  if (id === null) return
+  const r = presetRange(rangePreset.value)
+  if (!r) {
+    rangeError.value = '自定义范围要同时填起止时间'
+    return
+  }
+  if (r.to <= r.from) {
+    rangeError.value = '结束时间必须晚于开始时间'
+    return
+  }
+  rangeError.value = ''
+  const seq = ++trafficSeq
+  trafficLoading.value = true
+  trafficError.value = false
+  try {
+    const t = await api.userTraffic(id, { from: r.from, to: r.to })
+    if (seq !== trafficSeq) return
+    traffic.value = t
+  } catch (err) {
+    if (seq !== trafficSeq) return
+    traffic.value = null
+    trafficError.value = true
+    if (err instanceof ApiError && err.status === 400) rangeError.value = err.message
+  } finally {
+    if (seq === trafficSeq) trafficLoading.value = false
+  }
+}
+
+watch(rangePreset, (p) => {
+  if (p !== 'custom') void loadTraffic()
+})
+
+const rangeCaption = computed(() => {
+  const r = traffic.value?.range
+  if (!r) return ''
+  const unit = r.granularity === 'hour' ? '按小时' : '按 UTC 日'
+  const src = r.source === 'daily' ? '日汇总表' : '流水账本'
+  const upd = r.updated_at ? `,数据更新于 ${formatTime(r.updated_at)}` : ',还没有入账记录'
+  return `${formatUTC(r.from)} ~ ${formatUTC(r.to)} · ${unit}(来自${src})${upd}`
+})
+
+/** 按后端给的粒度铺时间轴:缺桶传 null —— 补 0 会把「那段没同步」画成「那段没人用」。 */
+const seriesPoints = computed<LbPoint[]>(() => {
+  const t = traffic.value
+  if (!t?.range) return []
+  const from = new Date(t.range.from).getTime()
+  const to = new Date(t.range.to).getTime()
+  if (Number.isNaN(from) || Number.isNaN(to) || to <= from) return []
+  const step = t.range.granularity === 'hour' ? 3600000 : 86400000
+  const byAt = new Map(t.series.map((p) => [new Date(p.at).getTime(), p.total]))
   const out: LbPoint[] = []
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400000)
-    const key = d.toISOString().slice(0, 10)
-    out.push({ at: key, value: byDay.has(key) ? (byDay.get(key) as number) : null })
+  // 起点对齐到桶边界(小时 / UTC 日),最多铺 1000 个桶。
+  let cursor = Math.floor(from / step) * step
+  let guard = 0
+  while (cursor < to && guard++ < 1000) {
+    out.push({ at: new Date(cursor).toISOString(), value: byAt.has(cursor) ? (byAt.get(cursor) as number) : null })
+    cursor += step
   }
   return out
 })
+
+function bucketLabel(at: string): string {
+  const r = traffic.value?.range
+  if (r?.granularity === 'hour') {
+    const d = new Date(at)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${pad(d.getUTCHours())}:00 UTC`
+  }
+  return formatUTCDay(at)
+}
+
+type NodeSortKey = 'total' | 'uplink' | 'downlink' | 'name' | 'sort_order'
+const nodeSortKey = ref<NodeSortKey>('total')
+const nodeSortDesc = ref(true)
+const nodeFilter = ref('')
+const nodeSortOptions: { value: NodeSortKey; label: string }[] = [
+  { value: 'total', label: '总流量' },
+  { value: 'uplink', label: '上传' },
+  { value: 'downlink', label: '下载' },
+  { value: 'name', label: '内部名称' },
+  { value: 'sort_order', label: '排序号' },
+]
+
+/** 默认总流量降序;同值按稳定的次级键(名称、节点 ID),不随刷新漂移。 */
+const sortedByNode = computed<UserNodeRange[]>(() => {
+  const list = [...(traffic.value?.by_node ?? [])]
+  const kw = nodeFilter.value.trim().toLowerCase()
+  const filtered = kw ? list.filter((n) => n.node_name.toLowerCase().includes(kw)) : list
+  const dir = nodeSortDesc.value ? -1 : 1
+  const key = nodeSortKey.value
+  return filtered.sort((a, b) => {
+    let c = 0
+    if (key === 'name') c = a.node_name.localeCompare(b.node_name, 'zh-Hans-CN')
+    else if (key === 'sort_order') c = a.node_sort_order - b.node_sort_order
+    else c = a[key] - b[key]
+    if (c !== 0) return c * dir
+    return a.node_name.localeCompare(b.node_name, 'zh-Hans-CN') || a.node_id - b.node_id
+  })
+})
+
+function sharePercent(n: UserNodeRange): string {
+  const total = traffic.value?.total?.total ?? 0
+  if (total <= 0) return '—'
+  return `${((n.total / total) * 100).toFixed(1)}%`
+}
 
 // ---------- 门户账号 ----------
 
@@ -592,10 +743,11 @@ const adjustColumns = [
                   </div>
                 </div>
                 <div class="ud__spark">
-                  <LbSparkline :points="dailyPoints" type="bar" :height="72" />
+                  <LbSparkline :points="seriesPoints" type="bar" :height="72" :label-format="bucketLabel" />
                   <div class="ud__spark-cap">
-                    近 30 天 · 按 UTC 日
-                    <LbInfoTip text="空心柱表示当天没有记录,不是 0 —— 不补 0、不插值。" :width="260" />
+                    {{ presetOptions.find((o) => o.value === rangePreset)?.label ?? '区间' }} ·
+                    {{ traffic?.range?.granularity === 'hour' ? '按小时' : '按 UTC 日' }}(与「流量」Tab 同一区间)
+                    <LbInfoTip text="空心柱表示那一段没有记录,不是 0 —— 不补 0、不插值。" :width="260" />
                   </div>
                 </div>
               </div>
@@ -715,30 +867,94 @@ const adjustColumns = [
             @retry="user && loadSections(user)"
           />
           <template v-else>
+            <div class="ud__range">
+              <a-segmented v-model:value="rangePreset" :options="presetOptions" size="small" />
+              <div v-if="rangePreset === 'custom'" class="ud__range-custom">
+                <a-input v-model:value="customFrom" type="datetime-local" size="small" />
+                <span class="ud__muted">~</span>
+                <a-input v-model:value="customTo" type="datetime-local" size="small" />
+                <a-button size="small" type="primary" :loading="trafficLoading" @click="loadTraffic()">查询</a-button>
+              </div>
+            </div>
+            <div v-if="rangeError" class="ud__note ud__note--danger">{{ rangeError }}</div>
+
             <section class="ud__card">
               <div class="ud__card-head">
-                近 30 天流量
+                区间流量
                 <span class="ud__spark-cap">
-                  按 UTC 日聚合
-                  <LbInfoTip text="悬停查看当日用量。空心柱表示当天没有记录,不是 0 —— 不补 0、不插值。" :width="260" />
+                  <span v-if="trafficLoading">正在查询…</span>
+                  <span v-else>{{ rangeCaption }}</span>
+                  <LbInfoTip
+                    :width="300"
+                    text="这是所选区间内的用户流量(与额度同一口径:链路凭据与不计流量的入口都不算),与下面的「当前额度用量」是两回事 —— 查历史区间不改变额度、重置时间与累计账本。空心柱表示那一段没有记录,不是 0;不补 0、不插值。"
+                  />
                 </span>
               </div>
               <div class="ud__card-body">
-                <LbSparkline :points="dailyPoints" type="bar" :height="130" />
+                <div class="ud__range-stats">
+                  <div class="ud__range-stat">
+                    <div class="ud__range-stat-label">区间总流量</div>
+                    <div class="ud__range-stat-value lb-tabular">{{ traffic?.total ? formatBytes(traffic.total.total) : '—' }}</div>
+                  </div>
+                  <div class="ud__range-stat">
+                    <div class="ud__range-stat-label">上传</div>
+                    <div class="ud__range-stat-value lb-tabular">{{ traffic?.total ? formatBytes(traffic.total.uplink) : '—' }}</div>
+                  </div>
+                  <div class="ud__range-stat">
+                    <div class="ud__range-stat-label">下载</div>
+                    <div class="ud__range-stat-value lb-tabular">{{ traffic?.total ? formatBytes(traffic.total.downlink) : '—' }}</div>
+                  </div>
+                  <div class="ud__range-stat">
+                    <div class="ud__range-stat-label">当前额度用量</div>
+                    <div class="ud__range-stat-value lb-tabular">
+                      {{ traffic ? formatBytes(traffic.used_total) : '—' }}
+                      <span class="ud__muted">/ {{ traffic ? (traffic.quota_bytes > 0 ? formatBytes(traffic.quota_bytes) : '不限') : '—' }}</span>
+                    </div>
+                  </div>
+                </div>
+                <LbSparkline :points="seriesPoints" type="bar" :height="130" :label-format="bucketLabel" />
               </div>
             </section>
 
-            <div class="ud__card-head ud__card-head--plain">按节点</div>
-            <div v-if="traffic && traffic.by_node.length" class="ud__bynode">
-              <div v-for="n in traffic.by_node" :key="n.node_id" class="ud__bynode-row">
-                <span class="lb-ellipsis">{{ n.node_name }}</span>
-                <span class="lb-mono">{{ formatBytes(n.total) }}</span>
+            <div class="ud__card-head ud__card-head--plain ud__bynode-head">
+              <span>按节点</span>
+              <span class="ud__bynode-tools">
+                <a-input v-model:value="nodeFilter" size="small" placeholder="筛选节点" allow-clear style="width: 130px" />
+                <a-select v-model:value="nodeSortKey" size="small" style="width: 110px">
+                  <a-select-option v-for="o in nodeSortOptions" :key="o.value" :value="o.value">{{ o.label }}</a-select-option>
+                </a-select>
+                <a-button size="small" class="lb-btn-ghost" @click="nodeSortDesc = !nodeSortDesc">
+                  {{ nodeSortDesc ? '降序' : '升序' }}
+                </a-button>
+              </span>
+            </div>
+            <div v-if="sortedByNode.length" class="ud__bynode">
+              <div v-for="n in sortedByNode" :key="n.node_id" class="ud__bynode-row">
+                <span class="lb-ellipsis">
+                  {{ n.node_name }}
+                  <span v-if="n.deleted" class="lb-chip">已删除</span>
+                  <span class="ud__muted">#{{ n.node_sort_order }}</span>
+                </span>
+                <span class="lb-mono">{{ formatBytes(n.total) }} <span class="ud__muted">{{ sharePercent(n) }}</span></span>
                 <span class="lb-mono ud__bynode-dir">
                   ↑ {{ formatBytes(n.uplink) }} · ↓ {{ formatBytes(n.downlink) }}
                 </span>
               </div>
             </div>
-            <div v-else class="ud__note">该用户在任何节点上都还没有产生流量。</div>
+            <div v-else-if="traffic && nodeFilter" class="ud__note">没有名称匹配「{{ nodeFilter }}」的节点。</div>
+            <div v-else-if="traffic" class="ud__note">这段时间里该用户在任何节点上都没有记录。</div>
+            <div v-if="traffic?.no_data?.length" class="ud__nodata">
+              <div v-for="n in traffic.no_data" :key="n.node_id" class="ud__nodata-row">
+                <span class="lb-ellipsis">{{ n.node_name }}</span>
+                <span v-if="n.reason === 'collect_failed'" class="lb-chip lb-chip--bad" :title="n.detail">采集失败</span>
+                <span v-else class="lb-chip">无记录</span>
+              </div>
+              <div class="ud__note">
+                「无记录」与「真的没用」在账本里长得一样;「采集失败」是最近一轮同步在那台机器上失败了,
+                那段用量不是零,是没采到。
+              </div>
+            </div>
+            <div class="ud__note">外部代理与中转线路不可统计:它们的流量走别人的服务器或不经认证,面板拿不到用户级计数。</div>
           </template>
         </a-tab-pane>
 
@@ -1129,6 +1345,64 @@ const adjustColumns = [
   font-size: 12px;
   color: var(--text3);
   text-align: right;
+}
+
+.ud__range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ud__range-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ud__range-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.ud__range-stat-label {
+  font-size: 12px;
+  color: var(--text3);
+}
+.ud__range-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+.ud__bynode-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ud__bynode-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ud__nodata {
+  margin-top: 10px;
+  background: var(--surface2);
+  border-radius: var(--r-group);
+  padding: 8px 14px;
+}
+.ud__nodata-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+@media (max-width: 767px) {
+  .ud__range-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .ud__logs {
