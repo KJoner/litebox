@@ -75,10 +75,6 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			extProtocol, extParamsEnc, extURI  string
 			extServer                          string
 		)
-		p.Order.Kind = OrderRelay
-		if engine == "REALM" {
-			p.Order.Kind = OrderRealm
-		}
 		if err := rows.Scan(&p.Order.NodeSort, &p.Order.NodeID, &p.Order.Sort, &p.Order.ID,
 			&p.DisplayName, &p.Host, &p.SubIPv4Address, &p.IPv6Address,
 			&p.Port, &p.IPv6Port,
@@ -86,6 +82,13 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 			&realityDest, &realityPub, &realitySI,
 			&extProtocol, &extParamsEnc, &extURI, &extServer); err != nil {
 			return nil, err
+		}
+		// 种类要在 Scan **之后**定:engine 是扫出来的。原来写在前面,
+		// realm 线路一律被当成 nginx 排 —— 同一台机器上 sort_order 相同的
+		// nginx 与 realm 线路会按 id 而不是按种类排,与前端的判据分叉。
+		p.Order.Kind = OrderRelay
+		if engine == "REALM" {
+			p.Order.Kind = OrderRealm
 		}
 
 		switch kind {

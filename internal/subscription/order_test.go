@@ -25,7 +25,7 @@ func names(entries []Entry) string {
 // 客户端里 VLESS 那条仍然在前面 —— 他改了那个数字、保存成功、
 // 什么都没发生,而面板不会说为什么。
 func TestSortOrderAppliesAcrossEntryKinds(t *testing.T) {
-	got := sortEntries([]orderedEntry{
+	got := sortEntries(SchemeLegacy, []orderedEntry{
 		named("中转-2", EntryOrder{NodeSort: 0, NodeID: 1, Sort: 2, Kind: OrderRelay, ID: 7}),
 		named("VLESS-1", EntryOrder{NodeSort: 0, NodeID: 1, Sort: 1, Kind: OrderSingBox, ID: 3}),
 		named("Mieru-0", EntryOrder{NodeSort: 0, NodeID: 1, Sort: 0, Kind: OrderMieru, ID: 9}),
@@ -40,7 +40,7 @@ func TestSortOrderAppliesAcrossEntryKinds(t *testing.T) {
 // **保留它是刻意的**:管理员是按机器分配 sort_order 的(一台机器上 0、1、2),
 // 去掉这一层的话两台机器的 0 号入口会交错在一起,而那不是任何人配置时的意图。
 func TestMachineOrderOutranksEntryOrder(t *testing.T) {
-	got := sortEntries([]orderedEntry{
+	got := sortEntries(SchemeLegacy, []orderedEntry{
 		named("B机-0", EntryOrder{NodeSort: 5, NodeID: 2, Sort: 0, Kind: OrderSingBox, ID: 1}),
 		named("A机-9", EntryOrder{NodeSort: 1, NodeID: 1, Sort: 9, Kind: OrderSingBox, ID: 2}),
 	})
@@ -56,7 +56,7 @@ func TestMachineOrderOutranksEntryOrder(t *testing.T) {
 // 谁的客户端里节点顺序都不会变。**这一条不是形式主义**:
 // 不少客户端按顺序记住"上次选的是第几个",顺序一变他就连到别的机器上了。
 func TestDefaultOrderKeepsLegacyGrouping(t *testing.T) {
-	got := sortEntries([]orderedEntry{
+	got := sortEntries(SchemeLegacy, []orderedEntry{
 		named("中转", EntryOrder{NodeID: 1, Kind: OrderRelay, ID: 1}),
 		named("Mieru", EntryOrder{NodeID: 1, Kind: OrderMieru, ID: 1}),
 		named("SS", EntryOrder{NodeID: 1, Kind: OrderSingBox, ID: 2}),
@@ -75,7 +75,7 @@ func TestDefaultOrderKeepsLegacyGrouping(t *testing.T) {
 func TestIPv6EntryStaysNextToItsIPv4(t *testing.T) {
 	one := EntryOrder{NodeID: 1, Sort: 1, Kind: OrderSingBox, ID: 1}
 	two := EntryOrder{NodeID: 1, Sort: 0, Kind: OrderSingBox, ID: 2}
-	got := sortEntries([]orderedEntry{
+	got := sortEntries(SchemeLegacy, []orderedEntry{
 		named("香港01", one), named("香港01-IPV6", one),
 		named("香港02", two), named("香港02-IPV6", two),
 	})
@@ -93,9 +93,9 @@ func TestOrderIsDeterministicOnTies(t *testing.T) {
 		named("b", EntryOrder{NodeID: 1, Kind: OrderSingBox, ID: 2}),
 		named("a", EntryOrder{NodeID: 1, Kind: OrderSingBox, ID: 1}),
 	}
-	first := names(sortEntries(append([]orderedEntry{}, in...)))
+	first := names(sortEntries(SchemeLegacy, append([]orderedEntry{}, in...)))
 	for i := 0; i < 20; i++ {
-		if s := names(sortEntries(append([]orderedEntry{}, in...))); s != first {
+		if s := names(sortEntries(SchemeLegacy, append([]orderedEntry{}, in...))); s != first {
 			t.Fatalf("第 %d 次排出了不同的顺序:%q vs %q", i, s, first)
 		}
 	}

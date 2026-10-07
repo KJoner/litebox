@@ -29,6 +29,10 @@ const (
 	// KeyExternalPosition 决定外部代理排在自建节点之前还是之后。
 	// 取值 BEFORE / AFTER,留空按 AFTER。
 	KeyExternalPosition = "subscription_external_position"
+	// KeyOrderScheme 是订阅排序方案(V20):LEGACY(先机器再入口,外部代理整块
+	// 排在前面或后面)或 GLOBAL(全局排序值一条数轴)。留空按 LEGACY ——
+	// 升级后在管理员点过「迁移」之前,订阅输出逐字节不变。
+	KeyOrderScheme = "subscription_order_scheme"
 	// KeySubscriptionUserAgent 是拉取机场订阅时用的 UA。
 	// 部分机场按 UA 返回不同格式,留空用 externalproxy.DefaultUserAgent。
 	KeySubscriptionUserAgent = "subscription_fetch_user_agent"

@@ -987,7 +987,38 @@ export interface CreateNodeResult {
   bootstrap_error?: string
 }
 
+/** 订阅排序方案(V20):LEGACY 先机器再入口、外部代理整块;GLOBAL 全局排序值一条数轴。 */
+export type OrderScheme = 'LEGACY' | 'GLOBAL'
+
+export interface OrderPlanItem {
+  kind: 'NODE' | 'SINGBOX' | 'MIERU' | 'NGINX' | 'REALM' | 'EXTERNAL'
+  id: number
+  name: string
+  node_id?: number
+  node_name?: string
+  old_sort: number
+  new_sort: number
+  /** 迁移之后的全局排序值(节点行是它的号段起点) */
+  global: number
+  note?: string
+}
+
+export interface OrderPlan {
+  scheme: OrderScheme
+  external_position: 'BEFORE' | 'AFTER'
+  nodes: OrderPlanItem[]
+  entries: OrderPlanItem[]
+  externals: OrderPlanItem[]
+  changed: number
+  errors: string[]
+  warnings: string[]
+}
+
 export interface PanelSettings {
+  /** 订阅排序方案(V20)。 */
+  subscription_order_scheme: OrderScheme
+  /** 旧方案下外部代理整块排在自建节点之前还是之后。 */
+  subscription_external_position: 'BEFORE' | 'AFTER'
   subscription_base_url: string
   config_base_url: string
   panel_public_key: string
@@ -2330,6 +2361,19 @@ export const api = {
   /** 就地改排序号(列表「编号」列,V20)。只影响订阅与门户里的先后。 */
   setNodeSortOrder: (id: number, sortOrder: number) =>
     request<{ sort_order: number }>(`/api/nodes/${id}/sort-order`, { method: 'PUT', body: { sort_order: sortOrder } }),
+  /**
+   * 改任意一种条目的排序(V20 入口管理页):NODE 是节点排序号,SINGBOX / MIERU / NGINX / REALM
+   * 是节点内的入口序号,EXTERNAL 是外部代理自带的全局排序值。只影响订阅与门户里的先后。
+   */
+  setEntrySortOrder: (kind: OrderPlanItem['kind'], id: number, sortOrder: number) =>
+    request<{ kind: string; id: number; sort_order: number }>(`/api/sort-order/${kind}/${id}`, {
+      method: 'PUT',
+      body: { sort_order: sortOrder },
+    }),
+  /** 旧排序 → 全局排序值的迁移计划(只算不写)。 */
+  orderMigrationPlan: () => request<OrderPlan>('/api/subscription/order-migration'),
+  /** 执行迁移并把方案切到 GLOBAL;计划里有错误时返回 409。 */
+  applyOrderMigration: () => request<OrderPlan>('/api/subscription/order-migration', { method: 'POST' }),
   setNodeEnabled: (id: number, enabled: boolean) =>
     request<{ message: string }>(`/api/nodes/${id}/enabled`, { method: 'POST', body: { enabled } }),
   testNodeSSH: (id: number) =>

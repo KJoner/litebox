@@ -99,6 +99,19 @@ func NewService(
 	}
 }
 
+// orderScheme 读取订阅排序方案。读不到按旧方案:那是升级前的行为。
+func (s *Service) orderScheme(ctx context.Context) OrderScheme {
+	if s.settings == nil {
+		return SchemeLegacy
+	}
+	raw, err := s.settings.Get(ctx, settings.KeyOrderScheme)
+	if err != nil {
+		s.logger.Error("读取订阅排序方案失败,按旧方案处理", "error", err)
+		return SchemeLegacy
+	}
+	return ParseOrderScheme(raw)
+}
+
 // externalPosition 读取「外部代理排在哪一边」。
 // 读不到时按 AFTER —— 那是默认值,也是绝大多数人想要的顺序。
 func (s *Service) externalPosition(ctx context.Context) ExternalPosition {
@@ -210,11 +223,17 @@ func (s *Service) buildEntries(ctx context.Context, u *user.User) ([]Entry, erro
 	// 机器那一层的先后保留(见 EntryOrder):管理员是按机器分配 sort_order
 	// 的,去掉它会让两台机器的 0 号入口交错在一起。
 	//
-	// 外部代理不参与这次排序 —— 它们由 mergeEntries 按来源分组整块插进来,
-	// 那是另一套规则(subscription_external_position)。
+	// 外部代理在旧方案里不参与这次排序 —— 它们由 mergeEntries 按来源分组
+	// 整块插进来(subscription_external_position);GLOBAL 方案(V20)里
+	// 它们带着自己的全局排序值与自建入口一起排,分组拼接不再覆盖排序结果。
 	ordered := append(s.entriesFor(cred, nodes), s.mieruEntries(cred, mierus)...)
 	ordered = append(ordered, s.relayEntries(cred, relays)...)
-	return s.mergeEntries(ctx, sortEntries(ordered), s.externalEntries(external)), nil
+	scheme := s.orderScheme(ctx)
+	if scheme == SchemeGlobal {
+		ordered = append(ordered, s.externalOrdered(external)...)
+		return sortEntries(scheme, ordered), nil
+	}
+	return s.mergeEntries(ctx, sortEntries(scheme, ordered), s.externalEntries(external)), nil
 }
 
 // entriesFor 把节点列表转成订阅条目。
@@ -483,7 +502,8 @@ func truncate(s string, n int) string {
 func (s *Service) externalFor(ctx context.Context, userID int64) ([]ExternalProxy, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.display_name, p.display_name_override, COALESCE(src.name_prefix, ''),
+		SELECT p.id, p.sort_order,
+		       p.display_name, p.display_name_override, COALESCE(src.name_prefix, ''),
 		       p.protocol, p.server, p.port, p.params_encrypted, p.raw_uri_encrypted
 		  FROM external_proxies p
 		  JOIN `+externalproxy.EffectiveView+` ep ON ep.external_proxy_id = p.id
@@ -512,10 +532,12 @@ func (s *Service) externalFor(ctx context.Context, userID int64) ([]ExternalProx
 			paramsEnc, rawURIEnc          string
 			p                             ExternalProxy
 		)
-		if err := rows.Scan(&displayName, &override, &prefix,
+		if err := rows.Scan(&p.Order.ID, &p.Order.Global, &displayName, &override, &prefix,
 			&protocol, &p.Server, &p.Port, &paramsEnc, &rawURIEnc); err != nil {
 			return nil, err
 		}
+		p.Order.Source = SourceExternal
+		p.Order.Kind = OrderExternal
 		// 前缀在这里拼,与管理页看到的最终名字来自同一条规则。
 		p.DisplayName = override
 		if p.DisplayName == "" {
@@ -558,7 +580,22 @@ func (s *Service) externalEntries(list []ExternalProxy) []Entry {
 	return entries
 }
 
-// mergeEntries 按分组顺序拼接两组条目。
+// externalOrdered 与 externalEntries 相同,只是把位置一起带上(GLOBAL 方案用)。
+func (s *Service) externalOrdered(list []ExternalProxy) []orderedEntry {
+	entries := make([]orderedEntry, 0, len(list))
+	for _, p := range list {
+		entry, err := EntryForExternal(p)
+		if err != nil {
+			s.logger.Error("生成外部代理条目失败,已跳过",
+				"proxy", p.DisplayName, "protocol", p.Protocol, "error", err)
+			continue
+		}
+		entries = append(entries, orderedEntry{order: p.Order, entry: entry})
+	}
+	return entries
+}
+
+// mergeEntries 按分组顺序拼接两组条目(旧方案)。
 //
 // **分组而不是全局统一排序**:两组的 sort_order 是在两个页面上各自分配的,
 // 管理员在其中一个页面里看不到另一组的取值,混排的结果多半不是他要的。
