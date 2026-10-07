@@ -36,6 +36,7 @@ import (
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/deployment"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/hosttraffic"
 	"github.com/litebox/litebox/internal/httpapi"
@@ -616,6 +617,20 @@ func cmdServe(args []string) error {
 	})
 	go watchdog.Run(ctx)
 
+	// 供应商到期提醒(V20):每分钟算一次该发的提醒,按「对象 + 周期 + 阶段 + 渠道」
+	// 持久化去重,发送失败有界重试。它只提醒,不停服务、不删节点、不关订阅。
+	expiryStore := expiry.NewStore(db)
+	expiryEngine := expiry.New(expiry.Options{
+		Store:    expiryStore,
+		Sender:   notifier,
+		Logger:   logger,
+		Schedule: settingsStore.ExpirySchedule,
+		BaseURL: func(ctx context.Context) string {
+			return settingsStore.BaseURL(ctx, cfg.HTTP.BaseURL)
+		},
+	})
+	go expiryEngine.Run(ctx)
+
 	// 外部代理源的自动同步。每个源自己的间隔决定何时拉,
 	// 这里的巡检只是「多久看一眼有没有到点的」。
 	// 默认所有源都关着自动同步 —— 打开之前管理员应该先手工同步一次看结果。
@@ -638,6 +653,7 @@ func cmdServe(args []string) error {
 		Nodes:    nodeService,
 		Users:    userService,
 		External: externalService,
+		Expiry:   expiryStore,
 		Profiles: profileStore,
 		Subs: subscription.NewService(
 			db, userStore, cipher, cfg.Subscription.ClientMixedPort,

@@ -702,6 +702,8 @@ export interface Node {
   config_state?: NodeConfigState
   /** 是否该提示部署。与 config_state 分开给 —— 不确定时不催。 */
   needs_deploy?: boolean
+  /** 供应商到期档案(V20)。没接入时为 null;没登记时 state 是 UNSET */
+  expiry?: ExpiryView | null
 }
 
 /**
@@ -922,6 +924,119 @@ export interface PanelSettings {
   /** 云账号轮询间隔(秒),0 表示用默认 */
   cloud_poll_interval_sec: number
   default_cloud_poll_interval_sec: number
+  /** 到期提醒(V20):提前天数(逗号分隔)、每天几点、时区;空串表示用默认 */
+  expiry_lead_days: string
+  default_expiry_lead_days: string
+  expiry_send_time: string
+  default_expiry_send_time: string
+  expiry_timezone: string
+  /** 实际生效的时区(留空时跟随云实例时区) */
+  effective_expiry_timezone: string
+}
+
+// ---------- 供应商到期与续费(V20) ----------
+
+export type ExpiryKind = 'NODE' | 'EXTERNAL_PROXY' | 'PROXY_SOURCE'
+/** UNSET 没登记;OK 正常;SOON 在提前天数之内;OVERDUE 已到期且没拿到新的到期时间 */
+export type ExpiryState = 'UNSET' | 'OK' | 'SOON' | 'OVERDUE'
+
+export interface ExpiryNoticeSummary {
+  stage: string
+  channel: string
+  status: 'PENDING' | 'SENT' | 'FAILED' | 'CANCELLED'
+  sent_at: string
+  last_error: string
+}
+
+/** 一个对象的到期视图:档案字段 + 算好的状态。一律有值,没登记时 state 为 UNSET */
+export interface ExpiryView {
+  kind: ExpiryKind
+  object_id: number
+  /** 对象自己有一行档案 */
+  has_profile: boolean
+  /** 外部代理:字段来自来源(代理源)的档案 */
+  inherited: boolean
+  inherited_from: number
+  /** 商家账单到期时间,RFC3339 UTC;空串 = 未设置(不是永不过期) */
+  expires_at: string
+  reminder_enabled: boolean
+  /** 「已在商家开启自动续费」—— 管理员登记的商家状态,不是面板代为扣款 */
+  auto_renew: boolean
+  vendor_name: string
+  vendor_url: string
+  note: string
+  /** 按对象覆盖的提前天数;空数组表示继承系统规则 */
+  lead_days: number[]
+  state: ExpiryState
+  /** 距到期还有几天(向上取整,已到期为负);未设置为 null */
+  days_left: number | null
+  last_notice: ExpiryNoticeSummary | null
+}
+
+export interface ExpiryRenewal {
+  id: number
+  kind: ExpiryKind
+  object_id: number
+  request_id: string
+  old_expires_at: string
+  new_expires_at: string
+  method: string
+  method_text: string
+  base: string
+  admin_user_id: number | null
+  admin_name: string
+  note: string
+  created_at: string
+}
+
+export interface ExpiryDetail {
+  view: ExpiryView
+  renewals: ExpiryRenewal[]
+  /** 全局规则,表单上显示「继承:7,3,1」用 */
+  lead_days: number[]
+  send_time: string
+  timezone: string
+}
+
+export interface ExpiryProfilePayload {
+  expires_at: string
+  reminder_enabled: boolean
+  auto_renew: boolean
+  vendor_name: string
+  vendor_url: string
+  note: string
+  lead_days: number[]
+}
+
+export type ExpiryRenewMethod = 'MONTHS' | 'YEARS' | 'ABSOLUTE' | 'CLEAR'
+export type ExpiryRenewBase = 'CURRENT' | 'NOW' | ''
+
+export interface ExpiryRenewPayload {
+  method: ExpiryRenewMethod
+  count?: number
+  base?: ExpiryRenewBase
+  expires_at?: string
+  /** 弹窗打开时生成一次;重复点击、网络重试都带同一个值 */
+  request_id?: string
+  note?: string
+  /** 只算不写 */
+  preview?: boolean
+}
+
+export interface ExpiryRenewPlan {
+  old_expires_at: string
+  new_expires_at: string
+  base: string
+  method_text: string
+  method: string
+}
+
+export interface ExpiryRenewResult {
+  plan: ExpiryRenewPlan
+  /** 这个 request_id 已经提交过,这次没有再延长 */
+  duplicate: boolean
+  renewal: ExpiryRenewal | null
+  view: ExpiryView | null
 }
 
 // ---------- 阿里云 CDT 主机(V17) ----------
@@ -1744,6 +1859,12 @@ export interface ExternalProxy {
   relayable: boolean
   created_at: string
   updated_at: string
+  /**
+   * 供应商到期档案(V20)。与上面的 expires_at 是两件事:那个是面板控制的
+   * 「可用截止时间」(到期即退出订阅),这个是商家账单什么时候到期(只提醒)。
+   * 跟随来源的条目 inherited 为真。
+   */
+  expiry?: ExpiryView | null
 }
 
 /**
@@ -1769,6 +1890,12 @@ export type NotifyKind =
   | 'RECOVER_FAILED'
   | 'DEPLOY_FAILED'
   | 'NODE_QUOTA'
+  | 'CLOUD_THRESHOLD'
+  | 'CLOUD_POWER'
+  | 'CLOUD_QUERY_FAILED'
+  | 'EXPIRY_SOON'
+  | 'EXPIRY_AUTO_RENEW'
+  | 'EXPIRY_OVERDUE'
 
 /**
  * 推送设置。
@@ -1874,6 +2001,8 @@ export interface ProxySource {
   proxy_count: number
   created_at: string
   updated_at: string
+  /** 供应商到期档案(V20);源下跟随来源的条目都按它提醒,按源只发一次 */
+  expiry?: ExpiryView | null
 }
 
 export interface ProxyPreviewItem {
@@ -2594,6 +2723,19 @@ export const api = {
   profilePlaceholders: () => request<ProfilePlaceholderInfo>('/api/subscription-profiles/placeholders'),
   previewSubscriptionProfile: (body: Record<string, unknown>) =>
     request<ProfilePreview>('/api/subscription-profiles/preview', { method: 'POST', body }),
+
+  // 供应商到期与续费(V20)。三类对象共用一组接口,种类走路径。
+  expiry: (kind: ExpiryKind, id: number) =>
+    request<ExpiryDetail>(`/api/expiry/${kind}/${id}`),
+  saveExpiry: (kind: ExpiryKind, id: number, body: ExpiryProfilePayload) =>
+    request<ExpiryView>(`/api/expiry/${kind}/${id}`, { method: 'PUT', body }),
+  /** 清除对象自己的档案:外部代理回到「跟随来源」,其他回到「未设置」 */
+  clearExpiry: (kind: ExpiryKind, id: number) =>
+    request<ExpiryView>(`/api/expiry/${kind}/${id}`, { method: 'DELETE' }),
+  renewExpiry: (kind: ExpiryKind, id: number, body: ExpiryRenewPayload) =>
+    request<ExpiryRenewResult>(`/api/expiry/${kind}/${id}/renew`, { method: 'POST', body }),
+  expiryRenewals: (kind: ExpiryKind, id: number) =>
+    request<{ items: ExpiryRenewal[] }>(`/api/expiry/${kind}/${id}/renewals`),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),

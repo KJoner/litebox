@@ -15,6 +15,7 @@ import {
   type NodeMetrics,
 } from '@/api/client'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
+import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import {
   LbBatchBar,
   LbCopyField,
@@ -226,6 +227,8 @@ onMounted(async () => {
 const formOpen = ref(false)
 const editing = ref<Node | null>(null)
 const busy = ref<Record<number, string>>({})
+/** 「续费 / 修改到期时间」弹窗(V20)。 */
+const expiryTarget = ref<Node | null>(null)
 
 function openCreate() {
   editing.value = null
@@ -1027,6 +1030,7 @@ const keyOpen = ref(false)
                   <a-menu>
                     <a-menu-item v-if="primaryAction(record) !== 'detail'" @click="openDetail(record.id)">详情</a-menu-item>
                     <a-menu-item @click="openEdit(record)">编辑节点</a-menu-item>
+                    <a-menu-item @click="expiryTarget = record">续费 / 修改到期时间</a-menu-item>
                     <a-menu-item @click="run(record.id, '探测', () => api.probeNode(record.id), '探测完成')">
                       探测
                     </a-menu-item>
@@ -1067,6 +1071,16 @@ const keyOpen = ref(false)
         }
       "
       @deploy="(id) => run(id, '部署', () => api.deployNode(id), '部署已执行,详情见部署记录')"
+    />
+
+    <ExpiryModal
+      v-if="expiryTarget"
+      :open="true"
+      kind="NODE"
+      :object-id="expiryTarget.id"
+      :name="expiryTarget.display_name || expiryTarget.name"
+      @update:open="(v) => { if (!v) expiryTarget = null }"
+      @changed="load"
     />
 
     <a-modal v-model:open="keyOpen" title="面板 SSH 公钥" :width="620" :footer="null">

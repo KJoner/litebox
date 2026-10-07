@@ -9,6 +9,8 @@ import {
   type ExternalProtocol,
   type ExternalProxy,
 } from '@/api/client'
+import ExpiryFields from '@/components/expiry/ExpiryFields.vue'
+import { useExpiryForm } from '@/components/expiry/useExpiryForm'
 
 /**
  * 新增 / 编辑一条外部代理。
@@ -33,6 +35,8 @@ const isEdit = computed(() => props.proxy !== null)
 const submitting = ref(false)
 const serverError = ref('')
 const parsing = ref(false)
+/** 供应商到期(V20):独立接口,主对象保存成功之后顺带保存。与 expires_at(可用截止)是两件事。 */
+const expiryForm = useExpiryForm()
 
 /** 新建时的两种填法。粘链接是默认 —— 手填九个字段太苦。 */
 const mode = ref<'uri' | 'manual'>('uri')
@@ -90,6 +94,8 @@ watch(
     mode.value = 'uri'
     parsedNote.value = ''
     const p = props.proxy
+    // 供应商到期:有来源的条目默认跟随来源,没档案时不单独设置。
+    expiryForm.fill(p?.expiry, !!p?.source_id)
     if (!p) {
       protocol.value = 'SHADOWSOCKS'
       Object.assign(form, blank, { access_tier_id: props.tiers[0]?.id ?? 1 })
@@ -169,7 +175,7 @@ async function submit() {
   serverError.value = ''
   try {
     if (!isEdit.value) {
-      await api.createExternalProxy({
+      const created = await api.createExternalProxy({
         // 粘链接时把原文一起发过去:后端会原样保留它,
         // 订阅按 URI 格式下发时优先透传 —— 不认识的参数才不会被丢掉。
         uri: mode.value === 'uri' ? form.uri.trim() : '',
@@ -189,7 +195,9 @@ async function submit() {
         maintenance_message: form.maintenance_message,
         expires_at: form.expires_at || null,
       })
-      message.success('已添加')
+      const expiryErr = await expiryForm.save('EXTERNAL_PROXY', created.id)
+      if (expiryErr) message.warning(`已添加,但到期档案没能保存:${expiryErr}`)
+      else message.success('已添加')
     } else {
       const id = props.proxy!.id
       // 手工条目才允许改地址与凭据。Shadowsocks 按字段改(填了新密码才发),
@@ -216,10 +224,13 @@ async function submit() {
         maintenance_message: form.maintenance_message,
         expires_at: form.expires_at || null,
       })
-      if (effect.changes.length) {
+      const expiryErr = await expiryForm.save('EXTERNAL_PROXY', id)
+      if (expiryErr) {
+        message.warning(`条目已保存,但到期档案没能保存:${expiryErr}`)
+      } else if (effect.changes.length) {
         message.success(`已保存:${effect.changes.join(';')}`)
       } else {
-        message.success('没有任何改动')
+        message.success(expiryForm.dirty.value ? '没有任何改动' : '已保存')
       }
     }
     close()
@@ -401,12 +412,23 @@ async function submit() {
         </a-col>
       </a-row>
 
-      <a-form-item label="到期时间">
+      <a-form-item label="可用截止时间(面板控制)">
         <a-input v-model:value="form.expires_at" placeholder="留空表示不过期,例如 2026-12-31T00:00:00Z" />
         <div class="ep__help">
           到期后自动退出订阅,<strong>数据保留</strong>。填 RFC3339 的 UTC 时间。
+          与下面的「商家到期时间」是两件事:这个决定用户还能不能用,那个只决定什么时候提醒你去续费。
         </div>
       </a-form-item>
+
+      <a-divider orientation="left" class="ep__divider">供应商到期(只提醒,不处置)</a-divider>
+      <div v-if="isEdit && props.proxy?.source_id" class="ep__inherit">
+        <a-switch v-model:checked="expiryForm.inherit.value" size="small" />
+        <span>跟随来源「{{ props.proxy?.source_name }}」的到期信息(关掉可单独设置)</span>
+      </div>
+      <div v-else-if="!isEdit" class="ep__help" style="margin-bottom: 8px">
+        手工添加、独立购买的线路在这里登记;从订阅源导入的条目默认跟随来源,不必逐条填。
+      </div>
+      <ExpiryFields v-model="expiryForm.form.value" :disabled="expiryForm.inherit.value" compact />
 
       <a-form-item label="下发到用户订阅">
         <a-switch v-model:checked="form.subscription_enabled" />

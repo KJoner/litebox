@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/subscription"
@@ -97,6 +98,9 @@ type nodeView struct {
 	// 解不开的私钥同样会让这里是 true(它能解密、只是不是合法私钥),
 	// 那恰恰是需要那个选项去救的情形。
 	UsesCustomKey bool `json:"uses_custom_key"`
+
+	// Expiry 是这台机器的供应商到期档案(V20),没接入时为 null。
+	Expiry *expiry.View `json:"expiry"`
 }
 
 // protocolOption 是入站协议下拉框里的一项。
@@ -150,10 +154,15 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		hosts[n.ID] = n.Host
 	}
 	clouds := s.cloudViews(r, hosts)
+	expiries := s.expiryResolver(r.Context())
 	items := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
 		v := newNodeView(n, status[n.ID])
 		v.Cloud = clouds[n.ID]
+		if expiries != nil {
+			ev := expiries.View(expiry.KindNode, n.ID, nil)
+			v.Expiry = &ev
+		}
 		items = append(items, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -172,6 +181,7 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 	state, needsDeploy := s.nodes.ConfigStatus(r.Context(), n)
 	v := newNodeView(n, node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy})
 	v.Cloud = s.cloudViewFor(r, n.ID, n.Host)
+	v.Expiry = s.expiryViewFor(r.Context(), expiry.KindNode, n.ID, nil)
 	writeJSON(w, http.StatusOK, v)
 }
 
@@ -514,6 +524,7 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 	chainTargets := s.nodes.ChainTargetsToRelease(r.Context(), id)
 	relayHosts, _ := s.relays.HostIDsTargetingNode(r.Context(), id)
 
+	s.dropExpiry(r.Context(), expiry.KindNode, id)
 	if err := s.nodes.Store().Delete(r.Context(), id); err != nil {
 		s.writeNodeError(w, err, "删除节点失败")
 		return

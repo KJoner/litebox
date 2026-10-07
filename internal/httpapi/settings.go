@@ -8,6 +8,7 @@ import (
 
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/deployment"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/settings"
 )
 
@@ -30,6 +31,15 @@ type settingsResponse struct {
 	// CloudPollIntervalSec 是云账号轮询间隔(秒),0 表示用默认。
 	CloudPollIntervalSec        int `json:"cloud_poll_interval_sec"`
 	DefaultCloudPollIntervalSec int `json:"default_cloud_poll_interval_sec"`
+
+	// 到期提醒(V20):提前天数、每天几点、时区。空值表示用默认,默认值一并下发。
+	ExpiryLeadDays        string `json:"expiry_lead_days"`
+	DefaultExpiryLeadDays string `json:"default_expiry_lead_days"`
+	ExpirySendTime        string `json:"expiry_send_time"`
+	DefaultExpirySendTime string `json:"default_expiry_send_time"`
+	ExpiryTimezone        string `json:"expiry_timezone"`
+	// EffectiveExpiryTimezone 是实际生效的那个(留空时跟随云实例时区)。
+	EffectiveExpiryTimezone string `json:"effective_expiry_timezone"`
 }
 
 // currentSettings 组装设置响应。读写两条路径共用它,
@@ -41,7 +51,21 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 		DefaultProbeURL:             deployment.DefaultProbeURL,
 		DefaultCloudTimezone:        settings.DefaultCloudTimezone,
 		DefaultCloudPollIntervalSec: int(settings.DefaultCloudPollInterval.Seconds()),
+		DefaultExpiryLeadDays:       expiry.JoinLeadDays(expiry.DefaultLeadDays),
+		DefaultExpirySendTime:       expiry.DefaultSendTime,
 	}
+	for key, dst := range map[string]*string{
+		settings.KeyExpiryLeadDays: &resp.ExpiryLeadDays,
+		settings.KeyExpirySendTime: &resp.ExpirySendTime,
+		settings.KeyExpiryTimezone: &resp.ExpiryTimezone,
+	} {
+		if v, err := s.settings.Get(ctx, key); err != nil {
+			s.logger.Error("读取到期提醒设置失败", "key", key, "error", err)
+		} else {
+			*dst = v
+		}
+	}
+	resp.EffectiveExpiryTimezone = s.settings.ExpiryLocation(ctx).String()
 	if v, err := s.settings.Get(ctx, settings.KeyProbeURL); err != nil {
 		s.logger.Error("读取拨测目标失败", "error", err)
 	} else {
@@ -80,6 +104,10 @@ type updateSettingsRequest struct {
 	// 云实例(V17):时区空串 = 用默认;轮询间隔 0 = 用默认。
 	CloudTimezone        *string `json:"cloud_timezone"`
 	CloudPollIntervalSec *int    `json:"cloud_poll_interval_sec"`
+	// 到期提醒(V20):三项都是空串 = 用默认。
+	ExpiryLeadDays *string `json:"expiry_lead_days"`
+	ExpirySendTime *string `json:"expiry_send_time"`
+	ExpiryTimezone *string `json:"expiry_timezone"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +117,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SubscriptionBaseURL == nil && req.ProbeURL == nil &&
-		req.CloudTimezone == nil && req.CloudPollIntervalSec == nil {
+		req.CloudTimezone == nil && req.CloudPollIntervalSec == nil &&
+		req.ExpiryLeadDays == nil && req.ExpirySendTime == nil && req.ExpiryTimezone == nil {
 		writeError(w, http.StatusBadRequest, "没有要改的设置项")
 		return
 	}
@@ -167,6 +196,57 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.ExpiryLeadDays != nil {
+		days, err := expiry.ParseLeadDays(*req.ExpiryLeadDays)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.settings.Set(r.Context(), settings.KeyExpiryLeadDays, expiry.JoinLeadDays(days)); err != nil {
+			s.logger.Error("保存到期提醒天数失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if len(days) == 0 {
+			details = append(details, "到期提醒天数改回默认("+expiry.JoinLeadDays(expiry.DefaultLeadDays)+")")
+		} else {
+			details = append(details, "到期提醒天数改为 "+expiry.JoinLeadDays(days))
+		}
+	}
+	if req.ExpirySendTime != nil {
+		t, err := expiry.ValidateSendTime(*req.ExpirySendTime)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.settings.Set(r.Context(), settings.KeyExpirySendTime, t); err != nil {
+			s.logger.Error("保存到期提醒时间失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if t == "" {
+			details = append(details, "到期提醒时间改回默认("+expiry.DefaultSendTime+")")
+		} else {
+			details = append(details, "到期提醒时间改为 "+t)
+		}
+	}
+	if req.ExpiryTimezone != nil {
+		tz, err := settings.ValidateTimezone(*req.ExpiryTimezone)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.settings.Set(r.Context(), settings.KeyExpiryTimezone, tz); err != nil {
+			s.logger.Error("保存到期提醒时区失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if tz == "" {
+			details = append(details, "到期提醒时区改为跟随云实例时区")
+		} else {
+			details = append(details, "到期提醒时区改为 "+tz)
+		}
+	}
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionSettingsUpdate,
 		TargetType: "settings", TargetID: "panel",

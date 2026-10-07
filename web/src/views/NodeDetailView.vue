@@ -26,6 +26,7 @@ import MetricsChart from '@/components/MetricsChart.vue'
 import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
 import NodeEntriesPanel from '@/components/node/NodeEntriesPanel.vue'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
+import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import CloudInstanceCard from '@/components/cloud/CloudInstanceCard.vue'
 import {
   LbEmptyState,
@@ -107,6 +108,8 @@ function syncTabToRoute(key: unknown) {
 
 /** 编辑表单由本页托管 —— 抽屉时期它挂在列表页上,而现在列表页不再知道谁被打开了。 */
 const editOpen = ref(false)
+/** 「续费 / 修改到期时间」弹窗(V20)。 */
+const expiryOpen = ref(false)
 const tierLoadError = ref(false)
 
 const deployments = ref<DeploymentRecord[]>([])
@@ -1035,6 +1038,7 @@ const needsPortForward = computed(() =>
             <a-menu>
               <a-menu-item-group title="这台机器">
                 <a-menu-item @click="editOpen = true">编辑节点</a-menu-item>
+                <a-menu-item @click="expiryOpen = true">续费 / 修改到期时间</a-menu-item>
                 <a-menu-item
                   @click="
                     () => {
@@ -2195,6 +2199,15 @@ const needsPortForward = computed(() =>
     :tiers="tiers"
     @update:open="(v) => (editOpen = v)"
     @saved="reload"
+  />
+  <ExpiryModal
+    v-if="node"
+    :open="expiryOpen"
+    kind="NODE"
+    :object-id="node.id"
+    :name="node.display_name || node.name"
+    @update:open="(v) => (expiryOpen = v)"
+    @changed="reload"
   />
 </template>
 

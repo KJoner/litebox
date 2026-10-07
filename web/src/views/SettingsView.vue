@@ -44,6 +44,7 @@ const sections = [
   { id: 'sub', label: '订阅地址' },
   { id: 'probe', label: '拨测目标' },
   { id: 'notify', label: '监控与推送' },
+  { id: 'expiry', label: '到期与续费提醒' },
   { id: 'cloud', label: '云账号' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
@@ -98,6 +99,47 @@ async function saveProbeURL() {
   } finally {
     savingProbeURL.value = false
   }
+}
+
+// ---------- 到期与续费提醒(V20) ----------
+
+const expiryForm = reactive({ lead_days: '', send_time: '', timezone: '' })
+const savedExpiry = reactive({ lead_days: '', send_time: '', timezone: '' })
+const savingExpiry = ref(false)
+const expiryDirty = computed(
+  () =>
+    expiryForm.lead_days !== savedExpiry.lead_days ||
+    expiryForm.send_time !== savedExpiry.send_time ||
+    expiryForm.timezone !== savedExpiry.timezone,
+)
+
+function fillExpiry(s: PanelSettings) {
+  expiryForm.lead_days = s.expiry_lead_days ?? ''
+  expiryForm.send_time = s.expiry_send_time ?? ''
+  expiryForm.timezone = s.expiry_timezone ?? ''
+  Object.assign(savedExpiry, { ...expiryForm })
+}
+
+async function saveExpiry() {
+  savingExpiry.value = true
+  try {
+    const s = await api.updateSettings({
+      expiry_lead_days: expiryForm.lead_days,
+      expiry_send_time: expiryForm.send_time,
+      expiry_timezone: expiryForm.timezone,
+    })
+    settings.value = { ...(settings.value as PanelSettings), ...s }
+    fillExpiry(s)
+    message.success('已保存,下一轮提醒起生效')
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '保存失败')
+  } finally {
+    savingExpiry.value = false
+  }
+}
+
+function restoreExpiry() {
+  Object.assign(expiryForm, { ...savedExpiry })
 }
 
 // ---------- 访问等级 ----------
@@ -309,6 +351,7 @@ async function loadAll() {
     savedBaseURL.value = s.subscription_base_url
     probeURL.value = s.probe_url ?? ''
     savedProbeURL.value = s.probe_url ?? ''
+    fillExpiry(s)
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '加载设置失败'
   }
@@ -616,6 +659,63 @@ const probeTip = computed(
               <a-button type="primary" size="small" :loading="savingNotify" @click="saveNotify">保存</a-button>
             </div>
           </template>
+        </div>
+      </section>
+
+      <!-- ③½ 到期与续费提醒(V20) -->
+      <section id="set-expiry">
+        <LbSectionTitle title="到期与续费提醒">
+          <template #badge>
+            <span class="lb-effect lb-effect--now">下一轮提醒起生效</span>
+          </template>
+        </LbSectionTitle>
+        <div class="lb-card st__card">
+          <div class="lb-group">
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                提前几天提醒
+                <LbInfoTip
+                  :width="340"
+                  text="自建节点、外部代理、代理源登记了商家到期时间之后,按这里的天数提醒。逗号分隔,每个值 1~365。错过的提醒只补当前最相关的一次:系统恢复时只剩 2 天,不会同时补发「提前 7 天」和「提前 3 天」两条旧消息。单个对象可以在它自己的到期档案里覆盖这一项。走「监控与推送」里的渠道,三种到期事件在那里可以单独关掉。"
+                />
+              </span>
+              <a-input
+                v-model:value="expiryForm.lead_days"
+                :placeholder="`留空用默认:${settings?.default_expiry_lead_days || '7,3,1'}`"
+              />
+            </div>
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                每天几点发
+                <LbInfoTip :width="300" text="两位小时的 HH:MM。提醒按「到期日往前数 N 天那一天的这个时间」发;已到期的在到期之后的第一个这个时间发一次。" />
+              </span>
+              <a-input
+                v-model:value="expiryForm.send_time"
+                :placeholder="`留空用默认:${settings?.default_expiry_send_time || '09:00'}`"
+                style="max-width: 160px"
+              />
+            </div>
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                时区
+                <LbInfoTip :width="300" text="提醒时间与「自然月」按哪个时区解释(IANA 名)。留空跟随上面云账号里的时区。" />
+              </span>
+              <a-input
+                v-model:value="expiryForm.timezone"
+                :placeholder="`留空跟随云实例时区(当前生效:${settings?.effective_expiry_timezone || 'Asia/Shanghai'})`"
+              />
+            </div>
+          </div>
+
+          <div class="st__actions">
+            <span v-if="expiryDirty" class="st__dirty">已改动</span>
+            <a-button v-if="expiryDirty" size="small" class="lb-btn-ghost lb-btn-ghost--text" @click="restoreExpiry">
+              还原
+            </a-button>
+            <a-button type="primary" size="small" :disabled="!expiryDirty" :loading="savingExpiry" @click="saveExpiry">
+              保存到期提醒
+            </a-button>
+          </div>
         </div>
       </section>
 

@@ -17,6 +17,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -54,6 +55,13 @@ const (
 	// 这条不能省:**查不到的那一刻起阈值保护就没了**,而面板上那台机器仍然
 	// 显示着上一次采样的用量。与「连不上要两轮才推」同理,一轮抖动不推。
 	KindCloudQueryFailed Kind = "CLOUD_QUERY_FAILED"
+	// KindExpirySoon 商家到期提醒:节点 / 外部代理 / 代理源将在 N 天后到期(V20)。
+	KindExpirySoon Kind = "EXPIRY_SOON"
+	// KindExpiryAutoRenew 同上,但管理员登记了「已在商家开启自动续费」——
+	// 文案变成"请确认余额及扣费结果"。单独一种,想只收手动续费那几条的人可以关掉它。
+	KindExpiryAutoRenew Kind = "EXPIRY_AUTO_RENEW"
+	// KindExpiryOverdue 已到期而且还没登记新的到期时间。
+	KindExpiryOverdue Kind = "EXPIRY_OVERDUE"
 	// KindTest 设置页上的「发送测试」。它永远不受事件开关与冷却影响 ——
 	// 测试的意义就是"现在立刻发一条",被冷却拦下会让人以为配置错了。
 	KindTest Kind = "TEST"
@@ -65,6 +73,7 @@ func AllKinds() []Kind {
 		KindServiceDown, KindServiceRecovered, KindRecoverFailed,
 		KindDeployFailed, KindNodeQuota,
 		KindCloudThreshold, KindCloudPower, KindCloudQueryFailed,
+		KindExpirySoon, KindExpiryAutoRenew, KindExpiryOverdue,
 	}
 }
 
@@ -87,6 +96,12 @@ func (k Kind) Label() string {
 		return "云实例开关机结果"
 	case KindCloudQueryFailed:
 		return "CDT 流量连续查询失败"
+	case KindExpirySoon:
+		return "商家到期提醒(即将到期)"
+	case KindExpiryAutoRenew:
+		return "商家到期提醒(已登记自动续费)"
+	case KindExpiryOverdue:
+		return "商家到期提醒(已到期未确认)"
 	case KindTest:
 		return "测试推送"
 	}
@@ -296,6 +311,50 @@ func (n *Notifier) SendNow(ctx context.Context, ev Event) []Result {
 	}
 	return out
 }
+
+// WantedChannels 返回此刻会收到这种事件的渠道名(推送总开关、事件开关、渠道配置三关都过)。
+//
+// 到期提醒引擎用它决定要给哪几个渠道各占一个去重位 —— 占了位才发,
+// 发不出去就留着重试,所以"哪些渠道"必须在占位之前就定下来。
+func (n *Notifier) WantedChannels(ctx context.Context, kind Kind) ([]string, error) {
+	cfg, err := n.loader.LoadNotifyConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Enabled || !cfg.WantsKind(kind) {
+		return nil, nil
+	}
+	var names []string
+	for _, ch := range cfg.Channels() {
+		names = append(names, ch.Name())
+	}
+	return names, nil
+}
+
+// SendVia 同步地只在一个渠道上发一条,返回那个渠道的结果。
+//
+// 与 Notify 的差别是**要知道成没成功**:到期提醒按「对象 + 周期 + 阶段 + 渠道」
+// 持久化去重,Telegram 成功而 Bark 失败时只重试 Bark —— 走队列的话两边的结果
+// 都看不到,只能要么都标成功(漏发)、要么都重发(重复)。
+// 渠道此刻没启用或没配置时返回 ErrChannelUnavailable,调用方据此作废而不是重试。
+func (n *Notifier) SendVia(ctx context.Context, channel string, ev Event) error {
+	cfg, err := n.loader.LoadNotifyConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled {
+		return fmt.Errorf("%w: 推送总开关已关闭", ErrChannelUnavailable)
+	}
+	for _, ch := range cfg.Channels() {
+		if ch.Name() == channel {
+			return ch.Send(ctx, ev)
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrChannelUnavailable, channel)
+}
+
+// ErrChannelUnavailable 表示那个渠道现在发不了(关了或没配)。
+var ErrChannelUnavailable = errors.New("推送渠道不可用")
 
 // Result 是单个渠道的发送结果。
 type Result struct {

@@ -20,6 +20,7 @@ import (
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
 	"github.com/litebox/litebox/internal/settings"
@@ -92,6 +93,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		Subs: subscription.NewService(db, userStore, cipher, 2080,
 			settings.NewStore(db, cipher), subscription.NewProfileStore(db), nil),
 		Profiles:    subscription.NewProfileStore(db),
+		Expiry:      expiry.NewStore(db),
+		Settings:    settings.NewStore(db, cipher),
 		Tiers:       access.NewStore(db),
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),

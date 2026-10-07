@@ -21,6 +21,8 @@ import { formatUTCTime } from '@/utils/format'
 import AddressListEditor from './AddressListEditor.vue'
 import { bootstrapNotes } from './bootstrapNotes'
 import { CLOUD_REGIONS } from '@/components/cloud/cloudMeta'
+import ExpiryFields from '@/components/expiry/ExpiryFields.vue'
+import { useExpiryForm } from '@/components/expiry/useExpiryForm'
 
 type AddrRow = { id?: number; address: string }
 
@@ -122,6 +124,8 @@ const blank = {
 }
 const form = reactive({ ...blank })
 let snapshot = JSON.stringify(blank)
+/** 供应商到期(V20):独立接口,主对象保存成功之后顺带保存;它不进节点配置,不需要部署。 */
+const expiryForm = useExpiryForm()
 
 watch(
   () => props.open,
@@ -129,6 +133,7 @@ watch(
     if (!open) return
     serverError.value = ''
     const n = props.node
+    expiryForm.fill(n?.expiry)
     if (!n) {
       accessMode.value = 'password'
       Object.assign(form, blank, { extra_v4: [], ipv6_list: [] })
@@ -314,6 +319,7 @@ const dirtyFields = computed(() => {
       out.add(fieldLabels[k])
     }
   }
+  if (expiryForm.dirty.value) out.add('供应商到期')
   return [...out]
 })
 
@@ -456,6 +462,10 @@ async function doSubmit() {
         }
       }
       await saveCloud(result.node.id)
+      const expiryErr = await expiryForm.save('NODE', result.node.id)
+      if (expiryErr) {
+        message.warning(`节点已创建,但到期档案没能保存(${expiryErr})。在节点菜单的「续费 / 修改到期时间」里补即可。`)
+      }
       emit('saved', result.node.id)
       return
     }
@@ -488,6 +498,8 @@ async function doSubmit() {
       maintenance_message: form.maintenance_message,
     })
     await saveCloud(id)
+    const expiryErr = await expiryForm.save('NODE', id)
+    if (expiryErr) message.warning(`节点已保存,但到期档案没能保存:${expiryErr}`)
     form.ssh_key = ''
     form.clear_ssh_key = false
     close()
@@ -1029,6 +1041,9 @@ async function doSubmit() {
         :message="`需要自行把 ${form.host || '节点'}:${form.proxy_port} 转发到本机 ${form.listen_port}`"
         description="面板不会创建这条转发规则。NAT 主机由服务商的端口映射完成,自建则用 nginx stream 或 iptables DNAT;sing-box 只负责监听主机端口。"
       />
+
+      <a-divider orientation="left" class="nf__divider">供应商到期(只提醒,不处置)</a-divider>
+      <ExpiryFields v-model="expiryForm.form.value" compact />
 
       <div v-if="isEdit" class="nf__help nf__help--row">
         协议、代理端口、TCP Fast Open 与 REALITY 握手目标都在节点详情的

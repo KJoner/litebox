@@ -9,6 +9,8 @@ import {
   type ProxySource,
 } from '@/api/client'
 import { formatBytes, formatUTCTime } from '@/utils/format'
+import ExpiryFields from '@/components/expiry/ExpiryFields.vue'
+import { useExpiryForm } from '@/components/expiry/useExpiryForm'
 
 /**
  * 新增 / 编辑订阅源。
@@ -33,6 +35,8 @@ const isEdit = computed(() => props.source !== null)
 const step = ref(0)
 const busy = ref(false)
 const serverError = ref('')
+/** 供应商到期(V20):源下跟随来源的条目都按它提醒,按源只发一次。 */
+const expiryForm = useExpiryForm()
 
 const blank = {
   name: '',
@@ -62,6 +66,7 @@ watch(
     preview.value = null
     selected.value = new Set()
     const s = props.source
+    expiryForm.fill(s?.expiry)
     if (!s) {
       Object.assign(form, blank, { default_access_tier_id: props.tiers[0]?.id ?? 1 })
       return
@@ -157,6 +162,10 @@ async function doImport() {
       ...payload(),
       selected_keys: [...selected.value],
     })
+    if (r.source?.id) {
+      const expiryErr = await expiryForm.save('PROXY_SOURCE', r.source.id)
+      if (expiryErr) message.warning(`到期档案没能保存:${expiryErr},可在源卡片的「续费 / 修改到期时间」里补。`)
+    }
     close()
     emit('saved')
     if (r.error) {
@@ -183,9 +192,11 @@ async function doSave() {
   serverError.value = ''
   try {
     await api.updateProxySource(props.source!.id, payload())
+    const expiryErr = await expiryForm.save('PROXY_SOURCE', props.source!.id)
     close()
     emit('saved')
-    message.success('已保存')
+    if (expiryErr) message.warning(`代理源已保存,但到期档案没能保存:${expiryErr}`)
+    else message.success('已保存')
   } catch (err) {
     serverError.value = err instanceof ApiError ? err.message : '保存失败'
   } finally {
@@ -252,6 +263,13 @@ async function doSave() {
       <div class="ps__help ps__help--row">
         源到期后,<strong>它下面全部条目一起退出订阅</strong> —— 机场账号到期后那些节点
         就是连不上的,留在订阅里只会让用户以为是自己的问题。数据全部保留。
+        这是面板控制的「可用截止时间」;下面的「商家到期时间」只决定什么时候提醒你去续费。
+      </div>
+
+      <a-divider orientation="left" class="ps__divider">供应商到期(只提醒,不处置)</a-divider>
+      <ExpiryFields v-model="expiryForm.form.value" compact />
+      <div class="ps__help ps__help--row">
+        源下跟随来源的条目都按这里提醒,<strong>按源只发一次</strong>,不会因为源下有 50 条线路就推 50 次。
       </div>
 
       <a-form-item label="新条目默认下发到订阅">
