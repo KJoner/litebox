@@ -5,12 +5,20 @@ import {
   api,
   ApiError,
   type AccessTier,
+  type ExpiryKind,
   type ExternalProxy,
   type ProxySource,
   EXTERNAL_PROTOCOL_LABEL,
 } from '@/api/client'
 import ExternalProxyModal from '@/components/external/ExternalProxyModal.vue'
 import ProxySourceModal from '@/components/external/ProxySourceModal.vue'
+import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
+import {
+  expiryFilterOptions,
+  expiryStatusMeta,
+  matchExpiryFilter,
+  type ExpiryFilter,
+} from '@/components/expiry/expiryMeta'
 import {
   LbEmptyState,
   LbNameConfirm,
@@ -60,6 +68,25 @@ const keyword = ref('')
 
 const proxyModal = reactive({ open: false, target: null as ExternalProxy | null })
 const sourceModal = reactive({ open: false, target: null as ProxySource | null })
+/** 「续费 / 修改到期时间」弹窗(V20):条目与源共用一个。 */
+const expiryModal = reactive({
+  open: false,
+  kind: 'EXTERNAL_PROXY' as ExpiryKind,
+  id: 0,
+  name: '',
+  sourceName: '',
+})
+function openExpiryProxy(p: ExternalProxy) {
+  Object.assign(expiryModal, {
+    open: true, kind: 'EXTERNAL_PROXY', id: p.id, name: p.final_display_name,
+    sourceName: p.source_id ? (p.source_name || '') : '',
+  })
+}
+function openExpirySource(s: ProxySource) {
+  Object.assign(expiryModal, { open: true, kind: 'PROXY_SOURCE', id: s.id, name: s.name, sourceName: '' })
+}
+/** 到期状态筛选(V20)。 */
+const expiryFilter = ref<ExpiryFilter>('ALL')
 const deleteTarget = ref<ExternalProxy | null>(null)
 const deleteSourceTarget = ref<ProxySource | null>(null)
 /** 删源时条目的去向。**没有默认值** —— 见 confirmDeleteSource。 */
@@ -94,12 +121,13 @@ onMounted(load)
 
 const visible = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
-  if (!kw) return proxies.value
   return proxies.value.filter(
     (p) =>
-      p.name.toLowerCase().includes(kw) ||
-      p.final_display_name.toLowerCase().includes(kw) ||
-      p.server.toLowerCase().includes(kw),
+      matchExpiryFilter(p.expiry, expiryFilter.value) &&
+      (!kw ||
+        p.name.toLowerCase().includes(kw) ||
+        p.final_display_name.toLowerCase().includes(kw) ||
+        p.server.toLowerCase().includes(kw)),
   )
 })
 
@@ -314,12 +342,15 @@ const quicNote =
   '走 QUIC:节点上的 sing-box 是精简构建(不含 with_quic)拨不动它,' +
   'nginx 透传也只搬 TCP 字节。照常下发给用户直连,但不能当入口的出口或转发落地。'
 
+// 两种「到期」分两列:可用截止是面板控制的(到期即退出订阅),商家到期只提醒。
+// 混在一格里的话,管理员分不清"用户已经连不上了"和"该去续费了"。
 const columns = [
   { title: '条目', key: 'item' },
-  { title: '地址', key: 'addr', width: 240 },
-  { title: '访问等级', key: 'tier', width: 110 },
-  { title: '到期', key: 'expiry', width: 190 },
-  { title: '订阅', key: 'sub', width: 90 },
+  { title: '地址', key: 'addr', width: 220 },
+  { title: '访问等级', key: 'tier', width: 100 },
+  { title: '可用截止', key: 'expiry', width: 170 },
+  { title: '商家到期', key: 'vendor', width: 150 },
+  { title: '订阅', key: 'sub', width: 80 },
   { title: '操作', key: 'ops', width: 150 },
 ]
 </script>
@@ -390,7 +421,9 @@ const columns = [
           </template>
           <template v-else>从未同步</template>
           <br />
-          {{ expiryText(src.expires_at || src.upstream_expires_at) }}
+          可用截止 {{ expiryText(src.expires_at || src.upstream_expires_at) }}
+          <br />
+          商家到期 <LbStatusTag :meta="expiryStatusMeta(src.expiry)" />
           <template v-if="src.upstream_total_bytes">
             <br />
             上游 {{ formatBytes(src.upstream_used_bytes) }} /
@@ -402,6 +435,7 @@ const columns = [
             {{ busy[src.id] === '同步' ? '同步中…' : '同步' }}
           </a>
           <a @click="sourceModal.target = src; sourceModal.open = true">编辑</a>
+          <a @click="openExpirySource(src)">续费</a>
           <a class="xp__danger" @click="confirmDeleteSource(src)">删除</a>
         </div>
       </div>
@@ -418,6 +452,9 @@ const columns = [
       <a-input v-model:value="keyword" placeholder="名称 / 地址" allow-clear>
         <template #prefix><LbIcon name="search" :size="14" /></template>
       </a-input>
+      <a-select v-model:value="expiryFilter" class="lb-filter__select" style="min-width: 150px">
+        <a-select-option v-for="o in expiryFilterOptions" :key="o.value" :value="o.value">{{ o.label }}</a-select-option>
+      </a-select>
       <label class="lb-filter__toggle" :class="{ 'lb-filter__toggle--on': showExcluded }">
         <a-switch v-model:checked="showExcluded" size="small" @change="load" />
         显示已排除({{ excludedCount }})
@@ -440,7 +477,11 @@ const columns = [
         </div>
         <div class="xp__note">
           {{ p.source_id ? `来自 ${p.source_name}` : '手工添加' }} ·
-          {{ expiryText(p.expires_at) }}
+          可用截止 {{ expiryText(p.expires_at) }}
+        </div>
+        <div class="xp__note">
+          商家到期 <LbStatusTag :meta="expiryStatusMeta(p.expiry)" />
+          <a @click="openExpiryProxy(p)">续费</a>
         </div>
         <div v-if="sourceExpiredNote(p)" class="xp__warn">{{ sourceExpiredNote(p) }}</div>
         <template #foot>
@@ -536,6 +577,14 @@ const columns = [
           </span>
         </template>
 
+        <template v-else-if="column.key === 'vendor'">
+          <a class="xp__vendor" @click="openExpiryProxy(record)">
+            <LbStatusTag :meta="expiryStatusMeta(record.expiry)" />
+            <span v-if="record.expiry?.inherited" class="xp__note">跟随来源</span>
+            <span v-if="record.expiry?.auto_renew && record.expiry?.expires_at" class="xp__note">自动续费</span>
+          </a>
+        </template>
+
         <template v-else-if="column.key === 'sub'">
           <a-switch
             :checked="record.subscription_enabled"
@@ -553,6 +602,7 @@ const columns = [
             <a-button size="small" style="margin-left: 6px">···</a-button>
             <template #overlay>
               <a-menu>
+                <a-menu-item @click="openExpiryProxy(record)">续费 / 修改到期时间</a-menu-item>
                 <a-menu-item @click="checkReachable(record)">测试连通性</a-menu-item>
                 <a-menu-item @click="toggleEnabled(record)">
                   {{ record.status === 'ACTIVE' ? '停用' : '启用' }}
@@ -588,6 +638,14 @@ const columns = [
       :source="sourceModal.target"
       :tiers="tiers"
       @saved="load"
+    />
+    <ExpiryModal
+      v-model:open="expiryModal.open"
+      :kind="expiryModal.kind"
+      :object-id="expiryModal.id"
+      :name="expiryModal.name"
+      :source-name="expiryModal.sourceName"
+      @changed="load"
     />
 
     <!-- 删除条目不可逆 → 要求输入内部名称 -->

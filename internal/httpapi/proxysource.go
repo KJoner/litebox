@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/externalproxy"
 )
 
@@ -18,7 +20,7 @@ func (s *Server) handleListProxySources(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items,
+		"items": s.sourceViews(r.Context(), items),
 		// 阈值下发给前端,免得两边各写一个数字。
 		"sync_failure_alert_threshold": externalproxy.SyncFailureAlertThreshold,
 		"missing_rounds_before_unlist": externalproxy.MissingRoundsBeforeUnlist,
@@ -35,7 +37,27 @@ func (s *Server) handleGetProxySource(w http.ResponseWriter, r *http.Request) {
 		s.writeProxyError(w, err, "查询代理源失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, src)
+	writeJSON(w, http.StatusOK, s.sourceViews(r.Context(), []*externalproxy.Source{src})[0])
+}
+
+// sourceView 在 Source 之外带上供应商到期档案(V20)。
+type sourceView struct {
+	*externalproxy.Source
+	Expiry *expiry.View `json:"expiry"`
+}
+
+func (s *Server) sourceViews(ctx context.Context, items []*externalproxy.Source) []sourceView {
+	out := make([]sourceView, 0, len(items))
+	res := s.expiryResolver(ctx)
+	for _, src := range items {
+		v := sourceView{Source: src}
+		if res != nil {
+			ev := res.View(expiry.KindProxySource, src.ID, nil)
+			v.Expiry = &ev
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 type sourceRequest struct {
@@ -185,6 +207,7 @@ func (s *Server) handleDeleteProxySource(w http.ResponseWriter, r *http.Request)
 		s.writeProxyError(w, err, "删除代理源失败")
 		return
 	}
+	s.dropExpiry(r.Context(), expiry.KindProxySource, id)
 
 	action := "一并删除"
 	if mode == "detach" {

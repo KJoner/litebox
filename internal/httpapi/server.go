@@ -17,6 +17,7 @@ import (
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/cloud"
 	"github.com/litebox/litebox/internal/config"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/hosttraffic"
 	"github.com/litebox/litebox/internal/node"
@@ -52,6 +53,7 @@ type Server struct {
 	cloud        *cloud.Engine
 	cloudStore   *cloud.Store
 	external     *externalproxy.Service
+	expiry       *expiry.Store
 	profiles     *subscription.ProfileStore
 	portal       *portal.Service
 	portalAccts  *portal.Store
@@ -94,6 +96,8 @@ type Options struct {
 	CloudStore *cloud.Store
 	// External 为 nil 时外部代理相关路由整体不注册。
 	External *externalproxy.Service
+	// Expiry 是供应商到期档案(V20);nil 时到期相关路由不注册,各视图里的 expiry 为 null。
+	Expiry *expiry.Store
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
 	// 而不是「页面在、点了报错」。
 	Profiles *subscription.ProfileStore
@@ -121,6 +125,7 @@ func NewServer(opts Options) *Server {
 		nodes:        opts.Nodes,
 		users:        opts.Users,
 		external:     opts.External,
+		expiry:       opts.Expiry,
 		profiles:     opts.Profiles,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
@@ -397,6 +402,14 @@ func (s *Server) Handler() http.Handler {
 	if s.monitor != nil {
 		authed.HandleFunc("POST /api/nodes/{id}/collect-metrics", longOperation(s.handleCollectNodeMetrics))
 		authed.HandleFunc("GET /api/metrics/status", s.handleMonitorStatus)
+	}
+	// 供应商到期与续费(V20):三类对象共用一组接口,种类走路径。
+	if s.expiry != nil && s.settings != nil {
+		authed.HandleFunc("GET /api/expiry/{kind}/{id}", s.handleGetExpiry)
+		authed.HandleFunc("PUT /api/expiry/{kind}/{id}", s.handleSaveExpiry)
+		authed.HandleFunc("DELETE /api/expiry/{kind}/{id}", s.handleDeleteExpiry)
+		authed.HandleFunc("POST /api/expiry/{kind}/{id}/renew", s.handleRenewExpiry)
+		authed.HandleFunc("GET /api/expiry/{kind}/{id}/renewals", s.handleListExpiryRenewals)
 	}
 	if s.settings != nil {
 		authed.HandleFunc("GET /api/settings", s.handleGetSettings)

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/externalproxy"
 )
 
@@ -78,8 +79,15 @@ func (s *Server) handleListExternalProxies(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		s.logger.Warn("统计已排除条目失败", "error", err)
 	}
+	views := externalProxyViews(items)
+	if res := s.expiryResolver(r.Context()); res != nil {
+		for i := range views {
+			ev := res.View(expiry.KindExternalProxy, views[i].ID, views[i].SourceID)
+			views[i].Expiry = &ev
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":          externalProxyViews(items),
+		"items":          views,
 		"excluded_count": excluded,
 	})
 }
@@ -104,6 +112,9 @@ type externalProxyView struct {
 	// 不对,协议本身"能拨",而部署在 check 那一步 FATAL。
 	DialableReason string `json:"dialable_reason"`
 	Relayable      bool   `json:"relayable"`
+	// Expiry 是这条线路的供应商到期档案(V20):自己有就用自己的,没有则跟随来源;
+	// 没接入时为 null。
+	Expiry *expiry.View `json:"expiry"`
 }
 
 func externalProxyViews(items []*externalproxy.Proxy) []externalProxyView {
@@ -143,7 +154,9 @@ func (s *Server) handleGetExternalProxy(w http.ResponseWriter, r *http.Request) 
 		s.writeProxyError(w, err, "查询外部代理失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, newExternalProxyView(p))
+	v := newExternalProxyView(p)
+	v.Expiry = s.expiryViewFor(r.Context(), expiry.KindExternalProxy, p.ID, p.SourceID)
+	writeJSON(w, http.StatusOK, v)
 }
 
 type createProxyRequest struct {
@@ -564,6 +577,7 @@ func (s *Server) handleDeleteExternalProxy(w http.ResponseWriter, r *http.Reques
 		s.writeProxyError(w, err, "删除外部代理失败")
 		return
 	}
+	s.dropExpiry(r.Context(), expiry.KindExternalProxy, id)
 	admin := adminFromContext(r.Context())
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionProxyDelete,
