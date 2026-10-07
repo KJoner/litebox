@@ -2897,6 +2897,58 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
   中位间隔的 2.5 倍就断线(`gapMs` 可覆盖),悬停按时间取最近的样本、落在断档里时提示
   「这一段没有采样」;CPU 与内存并排、网速独占一行。缺失的样本仍传 `null`,不补 0、不插值。
 
+## 统一入口管理与订阅全局排序约束(V20)
+
+入口管理页从「sing-box + Mieru」扩成**能进订阅的每一条线路**(加上 nginx / realm 转发与
+外部代理),订阅排序从「先机器再入口、外部代理整块拼接」扩成一条**全局排序值**的数轴
+(`subscription.OrderScheme`:LEGACY / GLOBAL,设置项 `subscription_order_scheme`)。
+V14.1 那一节「外部代理不参与这次排序」只对旧方案成立。
+
+* **全局排序值 = 节点排序号 × 1000 + 入口序号**(节点 1~1000、入口 0~999),外部代理自带一个
+  非负的全局排序值直接比较;比较顺序 **全局值 → 来源(自建在前、外部在后)→ 机器 → 入口序号 →
+  种类 → id**(`EntryOrder.LessGlobal`)。入口取 0~999 而不是 1~1000:入口 1000 会与下一台机器的
+  入口 0 同值;节点从 1 起:节点 0 的入口会与「排在所有机器之前」的外部代理挤在 0~999。
+  `TestGlobalOrderFollowsRequirementTable` 钉着需求里那张表;
+
+* **升级后默认仍是旧方案,订阅输出逐字节不变。** 切到 GLOBAL 只能走迁移接口
+  (`GET/POST /api/subscription/order-migration`,`Service.PlanOrderMigration` / `ApplyOrderMigration`),
+  设置接口上直接写 GLOBAL 会被拒 —— 存量的 0 号节点与外部代理会挤在同一段上;切回 LEGACY 允许,
+  密排过的值在旧方案下顺序相同;
+
+* **迁移是「把现有相对顺序原样密排进新范围」,预览与执行用同一份计划。** 节点按 (sort_order, id)
+  密排成 1..N,每台机器的入口按旧比较器密排成 0..M-1,外部代理整块放到旧方案里它们所在的那一侧
+  (AFTER 从最后一台机器的下一个号段起,BEFORE 从 0 起)。原值是 0、负数、超范围、重复都不改变结果,
+  只在每一行的 `note` 里写出来;**放不下(节点 > 1000、一台机器入口 > 1000、排在前面的外部代理 > 1000)
+  是错误,整个迁移拒绝、一行都不改**,不截断、不取模 —— 那两种做法都会悄悄改变相对顺序。
+  写库在一个事务里,方案切换在提交之后:切换失败时库里已是密排过的值,旧方案照样按它排;
+
+* **排序只影响订阅与门户里的先后**:`PUT /api/sort-order/{kind}/{id}` 一个接口按种类分派到各 Store 的
+  `SetSortOrder`,不进节点配置、不置 `NeedsDeploy`、不标脏、不重启任何服务,也不改权限、凭据、
+  订阅名称与协议参数。取值范围按当前方案校验(GLOBAL 下节点 1~1000、入口 0~999、外部代理非负;
+  旧方案只要求非负)。外部代理 IMPORTED 条目改排序要**锁住** `sort_order`,与 `Update` 里的 track
+  同一条规矩;
+
+* **IPv4 / IPv6 条目共用同一个 `EntryOrder`,外部代理与自建入口的键永远不相等**(Source 不同),
+  所以一条同值的外部代理只会落在这一对的后面、绝不插在两条之间(`TestGlobalOrderKeepsIPv6NextToIPv4`);
+  一台机器内部的顺序两种方案逐字节一致(`TestGlobalOrderMatchesLegacyWithinNode`);过滤掉一部分条目
+  后其余相对顺序不变 —— 排序只看键,不看邻居;
+
+* **realm 线路的种类要在 Scan 之后定**(`relayquery.go`)。原来写在 Scan 之前,`engine` 还没扫出来,
+  realm 一律被当成 nginx 排 —— 同机同序号的 nginx 与 realm 按 id 而不是按种类排,与前端判据分叉;
+
+* **前端 `entryOrder.ts` 与后端同一套判据**:`sortByEntryOrder(items, key, scheme, externalPosition)`,
+  旧方案下外部代理按设置放到两头,GLOBAL 下按 `globalValue` 混排。入口管理页的「全局排序」列在
+  GLOBAL 下显示那个数、旧方案下写「机器几 · 入口几」;**调整排序的弹窗(`EntrySortModal`)对自建入口
+  分「节点排序号」与「节点内入口序号」两栏并写明前者会把整台机器的入口一起挪**,外部代理只有一个
+  全局值;
+
+* **列表统一不等于部署方式统一。** 操作按类型分派:sing-box 整台下发、Mieru 逐入口、nginx 只 reload、
+  realm 要 restart(`lbDangerConfirm`);外部代理只有编辑、检查、订阅开关、续费与排序,不显示
+  「安装 sing-box」「重启节点」这类对它无效的按钮;转发的编辑 / 删除在节点详情里,这一页只跳过去。
+  外部代理的源、同步、导入、删除仍在「外部代理」页 —— 两处操作同一份记录,数据不复制
+  (入口页从 `GET /api/nodes`、`GET /api/relays`、`GET /api/external-proxies` 各取各的);
+  转发或外部代理那一类读不到时其余行照常显示,但要在页面上说出来 —— 一整类静默消失看起来像"没有配过"。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -3532,5 +3584,25 @@ Snell v5 共享 + HTTP 混淆四种入口的拨测全绿,日志零 deprecation �
 **顺带发现、没有修**:SS2022 的 `2022-blake3-chacha20-poly1305` 在多用户入站上
 sing-box 根本不支持(sing-shadowsocks 的 `NewMultiService` 只收两种 AES,`check` 报
 `invalid argument`),1.13.15 用的是同一版库 —— 面板仍把它列为入站可选方法。
+
+V20 优化(需求见 `docs/开发计划/v19/v19优化需求.md`,约束见上面五节「(V20)」):
+
+* Phase 55 供应商到期与续费提醒 —— 已完成(迁移 0037、`internal/expiry`、三种到期事件、
+  设置页提醒规则、节点 / 外部代理 / 代理源的到期档案与续费弹窗)
+* Phase 56 操作前检查与管理地址变更 —— 已完成(`node.Preflight` 五档结论、按需修复、
+  `Result.Unchanged`、`sshx.VerifyTarget` 与两种 409、迁移 0038、`Service.Recheck` 全面重检)
+* Phase 57 用户流量区间统计 —— 已完成(`traffic.Querier.UserRange`、按小时 / 按日两种粒度、
+  用户详情的预设区间与按节点排序)
+* Phase 58 节点列表与详情页重排 —— 已完成(七列、编号就地改、巡检摘要 `healthSummary`、
+  详情五个 Tab、`MetricsChart` 按时间等距与像素宽度)
+* Phase 59 统一入口管理与全局排序 —— 已完成(`OrderScheme` 与 `LessGlobal`、迁移计划与执行、
+  `PUT /api/sort-order/{kind}/{id}`、入口页纳入转发与外部代理、`EntrySortModal` /
+  `OrderMigrationModal`、设置页「订阅排序」)
+
+真机验证在 sh-kurun(Alpine 3.23 / OpenRC / NAT / 128MB)与 djj-ph(Alpine 3.24 / aarch64 /
+OpenRC / NAT)上跑完:部署从未装 sing-box 的机器一路自动探测、安装、下发,第二次部署
+「配置已一致」不重启;临时关掉 sshd 转发后前置检查自动写入 drop-in 并 reload;改管理地址到
+连不上的地址拿到 409 并可带 `save_unverified` 保存成待验证,改到另一台机器拿到主机密钥变更的
+409;scratch 面板上迁移到全局排序后订阅输出按 1000 / 1500 / 2000 把外部代理插在两台机器之间。
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

@@ -14,8 +14,9 @@ import {
   type ProxyUser,
 } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import { LbCopyField, LbEmptyState, LbInfoTip, LbSectionTitle } from '@/components/lb'
+import { LbCopyField, LbEmptyState, LbInfoTip, LbSectionTitle, lbDangerConfirm } from '@/components/lb'
 import CloudAccountsPanel from '@/components/cloud/CloudAccountsPanel.vue'
+import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
 
 /**
  * 系统设置。全站唯一的「分组表单」页,也是唯一需要「还原」按钮的地方 ——
@@ -364,6 +365,41 @@ async function loadAll() {
 }
 
 onMounted(loadAll)
+
+// ---------- 订阅排序方案(V20) ----------
+
+const orderOpen = ref(false)
+const switchingOrder = ref(false)
+const orderScheme = computed(() => settings.value?.subscription_order_scheme ?? 'LEGACY')
+
+/** 切回旧方案不走迁移:密排过的值在旧方案下顺序相同,只是外部代理回到整块。 */
+function switchBackLegacy() {
+  lbDangerConfirm({
+    title: '切回旧排序方案?',
+    okText: '切回',
+    okType: 'danger',
+    impacts: [
+      '外部代理不再按自己的全局排序值插在机器之间,整块回到自建节点之后(或之前,看下面那项设置)',
+      '节点与入口的排序号不变:旧方案只看相对大小,顺序与现在一致',
+      '不进节点配置、不部署、不重启服务;用户下次拉订阅时看到的是旧方案的顺序',
+    ],
+    onOk: () => {
+      void doSwitchBackLegacy()
+    },
+  })
+}
+
+async function doSwitchBackLegacy() {
+  switchingOrder.value = true
+  try {
+    settings.value = await api.updateSettings({ subscription_order_scheme: 'LEGACY' })
+    message.success('已切回旧排序方案')
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '切换失败')
+  } finally {
+    switchingOrder.value = false
+  }
+}
 
 const baseURLTip = computed(
   () =>
@@ -719,6 +755,48 @@ const probeTip = computed(
         </div>
       </section>
 
+      <!-- 订阅排序方案(V20) -->
+      <section id="set-order">
+        <LbSectionTitle title="订阅排序">
+          <template #badge>
+            <span class="lb-effect lb-effect--now">用户下次拉订阅起生效</span>
+          </template>
+        </LbSectionTitle>
+        <div class="lb-card st__card">
+          <div class="lb-group">
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                当前方案
+                <LbInfoTip
+                  :width="360"
+                  text="旧方案:先按机器的排序号、再按入口序号,外部代理整块排在自建节点之前或之后,插不进机器之间。全局排序:自建入口的全局排序值 = 节点排序号 × 1000 + 入口序号(节点 1~1000、入口 0~999),外部代理自带一个非负的全局排序值,直接与它比较;同值时自建在前。迁移会先把现有的相对顺序原样密排进新的取值范围,预览里逐行可见。"
+                />
+              </span>
+              <span class="st__order-state">
+                <b>{{ orderScheme === 'GLOBAL' ? '全局排序(GLOBAL)' : '旧方案(LEGACY)' }}</b>
+                <span v-if="orderScheme !== 'GLOBAL' && settings" class="st__order-dim">
+                  · 外部代理整块排在自建节点{{ settings.subscription_external_position === 'BEFORE' ? '之前' : '之后' }}
+                </span>
+              </span>
+            </div>
+          </div>
+          <div class="st__actions">
+            <a-button
+              v-if="orderScheme === 'GLOBAL'"
+              size="small"
+              class="lb-btn-ghost lb-btn-ghost--text"
+              :loading="switchingOrder"
+              @click="switchBackLegacy"
+            >
+              切回旧方案
+            </a-button>
+            <a-button type="primary" size="small" @click="orderOpen = true">
+              {{ orderScheme === 'GLOBAL' ? '重新密排(预览)' : '预览并迁移到全局排序' }}
+            </a-button>
+          </div>
+        </div>
+      </section>
+
       <!-- ④ 云账号(阿里云 CDT,V17) -->
       <section id="set-cloud">
         <LbSectionTitle title="云账号(阿里云 CDT)" effect="now" />
@@ -867,8 +945,9 @@ const probeTip = computed(
         </div>
       </div>
       <div class="st__sheet-note">改 level 会改变可用节点集合,受影响节点自动重新部署</div>
-    </div>
+  </div>
   </a-modal>
+  <OrderMigrationModal v-model:open="orderOpen" @applied="loadAll" />
 </template>
 
 <style scoped>
@@ -932,6 +1011,17 @@ const probeTip = computed(
   display: flex;
   flex-direction: column;
   gap: 28px;
+}
+
+.st__order-state {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13.5px;
+}
+.st__order-dim {
+  font-size: 12.5px;
+  color: var(--text3);
 }
 
 .st__card {

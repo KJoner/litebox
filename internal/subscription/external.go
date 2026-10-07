@@ -37,6 +37,9 @@ type ExternalProxy struct {
 	Params      externalproxy.Params
 	// RawURI 是上游给的原始分享链接。非空时**优先原样透传**。
 	RawURI string
+	// Order 是它在 GLOBAL 排序方案里的位置(Source 为 SourceExternal,
+	// Global 取 sort_order)。旧方案不读它。
+	Order EntryOrder
 }
 
 // EntryForExternal 把一条外部代理转成订阅条目。

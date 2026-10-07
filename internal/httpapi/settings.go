@@ -10,6 +10,7 @@ import (
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/settings"
+	"github.com/litebox/litebox/internal/subscription"
 )
 
 const actionSettingsUpdate = "settings.update"
@@ -40,6 +41,10 @@ type settingsResponse struct {
 	ExpiryTimezone        string `json:"expiry_timezone"`
 	// EffectiveExpiryTimezone 是实际生效的那个(留空时跟随云实例时区)。
 	EffectiveExpiryTimezone string `json:"effective_expiry_timezone"`
+
+	// 订阅排序(V20):方案 LEGACY / GLOBAL,以及旧方案下外部代理整块排在哪一侧。
+	SubscriptionOrderScheme      string `json:"subscription_order_scheme"`
+	SubscriptionExternalPosition string `json:"subscription_external_position"`
 }
 
 // currentSettings 组装设置响应。读写两条路径共用它,
@@ -66,6 +71,16 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 		}
 	}
 	resp.EffectiveExpiryTimezone = s.settings.ExpiryLocation(ctx).String()
+	if v, err := s.settings.Get(ctx, settings.KeyOrderScheme); err != nil {
+		s.logger.Error("读取订阅排序方案失败", "error", err)
+	} else {
+		resp.SubscriptionOrderScheme = string(subscription.ParseOrderScheme(v))
+	}
+	if v, err := s.settings.Get(ctx, settings.KeyExternalPosition); err != nil {
+		s.logger.Error("读取外部代理位置失败", "error", err)
+	} else {
+		resp.SubscriptionExternalPosition = string(subscription.ParseExternalPosition(v))
+	}
 	if v, err := s.settings.Get(ctx, settings.KeyProbeURL); err != nil {
 		s.logger.Error("读取拨测目标失败", "error", err)
 	} else {
@@ -108,6 +123,9 @@ type updateSettingsRequest struct {
 	ExpiryLeadDays *string `json:"expiry_lead_days"`
 	ExpirySendTime *string `json:"expiry_send_time"`
 	ExpiryTimezone *string `json:"expiry_timezone"`
+	// 订阅排序方案(V20)。切到 GLOBAL 走迁移接口,这里只允许切回 LEGACY ——
+	// 直接写 GLOBAL 会让存量的 0 号节点与外部代理挤在同一段上。
+	SubscriptionOrderScheme *string `json:"subscription_order_scheme"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -118,13 +136,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SubscriptionBaseURL == nil && req.ProbeURL == nil &&
 		req.CloudTimezone == nil && req.CloudPollIntervalSec == nil &&
-		req.ExpiryLeadDays == nil && req.ExpirySendTime == nil && req.ExpiryTimezone == nil {
+		req.ExpiryLeadDays == nil && req.ExpirySendTime == nil && req.ExpiryTimezone == nil &&
+		req.SubscriptionOrderScheme == nil {
 		writeError(w, http.StatusBadRequest, "没有要改的设置项")
 		return
 	}
 	admin := adminFromContext(r.Context())
 
 	var details []string
+	if req.SubscriptionOrderScheme != nil {
+		scheme := subscription.ParseOrderScheme(*req.SubscriptionOrderScheme)
+		if scheme != subscription.SchemeLegacy {
+			writeError(w, http.StatusBadRequest, "切到全局排序方案请走「迁移旧排序」,它会先把现有顺序重新编号")
+			return
+		}
+		if err := s.settings.Set(r.Context(), settings.KeyOrderScheme, string(scheme)); err != nil {
+			s.logger.Error("保存订阅排序方案失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		details = append(details, "订阅排序方案改回 LEGACY")
+	}
 	if req.SubscriptionBaseURL != nil {
 		baseURL, err := settings.ValidateBaseURL(*req.SubscriptionBaseURL)
 		if err != nil {
