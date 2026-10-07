@@ -366,7 +366,7 @@ func (s *Server) handleDeployRealm(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
-	result, err := s.nodes.DeployRealm(r.Context(), id)
+	result, err := s.nodes.DeployRealmWith(r.Context(), id, node.DeployOptions{Repair: true})
 	detail := string(result.Status)
 	if err != nil {
 		detail = err.Error()

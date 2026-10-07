@@ -318,6 +318,31 @@ type ChainLink struct {
 	NodeID    int64
 }
 
+// MieruChainSourceNodeIDs 返回出口链到【这台机器上任意一个入站】的 Mieru 入口所在的机器。
+func (s *Store) MieruChainSourceNodeIDs(ctx context.Context, nodeID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT m.node_id
+		  FROM node_mieru_inbounds m
+		  JOIN node_inbounds dst ON dst.id = m.chain_target_inbound_id
+		 WHERE m.deleted_at IS NULL
+		   AND m.chain_target_kind = 'INBOUND'
+		   AND dst.node_id = ?
+		 ORDER BY m.node_id`, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ChainsTargetingNode 返回全部链到【这台机器上任意一个入站】的发起方。
 //
 // 删除一个落地节点之前必须先取出它们:打上 deleted_at 之后就查不到了,

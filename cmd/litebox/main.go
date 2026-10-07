@@ -585,6 +585,8 @@ func cmdServe(args []string) error {
 		}
 		return reason
 	}
+	// 前置检查(部署、重检)也要认得"这台实例此刻停着",与巡检、采集同一个判据。
+	nodeService.SetSkip(cloudSkip)
 
 	// 节点资源监控。间隔为负表示关闭 —— 极端受限的节点上宁可不采。
 	metricsStore := node.NewMetricsStore(db)

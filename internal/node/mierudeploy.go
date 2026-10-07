@@ -185,6 +185,14 @@ func (s *Service) DesiredMieruConfig(
 func (s *Service) DeployMieru(
 	ctx context.Context, mieruID int64, usersOnly bool,
 ) (deployment.Result, error) {
+	return s.DeployMieruWith(ctx, mieruID, usersOnly, DeployOptions{})
+}
+
+// DeployMieruWith 带前置行为的 Mieru 下发(V20):Repair 为真时 mita / mieru 二进制
+// 缺了就自动安装,与 sing-box、realm 同一条规矩。粒度仍是一个入口一个实例。
+func (s *Service) DeployMieruWith(
+	ctx context.Context, mieruID int64, usersOnly bool, opts DeployOptions,
+) (deployment.Result, error) {
 	// 与 Service.Deploy 一样与请求 ctx 解绑:一次已经开始的节点操作
 	// 不得因为客户端断开而中止。断到一半会让 mita 停在一个刚 apply 完、
 	// 还没验证过的配置上,而面板上连一条记录都没有。
@@ -197,6 +205,34 @@ func (s *Service) DeployMieru(
 	n, err := s.store.Get(ctx, m.NodeID)
 	if err != nil {
 		return deployment.Result{}, err
+	}
+
+	// 前置:mita 在不在。缺了而允许修复就装,不允许就把话说清楚 ——
+	// 而不是让它在 mita apply 那一步以一句 "not found" 失败。
+	var binSteps []deployment.Step
+	if installed, err := s.mitaRuns(ctx, m.NodeID); err == nil && !installed {
+		rec := &nodeStepRecorder{}
+		if !opts.Repair {
+			err := errors.New("这台机器上没有 mita —— 点「下发」会在确认之后自动安装,或在「入口」Tab 的 Mieru 卡片上点「安装」")
+			_ = rec.run("前置检查:Mieru 已安装", func() (string, error) { return "", err })
+			return deployment.Result{
+				NodeID: m.NodeID, Kind: deployment.KindMieru, Status: deployment.StatusFailed,
+				Steps: rec.steps, ErrorMessage: "前置检查未通过:" + err.Error(),
+			}, err
+		}
+		if err := rec.run("前置检查:Mieru 已安装", func() (string, error) {
+			res, err := s.InstallMieruBinaries(ctx, m.NodeID)
+			if err != nil {
+				return "", err
+			}
+			return "已自动修复:这台机器上原来没有 mita,已安装 " + res.MitaVersion, nil
+		}); err != nil {
+			return deployment.Result{
+				NodeID: m.NodeID, Kind: deployment.KindMieru, Status: deployment.StatusFailed,
+				Steps: rec.steps, ErrorMessage: "前置检查未通过:" + err.Error(),
+			}, err
+		}
+		binSteps = rec.steps
 	}
 
 	// **落地那一台必须先就绪,而且面板不替他部署。** 那是另一台机器,
@@ -216,6 +252,7 @@ func (s *Service) DeployMieru(
 	// 每一步都记进结果:自动不等于不告知,尤其是"顺带重启了 sing-box"
 	// 这种会踢掉别人连接的事。
 	preSteps, err := s.prepareEgressHop(ctx, m, n)
+	preSteps = append(binSteps, preSteps...)
 	if err != nil {
 		// 前置步骤失败时也要把已经做完的那几步带回去 —— 管理员要看得出
 		// 卡在"装 sing-box"还是"下发它的配置"上,两者要做的事完全不同。

@@ -147,6 +147,17 @@ export const staleMeta: LbStatusMeta = {
 /** 节点停发订阅 —— subscription_enabled=false,与 DISABLED 是两回事。 */
 export const subscriptionOffMeta: LbStatusMeta = paused('停发订阅')
 
+/** 连接参数改了但还没验证过(V20):新地址当时连不上,管理员仍选择保存。 */
+export const verifyPendingMeta: LbStatusMeta = warn('连接待验证', 'ring')
+
+/** 管理地址改过之后、还没重新采样:这份数据说的是旧地址上的那台机器(V20)。 */
+export const preChangeMeta: LbStatusMeta = {
+  text: '变更前数据',
+  shape: 'dashRing',
+  fg: color.text3,
+  bg: color.fill,
+}
+
 /**
  * 巡检里一个服务的状态。
  *

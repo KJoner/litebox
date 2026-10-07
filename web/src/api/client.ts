@@ -4,9 +4,17 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /** 面板返回的 JSON 响应体(有的话)。409 这类带 code / check 的冲突要靠它分辨。 */
+    public readonly payload?: unknown,
   ) {
     super(message)
     this.name = 'ApiError'
+  }
+
+  /** 响应体里的 code 字段,没有则为空串。 */
+  get code(): string {
+    const p = this.payload
+    return p && typeof p === 'object' && 'code' in p ? String((p as { code: unknown }).code) : ''
   }
 }
 
@@ -80,7 +88,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       payload && typeof payload === 'object' && 'error' in payload
         ? String((payload as { error: unknown }).error)
         : `请求失败(HTTP ${response.status})`
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, payload)
   }
   return payload as T
 }
@@ -704,6 +712,75 @@ export interface Node {
   needs_deploy?: boolean
   /** 供应商到期档案(V20)。没接入时为 null;没登记时 state 是 UNSET */
   expiry?: ExpiryView | null
+  /** 最近一次改管理地址 / SSH 端口的时间(V20),空串表示没改过。它之前的巡检与采样是旧地址的 */
+  host_changed_at?: string
+  /** PENDING = 连接参数改了但新地址当时连不上、管理员仍选择保存,还没验证过 */
+  ssh_verify_state?: '' | 'PENDING'
+}
+
+/** 候选连接参数的验证结果(改管理地址时返回的 409 里带它)。 */
+export interface NodeCandidateCheck {
+  reachable: boolean
+  error?: string
+  dialed_ip?: string
+  uname?: string
+  fingerprint?: string
+  old_fingerprint?: string
+  /** 库里固定的主机密钥与新地址上出示的不一致 —— 不是同一台机器 */
+  host_key_changed: boolean
+  /** 库里还没固定过密钥(首次连接) */
+  host_key_new: boolean
+}
+
+export interface NodeDependentHost {
+  node_id: number
+  name: string
+  kind: string
+}
+
+export interface NodeUpdateResponse {
+  node: Node
+  effect: NodeUpdateEffect
+  /** 管理地址 / 端口变了,随即调 recheckNode 全面重检 */
+  recheck_required: boolean
+  /** 为假表示这次是带 save_unverified 存下来的,节点标成「待验证」 */
+  verified: boolean
+  host_key_changed: boolean
+  /** 依赖这台机器地址的中转 / 链式主机,已被标脏、按依赖顺序重新下发 */
+  dependents: NodeDependentHost[]
+}
+
+/** 前置检查的一项(V20)。 */
+export interface NodeCheckItem {
+  key: string
+  title: string
+  status: 'SATISFIED' | 'REPAIRED' | 'NEEDS_ACTION' | 'NOT_APPLICABLE' | 'FAILED'
+  detail: string
+  duration_ms: number
+  action?: string
+}
+
+export interface NodePreflight {
+  operation: string
+  items: NodeCheckItem[]
+  ok: boolean
+  repaired: boolean
+  block_reason?: string
+  service_running: boolean
+  config_unchanged: boolean
+  resolved_ip?: string
+  host_key_fingerprint?: string
+}
+
+/** 管理地址变更后的全面重检结果(V20),步骤与部署记录同形。 */
+export interface NodeRecheckResult {
+  node_id: number
+  ok: boolean
+  steps: DeployStep[]
+  preflight: NodePreflight
+  services: NodeServiceFacts | null
+  started_at: string
+  finished_at: string
 }
 
 /**
@@ -1298,6 +1375,8 @@ export interface DeployResult {
   config_sha256: string
   status: 'SUCCESS' | 'FAILED' | 'ROLLED_BACK'
   steps: DeployStep[]
+  /** 前置检查发现配置已一致,这次没有重启服务(V20) */
+  unchanged?: boolean
   error_message?: string
   rollback_result?: string
   started_at: string
@@ -2201,7 +2280,10 @@ export const api = {
     request<{ message: string }>(`/api/nodes/${id}/uninstall`, { method: 'POST' }),
   panelKey: () => request<{ public_key: string }>('/api/panel-key'),
   updateNode: (id: number, body: Record<string, unknown>) =>
-    request<{ node: Node; effect: NodeUpdateEffect }>(`/api/nodes/${id}`, { method: 'PUT', body }),
+    request<NodeUpdateResponse>(`/api/nodes/${id}`, { method: 'PUT', body }),
+  /** 管理地址变更后的全面重检(只读):连接、转发、服务、配置、端口、采集。 */
+  recheckNode: (id: number) =>
+    request<NodeRecheckResult>(`/api/nodes/${id}/recheck`, { method: 'POST' }),
   deleteNode: (id: number) =>
     request<{ message: string }>(`/api/nodes/${id}`, { method: 'DELETE' }),
   setNodeEnabled: (id: number, enabled: boolean) =>
@@ -2252,8 +2334,9 @@ export const api = {
     }),
   scanNodeDests: (id: number) =>
     request<{ items: DestCheckResult[] }>(`/api/nodes/${id}/dest-scan`, { method: 'POST' }),
-  deployNode: (id: number) =>
-    request<DeployResult>(`/api/nodes/${id}/deploy`, { method: 'POST' }),
+  /** force 为真时配置已一致也照样重启;默认一致就跳过重启。 */
+  deployNode: (id: number, opts: { force?: boolean } = {}) =>
+    request<DeployResult>(`/api/nodes/${id}/deploy`, { method: 'POST', body: { force: !!opts.force } }),
   restartNode: (id: number) =>
     request<{ message: string }>(`/api/nodes/${id}/restart`, { method: 'POST' }),
   resetNodeHostKey: (id: number) =>

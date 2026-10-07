@@ -301,7 +301,7 @@ func (s *Server) handleDeployMieru(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
-	result, err := s.nodes.DeployMieru(r.Context(), id, req.UsersOnly)
+	result, err := s.nodes.DeployMieruWith(r.Context(), id, req.UsersOnly, node.DeployOptions{Repair: true})
 	detail := "下发 Mieru 入口"
 	if req.UsersOnly {
 		detail = "下发 Mieru 入口(仅用户变更,不断连接)"

@@ -692,14 +692,22 @@ function uninstallSingBox() {
   uninstallKind.value = 'singbox'
 }
 
-function deploySingBox() {
+function deploySingBox(force = false) {
   confirmDeployNode(props.node, () =>
-    runOp('下发 sing-box 配置', '正在下发并做健康检查(约 15~25 秒)', async () => {
-      opDeploy.value = await api.deployNode(props.node.id)
-      if (opDeploy.value.status !== 'SUCCESS') {
-        opError.value = opDeploy.value.error_message || '下发未成功'
-      }
-    }),
+    runOp(
+      force ? '强制重新下发 sing-box 配置' : '下发 sing-box 配置',
+      '正在做前置检查、下发并做健康检查(约 15~25 秒)',
+      async () => {
+        opDeploy.value = await api.deployNode(props.node.id, { force })
+        if (opDeploy.value.status !== 'SUCCESS') {
+          opError.value = opDeploy.value.error_message || '下发未成功'
+        } else if (opDeploy.value.unchanged) {
+          // 配置一致时默认不重启:同一份配置重启一次换不来任何东西,只会踢掉在线连接。
+          opNote.value =
+            '节点上跑着的就是库里这一份,没有重启服务。要强制重新应用,用「重启」下拉里的「强制重新下发」。'
+        }
+      },
+    ),
   )
 }
 
@@ -974,6 +982,11 @@ const singBoxCard = computed<ServiceCardModel>(() => {
     {
       label: st?.upgradable ? '升级:换成面板分发的二进制' : '重新安装(换成面板分发的二进制)',
       onClick: () => installSingBox(phase),
+    },
+    // 配置已一致时「下发配置」不重启;这一项是显式的"强制重新应用"入口(V20)。
+    {
+      label: '强制重新下发(配置一致也重启)',
+      onClick: () => deploySingBox(true),
     },
   ]
 

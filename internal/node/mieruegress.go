@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/sshx"
@@ -117,6 +118,20 @@ func (s *Service) ensureSingBoxBinary(ctx context.Context, n *Node) (string, err
 	return "这台机器上原来没有 sing-box,已自动安装(" + res.ServiceName + ")", nil
 }
 
+// mitaRuns 问一次节点上的 mita 能不能跑(有没有装)。
+func (s *Service) mitaRuns(ctx context.Context, nodeID int64) (bool, error) {
+	var ok bool
+	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		res, err := client.Run(ctx, sshx.NewCommand(s.layout.MieruBinaryPath(), "version"))
+		if err != nil {
+			return err
+		}
+		ok = res.ExitCode == 0
+		return nil
+	})
+	return ok, err
+}
+
 // singBoxRuns 问一次节点上的 sing-box 能不能跑。
 //
 // 只看退出码,不解析版本:这一步要回答的是"有没有",而"版本对不对、
@@ -190,8 +205,10 @@ type nodeStepRecorder struct {
 }
 
 func (r *nodeStepRecorder) run(name string, fn func() (string, error)) error {
+	start := time.Now()
 	detail, err := fn()
-	step := deployment.Step{Name: name, Status: deployment.StepSuccess, Detail: detail}
+	step := deployment.Step{Name: name, Status: deployment.StepSuccess, Detail: detail,
+		DurationMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		step.Status = deployment.StepFailed
 		step.Detail = err.Error()

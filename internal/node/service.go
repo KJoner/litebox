@@ -74,6 +74,8 @@ type Service struct {
 	mieruSync     MieruSyncer
 	// hostTraffic 为 nil 时引导不装 vnStat。
 	hostTraffic HostTrafficInstaller
+	// skip 回答"这台机器此刻该不该被动"(云实例停机),与巡检、资源采集共用一个闭包。
+	skip func(ctx context.Context, nodeID int64) string
 	// relays 是中转主机上的 nginx 转发规则来源。为 nil 时 DeployRelays 直接报错,
 	// 而不是当成"没有规则"去停服务 —— 后者会在装配漏了的时候
 	// 悄悄把一台机器上全部转发停掉。
@@ -717,19 +719,74 @@ func nodeParams(n *Node, inbounds []singbox.InboundParams) singbox.NodeParams {
 	}
 }
 
-// Deploy 把节点当前的期望状态部署到节点。
+// DeployOptions 控制一次下发的前置行为。
+type DeployOptions struct {
+	// Repair 允许前置检查修改节点:打开 sshd 转发、装 sing-box、补探测。
+	// 只有管理员在确认框里看过"会自动补齐缺失的前置条件"的那条路才传 true;
+	// 协调器、巡检、Mieru 出口那一跳走的 Deploy() 一律 false —— 它们没有人在看。
+	Repair bool
+	// Force 为真时即使配置已一致也照样下发并重启。
+	// 默认不重启:同一份配置重启一次换不来任何东西,只会踢掉全部在线连接。
+	Force bool
+}
+
+// Deploy 把节点当前的期望状态部署到节点(不自动修复前置条件,不强制重启)。
 func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, error) {
-	n, inbounds, probes, err := s.renderInputs(ctx, nodeID)
+	return s.DeployWith(ctx, nodeID, DeployOptions{})
+}
+
+// DeployWith 先跑前置检查(按需修复),再进部署事务。
+//
+// 前置检查拦下来时节点一个字节都没动过:记一条 FAILED 的部署记录把原因与下一步
+// 写清楚,但**不把节点标成 DEPLOY_FAILED** —— 那一档的意思是"下发过、坏了、
+// 可能已回滚",而这里什么都没发生。配置已一致且服务在跑时默认跳过重启,
+// 记一条 Unchanged 的成功记录:它是管理员点了「部署」之后唯一的反馈。
+func (s *Service) DeployWith(ctx context.Context, nodeID int64, opts DeployOptions) (deployment.Result, error) {
+	n, err := s.store.Get(ctx, nodeID)
 	if err != nil {
 		return deployment.Result{}, err
 	}
 	if n.Status == StatusDisabled {
 		return deployment.Result{}, fmt.Errorf("节点 %s 已禁用,不能部署", n.Name)
 	}
-	// 链式入站的落地必须先同步。放在这里 —— 节点一个字节都还没动过,
-	// 拒绝的代价只是一句话;放到 deployer.Deploy 之后就是一次重启加一次回滚,
-	// 而报错还会指向错误的方向(见 ErrChainTargetOutOfSync)。
-	if err := s.checkChainTargetsReady(ctx, n.Inbounds); err != nil {
+	startedAt := time.Now().UTC()
+	pre, err := s.Preflight(ctx, nodeID, PreflightOptions{Operation: OpDeploy, Repair: opts.Repair})
+	if err != nil {
+		return deployment.Result{}, err
+	}
+	done := context.WithoutCancel(ctx)
+	if !pre.OK {
+		blockErr := pre.BlockErr
+		if blockErr == nil {
+			blockErr = errors.New(pre.BlockReason)
+		}
+		err := fmt.Errorf("前置检查未通过:%w", blockErr)
+		result := deployment.Result{
+			NodeID: nodeID, Revision: n.ConfigRevision, Status: deployment.StatusFailed,
+			Steps: pre.Steps(), ErrorMessage: err.Error(),
+			StartedAt: startedAt, FinishedAt: time.Now().UTC(),
+		}
+		logDeployResult(s.logger, nodeID, result, err)
+		s.saveDeployRecord(done, result)
+		return result, err
+	}
+	if pre.ConfigUnchanged && !opts.Force {
+		steps := append(pre.Steps(), deployment.Step{
+			Name: "下发配置", Status: deployment.StepSkipped,
+			Detail: "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」",
+		})
+		result := deployment.Result{
+			NodeID: nodeID, Revision: n.ConfigRevision, ConfigSHA256: n.DeployedConfigSHA256,
+			Status: deployment.StatusSuccess, Steps: steps, Unchanged: true,
+			StartedAt: startedAt, FinishedAt: time.Now().UTC(),
+		}
+		s.saveDeployRecord(done, result)
+		return result, nil
+	}
+
+	// 前置检查可能刚装过 sing-box 或补过探测:渲染输入要按现在的记录重新取。
+	n, inbounds, probes, err := s.renderInputs(ctx, nodeID)
+	if err != nil {
 		return deployment.Result{}, err
 	}
 
@@ -748,6 +805,9 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	}
 
 	result, deployErr := s.deployer.Deploy(ctx, req)
+	// 前置检查的步骤拼在最前面:管理员读的是一条时间线,而那几步确实发生在前面。
+	result.Steps = append(pre.Steps(), result.Steps...)
+	result.StartedAt = startedAt
 
 	// **收尾与调用方的 ctx 解绑。**
 	//
@@ -764,15 +824,12 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 	// 生产上真的发生过:一次 chain_apply 被中途掐断,日志里只剩三行
 	// context canceled。上游的 longOperation 现在也解绑了,这里是第二道 ——
 	// Deploy 还有协调器与巡检两条调用路径,不能靠调用方替它守住。
-	done := context.WithoutCancel(ctx)
 
 	// 结局先落日志再落库。Save 还有别的失败方式(数据库锁、磁盘满),
 	// 而部署恰恰是最不能没有痕迹的那种操作 —— 它重启服务、踢掉全部在线连接。
 	logDeployResult(s.logger, nodeID, result, deployErr)
 
-	if _, err := s.deployStore.Save(done, result); err != nil {
-		s.logger.Error("保存部署记录失败", "node_id", nodeID, "error", err)
-	}
+	s.saveDeployRecord(done, result)
 
 	if deployErr != nil {
 		if err := s.store.MarkDeployFailed(done, nodeID); err != nil {
@@ -803,6 +860,16 @@ func (s *Service) Deploy(ctx context.Context, nodeID int64) (deployment.Result, 
 		s.logger.Error("记录部署成功状态出错", "node_id", nodeID, "error", err)
 	}
 	return result, nil
+}
+
+// saveDeployRecord 落一条部署记录;没接部署记录存储(测试环境)时静默跳过。
+func (s *Service) saveDeployRecord(ctx context.Context, result deployment.Result) {
+	if s.deployStore == nil {
+		return
+	}
+	if _, err := s.deployStore.Save(ctx, result); err != nil {
+		s.logger.Error("保存部署记录失败", "node_id", result.NodeID, "error", err)
+	}
 }
 
 // RestartService 重启节点上的 sing-box。
