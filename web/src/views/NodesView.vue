@@ -16,6 +16,8 @@ import {
 } from '@/api/client'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
+import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
+import { useNodeRecheck } from '@/components/node/useNodeRecheck'
 import {
   LbBatchBar,
   LbCopyField,
@@ -229,6 +231,8 @@ const editing = ref<Node | null>(null)
 const busy = ref<Record<number, string>>({})
 /** 「续费 / 修改到期时间」弹窗(V20)。 */
 const expiryTarget = ref<Node | null>(null)
+/** 管理地址变更后的全面重检(V20):进度弹窗里逐步显示连接、转发、服务、采集。 */
+const recheck = useNodeRecheck(() => load())
 
 function openCreate() {
   editing.value = null
@@ -1031,6 +1035,7 @@ const keyOpen = ref(false)
                     <a-menu-item v-if="primaryAction(record) !== 'detail'" @click="openDetail(record.id)">详情</a-menu-item>
                     <a-menu-item @click="openEdit(record)">编辑节点</a-menu-item>
                     <a-menu-item @click="expiryTarget = record">续费 / 修改到期时间</a-menu-item>
+                    <a-menu-item @click="recheck.start(record)">全面重检</a-menu-item>
                     <a-menu-item @click="run(record.id, '探测', () => api.probeNode(record.id), '探测完成')">
                       探测
                     </a-menu-item>
@@ -1071,6 +1076,16 @@ const keyOpen = ref(false)
         }
       "
       @deploy="(id) => run(id, '部署', () => api.deployNode(id), '部署已执行,详情见部署记录')"
+      @recheck="(id, saved) => recheck.afterSave(nodes.find((n) => n.id === id) ?? null, saved)"
+    />
+    <NodeOpProgressModal
+      :open="recheck.open.value"
+      :title="recheck.title.value"
+      :running="recheck.running.value"
+      :deploy="recheck.result.value"
+      :error="recheck.error.value"
+      :note="recheck.note.value"
+      @update:open="recheck.close"
     />
 
     <ExpiryModal

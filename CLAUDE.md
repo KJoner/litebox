@@ -2767,6 +2767,63 @@ apt 也挂),只验到"创建节点 + 引导"这一步,Debian 的 vnStat 安装�
 * **提醒规则三项设置**(`expiry_lead_days` / `expiry_send_time` / `expiry_timezone`),空 = 默认
   (7,3,1 / 09:00 / 跟随 `cloud_timezone`);`ValidateSendTime` 要两位小时,与云实例那条同理。
 
+## 操作前检查、按需修复与管理地址变更约束(V20)
+
+`node.Preflight`(`internal/node/preflight.go`)是操作前检查的唯一入口,五档结论固定:
+已满足 / 已自动修复 / 需要人工处理 / 不适用 / 失败。每种操作只检查它真正依赖的条件
+(`Operation`:DEPLOY / INSTALL / START / SYNC / RECHECK)。
+
+* **只读入口与会改节点的操作分开**:`PreflightOptions.Repair` 为真才会打开 sshd 转发、
+  装 sing-box、补探测。`Service.Deploy()`(协调器、巡检、Mieru 出口那一跳走的)一律
+  `Repair=false` —— 它们没有人在看,拦下来只记一句指向具体按钮的话;只有管理员在确认框里
+  看过"会自动补齐缺失的前置条件"的 `POST /api/nodes/{id}/deploy` 才 `Repair=true`。
+  realm 与 Mieru 的下发同理(`DeployRealmWith` / `DeployMieruWith`);nginx 本来就 `EnsureNginx`;
+
+* **检查与修复各自走 `pool.Do`,绝不嵌套。** 事实在一次 SSH 会话里采齐(`preflightFacts`),
+  结论在锁外下;`EnsureTCPForwarding` 之后的 `Invalidate` 必须在 `Do` 之外 —— 节点锁不可重入;
+
+* **前置检查拦下来时节点一个字节都没动过:记一条 FAILED 的部署记录(步骤名带「前置检查:」
+  前缀、详情带「下一步:」),但【不】把节点标成 DEPLOY_FAILED** —— 那一档的意思是
+  "下发过、坏了、可能已回滚",这里什么都没发生。哨兵错误经 `Preflight.BlockErr` 透出,
+  `errors.Is(err, ErrChainTargetOutOfSync)` 照样认得出(`TestDeployRejectedWhenChainTargetOutOfSync`);
+
+* **配置已一致且服务在跑时默认不重启**(`Result.Unchanged`),判据三合一:渲染哈希 = 库里
+  `deployed_config_sha256` = 节点上配置文件的 sha256,**而且**服务 active。少一项都要下发 ——
+  tmpfs 重启后文件没了、服务被手工停了,都不是"一致"。同一份配置重启一次换不来任何东西,
+  只会踢掉在线连接;要强制重新应用走 `DeployOptions.Force`(卡片「重启」下拉里的
+  「强制重新下发」)或「重启」。记一条 `Unchanged` 的成功记录:那是管理员点了「部署」之后
+  唯一的反馈,**不 bump revision、不 MarkDeployed**;
+
+* **端口占用只在服务没跑时查**(单次采样 `deployment.ListeningScript`,不用 15 秒轮询 ——
+  那个轮询等的是服务起来,这里希望的恰恰是没人听);服务在跑时端口是它自己的,查不出"别人";
+
+* **云实例停着的机器连都不连**:`Service.SetSkip` 注入与巡检、采集同一个判据,
+  否则会被报成"SSH 失败",而真正的原因是它没开机。自动修复同样尊重它 —— 不会把一台
+  被面板按阈值停掉的实例当成故障去救;
+
+* **部署时自动装 sing-box 的前提是这台机器确实需要它**(`wantSingBox`:不是中转机、
+  不是只有 Mieru 入口的机器);没探测过架构就先补一次探测再装,这两步都记成 REPAIRED;
+
+* **管理地址 / SSH 参数改了,保存之前先用候选参数真的连一次**(`sshx.VerifyTarget` →
+  `Service.VerifyCandidate`,不进连接池、不固定任何东西)。连不上 → 409 `SSH_UNVERIFIED`,
+  只有带 `save_unverified` 再提交才存,并把 `nodes.ssh_verify_state` 标成 `PENDING`
+  (列表上显示「连接待验证」,不显示成连接正常);**主机密钥与库里固定的不一致 → 409
+  `HOST_KEY_CHANGED`,带新旧指纹,绝不为了自动化直接信任新机器** —— 同一台机器换地址
+  密钥不变,换成 / 重装了一台密钥一定变,两种情形在表单上分得开;只有带 `accept_host_key`
+  再提交才用 `SetHostKey` 覆盖(与 TOFU 的 `PinHostKey` 是两个方法);
+
+* **改了 host / 端口要记 `nodes.host_changed_at`**(迁移 0038),它之前的巡检、采样、探测说的
+  是旧地址上的那台机器 —— 前端 `isPreChange` 把它们标成「变更前数据」,**不能当新地址的
+  验证结果**。保存之后丢掉旧连接、前端随即开进度弹窗调 `POST /api/nodes/{id}/recheck`
+  (`Service.Recheck` 只读:连接与主机身份、转发、该有的服务、配置、端口、探测;流量与
+  资源采集两步由 HTTP 层补)。检查范围是这台机器实际承载的服务,不是把每一种都装一遍;
+
+* **改落地的地址,链到它的机器按【机器】找**(`ChainsTargetingNode` + `MieruChainSourceNodeIDs`)。
+  原来 `PropagateTargetChange` 把节点 id 当成入站 id 传给 `ChainSourceNodeIDs`,
+  于是一台都标不到 —— 入口机继续用旧地址连落地,而两台机器都显示正常。
+  `TestDependentsOfListsChainSources` 钉着;受影响的机器要在保存响应里列出来
+  (`DependentsOf`),不能更新本机之后就宣布全链路成功。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;

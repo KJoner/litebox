@@ -45,6 +45,57 @@ type Target struct {
 	OnHostKey func(hostKey string) error
 }
 
+// TargetCheck 是一次候选连接参数验证的结果。
+type TargetCheck struct {
+	// HostKey 是对方出示的主机公钥(base64 wire 格式),Fingerprint 是它的 SHA256 指纹。
+	HostKey     string `json:"host_key"`
+	Fingerprint string `json:"fingerprint"`
+	DialedIP    string `json:"dialed_ip"`
+	Uname       string `json:"uname"`
+}
+
+// VerifyTarget 用候选参数真的连一次、认证通过、跑一条命令,并把对方的主机密钥带回来。
+//
+// **不比对 KnownHostKey**:改地址的场景里"密钥对不对得上"正是要让管理员看的东西 ——
+// 同一台机器换地址密钥不变,换成 / 重装了一台机器密钥一定变。所以这里一律收下
+// 本次出示的密钥交给调用方去比,而不是在握手里直接拒掉。它只用于保存之前的验证,
+// 不进连接池,也不固定任何东西。
+func VerifyTarget(ctx context.Context, target Target, timeout time.Duration) (TargetCheck, error) {
+	var check TargetCheck
+	target.KnownHostKey = ""
+	target.OnHostKey = func(hostKey string) error {
+		check.HostKey = hostKey
+		check.Fingerprint = Fingerprint(hostKey)
+		return nil
+	}
+	client, err := Dial(ctx, target, timeout)
+	if err != nil {
+		return check, err
+	}
+	defer client.Close()
+	check.DialedIP = client.DialedIP()
+	res, err := client.Run(ctx, NewCommand("uname", "-a"))
+	if err != nil {
+		return check, err
+	}
+	check.Uname = strings.TrimSpace(res.Stdout)
+	return check, nil
+}
+
+// Fingerprint 把库里存的主机公钥(base64 wire 格式)转成 OpenSSH 风格的 SHA256 指纹。
+// 认不出来时返回空串 —— 给人看的东西,宁可不显示也不显示一个错的。
+func Fingerprint(hostKeyB64 string) string {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(hostKeyB64))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	key, err := ssh.ParsePublicKey(raw)
+	if err != nil {
+		return ""
+	}
+	return ssh.FingerprintSHA256(key)
+}
+
 func (t Target) address() string {
 	return net.JoinHostPort(t.Host, strconv.Itoa(t.Port))
 }

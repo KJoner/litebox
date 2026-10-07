@@ -1,6 +1,6 @@
 import type { Node, NodeConfigState, ProxyUser } from '@/api/client'
 import { threshold } from '@/theme/tokens'
-import { staleMeta, subscriptionOffMeta, type LbStatusMeta } from './statusMeta'
+import { staleMeta, subscriptionOffMeta, type LbStatusMeta, verifyPendingMeta, preChangeMeta } from './statusMeta'
 
 /**
  * 派生态。全部由已有字段算出,不新增任何请求。
@@ -106,6 +106,17 @@ export function isMetricsStale(collectedAt: string | null | undefined): boolean 
 export function nodeBadges(n: Node, collectedAt?: string | null): LbStatusMeta[] {
   const out: LbStatusMeta[] = []
   if (!n.subscription_enabled) out.push(subscriptionOffMeta)
-  if (isMetricsStale(collectedAt)) out.push(staleMeta)
+  if (n.ssh_verify_state === 'PENDING') out.push(verifyPendingMeta)
+  if (isPreChange(n, collectedAt)) out.push(preChangeMeta)
+  else if (isMetricsStale(collectedAt)) out.push(staleMeta)
   return out
+}
+
+/**
+ * 这份数据(采样 / 巡检)是不是在改管理地址之前采的。
+ * 是的话它说的是旧地址上的机器,不能当新地址的验证结果 —— 比「数据过期」更要紧。
+ */
+export function isPreChange(n: Pick<Node, 'host_changed_at'>, at?: string | null): boolean {
+  if (!n.host_changed_at || !at) return false
+  return new Date(at).getTime() < new Date(n.host_changed_at).getTime()
 }

@@ -11,6 +11,8 @@ import {
   type CloudThresholdAction,
   type Node,
   type NodeBillingMode,
+  type NodeCandidateCheck,
+  type NodeUpdateResponse,
   type NodeProtocol,
   type NodeRole,
   type NodeSSMethod,
@@ -52,7 +54,12 @@ const emit = defineEmits<{
   (e: 'update:open', v: boolean): void
   (e: 'saved', nodeID: number): void
   (e: 'deploy', nodeID: number): void
+  /** 管理地址 / 端口变了,页面据此开进度弹窗做全面重检(V20)。 */
+  (e: 'recheck', nodeID: number, saved: NodeUpdateResponse): void
 }>()
+
+/** 改管理地址时的两个一次性标记,见 doSubmit 的 catch。 */
+const hostFlags = reactive({ accept_host_key: false, save_unverified: false })
 
 const isEdit = computed(() => props.node !== null)
 const submitting = ref(false)
@@ -132,6 +139,8 @@ watch(
   async (open) => {
     if (!open) return
     serverError.value = ''
+    hostFlags.accept_host_key = false
+    hostFlags.save_unverified = false
     const n = props.node
     expiryForm.fill(n?.expiry)
     if (!n) {
@@ -478,7 +487,10 @@ async function doSubmit() {
 
     // 逐字段列出而不是 { ...form }:更新接口对未知字段是拒绝的
     // (DisallowUnknownFields),root_password 这类只属于新建的字段会让整个提交失败。
-    const { effect } = await api.updateNode(id, {
+    const saved = await api.updateNode(id, {
+      // 两个一次性标记(V20):上一轮 409 之后管理员确认过才带上,见 catch 里的处理。
+      accept_host_key: hostFlags.accept_host_key,
+      save_unverified: hostFlags.save_unverified,
       name: form.name,
       display_name: form.display_name,
       host: form.host,
@@ -497,6 +509,9 @@ async function doSubmit() {
       public_remark: form.public_remark,
       maintenance_message: form.maintenance_message,
     })
+    const { effect } = saved
+    hostFlags.accept_host_key = false
+    hostFlags.save_unverified = false
     await saveCloud(id)
     const expiryErr = await expiryForm.save('NODE', id)
     if (expiryErr) message.warning(`节点已保存,但到期档案没能保存:${expiryErr}`)
@@ -504,6 +519,13 @@ async function doSubmit() {
     form.clear_ssh_key = false
     close()
     emit('saved', id)
+
+    // 管理地址 / 端口变了:交给页面开一个进度弹窗做全面重检(V20)。
+    // 依赖这台机器地址的中转 / 链式主机要列出来 —— 不能更新本机之后就宣布全链路成功。
+    if (saved.recheck_required) {
+      emit('recheck', id, saved)
+      return
+    }
 
     // 三种保存结果,差别来自后端返回的 effect,前端不自己判断。
     if (effect.tier_changed) {
@@ -529,6 +551,46 @@ async function doSubmit() {
       )
     }
   } catch (err) {
+    // 改管理地址时的两种冲突(V20),都要管理员看过再决定,不自动替他选:
+    //   HOST_KEY_CHANGED  新地址上的机器出示的主机密钥与固定的不一致 —— 不是同一台机器;
+    //   SSH_UNVERIFIED    新参数连不上 —— 不能存成"连接正常",但可以标成待验证先存。
+    if (err instanceof ApiError && err.status === 409 && (err.code === 'HOST_KEY_CHANGED' || err.code === 'SSH_UNVERIFIED')) {
+      const check = (err.payload as { check?: NodeCandidateCheck }).check
+      if (err.code === 'HOST_KEY_CHANGED') {
+        Modal.confirm({
+          title: '新地址上不是同一台机器',
+          width: 560,
+          content: [
+            `新地址上的机器出示的 SSH 主机密钥与这个节点固定的不一致 —— 它是重装过的,或者换成了另一台。`,
+            `原密钥:${check?.old_fingerprint || '—'}`,
+            `新密钥:${check?.fingerprint || '—'}`,
+            check?.uname ? `对方系统:${check.uname}` : '',
+            `信任它意味着:面板会用新密钥连它,库里记着的「已安装 / 已部署」都是旧机器的事实,保存后会自动重检并提示该做什么。`,
+            `如果你只是换了 IP、机器没动过,密钥不该变 —— 这时不要信任,先确认地址有没有填错。`,
+          ].filter(Boolean).join('\n'),
+          okText: '信任新密钥并保存',
+          okType: 'danger',
+          cancelText: '不保存',
+          onOk: () => {
+            hostFlags.accept_host_key = true
+            void doSubmit()
+          },
+        })
+      } else {
+        Modal.confirm({
+          title: '用新的连接参数连不上这台机器',
+          width: 520,
+          content: `${check?.error || err.message}\n\n现在保存的话,节点会标成「连接待验证」,列表上不会显示成连接正常;机器就绪之后在节点菜单里点「全面重检」即可。`,
+          okText: '仍然保存(标为待验证)',
+          cancelText: '先不保存',
+          onOk: () => {
+            hostFlags.save_unverified = true
+            void doSubmit()
+          },
+        })
+      }
+      return
+    }
     serverError.value = err instanceof ApiError ? err.message : '保存失败'
   } finally {
     submitting.value = false

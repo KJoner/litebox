@@ -101,6 +101,13 @@ type Node struct {
 	// 流量从本机直接出去,界面上却写着"出口:某某落地"。
 	mieruEgress []singbox.MieruEgressParams
 
+	// HostChangedAt 是最近一次改管理地址 / SSH 端口的时间(V20),空串表示没改过。
+	// 它之前的巡检、采样、探测结果说的是旧地址上的那台机器,界面上标成「变更前数据」。
+	HostChangedAt string `json:"host_changed_at"`
+	// SSHVerifyState 为 "PENDING" 表示连接参数改了但还没验证过(新地址当时连不上,
+	// 管理员仍然选择保存)。列表上据此显示「待验证」,而不是把上一次的「在线」当真。
+	SSHVerifyState string `json:"ssh_verify_state"`
+
 	Arch           string `json:"arch"`
 	SingBoxVersion string `json:"singbox_version"`
 	BuildTags      string `json:"singbox_build_tags"`
@@ -170,6 +177,7 @@ const nodeColumns = `n.id, n.name, n.display_name, n.host, n.sub_ipv4_address, n
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
 	n.traffic_billing_mode,
 	n.status, n.last_heartbeat_at, n.config_revision, n.deployed_config_sha256,
+	n.host_changed_at, n.ssh_verify_state,
 	n.created_at, n.updated_at`
 
 // nodeFrom 不再 JOIN 等级表:等级是入口的属性(迁移 0020),
@@ -188,6 +196,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
 		&n.TrafficBillingMode,
 		&n.Status, &n.LastHeartbeatAt, &n.ConfigRevision, &n.DeployedConfigSHA256,
+		&n.HostChangedAt, &n.SSHVerifyState,
 		&n.CreatedAt, &n.UpdatedAt,
 	)
 	if err != nil {
@@ -909,6 +918,36 @@ func (s *Store) PinHostKey(ctx context.Context, id int64, hostKey string) error 
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE nodes SET ssh_host_key = ?, updated_at = ? WHERE id = ?`,
 		hostKey, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// SetHostKey 用管理员确认过的新主机密钥覆盖旧的(机器重装 / 换了一台)。
+//
+// 与 PinHostKey 不同:那一个是首次连接的 TOFU,已有值且不一致时拒绝;
+// 这一个只在管理员在表单上看过新旧指纹、显式点了「信任新密钥」之后调用。
+func (s *Store) SetHostKey(ctx context.Context, id int64, hostKey string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE nodes SET ssh_host_key = ?, updated_at = ? WHERE id = ?`,
+		hostKey, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// MarkHostChanged 记下"管理地址 / SSH 端口刚改过",以及这次保存有没有验证过新参数。
+func (s *Store) MarkHostChanged(ctx context.Context, id int64, verified bool) error {
+	state := ""
+	if !verified {
+		state = "PENDING"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE nodes SET host_changed_at = ?, ssh_verify_state = ?, updated_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), state, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// ClearSSHVerifyPending 在新参数真的连上一次之后清掉「待验证」。
+func (s *Store) ClearSSHVerifyPending(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE nodes SET ssh_verify_state = '' WHERE id = ? AND ssh_verify_state != ''`, id)
 	return err
 }
 

@@ -97,6 +97,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
         />
         <span class="nop__verdict-text">
           <template v-if="error">{{ error }}</template>
+          <template v-else-if="deploy?.unchanged">配置已一致,这次没有重启服务</template>
           <template v-else-if="deploy?.rollback_result">回滚:{{ deploy.rollback_result }}</template>
           <template v-else-if="note">{{ note }}</template>
           <template v-else>已完成</template>

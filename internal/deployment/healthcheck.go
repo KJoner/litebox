@@ -40,6 +40,10 @@ func (d *Deployer) checkServiceActive(ctx context.Context, client *sshx.Client, 
 // 判定为"端口未监听",部署因此永远失败并回滚 —— 而服务其实是好的。
 //
 // 两者的输出格式都随版本变化,这里只做存在性判断,不解析字段。
+// ListeningScript 是「此刻有没有人在听这个端口」的单次采样脚本(不轮询)。
+// 前置检查里用它查端口占用:那里希望的恰恰是没人听,轮询等的却是服务起来。
+func ListeningScript(port int) string { return listeningScript(port) }
+
 func listeningScript(port int) string {
 	return fmt.Sprintf(
 		`if command -v ss >/dev/null 2>&1; then ss -tln 2>/dev/null | grep -q ':%d '; `+

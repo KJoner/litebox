@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -414,6 +415,29 @@ type updateNodeRequest struct {
 	SubscriptionEnabled *bool  `json:"subscription_enabled"`
 	PublicRemark        string `json:"public_remark"`
 	MaintenanceMessage  string `json:"maintenance_message"`
+
+	// 管理地址 / SSH 参数变了时(V20),保存之前先用新参数真的连一次:
+	//   - 连不上 → 409 SSH_UNVERIFIED;管理员确实要先存,带 save_unverified 再提交,
+	//     节点标成「待验证」;
+	//   - 主机密钥与库里固定的不一致 → 409 HOST_KEY_CHANGED,带新旧指纹;
+	//     管理员确认那是重装 / 换了一台机器之后,带 accept_host_key 再提交。
+	// 两个标记只对这一次提交有效,不是设置项。
+	AcceptHostKey  bool `json:"accept_host_key"`
+	SaveUnverified bool `json:"save_unverified"`
+}
+
+// nodeUpdateResponse 在节点与 effect 之外,带上地址变更后要做的事。
+type nodeUpdateResponse struct {
+	Node   *node.Node        `json:"node"`
+	Effect node.UpdateEffect `json:"effect"`
+	// RecheckRequired 为真表示管理地址 / 端口变了,前端随即调 /recheck 全面重检。
+	RecheckRequired bool `json:"recheck_required"`
+	// Verified 为假表示这次是带 save_unverified 存下来的,节点标成「待验证」。
+	Verified bool `json:"verified"`
+	// HostKeyChanged 为真表示管理员这次接受了新的主机密钥(换了 / 重装了机器)。
+	HostKeyChanged bool `json:"host_key_changed"`
+	// Dependents 是依赖这台机器地址的中转 / 链式主机,它们已被标脏、按依赖顺序重新下发。
+	Dependents []node.DependentHost `json:"dependents"`
 }
 
 // handleUpdateNode 修改节点配置。
@@ -445,6 +469,45 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// 管理地址 / SSH 参数变了:先验证候选参数,主机密钥变了要管理员确认。
+	candidate := node.CandidateParams{
+		Host: strings.TrimSpace(req.Host), SSHPort: req.SSHPort, SSHUser: strings.TrimSpace(req.SSHUser),
+		SSHKey: req.SSHKey, ClearSSHKey: req.ClearSSHKey,
+	}
+	sshParamsChanged := candidate.Host != cur.Host ||
+		(candidate.SSHPort != 0 && candidate.SSHPort != cur.SSHPort) ||
+		(candidate.SSHUser != "" && candidate.SSHUser != cur.SSHUser) ||
+		strings.TrimSpace(req.SSHKey) != "" || req.ClearSSHKey
+	hostChanged := candidate.Host != cur.Host || (candidate.SSHPort != 0 && candidate.SSHPort != cur.SSHPort)
+	var check node.CandidateCheck
+	verified := true
+	if sshParamsChanged {
+		var err error
+		check, err = s.nodes.VerifyCandidate(r.Context(), id, candidate)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !check.Reachable {
+			if !req.SaveUnverified {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"code":  "SSH_UNVERIFIED",
+					"error": "用新的连接参数连不上这台机器:" + check.Error,
+					"check": check,
+				})
+				return
+			}
+			verified = false
+		} else if check.HostKeyChanged && !req.AcceptHostKey {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"code":  "HOST_KEY_CHANGED",
+				"error": "新地址上的机器出示的主机密钥与这个节点固定的不一致 —— 它不是同一台机器(重装过,或换成了另一台)",
+				"check": check,
+			})
+			return
+		}
 	}
 
 	n, effect, err := s.nodes.Store().Update(r.Context(), id, node.UpdateParams{
@@ -479,6 +542,19 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 主机密钥:管理员确认过换了机器就覆盖;首次连接则顺手固定(TOFU)。
+	if sshParamsChanged && check.Reachable && (check.HostKeyChanged && req.AcceptHostKey || check.HostKeyNew) {
+		if err := s.nodes.Store().SetHostKey(r.Context(), id, check.HostKey); err != nil {
+			s.logger.Error("写入节点主机密钥失败", "node_id", id, "error", err)
+		}
+	}
+	if hostChanged {
+		if err := s.nodes.Store().MarkHostChanged(r.Context(), id, verified); err != nil {
+			s.logger.Error("记录管理地址变更失败", "node_id", id, "error", err)
+		}
+	} else if sshParamsChanged && verified {
+		_ = s.nodes.Store().ClearSSHVerifyPending(r.Context(), id)
+	}
 	// 连接参数变了就必须丢弃长连接,否则后续操作仍走旧地址与旧密钥。
 	if effect.SSHChanged {
 		s.pool.Invalidate(id)
@@ -497,12 +573,27 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	if detail == "" {
 		detail = "无实际变更"
 	}
+	if sshParamsChanged && check.HostKeyChanged && req.AcceptHostKey {
+		detail += fmt.Sprintf(";已接受新的主机密钥 %s(原 %s)", check.Fingerprint, check.OldFingerprint)
+	}
+	if !verified {
+		detail += ";新连接参数未验证通过,按管理员要求保存并标成待验证"
+	}
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeUpdate,
 		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
 		Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"node": n, "effect": effect})
+	n, _ = s.nodes.Store().Get(r.Context(), id)
+	resp := nodeUpdateResponse{
+		Node: n, Effect: effect, RecheckRequired: hostChanged, Verified: verified,
+		HostKeyChanged: sshParamsChanged && check.HostKeyChanged && req.AcceptHostKey,
+		Dependents:     []node.DependentHost{},
+	}
+	if effect.RelayTargetChanged {
+		resp.Dependents = s.nodes.DependentsOf(r.Context(), id)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
@@ -746,8 +837,19 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admin := adminFromContext(r.Context())
+	// 请求体可选:老的调用方不带。force 为真时配置已一致也照样重启。
+	var req struct {
+		Force bool `json:"force"`
+	}
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
 
-	result, deployErr := s.nodes.Deploy(r.Context(), id)
+	// 管理员点的部署:确认框里写明了会自动补齐前置条件(装 sing-box、打开 sshd 转发)。
+	result, deployErr := s.nodes.DeployWith(r.Context(), id, node.DeployOptions{Repair: true, Force: req.Force})
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeDeploy,
 		TargetType: "node", TargetID: strconv.FormatInt(id, 10),

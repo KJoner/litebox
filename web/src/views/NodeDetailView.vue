@@ -27,6 +27,8 @@ import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
 import NodeEntriesPanel from '@/components/node/NodeEntriesPanel.vue'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
+import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
+import { useNodeRecheck } from '@/components/node/useNodeRecheck'
 import CloudInstanceCard from '@/components/cloud/CloudInstanceCard.vue'
 import {
   LbEmptyState,
@@ -110,6 +112,8 @@ function syncTabToRoute(key: unknown) {
 const editOpen = ref(false)
 /** 「续费 / 修改到期时间」弹窗(V20)。 */
 const expiryOpen = ref(false)
+/** 管理地址变更后的全面重检(V20)。 */
+const recheck = useNodeRecheck(() => reload())
 const tierLoadError = ref(false)
 
 const deployments = ref<DeploymentRecord[]>([])
@@ -1039,6 +1043,7 @@ const needsPortForward = computed(() =>
               <a-menu-item-group title="这台机器">
                 <a-menu-item @click="editOpen = true">编辑节点</a-menu-item>
                 <a-menu-item @click="expiryOpen = true">续费 / 修改到期时间</a-menu-item>
+                <a-menu-item @click="node && recheck.start(node)">全面重检</a-menu-item>
                 <a-menu-item
                   @click="
                     () => {
@@ -2199,6 +2204,16 @@ const needsPortForward = computed(() =>
     :tiers="tiers"
     @update:open="(v) => (editOpen = v)"
     @saved="reload"
+    @recheck="(_id, saved) => recheck.afterSave(node, saved)"
+  />
+  <NodeOpProgressModal
+    :open="recheck.open.value"
+    :title="recheck.title.value"
+    :running="recheck.running.value"
+    :deploy="recheck.result.value"
+    :error="recheck.error.value"
+    :note="recheck.note.value"
+    @update:open="recheck.close"
   />
   <ExpiryModal
     v-if="node"

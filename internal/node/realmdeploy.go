@@ -10,6 +10,7 @@ import (
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/realm"
 	"github.com/litebox/litebox/internal/relay"
+	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
 )
 
@@ -235,6 +236,14 @@ func prefixLines(prefix, body string) string {
 // 这一条会 **restart realm、断开全部 realm 线路的在途连接**,而改一条 nginx
 // 规则不该顺带把 realm 也重启一遍。
 func (s *Service) DeployRealm(ctx context.Context, nodeID int64) (deployment.Result, error) {
+	return s.DeployRealmWith(ctx, nodeID, DeployOptions{})
+}
+
+// DeployRealmWith 带前置行为的 realm 下发(V20):
+//   - Repair 为真且有规则要下发时,realm 二进制缺了就自动传(与 sing-box 同一条规矩);
+//   - 配置与节点上的一字不差、realm 又在跑时默认跳过 —— realm 没有 reload,
+//     每次下发都是 restart、断开全部在途连接,同一份配置重启一次换不来任何东西。
+func (s *Service) DeployRealmWith(ctx context.Context, nodeID int64, opts DeployOptions) (deployment.Result, error) {
 	n, err := s.store.Get(ctx, nodeID)
 	if err != nil {
 		return deployment.Result{}, err
@@ -286,8 +295,75 @@ func (s *Service) DeployRealm(ctx context.Context, nodeID int64) (deployment.Res
 	}
 	req.ConfigText = string(text)
 
+	// 前置:二进制在不在、配置有没有变。一次 SSH 问完。
+	pre := &nodeStepRecorder{}
+	var facts RealmFacts
+	var remoteSHA string
+	if err := pre.run("前置检查:realm 现状", func() (string, error) {
+		return "", s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+			var err error
+			facts, err = probeRealm(ctx, client, s.layout)
+			if err != nil {
+				return err
+			}
+			if facts.ConfigPresent {
+				remoteSHA, _ = remoteSHA256(ctx, client, s.layout.RealmConfigPath)
+			}
+			return nil
+		})
+	}); err != nil {
+		return s.realmPreFailed(ctx, nodeID, req, pre, err), err
+	}
+	switch {
+	case facts.Installed:
+		pre.steps[len(pre.steps)-1].Detail = "已安装 " + facts.Version
+	case !opts.Repair:
+		err := fmt.Errorf("%w —— 点「下发」会在确认之后自动安装", ErrRealmBinaryMissing)
+		pre.steps[len(pre.steps)-1].Status = deployment.StepFailed
+		pre.steps[len(pre.steps)-1].Detail = err.Error()
+		return s.realmPreFailed(ctx, nodeID, req, pre, err), err
+	default:
+		pre.steps[len(pre.steps)-1].Detail = "还没安装"
+		if err := pre.run("前置检查:安装 realm", func() (string, error) {
+			res, err := s.InstallRealm(ctx, nodeID)
+			if err != nil {
+				return "", err
+			}
+			return "已自动修复:" + strings.Join(res.Steps, ";"), nil
+		}); err != nil {
+			return s.realmPreFailed(ctx, nodeID, req, pre, err), err
+		}
+	}
+	if facts.Installed && facts.Running && facts.ConfigPresent &&
+		remoteSHA == singbox.SHA256([]byte(req.ConfigText)) && !opts.Force {
+		pre.steps = append(pre.steps, deployment.Step{
+			Name: "下发 realm 配置", Status: deployment.StepSkipped,
+			Detail: "配置已一致且 realm 在跑,没有重启(realm 没有 reload,重启会断开全部在途连接)。要强制重新应用请用「重启」",
+		})
+		result := deployment.Result{
+			NodeID: nodeID, Kind: deployment.KindRealm, Revision: req.Revision,
+			ConfigSHA256: remoteSHA, Status: deployment.StatusSuccess, Steps: pre.steps, Unchanged: true,
+			StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(),
+		}
+		s.saveRelayRecord(ctx, nodeID, result)
+		return result, nil
+	}
+
 	result, deployErr := s.deployer.DeployRealm(ctx, req)
+	result.Steps = append(pre.steps, result.Steps...)
 	logDeployResult(s.logger, nodeID, result, deployErr)
 	s.saveRelayRecord(ctx, nodeID, result)
 	return result, deployErr
+}
+
+// realmPreFailed 把前置阶段的失败记成一条 realm 下发记录:节点一个字节都没动过。
+func (s *Service) realmPreFailed(ctx context.Context, nodeID int64, req deployment.RealmRequest,
+	pre *nodeStepRecorder, err error) deployment.Result {
+	result := deployment.Result{
+		NodeID: nodeID, Kind: deployment.KindRealm, Revision: req.Revision,
+		Status: deployment.StatusFailed, Steps: pre.steps, ErrorMessage: "前置检查未通过:" + err.Error(),
+		StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(),
+	}
+	s.saveRelayRecord(ctx, nodeID, result)
+	return result
 }

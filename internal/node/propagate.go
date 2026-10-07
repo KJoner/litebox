@@ -48,12 +48,36 @@ func (s *Service) PropagateTargetChange(ctx context.Context, targetNodeID int64)
 			s.MarkRelayHostsDirty(hosts)
 		}
 	}
-	if sources, err := s.store.ChainSourceNodeIDs(ctx, targetNodeID); err != nil {
+	// 链式出站按【这台机器上的任意入站】找发起方。原来这里把节点 id 当成入站 id
+	// 传给 ChainSourceNodeIDs,于是改落地的地址之后链到它的入口机一台都标不到 ——
+	// 它们继续用旧地址连落地,而两台机器都显示正常。
+	if links, err := s.store.ChainsTargetingNode(ctx, targetNodeID); err != nil {
 		s.logger.Error("查询链到该落地的中转主机失败",
 			"target_node_id", targetNodeID, "error", err)
-	} else if len(sources) > 0 {
-		s.trigger.MarkDirty(sources...)
+	} else if ids := chainSourceNodes(links); len(ids) > 0 {
+		s.trigger.MarkDirty(ids...)
 	}
+	// 带出口的 Mieru 入口也链到落地:它借道本机 sing-box 的回环 socks 出站,
+	// 那份配置里写着落地的地址 —— 同样要重新下发本机 sing-box。
+	if ids, err := s.store.MieruChainSourceNodeIDs(ctx, targetNodeID); err != nil {
+		s.logger.Error("查询 Mieru 链到该落地的机器失败",
+			"target_node_id", targetNodeID, "error", err)
+	} else if len(ids) > 0 {
+		s.trigger.MarkDirty(ids...)
+	}
+}
+
+// chainSourceNodes 去重取发起方所在的机器。
+func chainSourceNodes(links []ChainLink) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, l := range links {
+		if !seen[l.NodeID] {
+			seen[l.NodeID] = true
+			out = append(out, l.NodeID)
+		}
+	}
+	return out
 }
 
 // PropagateInboundChange 在一个【入站】的对外参数变化之后,把依赖它的中转主机标脏。

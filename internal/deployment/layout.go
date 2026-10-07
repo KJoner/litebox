@@ -210,15 +210,18 @@ const (
 type Result struct {
 	NodeID int64 `json:"node_id"`
 	// Kind 空值按 SINGBOX 处理,与迁移里那一列的默认值一致。
-	Kind           Kind      `json:"kind"`
-	Revision       int64     `json:"revision"`
-	ConfigSHA256   string    `json:"config_sha256"`
-	Status         Status    `json:"status"`
-	Steps          []Step    `json:"steps"`
-	ErrorMessage   string    `json:"error_message,omitempty"`
-	RollbackResult string    `json:"rollback_result,omitempty"`
-	StartedAt      time.Time `json:"started_at"`
-	FinishedAt     time.Time `json:"finished_at"`
+	Kind           Kind   `json:"kind"`
+	Revision       int64  `json:"revision"`
+	ConfigSHA256   string `json:"config_sha256"`
+	Status         Status `json:"status"`
+	Steps          []Step `json:"steps"`
+	ErrorMessage   string `json:"error_message,omitempty"`
+	RollbackResult string `json:"rollback_result,omitempty"`
+	// Unchanged 为真表示前置检查发现节点上跑着的就是库里这一份,这次没有重启服务。
+	// 界面据此把结果写成「配置已一致」而不是「部署成功」—— 后者会被读成断过一次线。
+	Unchanged  bool      `json:"unchanged,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
 }
 
 // stepRecorder 累积步骤记录。
