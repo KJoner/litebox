@@ -293,6 +293,10 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   color: var(--text2);
   white-space: pre-wrap;
   word-break: break-word;
+  /* 拨测失败会带回整段节点日志(上百行)。不封顶的话,后面的「回滚」那一步被推出
+     好几屏 —— 而它回答的正是「节点现在还能不能用」。日志在自己的框里滚。 */
+  max-height: 280px;
+  overflow: auto;
 }
 
 .nop__error {

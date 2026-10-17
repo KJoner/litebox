@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watchEffect } from 'vue'
 import { RouterView } from 'vue-router'
+import { ConfigProvider } from 'ant-design-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import { antdTheme } from '@/theme/antd'
 import { useThemeStore } from '@/stores/theme'
@@ -8,6 +9,21 @@ import { useThemeStore } from '@/stores/theme'
 const themeStore = useThemeStore()
 // 按主题现算一份 ThemeConfig。深色时换 darkAlgorithm,基色仍来自 tokens.ts。
 const antd = computed(() => antdTheme(themeStore.mode))
+
+/*
+ * 静态方法(Modal.confirm / info / error,lbDangerConfirm 也是它)渲染在应用的组件树之外,
+ * 拿不到下面那个 ConfigProvider:主题、中文语言包、「两个汉字的按钮不插空格」三样全丢 ——
+ * 确认框的按钮于是写成「取 消」「部 署」,深色模式下弹出来的还是一张按浅色算的卡。
+ * ConfigProvider.config 给它们同一份配置,跟着主题切换一起变。
+ * (它顺带会注册一份旧式 CSS 变量主题,我们的 ThemeConfig 里没有那几个旧字段,注册出来是空的。)
+ */
+watchEffect(() => {
+  ConfigProvider.config({
+    theme: antd.value,
+    locale: zhCN,
+    autoInsertSpaceInButton: false,
+  } as unknown as Parameters<typeof ConfigProvider.config>[0])
+})
 </script>
 
 <template>
