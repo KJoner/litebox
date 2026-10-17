@@ -1,0 +1,68 @@
+name: ci
+
+# 后端:vet + 全部 Go 测试(真机集成测试没有 LITEBOX_TEST_NODE_* 时自动跳过)。
+# 前端:类型检查、构建、Playwright 功能回归。截图基线(@visual)只在本机比对 ——
+# 字体渲染随平台变,基线按平台存放,CI 上没有 Linux 的那一份。
+#
+# 前端测试全程不连任何后端:接口一律由 web/e2e/fixtures 里的固定数据回答,
+# 写操作没有显式模拟就判失败。这里不需要、也不应该配置任何节点或面板地址。
+
+on:
+  push:
+    branches: [master, 'feat/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+      # phase0/ 是 Phase 0 的一次性验证探针,原样留档,不在格式检查范围里。
+      - name: gofmt
+        run: test -z "$(gofmt -l $(git ls-files '*.go' | grep -v '^phase0/'))"
+      - name: go test
+        run: go test ./... -count=1
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: 类型检查
+        run: |
+          npm run typecheck
+          npm run typecheck:e2e
+      - name: 构建
+        run: npx vite build
+      - name: 安装浏览器
+        run: npx playwright install --with-deps chromium
+      - name: 前端回归(不含截图基线)
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
