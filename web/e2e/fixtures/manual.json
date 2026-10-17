@@ -1,0 +1,55 @@
+{
+  "_说明": "录制时拿不到、手工补的数据。键与 api.json 相同,同名时以这里为准。节点 1 在录制那天 SSH 不通,它的服务现状与网卡读数照节点 2 的形状补。",
+  "responses": {
+    "GET /api/nodes/1/services": {
+      "checked_at": "2026-10-17T11:47:08.9103181Z",
+      "init_system": "systemd",
+      "singbox": {
+        "installed": true,
+        "version": "v1.14.0-litebox",
+        "config_present": true,
+        "state": "RUNNING",
+        "detail": "started",
+        "upgradable": false
+      },
+      "mieru": {
+        "installed": false,
+        "version": "",
+        "config_present": false,
+        "state": "NOT_APPLICABLE",
+        "detail": "还没安装",
+        "instances": []
+      },
+      "nginx": {
+        "installed": false,
+        "version": "",
+        "config_present": false,
+        "state": "NOT_APPLICABLE",
+        "detail": "还没安装",
+        "facts": {
+          "installed": false,
+          "binary_path": "",
+          "version": "",
+          "stream_built_in": false,
+          "stream_module_path": "",
+          "stream_available": false,
+          "missing_package": "",
+          "package_manager": "apk"
+        }
+      },
+      "realm": {
+        "installed": false,
+        "version": "",
+        "config_present": false,
+        "state": "NOT_APPLICABLE",
+        "detail": "还没安装"
+      }
+    },
+    "GET /api/nodes/1/host-traffic/live": {
+      "iface": "eth0",
+      "rx_bytes": 51200000,
+      "tx_bytes": 20480000,
+      "at": "2026-10-17T11:47:14.3251319Z"
+    }
+  }
+}

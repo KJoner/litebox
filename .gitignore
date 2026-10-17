@@ -31,6 +31,13 @@ assets/mieru/mieru-linux-*
 # 依赖
 node_modules/
 
+# 前端回归测试的产物(截图基线 e2e/__screenshots__ 要提交,这些不要)
+web/test-results/
+web/playwright-report/
+web/e2e/fixtures/raw*.json
+# 脱敏脚本的真实端口 / 别名对照表,只留在本机
+web/e2e/tools/sanitize.local.json
+
 # 本地配置(含主密钥,绝不能提交)
 litebox.local.yaml
 *.local.yaml

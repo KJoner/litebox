@@ -1,0 +1,4970 @@
+{
+  "capturedAt": "2026-10-17T11:46:21.737Z",
+  "responses": {
+    "GET /api/auth/me": {
+      "id": 1,
+      "username": "admin"
+    },
+    "GET /api/traffic/daily?days=30": {
+      "daily": [
+        {
+          "day": "2026-09-17",
+          "uplink": 118699753,
+          "downlink": 1493415637,
+          "total": 1612115390
+        },
+        {
+          "day": "2026-09-18",
+          "uplink": 125830267,
+          "downlink": 1448356334,
+          "total": 1574186601
+        },
+        {
+          "day": "2026-09-19",
+          "uplink": 135429989,
+          "downlink": 1702527402,
+          "total": 1837957391
+        },
+        {
+          "day": "2026-09-20",
+          "uplink": 134066808,
+          "downlink": 1260147550,
+          "total": 1394214358
+        },
+        {
+          "day": "2026-09-21",
+          "uplink": 128324297,
+          "downlink": 1569265654,
+          "total": 1697589951
+        },
+        {
+          "day": "2026-09-22",
+          "uplink": 120041500,
+          "downlink": 1531526502,
+          "total": 1651568002
+        },
+        {
+          "day": "2026-09-23",
+          "uplink": 148841979,
+          "downlink": 1536035363,
+          "total": 1684877342
+        },
+        {
+          "day": "2026-09-24",
+          "uplink": 125988514,
+          "downlink": 1593764501,
+          "total": 1719753015
+        },
+        {
+          "day": "2026-09-25",
+          "uplink": 131880701,
+          "downlink": 1464172547,
+          "total": 1596053248
+        },
+        {
+          "day": "2026-09-26",
+          "uplink": 154616326,
+          "downlink": 1655427077,
+          "total": 1810043403
+        },
+        {
+          "day": "2026-09-27",
+          "uplink": 125169001,
+          "downlink": 1383115365,
+          "total": 1508284366
+        },
+        {
+          "day": "2026-09-28",
+          "uplink": 135346638,
+          "downlink": 1383640325,
+          "total": 1518986963
+        },
+        {
+          "day": "2026-09-29",
+          "uplink": 118927963,
+          "downlink": 1296698321,
+          "total": 1415626284
+        },
+        {
+          "day": "2026-09-30",
+          "uplink": 133456435,
+          "downlink": 1818282717,
+          "total": 1951739152
+        },
+        {
+          "day": "2026-10-01",
+          "uplink": 153790996,
+          "downlink": 1409743473,
+          "total": 1563534469
+        },
+        {
+          "day": "2026-10-02",
+          "uplink": 138232825,
+          "downlink": 1297993749,
+          "total": 1436226574
+        },
+        {
+          "day": "2026-10-03",
+          "uplink": 151429399,
+          "downlink": 1631188728,
+          "total": 1782618127
+        },
+        {
+          "day": "2026-10-04",
+          "uplink": 121169407,
+          "downlink": 1405048459,
+          "total": 1526217866
+        },
+        {
+          "day": "2026-10-05",
+          "uplink": 144053423,
+          "downlink": 1643045576,
+          "total": 1787098999
+        },
+        {
+          "day": "2026-10-06",
+          "uplink": 135439699,
+          "downlink": 1566616546,
+          "total": 1702056245
+        },
+        {
+          "day": "2026-10-07",
+          "uplink": 52714793,
+          "downlink": 699375259,
+          "total": 752090052
+        }
+      ]
+    },
+    "GET /api/deployments?limit=100": {
+      "items": [
+        {
+          "id": 5,
+          "node_id": 2,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "b2066c8e5ed260eb03e58898c76a7aafb2066c8e5ed260eb03e58898c76a7aaf",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3860,
+              "detail": "已连上 203.0.113.10,主机密钥 SHA256:emVnEEVXtf0jivEgStqpaJYSJiGOuqx0emVnEEVX+f0"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 0s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2590,
+              "detail": "1103 字节,sha256=1af6120d5a3b"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 421,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 749,
+              "detail": "/opt/litebox/backup/config-1.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 708,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 434,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 381,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 376,
+              "detail": "端口 9443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 4337,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,409 ms)"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 2,
+          "config_sha256": "f3ab7d7c4b38528b05d67bb1e8628ca6f3ab7d7c4b38528b05d67bb1e8628ca6",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:14Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3853,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "库里的配置与上次下发的不同,需要下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2400,
+              "detail": "1103 字节,sha256=6efec6787dff"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 405,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 685,
+              "detail": "/opt/litebox/backup/config-2.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 354,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 415,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 362,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 344,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 4019,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,381 ms)"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:59Z",
+          "finished_at": "2026-10-07T09:25:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3732,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 13971,
+              "detail": "已自动修复:节点原先禁止 TCP 转发,已在 /etc/ssh/sshd_config.d/00-litebox-forwarding.conf 写入 AllowTcpForwarding yes 并 reload sshd"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:02Z",
+          "finished_at": "2026-10-07T09:24:05Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3483,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 1,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:22:51Z",
+          "finished_at": "2026-10-07T09:23:28Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 4283,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:探测架构",
+              "status": "SUCCESS",
+              "duration_ms": 4368,
+              "detail": "已自动修复:还没探测过,已补探测:amd64"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 20490,
+              "detail": "已自动修复:这台机器上原来没有 sing-box,已安装 v1.14.0-litebox(openrc)"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没在跑()"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "节点上还没有配置,这次下发会写入"
+            },
+            {
+              "name": "前置检查:端口占用",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "入口端口都空着"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "节点上的 sing-box 未运行,无待同步流量:采集节点 1 流量失败(未修改数据库): 节点 1 的 V2Ray API 不可用(127.0.0.1:20080): 读取运行时状态: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: ssh: rejected: connect failed (Connection refused)\""
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2382,
+              "detail": "915 字节,sha256=c97a65ca2f8e"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 392,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 342,
+              "detail": "首次部署,无需备份"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 340,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 466,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 347,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 339,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "这个入站上没有用户,无法拨测"
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/dashboard/summary": {
+      "expiring_soon": 0,
+      "failed_deploys": 0,
+      "node_online": 2,
+      "node_total": 2,
+      "quota_exceeded": 0,
+      "traffic_month": 10549842332,
+      "traffic_today": 0,
+      "user_active": 1,
+      "user_total": 1
+    },
+    "GET /api/external-proxies": {
+      "excluded_count": 0,
+      "items": [
+        {
+          "id": 1,
+          "source_id": null,
+          "source_name": "",
+          "name_prefix": "",
+          "name": "测试机场-HK01",
+          "display_name": "机场 HK01",
+          "display_name_override": "",
+          "raw_name": "",
+          "protocol": "SHADOWSOCKS",
+          "server": "ext-hk01.example.com",
+          "port": 8388,
+          "access_tier_id": 1,
+          "access_tier_code": "normal",
+          "access_tier_name": "普通组",
+          "access_tier_level": 10,
+          "subscription_enabled": true,
+          "sort_order": 1500,
+          "public_remark": "",
+          "maintenance_message": "",
+          "expires_at": null,
+          "origin": "MANUAL",
+          "identity_key": "ff321d970a17848233cd4303d8a74ba8ff321d970a17848233cd4303d8a74ba8",
+          "locked_fields": "",
+          "missing_rounds": 0,
+          "missing_since": null,
+          "last_seen_at": null,
+          "status": "ACTIVE",
+          "last_check_at": null,
+          "last_check_ok": null,
+          "last_check_message": "",
+          "last_check_latency_ms": null,
+          "created_at": "2026-10-07T13:13:52Z",
+          "updated_at": "2026-10-07T13:15:18Z",
+          "final_display_name": "机场 HK01",
+          "locked_list": [],
+          "dialable_by_node": true,
+          "dialable_reason": "",
+          "relayable": true,
+          "expiry": {
+            "kind": "EXTERNAL_PROXY",
+            "object_id": 1,
+            "has_profile": false,
+            "inherited": false,
+            "inherited_from": 0,
+            "expires_at": "",
+            "reminder_enabled": true,
+            "auto_renew": false,
+            "vendor_name": "",
+            "vendor_url": "",
+            "note": "",
+            "lead_days": [],
+            "state": "UNSET",
+            "days_left": null,
+            "last_notice": null
+          }
+        }
+      ]
+    },
+    "GET /api/dashboard/alerts": {
+      "items": []
+    },
+    "GET /api/nodes": {
+      "items": [
+        {
+          "id": 1,
+          "name": "sh-node",
+          "display_name": "上海-alpha",
+          "host": "203.0.113.11",
+          "sub_ipv4_address": "",
+          "ipv6_address": "",
+          "ssh_port": 2222,
+          "ssh_user": "root",
+          "api_port": 20080,
+          "config_in_ram": false,
+          "role": "LANDING",
+          "inbounds": [
+            {
+              "id": 1,
+              "node_id": 1,
+              "node_name": "sh-node",
+              "node_display_name": "上海-alpha",
+              "tag": "in-1",
+              "display_name": "上海-alpha",
+              "protocol": "VLESS_REALITY",
+              "ss_method": "",
+              "deployed_protocol": "VLESS_REALITY",
+              "deployed_ss_method": "",
+              "snell_version": 0,
+              "snell_obfs_mode": "",
+              "snell_obfs_host": "",
+              "snell_v6_mode": "",
+              "snell_shared_psk": false,
+              "deployed_snell_version": 0,
+              "deployed_snell_obfs_mode": "",
+              "deployed_snell_v6_mode": "",
+              "deployed_snell_shared_psk": false,
+              "unmetered": false,
+              "deployed_unmetered": false,
+              "listen_port": 8443,
+              "public_port": 8443,
+              "ipv6_public_port": 0,
+              "ipv6_enabled": true,
+              "ipv6_display_name": "",
+              "ipv6_entry_name": "上海-alpha-IPV6",
+              "tcp_fast_open": false,
+              "deployed_tcp_fast_open": false,
+              "reality_dest": "www.fastly.com",
+              "reality_dest_port": 443,
+              "reality_public_key": "wLucv-UVahFDh69j95HBYAkMvCO8G1LtwL_cv4UVahF",
+              "reality_short_id": "3710266fdd258b3f",
+              "handshake_max_record_size": 0,
+              "handshake_checked_at": null,
+              "chain_target_kind": "",
+              "chain_target_inbound_id": 0,
+              "chain_target_external_id": 0,
+              "chain_code": "",
+              "access_tier_id": 1,
+              "access_tier_code": "normal",
+              "access_tier_name": "普通组",
+              "access_tier_level": 10,
+              "sort_order": 0,
+              "subscription_enabled": true,
+              "public_remark": "",
+              "enabled": true,
+              "created_at": "2026-10-07T09:01:26Z",
+              "updated_at": "2026-10-07T09:35:14Z"
+            }
+          ],
+          "mieru_inbounds": [],
+          "host_changed_at": "",
+          "ssh_verify_state": "",
+          "arch": "amd64",
+          "singbox_version": "v1.14.0-litebox",
+          "singbox_build_tags": "with_utls,with_v2ray_api,badlinkname,tfogo_checklinkname0",
+          "mem_total_mb": 122,
+          "sort_order": 1,
+          "subscription_enabled": true,
+          "public_remark": "",
+          "maintenance_message": "",
+          "traffic_quota_bytes": 0,
+          "traffic_reset_cycle": "NONE",
+          "traffic_reset_day": 1,
+          "traffic_billing_mode": "EGRESS",
+          "status": "ONLINE",
+          "last_heartbeat_at": "2026-10-07T09:35:14Z",
+          "config_revision": 2,
+          "deployed_config_sha256": "f3ab7d7c4b38528b05d67bb1e8628ca6f3ab7d7c4b38528b05d67bb1e8628ca6",
+          "created_at": "2026-10-07T09:01:26Z",
+          "updated_at": "2026-10-07T09:35:14Z",
+          "config_state": "IN_SYNC",
+          "needs_deploy": false,
+          "udp_timeout": "2m",
+          "subscription_host": "203.0.113.11",
+          "available_protocols": [
+            {
+              "value": "VLESS_REALITY",
+              "label": "VLESS + REALITY"
+            },
+            {
+              "value": "SHADOWSOCKS",
+              "label": "Shadowsocks 2022"
+            },
+            {
+              "value": "SNELL",
+              "label": "Snell"
+            }
+          ],
+          "cloud": null,
+          "uses_custom_key": false,
+          "expiry": {
+            "kind": "NODE",
+            "object_id": 1,
+            "has_profile": true,
+            "inherited": false,
+            "inherited_from": 0,
+            "expires_at": "2026-11-10T16:00:00Z",
+            "reminder_enabled": true,
+            "auto_renew": false,
+            "vendor_name": "alpha",
+            "vendor_url": "https://alpha.example.com/renew",
+            "note": "测试",
+            "lead_days": [],
+            "state": "OK",
+            "days_left": 25,
+            "last_notice": null
+          }
+        },
+        {
+          "id": 2,
+          "name": "tk-node",
+          "display_name": "东京-beta",
+          "host": "203.0.113.10",
+          "sub_ipv4_address": "",
+          "ipv6_address": "",
+          "ssh_port": 2200,
+          "ssh_user": "root",
+          "api_port": 20081,
+          "config_in_ram": false,
+          "role": "LANDING",
+          "inbounds": [
+            {
+              "id": 2,
+              "node_id": 2,
+              "node_name": "tk-node",
+              "node_display_name": "东京-beta",
+              "tag": "in-2",
+              "display_name": "东京-beta",
+              "protocol": "VLESS_REALITY",
+              "ss_method": "",
+              "deployed_protocol": "VLESS_REALITY",
+              "deployed_ss_method": "",
+              "snell_version": 0,
+              "snell_obfs_mode": "",
+              "snell_obfs_host": "",
+              "snell_v6_mode": "",
+              "snell_shared_psk": false,
+              "deployed_snell_version": 0,
+              "deployed_snell_obfs_mode": "",
+              "deployed_snell_v6_mode": "",
+              "deployed_snell_shared_psk": false,
+              "unmetered": false,
+              "deployed_unmetered": false,
+              "listen_port": 9443,
+              "public_port": 9443,
+              "ipv6_public_port": 0,
+              "ipv6_enabled": true,
+              "ipv6_display_name": "",
+              "ipv6_entry_name": "东京-beta-IPV6",
+              "tcp_fast_open": false,
+              "deployed_tcp_fast_open": false,
+              "reality_dest": "www.fastly.com",
+              "reality_dest_port": 443,
+              "reality_public_key": "BqUL0RpAzPKxl7FhQ9f4mo9VNmf9VCRrBqUL0RpAzPK",
+              "reality_short_id": "02ef06a3e1dba662",
+              "handshake_max_record_size": 0,
+              "handshake_checked_at": null,
+              "chain_target_kind": "",
+              "chain_target_inbound_id": 0,
+              "chain_target_external_id": 0,
+              "chain_code": "",
+              "access_tier_id": 1,
+              "access_tier_code": "normal",
+              "access_tier_name": "普通组",
+              "access_tier_level": 10,
+              "sort_order": 0,
+              "subscription_enabled": true,
+              "public_remark": "",
+              "enabled": true,
+              "created_at": "2026-10-07T09:01:54Z",
+              "updated_at": "2026-10-07T09:35:16Z"
+            }
+          ],
+          "mieru_inbounds": [],
+          "host_changed_at": "2026-10-07T09:23:21Z",
+          "ssh_verify_state": "",
+          "arch": "arm64",
+          "singbox_version": "v1.14.0-litebox",
+          "singbox_build_tags": "with_utls,with_v2ray_api,badlinkname,tfogo_checklinkname0",
+          "mem_total_mb": 512,
+          "sort_order": 2,
+          "subscription_enabled": true,
+          "public_remark": "",
+          "maintenance_message": "",
+          "traffic_quota_bytes": 0,
+          "traffic_reset_cycle": "NONE",
+          "traffic_reset_day": 1,
+          "traffic_billing_mode": "EGRESS",
+          "status": "ONLINE",
+          "last_heartbeat_at": "2026-10-07T09:35:16Z",
+          "config_revision": 1,
+          "deployed_config_sha256": "b2066c8e5ed260eb03e58898c76a7aafb2066c8e5ed260eb03e58898c76a7aaf",
+          "created_at": "2026-10-07T09:01:54Z",
+          "updated_at": "2026-10-07T10:01:01Z",
+          "config_state": "IN_SYNC",
+          "needs_deploy": false,
+          "udp_timeout": "3m",
+          "subscription_host": "203.0.113.10",
+          "available_protocols": [
+            {
+              "value": "VLESS_REALITY",
+              "label": "VLESS + REALITY"
+            },
+            {
+              "value": "SHADOWSOCKS",
+              "label": "Shadowsocks 2022"
+            },
+            {
+              "value": "SNELL",
+              "label": "Snell"
+            }
+          ],
+          "cloud": null,
+          "uses_custom_key": false,
+          "expiry": {
+            "kind": "NODE",
+            "object_id": 2,
+            "has_profile": false,
+            "inherited": false,
+            "inherited_from": 0,
+            "expires_at": "",
+            "reminder_enabled": true,
+            "auto_renew": false,
+            "vendor_name": "",
+            "vendor_url": "",
+            "note": "",
+            "lead_days": [],
+            "state": "UNSET",
+            "days_left": null,
+            "last_notice": null
+          }
+        }
+      ]
+    },
+    "GET /api/proxy-sources": {
+      "items": [],
+      "missing_rounds_before_unlist": 3,
+      "sync_failure_alert_threshold": 3
+    },
+    "GET /api/users": {
+      "items": [
+        {
+          "id": 1,
+          "user_code": "user_000001",
+          "display_name": "测试用户A",
+          "remark": "",
+          "status": "ACTIVE",
+          "quota_bytes": 0,
+          "used_uplink": 18525,
+          "used_downlink": 9078106,
+          "expires_at": null,
+          "reset_cycle": "NONE",
+          "reset_day": 1,
+          "last_reset_at": null,
+          "access_tier_id": 1,
+          "access_tier_code": "normal",
+          "access_tier_name": "普通组",
+          "access_tier_level": 10,
+          "node_ids": [],
+          "effective_node_ids": [
+            1,
+            2
+          ],
+          "external_proxy_ids": [],
+          "effective_external_proxy_ids": [
+            1
+          ],
+          "created_at": "2026-10-07T09:34:55Z",
+          "updated_at": "2026-10-07T09:35:26Z",
+          "sub_last_access_at": "2026-10-07T13:15:29Z",
+          "sub_last_access_ip": "127.0.0.1",
+          "sub_last_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+          "sub_access_count": 1,
+          "used_total": 9096631,
+          "portal_account": {
+            "id": 1,
+            "proxy_user_id": 1,
+            "username": "demo",
+            "login_enabled": true,
+            "must_change_password": false,
+            "last_login_at": "2026-10-17T11:27:37Z",
+            "last_login_ip": "127.0.0.1",
+            "created_at": "2026-10-17T09:37:44Z",
+            "updated_at": "2026-10-17T11:27:37Z",
+            "session_count": 3
+          },
+          "last_renewal_at": "",
+          "next_reset_at": ""
+        }
+      ]
+    },
+    "GET /api/traffic/status": {
+      "failing_nodes": [
+        {
+          "error": "采集节点 1 流量失败(未修改数据库): SSH 握手 203.0.113.11:2222: ssh: handshake failed: EOF",
+          "failed_at": "2026-10-17T11:47:07Z",
+          "node_id": 1
+        }
+      ],
+      "last_run": "2026-10-17T11:47:12Z",
+      "last_started": "2026-10-17T11:47:05Z",
+      "running": false
+    },
+    "GET /api/deployments?limit=50": {
+      "items": [
+        {
+          "id": 5,
+          "node_id": 2,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "b2066c8e5ed260eb03e58898c76a7aafb2066c8e5ed260eb03e58898c76a7aaf",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3860,
+              "detail": "已连上 203.0.113.10,主机密钥 SHA256:emVnEEVXtf0jivEgStqpaJYSJiGOuqx0emVnEEVX+f0"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 0s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2590,
+              "detail": "1103 字节,sha256=1af6120d5a3b"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 421,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 749,
+              "detail": "/opt/litebox/backup/config-1.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 708,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 434,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 381,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 376,
+              "detail": "端口 9443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 4337,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,409 ms)"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 2,
+          "config_sha256": "f3ab7d7c4b38528b05d67bb1e8628ca6f3ab7d7c4b38528b05d67bb1e8628ca6",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:14Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3853,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "库里的配置与上次下发的不同,需要下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2400,
+              "detail": "1103 字节,sha256=6efec6787dff"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 405,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 685,
+              "detail": "/opt/litebox/backup/config-2.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 354,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 415,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 362,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 344,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 4019,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,381 ms)"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:59Z",
+          "finished_at": "2026-10-07T09:25:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3732,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 13971,
+              "detail": "已自动修复:节点原先禁止 TCP 转发,已在 /etc/ssh/sshd_config.d/00-litebox-forwarding.conf 写入 AllowTcpForwarding yes 并 reload sshd"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:02Z",
+          "finished_at": "2026-10-07T09:24:05Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3483,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 1,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:22:51Z",
+          "finished_at": "2026-10-07T09:23:28Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 4283,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:探测架构",
+              "status": "SUCCESS",
+              "duration_ms": 4368,
+              "detail": "已自动修复:还没探测过,已补探测:amd64"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 20490,
+              "detail": "已自动修复:这台机器上原来没有 sing-box,已安装 v1.14.0-litebox(openrc)"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没在跑()"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "节点上还没有配置,这次下发会写入"
+            },
+            {
+              "name": "前置检查:端口占用",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "入口端口都空着"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "节点上的 sing-box 未运行,无待同步流量:采集节点 1 流量失败(未修改数据库): 节点 1 的 V2Ray API 不可用(127.0.0.1:20080): 读取运行时状态: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: ssh: rejected: connect failed (Connection refused)\""
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2382,
+              "detail": "915 字节,sha256=c97a65ca2f8e"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 392,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 342,
+              "detail": "首次部署,无需备份"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 340,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 466,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 347,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 339,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "这个入站上没有用户,无法拨测"
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/metrics/nodes-latest": {
+      "items": [
+        {
+          "node_id": 2,
+          "cpu_percent": 4.040404040404041,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17563,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.06,
+          "uptime_seconds": 4254266,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:43:10Z"
+        }
+      ]
+    },
+    "GET /api/traffic/nodes-cycle": {
+      "items": [
+        {
+          "node_id": 1,
+          "period_start": "2026-10-07T09:01:26Z",
+          "next_reset_at": null,
+          "uplink_bytes": 1705,
+          "downlink_bytes": 4101,
+          "proxy_bytes": 5806,
+          "used_bytes": 5806,
+          "quota_bytes": 0,
+          "remaining_bytes": null,
+          "usage_percent": null,
+          "unlimited": true,
+          "exceeded": false,
+          "warning_level": "UNLIMITED",
+          "reset_cycle": "NONE",
+          "reset_day": 1,
+          "billing_mode": "EGRESS",
+          "billing_factor": 1
+        },
+        {
+          "node_id": 2,
+          "period_start": "2026-10-07T09:01:54Z",
+          "next_reset_at": null,
+          "uplink_bytes": 16820,
+          "downlink_bytes": 9074005,
+          "proxy_bytes": 9090825,
+          "used_bytes": 9090825,
+          "quota_bytes": 0,
+          "remaining_bytes": null,
+          "usage_percent": null,
+          "unlimited": true,
+          "exceeded": false,
+          "warning_level": "UNLIMITED",
+          "reset_cycle": "NONE",
+          "reset_day": 1,
+          "billing_mode": "EGRESS",
+          "billing_factor": 1
+        }
+      ]
+    },
+    "GET /api/nodes/health": {
+      "enabled": true,
+      "items": [
+        {
+          "node_id": 1,
+          "node_name": "sh-node",
+          "checked_at": "2026-10-17T19:46:05.7381291+08:00",
+          "singbox": "UNREACHABLE",
+          "singbox_detail": "SSH 握手 203.0.113.11:2222: ssh: handshake failed: EOF",
+          "nginx": "NOT_APPLICABLE",
+          "nginx_detail": "SSH 握手 203.0.113.11:2222: ssh: handshake failed: EOF",
+          "realm": "NOT_APPLICABLE",
+          "realm_detail": "SSH 握手 203.0.113.11:2222: ssh: handshake failed: EOF",
+          "mieru": [],
+          "recovered": false,
+          "fail_streak": 0
+        },
+        {
+          "node_id": 2,
+          "node_name": "tk-node",
+          "checked_at": "2026-10-17T19:46:09.3034599+08:00",
+          "singbox": "RUNNING",
+          "singbox_detail": "started",
+          "nginx": "NOT_APPLICABLE",
+          "nginx_detail": "",
+          "realm": "NOT_APPLICABLE",
+          "realm_detail": "",
+          "mieru": null,
+          "recovered": false,
+          "fail_streak": 0
+        }
+      ]
+    },
+    "GET /api/access-tiers": {
+      "items": [
+        {
+          "id": 1,
+          "code": "normal",
+          "name": "普通组",
+          "level": 10,
+          "description": "可使用普通节点",
+          "sort_order": 10,
+          "created_at": "2026-10-07T09:01:07Z",
+          "updated_at": "2026-10-07T09:01:07Z"
+        },
+        {
+          "id": 2,
+          "code": "vip",
+          "name": "VIP组",
+          "level": 20,
+          "description": "可使用普通节点与 VIP 节点",
+          "sort_order": 20,
+          "created_at": "2026-10-07T09:01:07Z",
+          "updated_at": "2026-10-07T09:01:07Z"
+        },
+        {
+          "id": 3,
+          "code": "root",
+          "name": "ROOT组",
+          "level": 30,
+          "description": "可使用全部节点",
+          "sort_order": 30,
+          "created_at": "2026-10-07T09:01:07Z",
+          "updated_at": "2026-10-07T09:01:07Z"
+        }
+      ]
+    },
+    "GET /api/panel-key": {
+      "public_key": "5Li-WjBEwpAP80vOpUy61RbgzkHJU0gD5LibWjBEwpAP80vOpUy61Rbg+kHJU0gD5LibWjBEw/AP80vOpUy61Rbg-kHJU0"
+    },
+    "GET /api/relays": {
+      "items": []
+    },
+    "GET /api/settings": {
+      "subscription_base_url": "http://127.0.0.1:18100",
+      "config_base_url": "http://127.0.0.1:18100",
+      "panel_public_key": "5Li-WjBEwpAP80vOpUy61RbgzkHJU0gD5LibWjBEwpAP80vOpUy61Rbg+kHJU0gD5LibWjBEw/AP80vOpUy61Rbg-kHJU0",
+      "probe_url": "",
+      "default_probe_url": "https://www.gstatic.com/generate_204",
+      "cloud_timezone": "",
+      "default_cloud_timezone": "Asia/Shanghai",
+      "cloud_poll_interval_sec": 0,
+      "default_cloud_poll_interval_sec": 300,
+      "expiry_lead_days": "",
+      "default_expiry_lead_days": "7,3,1",
+      "expiry_send_time": "",
+      "default_expiry_send_time": "09:00",
+      "expiry_timezone": "",
+      "effective_expiry_timezone": "Asia/Shanghai",
+      "subscription_order_scheme": "GLOBAL",
+      "subscription_external_position": "AFTER"
+    },
+    "GET /api/subscription-profiles": {
+      "items": []
+    },
+    "GET /api/subscription-profiles/placeholders": {
+      "default_filenames": {
+        "CLASH": "config.yaml",
+        "SHADOWROCKET": "shadowrocket.conf",
+        "SINGBOX": "config.json"
+      },
+      "items": [
+        {
+          "name": "sub_url",
+          "description": "该用户的通用节点订阅链接",
+          "kinds": [
+            "SINGBOX",
+            "CLASH",
+            "SHADOWROCKET"
+          ],
+          "once": false
+        },
+        {
+          "name": "clash_sub_url",
+          "description": "该用户的 Clash 原生订阅(?format=clash),proxy-providers 的 url 用它 —— 比 sub_url 多出没有分享链接的线路(如共享凭据的 Snell)",
+          "kinds": [
+            "CLASH"
+          ],
+          "once": false
+        },
+        {
+          "name": "user_code",
+          "description": "用户代码,形如 user_000001",
+          "kinds": [
+            "SINGBOX",
+            "CLASH",
+            "SHADOWROCKET"
+          ],
+          "once": false
+        },
+        {
+          "name": "singbox_outbounds",
+          "description": "该用户全部节点的出站对象,逗号分隔(落地节点自动挂 detour)",
+          "kinds": [
+            "SINGBOX"
+          ],
+          "once": true
+        },
+        {
+          "name": "singbox_all_tags",
+          "description": "全部节点的 tag,带引号逗号分隔",
+          "kinds": [
+            "SINGBOX"
+          ],
+          "once": false
+        },
+        {
+          "name": "singbox_general_tags",
+          "description": "非落地节点的 tag",
+          "kinds": [
+            "SINGBOX"
+          ],
+          "once": false
+        },
+        {
+          "name": "singbox_landing_tags",
+          "description": "落地节点的 tag(名字含「落地」或 landing)",
+          "kinds": [
+            "SINGBOX"
+          ],
+          "once": false
+        },
+        {
+          "name": "clash_proxies",
+          "description": "该用户全部节点的 proxies 条目(直接内联,不经 proxy-providers)",
+          "kinds": [
+            "CLASH"
+          ],
+          "once": true
+        },
+        {
+          "name": "clash_proxy_names",
+          "description": "全部节点的名字,YAML 列表项",
+          "kinds": [
+            "CLASH"
+          ],
+          "once": false
+        },
+        {
+          "name": "clash_general_names",
+          "description": "非落地节点的名字",
+          "kinds": [
+            "CLASH"
+          ],
+          "once": false
+        },
+        {
+          "name": "clash_landing_names",
+          "description": "落地节点的名字(名字含「落地」或 landing)",
+          "kinds": [
+            "CLASH"
+          ],
+          "once": false
+        }
+      ],
+      "landing_keywords": [
+        "落地",
+        "landing"
+      ],
+      "max_bytes": 262144
+    },
+    "GET /api/deployments?limit=200": {
+      "items": [
+        {
+          "id": 5,
+          "node_id": 2,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "b2066c8e5ed260eb03e58898c76a7aafb2066c8e5ed260eb03e58898c76a7aaf",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3860,
+              "detail": "已连上 203.0.113.10,主机密钥 SHA256:emVnEEVXtf0jivEgStqpaJYSJiGOuqx0emVnEEVX+f0"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 0s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2590,
+              "detail": "1103 字节,sha256=1af6120d5a3b"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 421,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 749,
+              "detail": "/opt/litebox/backup/config-1.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 708,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 434,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 381,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 376,
+              "detail": "端口 9443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 4337,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,409 ms)"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 2,
+          "config_sha256": "f3ab7d7c4b38528b05d67bb1e8628ca6f3ab7d7c4b38528b05d67bb1e8628ca6",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:14Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3853,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "库里的配置与上次下发的不同,需要下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2400,
+              "detail": "1103 字节,sha256=6efec6787dff"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 405,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 685,
+              "detail": "/opt/litebox/backup/config-2.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 354,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 415,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 362,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 344,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 4019,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,381 ms)"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:59Z",
+          "finished_at": "2026-10-07T09:25:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3732,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 13971,
+              "detail": "已自动修复:节点原先禁止 TCP 转发,已在 /etc/ssh/sshd_config.d/00-litebox-forwarding.conf 写入 AllowTcpForwarding yes 并 reload sshd"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:02Z",
+          "finished_at": "2026-10-07T09:24:05Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3483,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 1,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:22:51Z",
+          "finished_at": "2026-10-07T09:23:28Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 4283,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:探测架构",
+              "status": "SUCCESS",
+              "duration_ms": 4368,
+              "detail": "已自动修复:还没探测过,已补探测:amd64"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 20490,
+              "detail": "已自动修复:这台机器上原来没有 sing-box,已安装 v1.14.0-litebox(openrc)"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没在跑()"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "节点上还没有配置,这次下发会写入"
+            },
+            {
+              "name": "前置检查:端口占用",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "入口端口都空着"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "节点上的 sing-box 未运行,无待同步流量:采集节点 1 流量失败(未修改数据库): 节点 1 的 V2Ray API 不可用(127.0.0.1:20080): 读取运行时状态: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: ssh: rejected: connect failed (Connection refused)\""
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2382,
+              "detail": "915 字节,sha256=c97a65ca2f8e"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 392,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 342,
+              "detail": "首次部署,无需备份"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 340,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 466,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 347,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 339,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "这个入站上没有用户,无法拨测"
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/audit-logs?limit=200": {
+      "items": [
+        {
+          "id": 28,
+          "admin_user_id": null,
+          "action": "admin.login_failed",
+          "target_type": "",
+          "target_id": "",
+          "detail": "用户名或密码错误:admin",
+          "client_ip": "127.0.0.1",
+          "succeeded": false,
+          "created_at": "2026-10-17T10:40:38Z"
+        },
+        {
+          "id": 27,
+          "admin_user_id": null,
+          "action": "admin.login_failed",
+          "target_type": "",
+          "target_id": "",
+          "detail": "用户名或密码错误:admin",
+          "client_ip": "127.0.0.1",
+          "succeeded": false,
+          "created_at": "2026-10-17T10:40:27Z"
+        },
+        {
+          "id": 26,
+          "admin_user_id": null,
+          "action": "admin.login_failed",
+          "target_type": "",
+          "target_id": "",
+          "detail": "用户名或密码错误:admin",
+          "client_ip": "127.0.0.1",
+          "succeeded": false,
+          "created_at": "2026-10-17T10:36:22Z"
+        },
+        {
+          "id": 25,
+          "admin_user_id": 1,
+          "action": "portal.account_set",
+          "target_type": "user",
+          "target_id": "user_000001",
+          "detail": "登录账号 demo;已重设密码并撤销全部旧会话",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-17T09:37:44Z"
+        },
+        {
+          "id": 24,
+          "admin_user_id": 1,
+          "action": "admin.login",
+          "target_type": "",
+          "target_id": "",
+          "detail": "",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-17T09:35:04Z"
+        },
+        {
+          "id": 23,
+          "admin_user_id": 1,
+          "action": "admin.login",
+          "target_type": "",
+          "target_id": "",
+          "detail": "",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-17T09:34:32Z"
+        },
+        {
+          "id": 22,
+          "admin_user_id": 1,
+          "action": "external_proxy.update",
+          "target_type": "external_proxy",
+          "target_id": "1",
+          "detail": "排序改为 1500",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T13:15:18Z"
+        },
+        {
+          "id": 21,
+          "admin_user_id": 1,
+          "action": "subscription.order_migrate",
+          "target_type": "settings",
+          "target_id": "",
+          "detail": "订阅排序切换为 GLOBAL,改写了 1 行(节点 2、入口 2、外部代理 1)",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T13:15:01Z"
+        },
+        {
+          "id": 20,
+          "admin_user_id": 1,
+          "action": "external_proxy.create",
+          "target_type": "external_proxy",
+          "target_id": "测试机场-HK01",
+          "detail": "Shadowsocks ext-hk01.example.com:8388",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T13:13:52Z"
+        },
+        {
+          "id": 19,
+          "admin_user_id": 1,
+          "action": "node.update",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "排序号改为 2",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T10:01:01Z"
+        },
+        {
+          "id": 18,
+          "admin_user_id": 1,
+          "action": "node.update",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "排序号改为 5",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T10:00:36Z"
+        },
+        {
+          "id": 17,
+          "admin_user_id": 1,
+          "action": "user.create",
+          "target_type": "user",
+          "target_id": "user_000001",
+          "detail": "新增用户 测试用户A",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:34:55Z"
+        },
+        {
+          "id": 16,
+          "admin_user_id": 1,
+          "action": "node.addresses",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "保存额外订阅地址:共 0 条",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:26:56Z"
+        },
+        {
+          "id": 15,
+          "admin_user_id": 1,
+          "action": "node.deploy",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "revision=1 ",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:25:16Z"
+        },
+        {
+          "id": 14,
+          "admin_user_id": 1,
+          "action": "node.deploy",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "revision=1 ",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:24:05Z"
+        },
+        {
+          "id": 13,
+          "admin_user_id": 1,
+          "action": "node.recheck",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "全部 11 项通过",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:23:35Z"
+        },
+        {
+          "id": 12,
+          "admin_user_id": 1,
+          "action": "node.deploy",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "revision=1 ",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:23:28Z"
+        },
+        {
+          "id": 11,
+          "admin_user_id": 1,
+          "action": "node.update",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "IPv4 地址 192.0.2.1 → 203.0.113.10",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:23:21Z"
+        },
+        {
+          "id": 10,
+          "admin_user_id": 1,
+          "action": "node.update",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "IPv4 地址 203.0.113.10 → 192.0.2.1;新连接参数未验证通过,按管理员要求保存并标成待验证",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:23:01Z"
+        },
+        {
+          "id": 9,
+          "admin_user_id": 1,
+          "action": "expiry.renew",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "从原到期时间起延长 1 个月:2026-10-10T16:00:00Z → 2026-11-10T16:00:00Z;",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:03:45Z"
+        },
+        {
+          "id": 8,
+          "admin_user_id": 1,
+          "action": "admin.login",
+          "target_type": "",
+          "target_id": "",
+          "detail": "",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:03:16Z"
+        },
+        {
+          "id": 7,
+          "admin_user_id": 1,
+          "action": "admin.login",
+          "target_type": "",
+          "target_id": "",
+          "detail": "",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:02:19Z"
+        },
+        {
+          "id": 6,
+          "admin_user_id": 1,
+          "action": "expiry.update",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "到期时间 2026-10-10T16:00:00Z;提醒 开;商家自动续费 关",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:02:07Z"
+        },
+        {
+          "id": 5,
+          "admin_user_id": 1,
+          "action": "node.bootstrap",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "认证方式 local-key;使用主控本机私钥:C:\\Users\\xukan\\.ssh\\id_ed25519 面板公钥已写入并验证通过。 vnStat 已就绪(vnStat 2.13 by Teemu Toivola <tst at iki dot fi> (SQLite 3.53.4),网卡 eth0):vnstat 守护进程已启用;vnStat 2.13 by Teemu Toivola <tst at iki dot fi> (SQLite 3.53.4) · 统计网卡 eth0。",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:02:07Z"
+        },
+        {
+          "id": 4,
+          "admin_user_id": 1,
+          "action": "node.create",
+          "target_type": "node",
+          "target_id": "2",
+          "detail": "新增节点 tk-node",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:01:54Z"
+        },
+        {
+          "id": 3,
+          "admin_user_id": 1,
+          "action": "node.bootstrap",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "认证方式 local-key;使用主控本机私钥:C:\\Users\\xukan\\.ssh\\id_ed25519 面板公钥已写入并验证通过。 vnStat 已就绪(vnStat 2.13 by Teemu Toivola <tst at iki dot fi> (SQLite 3.53.4),网卡 eth0):已安装 vnstat;已安装 iftop 与 nload(排查时手工用);vnstat 守护进程已启用;vnStat 2.13 by Teemu Toivola <tst at iki dot fi> (SQLite 3.53.4) · 统计网卡 eth0。",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:01:44Z"
+        },
+        {
+          "id": 2,
+          "admin_user_id": 1,
+          "action": "node.create",
+          "target_type": "node",
+          "target_id": "1",
+          "detail": "新增节点 sh-node",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:01:26Z"
+        },
+        {
+          "id": 1,
+          "admin_user_id": 1,
+          "action": "admin.login",
+          "target_type": "",
+          "target_id": "",
+          "detail": "",
+          "client_ip": "127.0.0.1",
+          "succeeded": true,
+          "created_at": "2026-10-07T09:01:26Z"
+        }
+      ]
+    },
+    "GET /api/cloud-accounts": {
+      "items": [],
+      "last_run": "2026-10-17T11:44:05Z"
+    },
+    "GET /api/settings/notify": {
+      "enabled": false,
+      "bark_enabled": false,
+      "bark_group": "",
+      "bark_sound": "",
+      "telegram_enabled": false,
+      "telegram_chat_id": "",
+      "telegram_thread_id": "",
+      "kinds": [],
+      "bark_configured": false,
+      "telegram_configured": false,
+      "auto_recover": true,
+      "available_kinds": [
+        {
+          "kind": "SERVICE_DOWN",
+          "label": "节点服务停止运行"
+        },
+        {
+          "kind": "SERVICE_RECOVERED",
+          "label": "自动恢复成功"
+        },
+        {
+          "kind": "RECOVER_FAILED",
+          "label": "自动恢复失败"
+        },
+        {
+          "kind": "DEPLOY_FAILED",
+          "label": "部署失败"
+        },
+        {
+          "kind": "NODE_QUOTA",
+          "label": "节点流量额度告警"
+        },
+        {
+          "kind": "CLOUD_THRESHOLD",
+          "label": "云账号 CDT 流量达到阈值"
+        },
+        {
+          "kind": "CLOUD_POWER",
+          "label": "云实例开关机结果"
+        },
+        {
+          "kind": "CLOUD_QUERY_FAILED",
+          "label": "CDT 流量连续查询失败"
+        },
+        {
+          "kind": "EXPIRY_SOON",
+          "label": "商家到期提醒(即将到期)"
+        },
+        {
+          "kind": "EXPIRY_AUTO_RENEW",
+          "label": "商家到期提醒(已登记自动续费)"
+        },
+        {
+          "kind": "EXPIRY_OVERDUE",
+          "label": "商家到期提醒(已到期未确认)"
+        }
+      ]
+    },
+    "GET /api/nodes/1": {
+      "id": 1,
+      "name": "sh-node",
+      "display_name": "上海-alpha",
+      "host": "203.0.113.11",
+      "sub_ipv4_address": "",
+      "ipv6_address": "",
+      "ssh_port": 2222,
+      "ssh_user": "root",
+      "api_port": 20080,
+      "config_in_ram": false,
+      "role": "LANDING",
+      "inbounds": [
+        {
+          "id": 1,
+          "node_id": 1,
+          "node_name": "sh-node",
+          "node_display_name": "上海-alpha",
+          "tag": "in-1",
+          "display_name": "上海-alpha",
+          "protocol": "VLESS_REALITY",
+          "ss_method": "",
+          "deployed_protocol": "VLESS_REALITY",
+          "deployed_ss_method": "",
+          "snell_version": 0,
+          "snell_obfs_mode": "",
+          "snell_obfs_host": "",
+          "snell_v6_mode": "",
+          "snell_shared_psk": false,
+          "deployed_snell_version": 0,
+          "deployed_snell_obfs_mode": "",
+          "deployed_snell_v6_mode": "",
+          "deployed_snell_shared_psk": false,
+          "unmetered": false,
+          "deployed_unmetered": false,
+          "listen_port": 8443,
+          "public_port": 8443,
+          "ipv6_public_port": 0,
+          "ipv6_enabled": true,
+          "ipv6_display_name": "",
+          "ipv6_entry_name": "上海-alpha-IPV6",
+          "tcp_fast_open": false,
+          "deployed_tcp_fast_open": false,
+          "reality_dest": "www.fastly.com",
+          "reality_dest_port": 443,
+          "reality_public_key": "wLucv-UVahFDh69j95HBYAkMvCO8G1LtwL_cv4UVahF",
+          "reality_short_id": "3710266fdd258b3f",
+          "handshake_max_record_size": 0,
+          "handshake_checked_at": null,
+          "chain_target_kind": "",
+          "chain_target_inbound_id": 0,
+          "chain_target_external_id": 0,
+          "chain_code": "",
+          "access_tier_id": 1,
+          "access_tier_code": "normal",
+          "access_tier_name": "普通组",
+          "access_tier_level": 10,
+          "sort_order": 0,
+          "subscription_enabled": true,
+          "public_remark": "",
+          "enabled": true,
+          "created_at": "2026-10-07T09:01:26Z",
+          "updated_at": "2026-10-07T09:35:14Z"
+        }
+      ],
+      "mieru_inbounds": [],
+      "host_changed_at": "",
+      "ssh_verify_state": "",
+      "arch": "amd64",
+      "singbox_version": "v1.14.0-litebox",
+      "singbox_build_tags": "with_utls,with_v2ray_api,badlinkname,tfogo_checklinkname0",
+      "mem_total_mb": 122,
+      "sort_order": 1,
+      "subscription_enabled": true,
+      "public_remark": "",
+      "maintenance_message": "",
+      "traffic_quota_bytes": 0,
+      "traffic_reset_cycle": "NONE",
+      "traffic_reset_day": 1,
+      "traffic_billing_mode": "EGRESS",
+      "status": "ONLINE",
+      "last_heartbeat_at": "2026-10-07T09:35:14Z",
+      "config_revision": 2,
+      "deployed_config_sha256": "f3ab7d7c4b38528b05d67bb1e8628ca6f3ab7d7c4b38528b05d67bb1e8628ca6",
+      "created_at": "2026-10-07T09:01:26Z",
+      "updated_at": "2026-10-07T09:35:14Z",
+      "config_state": "IN_SYNC",
+      "needs_deploy": false,
+      "udp_timeout": "2m",
+      "subscription_host": "203.0.113.11",
+      "available_protocols": [
+        {
+          "value": "VLESS_REALITY",
+          "label": "VLESS + REALITY"
+        },
+        {
+          "value": "SHADOWSOCKS",
+          "label": "Shadowsocks 2022"
+        },
+        {
+          "value": "SNELL",
+          "label": "Snell"
+        }
+      ],
+      "cloud": null,
+      "uses_custom_key": false,
+      "expiry": {
+        "kind": "NODE",
+        "object_id": 1,
+        "has_profile": true,
+        "inherited": false,
+        "inherited_from": 0,
+        "expires_at": "2026-11-10T16:00:00Z",
+        "reminder_enabled": true,
+        "auto_renew": false,
+        "vendor_name": "alpha",
+        "vendor_url": "https://alpha.example.com/renew",
+        "note": "测试",
+        "lead_days": [],
+        "state": "OK",
+        "days_left": 25,
+        "last_notice": null
+      }
+    },
+    "GET /api/nodes/1/deployments?limit=50": {
+      "items": [
+        {
+          "id": 4,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 2,
+          "config_sha256": "f3ab7d7c4b38528b05d67bb1e8628ca6f3ab7d7c4b38528b05d67bb1e8628ca6",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:14Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3853,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "库里的配置与上次下发的不同,需要下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2400,
+              "detail": "1103 字节,sha256=6efec6787dff"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 405,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 685,
+              "detail": "/opt/litebox/backup/config-2.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 354,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 415,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 362,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 344,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 4019,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,381 ms)"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:59Z",
+          "finished_at": "2026-10-07T09:25:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3732,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 13971,
+              "detail": "已自动修复:节点原先禁止 TCP 转发,已在 /etc/ssh/sshd_config.d/00-litebox-forwarding.conf 写入 AllowTcpForwarding yes 并 reload sshd"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:24:02Z",
+          "finished_at": "2026-10-07T09:24:05Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3483,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "配置已一致:节点上跑着的就是库里这一份(c97a65ca2f8e)"
+            },
+            {
+              "name": "下发配置",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "配置已一致,没有重启服务。要强制重新应用请用「强制重新下发」或「重启」"
+            }
+          ]
+        },
+        {
+          "id": 1,
+          "node_id": 1,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "690cd79aa4154e82337d95ab95b1c3ec690cd79aa4154e82337d95ab95b1c3ec",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:22:51Z",
+          "finished_at": "2026-10-07T09:23:28Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 4283,
+              "detail": "已连上 203.0.113.11,主机密钥 SHA256:YsEFd2E7AIHqeoteUsi/6nuvENcHdiOHYsEFd2E7AIH"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:探测架构",
+              "status": "SUCCESS",
+              "duration_ms": 4368,
+              "detail": "已自动修复:还没探测过,已补探测:amd64"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 20490,
+              "detail": "已自动修复:这台机器上原来没有 sing-box,已安装 v1.14.0-litebox(openrc)"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没在跑()"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "节点上还没有配置,这次下发会写入"
+            },
+            {
+              "name": "前置检查:端口占用",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "入口端口都空着"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "节点上的 sing-box 未运行,无待同步流量:采集节点 1 流量失败(未修改数据库): 节点 1 的 V2Ray API 不可用(127.0.0.1:20080): 读取运行时状态: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: ssh: rejected: connect failed (Connection refused)\""
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 5s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2382,
+              "detail": "915 字节,sha256=c97a65ca2f8e"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 392,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 342,
+              "detail": "首次部署,无需备份"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 340,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 466,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 347,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-1)",
+              "status": "SUCCESS",
+              "duration_ms": 339,
+              "detail": "端口 8443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-1)",
+              "status": "SKIPPED",
+              "duration_ms": 0,
+              "detail": "这个入站上没有用户,无法拨测"
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/nodes/1/metrics?hours=6": {
+      "hours": 6,
+      "items": []
+    },
+    "GET /api/nodes/1/traffic?days=30": {
+      "cycle": {
+        "node_id": 1,
+        "period_start": "2026-10-07T09:01:26Z",
+        "next_reset_at": null,
+        "uplink_bytes": 1705,
+        "downlink_bytes": 4101,
+        "proxy_bytes": 5806,
+        "used_bytes": 5806,
+        "quota_bytes": 0,
+        "remaining_bytes": null,
+        "usage_percent": null,
+        "unlimited": true,
+        "exceeded": false,
+        "warning_level": "UNLIMITED",
+        "reset_cycle": "NONE",
+        "reset_day": 1,
+        "billing_mode": "EGRESS",
+        "billing_factor": 1
+      },
+      "daily": [
+        {
+          "day": "2026-09-17",
+          "uplink": 81355869,
+          "downlink": 925214339,
+          "total": 1006570208
+        },
+        {
+          "day": "2026-09-18",
+          "uplink": 89248314,
+          "downlink": 873294870,
+          "total": 962543184
+        },
+        {
+          "day": "2026-09-19",
+          "uplink": 92001129,
+          "downlink": 1145048634,
+          "total": 1237049763
+        },
+        {
+          "day": "2026-09-20",
+          "uplink": 91659030,
+          "downlink": 789961857,
+          "total": 881620887
+        },
+        {
+          "day": "2026-09-21",
+          "uplink": 84614068,
+          "downlink": 1069841954,
+          "total": 1154456022
+        },
+        {
+          "day": "2026-09-22",
+          "uplink": 83412155,
+          "downlink": 935734175,
+          "total": 1019146330
+        },
+        {
+          "day": "2026-09-23",
+          "uplink": 99474722,
+          "downlink": 975526174,
+          "total": 1075000896
+        },
+        {
+          "day": "2026-09-24",
+          "uplink": 80666730,
+          "downlink": 968418174,
+          "total": 1049084904
+        },
+        {
+          "day": "2026-09-25",
+          "uplink": 84178679,
+          "downlink": 923803003,
+          "total": 1007981682
+        },
+        {
+          "day": "2026-09-26",
+          "uplink": 107742776,
+          "downlink": 1209862006,
+          "total": 1317604782
+        },
+        {
+          "day": "2026-09-27",
+          "uplink": 87231845,
+          "downlink": 972530002,
+          "total": 1059761847
+        },
+        {
+          "day": "2026-09-28",
+          "uplink": 101330673,
+          "downlink": 948318054,
+          "total": 1049648727
+        },
+        {
+          "day": "2026-09-29",
+          "uplink": 74556005,
+          "downlink": 857446589,
+          "total": 932002594
+        },
+        {
+          "day": "2026-09-30",
+          "uplink": 89579828,
+          "downlink": 1169571968,
+          "total": 1259151796
+        },
+        {
+          "day": "2026-10-01",
+          "uplink": 100610426,
+          "downlink": 969575044,
+          "total": 1070185470
+        },
+        {
+          "day": "2026-10-02",
+          "uplink": 97645174,
+          "downlink": 881424266,
+          "total": 979069440
+        },
+        {
+          "day": "2026-10-03",
+          "uplink": 105181971,
+          "downlink": 1087689344,
+          "total": 1192871315
+        },
+        {
+          "day": "2026-10-04",
+          "uplink": 82280126,
+          "downlink": 1054287627,
+          "total": 1136567753
+        },
+        {
+          "day": "2026-10-05",
+          "uplink": 106311112,
+          "downlink": 1193304832,
+          "total": 1299615944
+        },
+        {
+          "day": "2026-10-06",
+          "uplink": 88589891,
+          "downlink": 1191361642,
+          "total": 1279951533
+        },
+        {
+          "day": "2026-10-07",
+          "uplink": 37383157,
+          "downlink": 510577299,
+          "total": 547960456
+        }
+      ],
+      "metered": true,
+      "node_id": 1
+    },
+    "GET /api/nodes/1/traffic/series?granularity=day": {
+      "granularity": "DAY",
+      "host": [
+        {
+          "at": "2026-10-07T00:00:00Z",
+          "rx": 39051416,
+          "tx": 1848557,
+          "total": 40899973
+        }
+      ],
+      "host_state": {
+        "node_id": 1,
+        "installed": true,
+        "iface": "eth0",
+        "vnstat_version": "vnStat 2.13 by Teemu Toivola <tst at iki dot fi> (SQLite 3.53.4)",
+        "synced_at": "2026-10-07T12:52:07Z",
+        "last_error": "SSH 握手 203.0.113.11:2222: ssh: handshake failed: EOF"
+      },
+      "limit": 30,
+      "metered": true,
+      "node_id": 1,
+      "proxy": [
+        {
+          "at": "2026-09-17T00:00:00Z",
+          "uplink": 81355869,
+          "downlink": 925214339,
+          "total": 1006570208
+        },
+        {
+          "at": "2026-09-18T00:00:00Z",
+          "uplink": 89248314,
+          "downlink": 873294870,
+          "total": 962543184
+        },
+        {
+          "at": "2026-09-19T00:00:00Z",
+          "uplink": 92001129,
+          "downlink": 1145048634,
+          "total": 1237049763
+        },
+        {
+          "at": "2026-09-20T00:00:00Z",
+          "uplink": 91659030,
+          "downlink": 789961857,
+          "total": 881620887
+        },
+        {
+          "at": "2026-09-21T00:00:00Z",
+          "uplink": 84614068,
+          "downlink": 1069841954,
+          "total": 1154456022
+        },
+        {
+          "at": "2026-09-22T00:00:00Z",
+          "uplink": 83412155,
+          "downlink": 935734175,
+          "total": 1019146330
+        },
+        {
+          "at": "2026-09-23T00:00:00Z",
+          "uplink": 99474722,
+          "downlink": 975526174,
+          "total": 1075000896
+        },
+        {
+          "at": "2026-09-24T00:00:00Z",
+          "uplink": 80666730,
+          "downlink": 968418174,
+          "total": 1049084904
+        },
+        {
+          "at": "2026-09-25T00:00:00Z",
+          "uplink": 84178679,
+          "downlink": 923803003,
+          "total": 1007981682
+        },
+        {
+          "at": "2026-09-26T00:00:00Z",
+          "uplink": 107742776,
+          "downlink": 1209862006,
+          "total": 1317604782
+        },
+        {
+          "at": "2026-09-27T00:00:00Z",
+          "uplink": 87231845,
+          "downlink": 972530002,
+          "total": 1059761847
+        },
+        {
+          "at": "2026-09-28T00:00:00Z",
+          "uplink": 101330673,
+          "downlink": 948318054,
+          "total": 1049648727
+        },
+        {
+          "at": "2026-09-29T00:00:00Z",
+          "uplink": 74556005,
+          "downlink": 857446589,
+          "total": 932002594
+        },
+        {
+          "at": "2026-09-30T00:00:00Z",
+          "uplink": 89579828,
+          "downlink": 1169571968,
+          "total": 1259151796
+        },
+        {
+          "at": "2026-10-01T00:00:00Z",
+          "uplink": 100610426,
+          "downlink": 969575044,
+          "total": 1070185470
+        },
+        {
+          "at": "2026-10-02T00:00:00Z",
+          "uplink": 97645174,
+          "downlink": 881424266,
+          "total": 979069440
+        },
+        {
+          "at": "2026-10-03T00:00:00Z",
+          "uplink": 105181971,
+          "downlink": 1087689344,
+          "total": 1192871315
+        },
+        {
+          "at": "2026-10-04T00:00:00Z",
+          "uplink": 82280126,
+          "downlink": 1054287627,
+          "total": 1136567753
+        },
+        {
+          "at": "2026-10-05T00:00:00Z",
+          "uplink": 106311112,
+          "downlink": 1193304832,
+          "total": 1299615944
+        },
+        {
+          "at": "2026-10-06T00:00:00Z",
+          "uplink": 88589891,
+          "downlink": 1191361642,
+          "total": 1279951533
+        },
+        {
+          "at": "2026-10-07T00:00:00Z",
+          "uplink": 37383157,
+          "downlink": 510577299,
+          "total": 547960456
+        }
+      ]
+    },
+    "GET /api/nodes/1/relays": {
+      "items": []
+    },
+    "GET /api/nodes/2": {
+      "id": 2,
+      "name": "tk-node",
+      "display_name": "东京-beta",
+      "host": "203.0.113.10",
+      "sub_ipv4_address": "",
+      "ipv6_address": "",
+      "ssh_port": 2200,
+      "ssh_user": "root",
+      "api_port": 20081,
+      "config_in_ram": false,
+      "role": "LANDING",
+      "inbounds": [
+        {
+          "id": 2,
+          "node_id": 2,
+          "node_name": "tk-node",
+          "node_display_name": "东京-beta",
+          "tag": "in-2",
+          "display_name": "东京-beta",
+          "protocol": "VLESS_REALITY",
+          "ss_method": "",
+          "deployed_protocol": "VLESS_REALITY",
+          "deployed_ss_method": "",
+          "snell_version": 0,
+          "snell_obfs_mode": "",
+          "snell_obfs_host": "",
+          "snell_v6_mode": "",
+          "snell_shared_psk": false,
+          "deployed_snell_version": 0,
+          "deployed_snell_obfs_mode": "",
+          "deployed_snell_v6_mode": "",
+          "deployed_snell_shared_psk": false,
+          "unmetered": false,
+          "deployed_unmetered": false,
+          "listen_port": 9443,
+          "public_port": 9443,
+          "ipv6_public_port": 0,
+          "ipv6_enabled": true,
+          "ipv6_display_name": "",
+          "ipv6_entry_name": "东京-beta-IPV6",
+          "tcp_fast_open": false,
+          "deployed_tcp_fast_open": false,
+          "reality_dest": "www.fastly.com",
+          "reality_dest_port": 443,
+          "reality_public_key": "BqUL0RpAzPKxl7FhQ9f4mo9VNmf9VCRrBqUL0RpAzPK",
+          "reality_short_id": "02ef06a3e1dba662",
+          "handshake_max_record_size": 0,
+          "handshake_checked_at": null,
+          "chain_target_kind": "",
+          "chain_target_inbound_id": 0,
+          "chain_target_external_id": 0,
+          "chain_code": "",
+          "access_tier_id": 1,
+          "access_tier_code": "normal",
+          "access_tier_name": "普通组",
+          "access_tier_level": 10,
+          "sort_order": 0,
+          "subscription_enabled": true,
+          "public_remark": "",
+          "enabled": true,
+          "created_at": "2026-10-07T09:01:54Z",
+          "updated_at": "2026-10-07T09:35:16Z"
+        }
+      ],
+      "mieru_inbounds": [],
+      "host_changed_at": "2026-10-07T09:23:21Z",
+      "ssh_verify_state": "",
+      "arch": "arm64",
+      "singbox_version": "v1.14.0-litebox",
+      "singbox_build_tags": "with_utls,with_v2ray_api,badlinkname,tfogo_checklinkname0",
+      "mem_total_mb": 512,
+      "sort_order": 2,
+      "subscription_enabled": true,
+      "public_remark": "",
+      "maintenance_message": "",
+      "traffic_quota_bytes": 0,
+      "traffic_reset_cycle": "NONE",
+      "traffic_reset_day": 1,
+      "traffic_billing_mode": "EGRESS",
+      "status": "ONLINE",
+      "last_heartbeat_at": "2026-10-07T09:35:16Z",
+      "config_revision": 1,
+      "deployed_config_sha256": "b2066c8e5ed260eb03e58898c76a7aafb2066c8e5ed260eb03e58898c76a7aaf",
+      "created_at": "2026-10-07T09:01:54Z",
+      "updated_at": "2026-10-07T10:01:01Z",
+      "config_state": "IN_SYNC",
+      "needs_deploy": false,
+      "udp_timeout": "3m",
+      "subscription_host": "203.0.113.10",
+      "available_protocols": [
+        {
+          "value": "VLESS_REALITY",
+          "label": "VLESS + REALITY"
+        },
+        {
+          "value": "SHADOWSOCKS",
+          "label": "Shadowsocks 2022"
+        },
+        {
+          "value": "SNELL",
+          "label": "Snell"
+        }
+      ],
+      "cloud": null,
+      "uses_custom_key": false,
+      "expiry": {
+        "kind": "NODE",
+        "object_id": 2,
+        "has_profile": false,
+        "inherited": false,
+        "inherited_from": 0,
+        "expires_at": "",
+        "reminder_enabled": true,
+        "auto_renew": false,
+        "vendor_name": "",
+        "vendor_url": "",
+        "note": "",
+        "lead_days": [],
+        "state": "UNSET",
+        "days_left": null,
+        "last_notice": null
+      }
+    },
+    "GET /api/nodes/2/metrics?hours=6": {
+      "hours": 6,
+      "items": [
+        {
+          "node_id": 2,
+          "cpu_percent": 34,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17546,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.09,
+          "uptime_seconds": 4246562,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T09:34:46Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 12.871287128712872,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17554,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.07,
+          "uptime_seconds": 4246831,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T09:39:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 17.647058823529413,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17570,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.56,
+          "uptime_seconds": 4247131,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T09:44:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 15,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17558,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.2,
+          "uptime_seconds": 4247431,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T09:49:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 11.224489795918368,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17590,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.11,
+          "uptime_seconds": 4247731,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T09:54:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 12.244897959183673,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17602,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.09,
+          "uptime_seconds": 4248031,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T09:59:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 17.475728155339805,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17558,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.05,
+          "uptime_seconds": 4248331,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:04:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 12.121212121212121,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17576,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.4,
+          "uptime_seconds": 4248631,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:09:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 6.0606060606060606,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17588,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.51,
+          "uptime_seconds": 4248934,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:14:18Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 12.244897959183673,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17604,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.06,
+          "uptime_seconds": 4249231,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:19:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 13.26530612244898,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17584,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.18,
+          "uptime_seconds": 4249531,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:24:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 11.11111111111111,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17588,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.03,
+          "uptime_seconds": 4249831,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:29:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 21.21212121212121,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17564,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.12,
+          "uptime_seconds": 4250132,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:34:16Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 26.73267326732673,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17572,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.13,
+          "uptime_seconds": 4250431,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:39:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 22.448979591836736,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17616,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.01,
+          "uptime_seconds": 4250731,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:44:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 23,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17584,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.03,
+          "uptime_seconds": 4251032,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:49:16Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 22.22222222222222,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17564,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.03,
+          "uptime_seconds": 4251331,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:54:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 15.533980582524272,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17580,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.27,
+          "uptime_seconds": 4251630,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T10:59:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 12.121212121212121,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17472,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.59,
+          "uptime_seconds": 4251931,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:04:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 36.53846153846154,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17628,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 1.5,
+          "uptime_seconds": 4252231,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:09:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 14.705882352941176,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17660,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.14,
+          "uptime_seconds": 4252531,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:14:15Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 9.900990099009901,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17632,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.03,
+          "uptime_seconds": 4252796,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:18:40Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 31.132075471698112,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17664,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.27,
+          "uptime_seconds": 4253064,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:23:08Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 5.05050505050505,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17592,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 1.32,
+          "uptime_seconds": 4253364,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:28:08Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 5.05050505050505,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17587,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.38,
+          "uptime_seconds": 4253664,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:33:08Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 4.040404040404041,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17595,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.25,
+          "uptime_seconds": 4253964,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:38:08Z"
+        },
+        {
+          "node_id": 2,
+          "cpu_percent": 4.040404040404041,
+          "mem_total_kb": 524288,
+          "mem_used_kb": 17563,
+          "net_rx_bps": 234,
+          "net_tx_bps": 334,
+          "load1": 0.06,
+          "uptime_seconds": 4254266,
+          "disk_total_kb": 2097152,
+          "disk_used_kb": 60628,
+          "collected_at": "2026-10-17T11:43:10Z"
+        }
+      ]
+    },
+    "GET /api/nodes/2/deployments?limit=50": {
+      "items": [
+        {
+          "id": 5,
+          "node_id": 2,
+          "kind": "SINGBOX",
+          "revision": 1,
+          "config_sha256": "b2066c8e5ed260eb03e58898c76a7aafb2066c8e5ed260eb03e58898c76a7aaf",
+          "status": "SUCCESS",
+          "started_at": "2026-10-07T09:35:00Z",
+          "finished_at": "2026-10-07T09:35:16Z",
+          "error_message": "",
+          "rollback_result": "",
+          "steps": [
+            {
+              "name": "前置检查:SSH 连接与主机身份",
+              "status": "SUCCESS",
+              "duration_ms": 3860,
+              "detail": "已连上 203.0.113.10,主机密钥 SHA256:emVnEEVXtf0jivEgStqpaJYSJiGOuqx0emVnEEVX+f0"
+            },
+            {
+              "name": "前置检查:init 系统",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "openrc"
+            },
+            {
+              "name": "前置检查:SSH TCP 转发",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "sshd 允许 direct-tcpip 通道"
+            },
+            {
+              "name": "前置检查:sing-box 已安装",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "v1.14.0-litebox"
+            },
+            {
+              "name": "前置检查:服务运行状态",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "运行中(started)"
+            },
+            {
+              "name": "前置检查:配置文件",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "前置检查:链式落地就绪",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "没有链式入口,或落地配置已同步"
+            },
+            {
+              "name": "前置检查:配置差异",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "从未下发过,这次是首次下发"
+            },
+            {
+              "name": "同步流量",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "已同步"
+            },
+            {
+              "name": "检查节点时钟",
+              "status": "SUCCESS",
+              "duration_ms": 0,
+              "detail": "与主控相差 0s,正常"
+            },
+            {
+              "name": "上传临时配置",
+              "status": "SUCCESS",
+              "duration_ms": 2590,
+              "detail": "1103 字节,sha256=1af6120d5a3b"
+            },
+            {
+              "name": "sing-box check",
+              "status": "SUCCESS",
+              "duration_ms": 421,
+              "detail": "通过"
+            },
+            {
+              "name": "备份当前配置",
+              "status": "SUCCESS",
+              "duration_ms": 749,
+              "detail": "/opt/litebox/backup/config-1.json"
+            },
+            {
+              "name": "原子替换配置",
+              "status": "SUCCESS",
+              "duration_ms": 708,
+              "detail": "/opt/litebox/config.json"
+            },
+            {
+              "name": "重启服务",
+              "status": "SUCCESS",
+              "duration_ms": 434,
+              "detail": "已重启(openrc)"
+            },
+            {
+              "name": "健康检查:服务状态",
+              "status": "SUCCESS",
+              "duration_ms": 381,
+              "detail": "started"
+            },
+            {
+              "name": "健康检查:端口监听(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 376,
+              "detail": "端口 9443 正在监听"
+            },
+            {
+              "name": "健康检查:VLESS 拨测(in-2)",
+              "status": "SUCCESS",
+              "duration_ms": 4337,
+              "detail": "用户 user_000001 拨测成功(目标 https://www.gstatic.com/generate_204,HTTP 204,409 ms)"
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/nodes/2/traffic/series?granularity=day": {
+      "granularity": "DAY",
+      "host": [
+        {
+          "at": "2026-09-18T00:00:00Z",
+          "rx": 61057,
+          "tx": 4782,
+          "total": 65839
+        },
+        {
+          "at": "2026-09-19T00:00:00Z",
+          "rx": 63916,
+          "tx": 6732,
+          "total": 70648
+        },
+        {
+          "at": "2026-09-20T00:00:00Z",
+          "rx": 93445,
+          "tx": 34039,
+          "total": 127484
+        },
+        {
+          "at": "2026-09-21T00:00:00Z",
+          "rx": 186509,
+          "tx": 5732,
+          "total": 192241
+        },
+        {
+          "at": "2026-09-22T00:00:00Z",
+          "rx": 83210,
+          "tx": 15103,
+          "total": 98313
+        },
+        {
+          "at": "2026-09-23T00:00:00Z",
+          "rx": 79073,
+          "tx": 11648,
+          "total": 90721
+        },
+        {
+          "at": "2026-09-24T00:00:00Z",
+          "rx": 82325,
+          "tx": 8939,
+          "total": 91264
+        },
+        {
+          "at": "2026-09-25T00:00:00Z",
+          "rx": 1540978,
+          "tx": 1515659,
+          "total": 3056637
+        },
+        {
+          "at": "2026-09-26T00:00:00Z",
+          "rx": 77102,
+          "tx": 10222,
+          "total": 87324
+        },
+        {
+          "at": "2026-09-27T00:00:00Z",
+          "rx": 217368,
+          "tx": 21239,
+          "total": 238607
+        },
+        {
+          "at": "2026-09-28T00:00:00Z",
+          "rx": 70218,
+          "tx": 10696,
+          "total": 80914
+        },
+        {
+          "at": "2026-09-29T00:00:00Z",
+          "rx": 69980,
+          "tx": 9623,
+          "total": 79603
+        },
+        {
+          "at": "2026-09-30T00:00:00Z",
+          "rx": 69551,
+          "tx": 5612,
+          "total": 75163
+        },
+        {
+          "at": "2026-10-01T00:00:00Z",
+          "rx": 67426,
+          "tx": 8907,
+          "total": 76333
+        },
+        {
+          "at": "2026-10-02T00:00:00Z",
+          "rx": 73335,
+          "tx": 7236,
+          "total": 80571
+        },
+        {
+          "at": "2026-10-03T00:00:00Z",
+          "rx": 73435,
+          "tx": 10965,
+          "total": 84400
+        },
+        {
+          "at": "2026-10-04T00:00:00Z",
+          "rx": 69851,
+          "tx": 5582,
+          "total": 75433
+        },
+        {
+          "at": "2026-10-05T00:00:00Z",
+          "rx": 91553,
+          "tx": 8623,
+          "total": 100176
+        },
+        {
+          "at": "2026-10-06T00:00:00Z",
+          "rx": 75289,
+          "tx": 6362,
+          "total": 81651
+        },
+        {
+          "at": "2026-10-07T00:00:00Z",
+          "rx": 2578809,
+          "tx": 6891204,
+          "total": 9470013
+        },
+        {
+          "at": "2026-10-08T00:00:00Z",
+          "rx": 78331,
+          "tx": 6602,
+          "total": 84933
+        },
+        {
+          "at": "2026-10-09T00:00:00Z",
+          "rx": 82494,
+          "tx": 14297,
+          "total": 96791
+        },
+        {
+          "at": "2026-10-10T00:00:00Z",
+          "rx": 72167,
+          "tx": 12077,
+          "total": 84244
+        },
+        {
+          "at": "2026-10-11T00:00:00Z",
+          "rx": 64741,
+          "tx": 5088,
+          "total": 69829
+        },
+        {
+          "at": "2026-10-12T00:00:00Z",
+          "rx": 62801,
+          "tx": 8143,
+          "total": 70944
+        },
+        {
+          "at": "2026-10-13T00:00:00Z",
+          "rx": 62385,
+          "tx": 4938,
+          "total": 67323
+        },
+        {
+          "at": "2026-10-14T00:00:00Z",
+          "rx": 219200,
+          "tx": 166139,
+          "total": 385339
+        },
+        {
+          "at": "2026-10-15T00:00:00Z",
+          "rx": 117233,
+          "tx": 5268,
+          "total": 122501
+        },
+        {
+          "at": "2026-10-16T00:00:00Z",
+          "rx": 176449,
+          "tx": 29426,
+          "total": 205875
+        },
+        {
+          "at": "2026-10-17T00:00:00Z",
+          "rx": 641688,
+          "tx": 2507636,
+          "total": 3149324
+        }
+      ],
+      "host_state": {
+        "node_id": 2,
+        "installed": true,
+        "iface": "eth0",
+        "vnstat_version": "vnStat 2.13 by Teemu Toivola <tst at iki dot fi> (SQLite 3.53.4)",
+        "synced_at": "2026-10-17T11:47:12Z",
+        "last_error": ""
+      },
+      "limit": 30,
+      "metered": true,
+      "node_id": 2,
+      "proxy": [
+        {
+          "at": "2026-09-17T00:00:00Z",
+          "uplink": 37343884,
+          "downlink": 568201298,
+          "total": 605545182
+        },
+        {
+          "at": "2026-09-18T00:00:00Z",
+          "uplink": 36581953,
+          "downlink": 575061464,
+          "total": 611643417
+        },
+        {
+          "at": "2026-09-19T00:00:00Z",
+          "uplink": 43428860,
+          "downlink": 557478768,
+          "total": 600907628
+        },
+        {
+          "at": "2026-09-20T00:00:00Z",
+          "uplink": 42407778,
+          "downlink": 470185693,
+          "total": 512593471
+        },
+        {
+          "at": "2026-09-21T00:00:00Z",
+          "uplink": 43710229,
+          "downlink": 499423700,
+          "total": 543133929
+        },
+        {
+          "at": "2026-09-22T00:00:00Z",
+          "uplink": 36629345,
+          "downlink": 595792327,
+          "total": 632421672
+        },
+        {
+          "at": "2026-09-23T00:00:00Z",
+          "uplink": 49367257,
+          "downlink": 560509189,
+          "total": 609876446
+        },
+        {
+          "at": "2026-09-24T00:00:00Z",
+          "uplink": 45321784,
+          "downlink": 625346327,
+          "total": 670668111
+        },
+        {
+          "at": "2026-09-25T00:00:00Z",
+          "uplink": 47702022,
+          "downlink": 540369544,
+          "total": 588071566
+        },
+        {
+          "at": "2026-09-26T00:00:00Z",
+          "uplink": 46873550,
+          "downlink": 445565071,
+          "total": 492438621
+        },
+        {
+          "at": "2026-09-27T00:00:00Z",
+          "uplink": 37937156,
+          "downlink": 410585363,
+          "total": 448522519
+        },
+        {
+          "at": "2026-09-28T00:00:00Z",
+          "uplink": 34015965,
+          "downlink": 435322271,
+          "total": 469338236
+        },
+        {
+          "at": "2026-09-29T00:00:00Z",
+          "uplink": 44371958,
+          "downlink": 439251732,
+          "total": 483623690
+        },
+        {
+          "at": "2026-09-30T00:00:00Z",
+          "uplink": 43876607,
+          "downlink": 648710749,
+          "total": 692587356
+        },
+        {
+          "at": "2026-10-01T00:00:00Z",
+          "uplink": 53180570,
+          "downlink": 440168429,
+          "total": 493348999
+        },
+        {
+          "at": "2026-10-02T00:00:00Z",
+          "uplink": 40587651,
+          "downlink": 416569483,
+          "total": 457157134
+        },
+        {
+          "at": "2026-10-03T00:00:00Z",
+          "uplink": 46247428,
+          "downlink": 543499384,
+          "total": 589746812
+        },
+        {
+          "at": "2026-10-04T00:00:00Z",
+          "uplink": 38889281,
+          "downlink": 350760832,
+          "total": 389650113
+        },
+        {
+          "at": "2026-10-05T00:00:00Z",
+          "uplink": 37742311,
+          "downlink": 449740744,
+          "total": 487483055
+        },
+        {
+          "at": "2026-10-06T00:00:00Z",
+          "uplink": 46849808,
+          "downlink": 375254904,
+          "total": 422104712
+        },
+        {
+          "at": "2026-10-07T00:00:00Z",
+          "uplink": 15331636,
+          "downlink": 188797960,
+          "total": 204129596
+        }
+      ]
+    },
+    "GET /api/nodes/2/traffic?days=30": {
+      "cycle": {
+        "node_id": 2,
+        "period_start": "2026-10-07T09:01:54Z",
+        "next_reset_at": null,
+        "uplink_bytes": 16820,
+        "downlink_bytes": 9074005,
+        "proxy_bytes": 9090825,
+        "used_bytes": 9090825,
+        "quota_bytes": 0,
+        "remaining_bytes": null,
+        "usage_percent": null,
+        "unlimited": true,
+        "exceeded": false,
+        "warning_level": "UNLIMITED",
+        "reset_cycle": "NONE",
+        "reset_day": 1,
+        "billing_mode": "EGRESS",
+        "billing_factor": 1
+      },
+      "daily": [
+        {
+          "day": "2026-09-17",
+          "uplink": 37343884,
+          "downlink": 568201298,
+          "total": 605545182
+        },
+        {
+          "day": "2026-09-18",
+          "uplink": 36581953,
+          "downlink": 575061464,
+          "total": 611643417
+        },
+        {
+          "day": "2026-09-19",
+          "uplink": 43428860,
+          "downlink": 557478768,
+          "total": 600907628
+        },
+        {
+          "day": "2026-09-20",
+          "uplink": 42407778,
+          "downlink": 470185693,
+          "total": 512593471
+        },
+        {
+          "day": "2026-09-21",
+          "uplink": 43710229,
+          "downlink": 499423700,
+          "total": 543133929
+        },
+        {
+          "day": "2026-09-22",
+          "uplink": 36629345,
+          "downlink": 595792327,
+          "total": 632421672
+        },
+        {
+          "day": "2026-09-23",
+          "uplink": 49367257,
+          "downlink": 560509189,
+          "total": 609876446
+        },
+        {
+          "day": "2026-09-24",
+          "uplink": 45321784,
+          "downlink": 625346327,
+          "total": 670668111
+        },
+        {
+          "day": "2026-09-25",
+          "uplink": 47702022,
+          "downlink": 540369544,
+          "total": 588071566
+        },
+        {
+          "day": "2026-09-26",
+          "uplink": 46873550,
+          "downlink": 445565071,
+          "total": 492438621
+        },
+        {
+          "day": "2026-09-27",
+          "uplink": 37937156,
+          "downlink": 410585363,
+          "total": 448522519
+        },
+        {
+          "day": "2026-09-28",
+          "uplink": 34015965,
+          "downlink": 435322271,
+          "total": 469338236
+        },
+        {
+          "day": "2026-09-29",
+          "uplink": 44371958,
+          "downlink": 439251732,
+          "total": 483623690
+        },
+        {
+          "day": "2026-09-30",
+          "uplink": 43876607,
+          "downlink": 648710749,
+          "total": 692587356
+        },
+        {
+          "day": "2026-10-01",
+          "uplink": 53180570,
+          "downlink": 440168429,
+          "total": 493348999
+        },
+        {
+          "day": "2026-10-02",
+          "uplink": 40587651,
+          "downlink": 416569483,
+          "total": 457157134
+        },
+        {
+          "day": "2026-10-03",
+          "uplink": 46247428,
+          "downlink": 543499384,
+          "total": 589746812
+        },
+        {
+          "day": "2026-10-04",
+          "uplink": 38889281,
+          "downlink": 350760832,
+          "total": 389650113
+        },
+        {
+          "day": "2026-10-05",
+          "uplink": 37742311,
+          "downlink": 449740744,
+          "total": 487483055
+        },
+        {
+          "day": "2026-10-06",
+          "uplink": 46849808,
+          "downlink": 375254904,
+          "total": 422104712
+        },
+        {
+          "day": "2026-10-07",
+          "uplink": 15331636,
+          "downlink": 188797960,
+          "total": 204129596
+        }
+      ],
+      "metered": true,
+      "node_id": 2
+    },
+    "GET /api/nodes/2/relays": {
+      "items": []
+    },
+    "GET /api/nodes/2/services": {
+      "checked_at": "2026-10-17T11:47:08.9103181Z",
+      "init_system": "openrc",
+      "singbox": {
+        "installed": true,
+        "version": "v1.14.0-litebox",
+        "config_present": true,
+        "state": "RUNNING",
+        "detail": "started",
+        "upgradable": false
+      },
+      "mieru": {
+        "installed": false,
+        "version": "",
+        "config_present": false,
+        "state": "NOT_APPLICABLE",
+        "detail": "还没安装",
+        "instances": []
+      },
+      "nginx": {
+        "installed": false,
+        "version": "",
+        "config_present": false,
+        "state": "NOT_APPLICABLE",
+        "detail": "还没安装",
+        "facts": {
+          "installed": false,
+          "binary_path": "",
+          "version": "",
+          "stream_built_in": false,
+          "stream_module_path": "",
+          "stream_available": false,
+          "missing_package": "",
+          "package_manager": "apk"
+        }
+      },
+      "realm": {
+        "installed": true,
+        "version": "Realm 2.9.4 [brutal][batched-udp][proxy][balance][transport][mul…",
+        "config_present": false,
+        "state": "STOPPED",
+        "detail": ""
+      }
+    },
+    "GET /api/nodes/2/host-traffic/live": {
+      "iface": "eth0",
+      "rx_bytes": 72761264,
+      "tx_bytes": 21921616,
+      "at": "2026-10-17T11:47:14.3251319Z"
+    },
+    "GET /api/portal/auth/me": {
+      "username": "demo",
+      "display_name": "测试用户A",
+      "must_change_password": false
+    },
+    "GET /api/portal/dashboard": {
+      "display_name": "测试用户A",
+      "user_code": "user_000001",
+      "tier_name": "普通组",
+      "tier_code": "normal",
+      "status": "ACTIVE",
+      "status_text": "正常",
+      "serviceable": true,
+      "reason": "",
+      "used_uplink": 18525,
+      "used_downlink": 9078106,
+      "used_total": 9096631,
+      "quota_bytes": 0,
+      "remaining": 0,
+      "used_percent": null,
+      "expires_at": null,
+      "remaining_days": null,
+      "last_reset_at": null,
+      "next_reset_at": null,
+      "node_count": 2,
+      "alerts": []
+    },
+    "GET /api/portal/adjustments": {
+      "items": []
+    },
+    "GET /api/portal/subscription": {
+      "available": true,
+      "reason": "",
+      "base_url": "http://127.0.0.1:18100/sub/1_HG-WmukM3LqGRSYpGm7_Dt87BpaH8M",
+      "url_base64": "http://127.0.0.1:18100/sub/1_HG-WmukM3LqGRSYpGm7_Dt87BpaH8M",
+      "url_uri": "http://127.0.0.1:18100/sub/1_HG-WmukM3LqGRSYpGm7_Dt87BpaH8M?format=uri",
+      "url_singbox": "http://127.0.0.1:18100/sub/1_HG-WmukM3LqGRSYpGm7_Dt87BpaH8M?format=sing-box",
+      "url_clash": "http://127.0.0.1:18100/sub/1_HG-WmukM3LqGRSYpGm7_Dt87BpaH8M?format=clash",
+      "node_count": 2,
+      "ipv6_count": 0,
+      "entry_count": 2,
+      "last_access_at": "2026-10-07T13:15:29Z",
+      "access_count": 1,
+      "profiles": []
+    },
+    "GET /api/portal/nodes": {
+      "external": [
+        {
+          "id": 1,
+          "display_name": "机场 HK01",
+          "tier_name": "普通组",
+          "tier_code": "normal",
+          "status": "normal",
+          "public_remark": "",
+          "maintenance_message": "",
+          "in_subscription": true
+        }
+      ],
+      "items": [
+        {
+          "id": 1,
+          "display_name": "上海-alpha",
+          "tier_name": "普通组",
+          "tier_code": "normal",
+          "status": "normal",
+          "protocol": "VLESS + REALITY",
+          "public_port": 8443,
+          "public_remark": "",
+          "maintenance_message": "",
+          "in_subscription": true,
+          "supports_ipv6": false,
+          "unmetered": false,
+          "today_bytes": 0,
+          "month_bytes": 7506221911,
+          "total_bytes": 44365579907,
+          "last_seen_at": "2026-10-07T09:35:25Z"
+        },
+        {
+          "id": 2,
+          "display_name": "东京-beta",
+          "tier_name": "普通组",
+          "tier_code": "normal",
+          "status": "normal",
+          "protocol": "VLESS + REALITY",
+          "public_port": 9443,
+          "public_remark": "",
+          "maintenance_message": "",
+          "in_subscription": true,
+          "supports_ipv6": false,
+          "unmetered": false,
+          "today_bytes": 0,
+          "month_bytes": 3043620421,
+          "total_bytes": 21658213460,
+          "last_seen_at": "2026-10-07T09:35:26Z"
+        }
+      ],
+      "relays": []
+    },
+    "GET /api/portal/auth/sessions": {
+      "items": [
+        {
+          "id": 4,
+          "created_at": "2026-10-17T11:27:37Z",
+          "expires_at": "2026-10-18T11:27:37Z",
+          "last_seen_at": "2026-10-17T11:47:29Z",
+          "client_ip": "127.0.0.1",
+          "user_agent": "curl/8.14.1",
+          "current": true
+        },
+        {
+          "id": 3,
+          "created_at": "2026-10-17T11:24:19Z",
+          "expires_at": "2026-10-18T11:24:19Z",
+          "last_seen_at": "2026-10-17T11:44:57Z",
+          "client_ip": "127.0.0.1",
+          "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+          "current": false
+        },
+        {
+          "id": 1,
+          "created_at": "2026-10-17T09:37:58Z",
+          "expires_at": "2026-10-18T09:37:58Z",
+          "last_seen_at": "2026-10-17T10:16:15Z",
+          "client_ip": "127.0.0.1",
+          "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+          "current": false
+        }
+      ]
+    },
+    "GET /api/portal/traffic?days=30": {
+      "days": 30,
+      "daily": [
+        {
+          "day": "2026-09-18",
+          "uplink": 125830267,
+          "downlink": 1448356334,
+          "total": 1574186601
+        },
+        {
+          "day": "2026-09-19",
+          "uplink": 135429989,
+          "downlink": 1702527402,
+          "total": 1837957391
+        },
+        {
+          "day": "2026-09-20",
+          "uplink": 134066808,
+          "downlink": 1260147550,
+          "total": 1394214358
+        },
+        {
+          "day": "2026-09-21",
+          "uplink": 128324297,
+          "downlink": 1569265654,
+          "total": 1697589951
+        },
+        {
+          "day": "2026-09-22",
+          "uplink": 120041500,
+          "downlink": 1531526502,
+          "total": 1651568002
+        },
+        {
+          "day": "2026-09-23",
+          "uplink": 148841979,
+          "downlink": 1536035363,
+          "total": 1684877342
+        },
+        {
+          "day": "2026-09-24",
+          "uplink": 125988514,
+          "downlink": 1593764501,
+          "total": 1719753015
+        },
+        {
+          "day": "2026-09-25",
+          "uplink": 131880701,
+          "downlink": 1464172547,
+          "total": 1596053248
+        },
+        {
+          "day": "2026-09-26",
+          "uplink": 154616326,
+          "downlink": 1655427077,
+          "total": 1810043403
+        },
+        {
+          "day": "2026-09-27",
+          "uplink": 125169001,
+          "downlink": 1383115365,
+          "total": 1508284366
+        },
+        {
+          "day": "2026-09-28",
+          "uplink": 135346638,
+          "downlink": 1383640325,
+          "total": 1518986963
+        },
+        {
+          "day": "2026-09-29",
+          "uplink": 118927963,
+          "downlink": 1296698321,
+          "total": 1415626284
+        },
+        {
+          "day": "2026-09-30",
+          "uplink": 133456435,
+          "downlink": 1818282717,
+          "total": 1951739152
+        },
+        {
+          "day": "2026-10-01",
+          "uplink": 153790996,
+          "downlink": 1409743473,
+          "total": 1563534469
+        },
+        {
+          "day": "2026-10-02",
+          "uplink": 138232825,
+          "downlink": 1297993749,
+          "total": 1436226574
+        },
+        {
+          "day": "2026-10-03",
+          "uplink": 151429399,
+          "downlink": 1631188728,
+          "total": 1782618127
+        },
+        {
+          "day": "2026-10-04",
+          "uplink": 121169407,
+          "downlink": 1405048459,
+          "total": 1526217866
+        },
+        {
+          "day": "2026-10-05",
+          "uplink": 144053423,
+          "downlink": 1643045576,
+          "total": 1787098999
+        },
+        {
+          "day": "2026-10-06",
+          "uplink": 135439699,
+          "downlink": 1566616546,
+          "total": 1702056245
+        },
+        {
+          "day": "2026-10-07",
+          "uplink": 52714793,
+          "downlink": 699375259,
+          "total": 752090052
+        }
+      ],
+      "by_node": [
+        {
+          "node_id": 1,
+          "display_name": "上海-alpha",
+          "uplink": 1783697811,
+          "downlink": 19727577514,
+          "total": 21511275325,
+          "percent": 67.4
+        },
+        {
+          "node_id": 2,
+          "display_name": "东京-beta",
+          "uplink": 831053149,
+          "downlink": 9568393934,
+          "total": 10399447083,
+          "percent": 32.6
+        }
+      ],
+      "total": 31910722408,
+      "uplink": 2614750960,
+      "downlink": 29295971448
+    },
+    "GET /api/portal/traffic?days=7": {
+      "days": 7,
+      "daily": [],
+      "by_node": [],
+      "total": 0,
+      "uplink": 0,
+      "downlink": 0
+    }
+  }
+}
