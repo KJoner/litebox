@@ -2,15 +2,17 @@
 
 > 检查日期 2026-10-17。分支 `feat/ui-2.0`,以本地代码与 Git 状态为准。
 > 敏感信息按**方案 A(向前修复,不改写公开 master 历史)**处理。
-> 结论:**B. 暂缓合并** —— 本地层面的阻塞已全部解除(敏感数据清理、迁移哈希兼容、CI 隐患);
-> 剩两道门槛:仓库所有者确认测试机加固完成,之后推送分支并让 GitHub Actions 全绿、开 Draft PR。
+> 结论:**A. 可以合并** —— 敏感数据清理、迁移哈希兼容、CI 隐患都已解决;`feat/ui-2.0` 已推送,
+> GitHub Actions 全绿,Draft PR [#1](https://github.com/KJoner/litebox/pull/1) 已创建,可以转为 Ready for Review。
+> **合并 master 即发布**,合并时机由仓库所有者决定;本轮没有合并、没有打 tag、没有部署生产。
 
 ## 1. 分支与提交
 
 | 项 | 值 |
 |---|---|
 | 远程 master | `7790978`,已包含 UI 2.0 五批(上一轮按要求快进合并并推送) |
-| 待推送 | `origin/master..feat/ui-2.0` 共 20 个提交,**全部未推送**;`HEAD..origin/master` 为空,合并不会冲突 |
+| 已推送 | 只推送了 `feat/ui-2.0`(`origin/master..feat/ui-2.0` 共 20 个提交);`master` 仍是 `7790978`,没有强推,没有改写任何远程分支;`HEAD..origin/master` 为空,合并不会冲突 |
+| PR | Draft PR [#1](https://github.com/KJoner/litebox/pull/1),`feat/ui-2.0` → `master`,GitHub 判定可合并 |
 | 基底 | 第一个提交 `2f23204` 是独立的安全清理提交(分支 `security/scrub-public-artifacts`,直接基于 `origin/master`),UI 2.0.1 的提交整体变基在它之上 |
 | `git diff --check` | 干净 |
 | 后端改动范围 | `internal/traffic`(同步状态)、`internal/httpapi/traffic.go`(接口加字段)、`internal/database/migrate.go`(迁移哈希按换行归一,见第 4 节);**没有新迁移、没有安装 / 升级脚本改动** |
@@ -42,7 +44,8 @@ f757de9 docs(ui): 发布前最终检查(本文件的第一版)
 | 仅本地(从未推送) | 2.0.1 的两张截图(一张在遮罩后面露出半截地址);固定数据里两台测试机的真实 SSH 端口与部署详情里的主机密钥指纹;脱敏脚本里的真实端口对照表 | **已从待推送历史中清除**(2.3) |
 
 面板凭据 —— 主密钥、管理员口令、订阅 token、节点私钥、AccessKey、推送凭据 —— **都没有出现在任何提交里**,
-不需要轮换。泄露的是**测试机的管理端点**;对测试机的加固与核实步骤已单独交给仓库所有者,不写进公开文档。
+不需要轮换。泄露的是**测试机的管理端点**。加固与核实步骤已单独交给仓库所有者(不写进公开文档);
+**仓库所有者决定本轮不对这两台测试机做 SSH 加固,也不把它作为推送与合并的前置条件**。
 
 ### 2.2 公开 master:独立的安全清理提交(待决定,未合并)
 
@@ -141,8 +144,10 @@ f757de9 docs(ui): 发布前最终检查(本文件的第一版)
 | **CI 隐患(已修)** | 干净检出上 `web/dist` 不存在(整个在 `.gitignore` 里,`embed.go` 注释里说的占位文件从没提交过),Go job 的 `go vet` 第一步就会报 `pattern all:dist: no matching files found`。容器里复现后在 Go job 加了占位步骤(`8515550`) |
 | 前端 · Windows | `vue-tsc`、e2e 的 `tsc` 通过;`vite build` 通过;对构建产物跑 Playwright 功能用例 94 个全部通过;截图基线 26 张全部通过 |
 | 前端 · Linux 容器预演 | 在 `mcr.microsoft.com/playwright:v1.63.0-noble` 里对 `git archive` 的干净检出按 CI 的步骤跑(`CI=1`):`npm ci` → `vue-tsc` 与 e2e 的 `tsc` → `vite build` → Playwright 功能用例 **94 passed**,没有靠重试才通过的用例 |
-| GitHub Actions | **未运行** —— 等仓库所有者确认测试机加固后再推送 |
-| PR | **未创建**(同上)。PR 正文草稿见附录 |
+| GitHub Actions · push | [运行 39043997676](https://github.com/KJoner/litebox/actions/runs/39043997676) **success**:Go job(占位产物 → vet → gofmt → test)与 web job(`npm ci` → 类型检查 → 构建 → 装浏览器 → Playwright 功能用例 **94 passed**)全绿,没有靠重试才通过的用例 |
+| GitHub Actions · PR | [运行 39044467146](https://github.com/KJoner/litebox/actions/runs/39044467146)(`pull_request`,对合并到 master 之后的结果跑)**success**:Go 与 web 两个 job 全绿,Playwright 功能用例 **94 passed** |
+| CI 平台提示(不影响本 PR) | `actions/checkout@v4`、`setup-go@v5`、`setup-node@v4` 目标是 Node 20,被强制跑在 Node 24 上(警告);`ubuntu-latest` 从 2026-10-19 起迁到 Ubuntu 26 |
+| PR | Draft [#1](https://github.com/KJoner/litebox/pull/1),正文见附录 |
 
 **关于「120 个用例」**:Playwright 共 120 个 = **94 个功能用例 + 26 张截图基线**。CI 只跑 94 个功能用例;
 截图基线按平台存放、目前只有 win32 一份,字体渲染随平台变,在 Linux 上比对必然不同 ——
@@ -203,10 +208,10 @@ f757de9 docs(ui): 发布前最终检查(本文件的第一版)
 
 | # | 级别 | 内容 | 需要的动作 |
 |---|---|---|---|
-| 1 | **阻塞** | 测试机加固(关闭口令登录、换口令、核对公钥) | 仓库所有者执行并确认;确认前不推送 |
-| 2 | **阻塞** | GitHub Actions 未运行、Draft PR 未创建 | 第 1 项确认后推送 `feat/ui-2.0`、跑 CI、开 Draft PR |
-| 3 | 高 | 公开 master 的当前版本仍含 64 张截图与真实地址(历史里永久保留) | 决定 `security/scrub-public-artifacts` 单独先合并还是随本 PR 合并 |
-| 4 | 中 | 一台测试机的 SSH 主机密钥与记录不一致 | 经服务商控制台核实身份;核实前不接受新密钥、不纳入验证 |
+| 1 | 高 | 公开 master 的当前版本仍含 64 张截图与真实地址(历史里永久保留) | 本 PR 合并时随第一个提交一起清掉;想更早缩小暴露面,可把 `2f23204` 单独开 PR 先合 |
+| 2 | 中 | 两台测试机未加固(口令登录开着,管理端点已公开) | 仓库所有者已决定本轮不处理、不作为前置条件;建议至少换掉 root 口令 |
+| 3 | 中 | 一台测试机的 SSH 主机密钥与记录不一致 | 经服务商控制台核实身份;核实前不接受新密钥、不纳入验证 |
+| 4 | 低 | `ubuntu-latest` 迁到 Ubuntu 26 后,Playwright 的 `install --with-deps` 可能要跟着调;几个 action 的 Node 20 弃用警告 | 需要时把 `runs-on` 固定成 `ubuntu-24.04`、升级 action 主版本 |
 | 5 | 中 | 「配置一致跳过」的判据没有单元测试 | 后续把判据抽成纯函数并补测试 |
 | 6 | 低 | 旧的 Windows CRLF 构建不认修复后新应用的迁移(第 4 节「限制」) | 生产在 Linux 上构建,不受影响 |
 | 7 | 低 | 仪表盘「刷新」与「重试」并发时的请求先后 | 可后续加请求序号 |
@@ -215,10 +220,11 @@ f757de9 docs(ui): 发布前最终检查(本文件的第一版)
 
 ## 10. 结论
 
-**B. 暂缓合并。** 代码层面已经就绪:本地 Windows 与 Linux 容器里全部测试通过,升级、跳过重启、回滚都在
-测试数据库副本与授权测试节点上验证过,迁移哈希的跨平台问题已修复并用旧库副本交叉验证。
-待推送的对象逐个核查过,不含真实管理地址、端口、指纹或凭据。剩下的是顺序问题:
-测试机加固确认 → 推送分支 → GitHub Actions 全绿 → Draft PR,之后才能改判 **A. 可以合并**。
+**A. 可以合并。** 本地 Windows、Linux 容器与 GitHub Actions 上全部测试通过;升级、跳过重启、回滚都在
+测试数据库副本与授权测试节点上验证过;迁移哈希的跨平台问题已修复并用旧库副本交叉验证;
+推送的对象逐个核查过,不含真实管理地址、端口、指纹或凭据。第 9 节没有阻塞项。
+Draft PR [#1](https://github.com/KJoner/litebox/pull/1) 可以转为 Ready for Review;**合并 master 即发布**,
+由仓库所有者决定时机。
 
 ## 附录:PR 正文草稿
 
