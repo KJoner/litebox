@@ -26,9 +26,32 @@ type Scheduler struct {
 	// host 是主机流量(vnStat)那一路,nil 表示没启用。
 	host *hosttraffic.Syncer
 
-	mu       sync.Mutex
-	lastRun  time.Time
-	lastErrs map[int64]string
+	mu        sync.Mutex
+	lastRun   time.Time
+	lastStart time.Time
+	running   bool
+	lastErrs  map[int64]NodeFailure
+}
+
+// NodeFailure 是一台机器最近一次同步失败的原因与时刻。
+type NodeFailure struct {
+	Error string
+	At    time.Time
+}
+
+// SchedulerStatus 是给页面看的调度状态。
+//
+// **失败是在一轮中途逐台写入的,LastRun 却要等整轮跑完才写。** 面板刚启动时
+// 第一轮里有几台机器连不上(每台要等一次 SSH 超时),页面会同时看到
+// 「N 个节点同步失败」与「上次运行:尚未运行」—— 两句都是真的,放在一起
+// 却像是在说谎。所以把「正在跑」与每条失败自己的时刻一起给出去,
+// 由页面说清楚「首轮还在进行」,而不是让其中一句消失。
+type SchedulerStatus struct {
+	// LastRun 是上一轮【跑完】的时刻;零值表示面板启动以来还没跑完过一轮。
+	LastRun     time.Time
+	LastStarted time.Time
+	Running     bool
+	Failing     map[int64]NodeFailure
 }
 
 type SchedulerOptions struct {
@@ -59,7 +82,7 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 		logger:   opts.Logger,
 		interval: interval,
 		host:     opts.Host,
-		lastErrs: make(map[int64]string),
+		lastErrs: make(map[int64]NodeFailure),
 	}
 }
 
@@ -91,6 +114,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 		s.logger.Error("查询待同步节点失败", "error", err)
 		return
 	}
+	s.beginRound(nodeIDs)
 
 	var totalBytes int64
 	var totalEntries int
@@ -145,6 +169,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 
 	s.mu.Lock()
 	s.lastRun = time.Now()
+	s.running = false
 	s.mu.Unlock()
 
 	if totalEntries > 0 || len(enforced.Changes) > 0 {
@@ -291,6 +316,28 @@ func (s *Scheduler) activeNodes(ctx context.Context) ([]syncTarget, error) {
 	return out, rows.Err()
 }
 
+// beginRound 标记一轮开始,并丢掉已经不在同步名单里的机器的失败记录。
+//
+// 失败只在下一次同步成功时才清掉,而被删除、停用、改回待部署或云实例停机的
+// 机器再也不会被同步 —— 不清的话侧栏会永远写着「1 个节点同步失败」,
+// 指向一台面板早就不去连的机器。这不是把错误藏起来:它不在名单里,
+// 就不存在"此刻同步失败"这件事。
+func (s *Scheduler) beginRound(targets []syncTarget) {
+	active := make(map[int64]bool, len(targets))
+	for _, t := range targets {
+		active[t.ID] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.lastErrs {
+		if !active[id] {
+			delete(s.lastErrs, id)
+		}
+	}
+	s.lastStart = time.Now()
+	s.running = true
+}
+
 func (s *Scheduler) recordError(nodeID int64, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -298,16 +345,21 @@ func (s *Scheduler) recordError(nodeID int64, msg string) {
 		delete(s.lastErrs, nodeID)
 		return
 	}
-	s.lastErrs[nodeID] = msg
+	s.lastErrs[nodeID] = NodeFailure{Error: msg, At: time.Now()}
 }
 
 // Status 返回调度状态,供健康检查与页面展示。
-func (s *Scheduler) Status() (lastRun time.Time, failing map[int64]string) {
+func (s *Scheduler) Status() SchedulerStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	failing = make(map[int64]string, len(s.lastErrs))
+	failing := make(map[int64]NodeFailure, len(s.lastErrs))
 	for k, v := range s.lastErrs {
 		failing[k] = v
 	}
-	return s.lastRun, failing
+	return SchedulerStatus{
+		LastRun:     s.lastRun,
+		LastStarted: s.lastStart,
+		Running:     s.running,
+		Failing:     failing,
+	}
 }

@@ -1624,8 +1624,13 @@ export interface HostLiveSample {
 }
 
 export interface TrafficStatus {
+  /** 上一轮【跑完】的时刻;面板启动以来还没跑完过一轮时没有这个字段。 */
   last_run?: string
-  failing_nodes: { node_id: number; error: string }[]
+  /** 当前或上一轮开始的时刻。 */
+  last_started?: string
+  /** 此刻是否有一轮正在跑。旧后端没有这个字段。 */
+  running?: boolean
+  failing_nodes: { node_id: number; error: string; failed_at?: string }[]
 }
 
 // ---------- 续期与调整 ----------

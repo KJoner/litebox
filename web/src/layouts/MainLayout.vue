@@ -2,10 +2,11 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { api } from '@/api/client'
+import { api, type TrafficStatus } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore, type ThemePreference } from '@/stores/theme'
 import { LbIcon, LbTimeText, type LbIconName } from '@/components/lb'
+import { summarizeSync, SYNC_DOT, SYNC_STALE_MS } from './syncStatus'
 
 /**
  * 后台布局(UI 2.0)。白侧栏 240px + 1px 右边线,顶栏 56px 实底 + 下边线,
@@ -46,8 +47,15 @@ const counts = ref<{
   external?: number
   failedDeploys?: number
 }>({})
-/** 侧栏底部的流量同步状态。它是全站唯一一处能看出后台任务还活着的地方。 */
-const sync = ref<{ lastRun?: string; failing: number } | null>(null)
+/**
+ * 侧栏底部的流量同步状态。它是全站唯一一处能看出后台任务还活着的地方,
+ * 所以每分钟重拉一次 —— 只在挂载时读一次的话,开着页面一小时后它还在说
+ * 「上次完成 刚刚」。读失败时保留上一次的值并标出来,不让这一格消失。
+ */
+const syncStatus = ref<TrafficStatus | null>(null)
+const syncLoadFailed = ref(false)
+const sync = computed(() => summarizeSync(syncStatus.value, syncLoadFailed.value))
+const syncTooltip = computed(() => (sync.value ? `${sync.value.title} · ${sync.value.detail}` : ''))
 
 interface NavItem {
   key: string
@@ -183,16 +191,34 @@ async function loadMeta() {
     ).length
     counts.value.failedDeploys = failed || undefined
   }
-  if (s.status === 'fulfilled') {
-    sync.value = { lastRun: s.value.last_run, failing: s.value.failing_nodes.length }
+  applySync(s)
+}
+
+function applySync(r: PromiseSettledResult<TrafficStatus>) {
+  if (r.status === 'fulfilled') {
+    syncStatus.value = r.value
+    syncLoadFailed.value = false
+  } else {
+    syncLoadFailed.value = true
   }
 }
 
+async function refreshSync() {
+  if (document.hidden) return
+  const [r] = await Promise.allSettled([api.trafficStatus()])
+  applySync(r)
+}
+
+let syncTimer: number | undefined
 onMounted(() => {
   window.addEventListener('resize', onResize)
   loadMeta()
+  syncTimer = window.setInterval(refreshSync, 60_000)
 })
-onUnmounted(() => window.removeEventListener('resize', onResize))
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize)
+  window.clearInterval(syncTimer)
+})
 
 async function go(key: string) {
   drawerOpen.value = false
@@ -211,9 +237,6 @@ async function onUserMenu({ key }: { key: string | number }) {
 }
 
 const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUpperCase())
-const syncText = computed(() =>
-  sync.value?.failing ? `${sync.value.failing} 个节点同步失败` : '流量同步正常',
-)
 </script>
 
 <template>
@@ -257,13 +280,20 @@ const syncText = computed(() =>
       </nav>
 
       <!-- 后台任务还活不活着,只有这里看得出来。 -->
-      <a-tooltip v-if="sync" :title="collapsed ? syncText : undefined" placement="right">
-        <div class="ml__sync" :class="{ 'ml__sync--mini': collapsed }">
-          <span class="lb-dot" :style="{ '--dot': sync.failing ? 'var(--bad)' : 'var(--ok)' }" />
+      <a-tooltip v-if="sync" :title="collapsed ? syncTooltip : undefined" placement="right">
+        <div
+          class="ml__sync"
+          :class="{ 'ml__sync--mini': collapsed }"
+          role="status"
+          :aria-label="syncTooltip"
+          data-testid="sync-status"
+        >
+          <span class="lb-dot" :style="{ '--dot': SYNC_DOT[sync.tone] }" />
           <div v-if="!collapsed" class="ml__sync-text">
-            <div class="ml__sync-title">{{ syncText }}</div>
+            <div class="ml__sync-title">{{ sync.title }}</div>
             <div class="ml__sync-time">
-              上次 <LbTimeText :value="sync.lastRun ?? null" empty="尚未运行" />
+              {{ sync.detail }}
+              <LbTimeText v-if="sync.at" :value="sync.at" :warn-after-ms="SYNC_STALE_MS" />
             </div>
           </div>
         </div>
@@ -374,11 +404,14 @@ const syncText = computed(() =>
         </button>
       </template>
     </nav>
-    <div v-if="sync" class="ml__sync ml__sync--drawer">
-      <span class="lb-dot" :style="{ '--dot': sync.failing ? 'var(--bad)' : 'var(--ok)' }" />
+    <div v-if="sync" class="ml__sync ml__sync--drawer" role="status" :aria-label="syncTooltip">
+      <span class="lb-dot" :style="{ '--dot': SYNC_DOT[sync.tone] }" />
       <div class="ml__sync-text">
-        <div class="ml__sync-title">{{ syncText }}</div>
-        <div class="ml__sync-time">上次 <LbTimeText :value="sync.lastRun ?? null" empty="尚未运行" /></div>
+        <div class="ml__sync-title">{{ sync.title }}</div>
+        <div class="ml__sync-time">
+          {{ sync.detail }}
+          <LbTimeText v-if="sync.at" :value="sync.at" :warn-after-ms="SYNC_STALE_MS" />
+        </div>
       </div>
     </div>
   </a-drawer>
