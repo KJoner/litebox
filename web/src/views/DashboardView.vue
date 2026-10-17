@@ -402,7 +402,8 @@ const attention = computed<AttentionItem[]>(() => {
         icon: 'activity',
         title: r.n.display_name,
         cat: '节点 · 流量同步',
-        text: `流量同步失败(数据库未改动,恢复后连同这段一起入账):${syncError.split('\n')[0]}`,
+        // 后端的原文已经写了「未修改数据库」,这里不再重复,只取第一行。
+        text: `流量同步失败:${syncError.split('\n')[0]}`,
         to: `/nodes/${id}`,
         action: '查看节点',
       })
