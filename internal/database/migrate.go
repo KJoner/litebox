@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
@@ -22,7 +23,25 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
-	Hash    string
+	// Hash 按换行统一成 LF 之后的内容算,新应用的迁移记这一份。
+	Hash string
+	// accepted 是库里记着也算「同一份内容」的哈希:LF、CRLF 与嵌入时的原始字节各一份。
+	//
+	// Windows 上 core.autocrlf=true 检出的迁移文件是 CRLF,在那里编出来的二进制把 CRLF 的
+	// 哈希记进了库;它与 Linux 编的二进制原来互相拒绝对方的库(「内容在应用后被修改」),
+	// 而 SQL 一个字节都没变。只放过换行这一种差异 —— 别的任何改动照样拒绝,
+	// 库里已有的记录也不改写:回滚到旧二进制之后它还要认得自己记下的那一份。
+	accepted []string
+}
+
+// Matches 回答库里记的哈希是不是这份迁移本身(只容忍换行差异)。
+func (m Migration) Matches(recorded string) bool {
+	for _, h := range m.accepted {
+		if h == recorded {
+			return true
+		}
+	}
+	return false
 }
 
 // Migrate 按版本号顺序应用所有未执行的迁移。
@@ -47,7 +66,7 @@ func Migrate(db *sql.DB, logger *slog.Logger) error {
 	for _, m := range migrations {
 		if prevHash, ok := applied[m.Version]; ok {
 			// 已应用的迁移内容被改动是严重问题:不同环境的库结构会悄悄分叉。
-			if prevHash != m.Hash {
+			if !m.Matches(prevHash) {
 				return fmt.Errorf("迁移 %04d_%s 的内容在应用后被修改"+
 					"(记录哈希 %s,当前 %s)。请新增迁移而不是修改已有迁移",
 					m.Version, m.Name, prevHash[:12], m.Hash[:12])
@@ -131,12 +150,18 @@ func loadMigrations() ([]Migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		sum := sha256.Sum256(content)
+		lf := bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+		hash := sha256Hex(lf)
 		migrations = append(migrations, Migration{
 			Version: version,
 			Name:    parts[1],
-			SQL:     string(content),
-			Hash:    hex.EncodeToString(sum[:]),
+			SQL:     string(lf),
+			Hash:    hash,
+			accepted: []string{
+				hash,
+				sha256Hex(bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n"))),
+				sha256Hex(content),
+			},
 		})
 	}
 
@@ -150,6 +175,11 @@ func loadMigrations() ([]Migration, error) {
 		}
 	}
 	return migrations, nil
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // applyMigration 在单个事务内执行迁移并记录版本,保证要么全成功要么全回滚。

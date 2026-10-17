@@ -1,0 +1,4 @@
+# 迁移文件的哈希会记进库里(internal/database/migrate.go)。不固定换行的话,
+# Windows 上 core.autocrlf=true 检出的是 CRLF,在那里编出来的二进制记下的哈希
+# 与 Linux 编的对不上 —— 两边曾经互相拒绝对方的库。
+internal/database/migrations/*.sql text eol=lf
