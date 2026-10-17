@@ -691,7 +691,7 @@ async function doSubmit() {
       </template>
 
       <a-form-item label="管理 IPv4 地址 / 域名" required>
-        <a-input v-model:value="form.host" placeholder="例如:45.77.12.90 或 la.ddns.example.com" />
+        <a-input v-model:value="form.host" placeholder="例如:203.0.113.10 或 la.ddns.example.com" />
         <div class="nf__help">
           面板<strong>唯一</strong>的管理通道:SSH、探测、部署、流量同步与资源采集全走它,必须填写。
           下面那一栏留空时,它同时兼任 IPv4 订阅地址。

@@ -18,7 +18,7 @@ func chainCase() (singbox.InboundParams, *ChainProbe) {
 	}
 	chain := &ChainProbe{
 		Landing:        "lax-1 / 香港SS入口",
-		Server:         "154.31.157.27",
+		Server:         "198.51.100.27",
 		Port:           28443,
 		Code:           "chain_000003",
 		LandingSSHPort: 22,
@@ -36,7 +36,7 @@ func TestChainDialNoteSplitsTheThreeHops(t *testing.T) {
 		chainHopUnknown, true)
 
 	for _, want := range []string{"①", "②", "③", "in-27", "lax-1 / 香港SS入口",
-		"154.31.157.27:28443", "generate_204", "chain_000003"} {
+		"198.51.100.27:28443", "generate_204", "chain_000003"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("归因里缺了 %q —— 少了它管理员答不出该去哪台机器:\n%s", want, note)
 		}

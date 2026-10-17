@@ -11,10 +11,10 @@ import (
 // 连接。用户的 TLS ClientHello(517 字节)发过去,上游直接 RST ——
 // 这几行把"该去找机场而不是查中转机"写得清清楚楚,而面板当时只报了
 // 「经代理未读到任何数据: EOF」。
-const realRelayLog = `2026/08/21 02:50:58 [error] 1511#1511: *265 recv() failed (104: Connection reset by peer) while proxying and reading from upstream, client: 111.55.79.17, server: 0.0.0.0:48208, upstream: "167.254.242.36:56697", bytes from/to client:566/0, bytes from/to upstream:0/566
-2026/08/21 03:00:58 [error] 1511#1511: *273 recv() failed (104: Connection reset by peer) while proxying and reading from upstream, client: 111.55.79.17, server: 0.0.0.0:48208, upstream: "167.254.242.36:56697", bytes from/to client:598/0, bytes from/to upstream:0/598
+const realRelayLog = `2026/08/21 02:50:58 [error] 1511#1511: *265 recv() failed (104: Connection reset by peer) while proxying and reading from upstream, client: 203.0.113.79, server: 0.0.0.0:48208, upstream: "198.51.100.36:56697", bytes from/to client:566/0, bytes from/to upstream:0/566
+2026/08/21 03:00:58 [error] 1511#1511: *273 recv() failed (104: Connection reset by peer) while proxying and reading from upstream, client: 203.0.113.79, server: 0.0.0.0:48208, upstream: "198.51.100.36:56697", bytes from/to client:598/0, bytes from/to upstream:0/598
 2026/08/21 03:05:11 [error] 1511#1511: *281 connect() failed while connecting to upstream, client: 10.0.0.9, server: 0.0.0.0:39000, upstream: "1.2.3.4:443", bytes from/to client:0/0, bytes from/to upstream:0/0
-2026/08/21 03:15:58 [error] 1511#1511: *285 recv() failed (104: Connection reset by peer) while proxying and reading from upstream, client: 111.55.79.17, server: 0.0.0.0:48208, upstream: "167.254.242.36:56697", bytes from/to client:566/0, bytes from/to upstream:0/566`
+2026/08/21 03:15:58 [error] 1511#1511: *285 recv() failed (104: Connection reset by peer) while proxying and reading from upstream, client: 203.0.113.79, server: 0.0.0.0:48208, upstream: "198.51.100.36:56697", bytes from/to client:566/0, bytes from/to upstream:0/566`
 
 func TestPickNginxErrorLinesFindsTheUpstreamStory(t *testing.T) {
 	got := pickNginxErrorLines(realRelayLog, 48208)
@@ -22,7 +22,7 @@ func TestPickNginxErrorLinesFindsTheUpstreamStory(t *testing.T) {
 		t.Fatal("一行都没挑出来 —— 那几行正是判断该找谁的全部依据")
 	}
 	// 上游地址是这里最要紧的一条信息:它说明问题在落地那一端。
-	if !strings.Contains(got, `upstream: "167.254.242.36:56697"`) {
+	if !strings.Contains(got, `upstream: "198.51.100.36:56697"`) {
 		t.Errorf("没带上上游地址:%s", got)
 	}
 	if !strings.Contains(got, "Connection reset by peer") {
