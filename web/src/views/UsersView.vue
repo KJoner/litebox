@@ -403,7 +403,7 @@ onMounted(load)
       <LbMetricCard label="有效用户" icon="users" :state="metricState" :value="stats.active" :total="stats.total" :hint="inactiveNote" />
       <LbMetricCard label="7 天内到期" icon="calendar" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
         <template #foot>
-          <a v-if="stats.expiring" class="uv__link" @click="filters.expiringSoon = true">筛选 ›</a>
+          <button type="button" v-if="stats.expiring" class="lb-linkbtn uv__link" @click="filters.expiringSoon = true">筛选 ›</button>
           <span v-else>近期没有人到期</span>
         </template>
       </LbMetricCard>
@@ -416,7 +416,7 @@ onMounted(load)
         :tone="stats.near ? 'warning' : 'default'"
       >
         <template #foot>
-          <a v-if="stats.near" class="uv__link" @click="filters.nearQuota = true">筛选 ›</a>
+          <button type="button" v-if="stats.near" class="lb-linkbtn uv__link" @click="filters.nearQuota = true">筛选 ›</button>
           <span v-else>没有人接近额度</span>
         </template>
       </LbMetricCard>
@@ -509,7 +509,7 @@ onMounted(load)
       <div v-else-if="narrow" class="uv__cards">
         <LbRowCard v-for="u in pager.slice(visible)" :key="u.id">
           <template #head>
-            <a class="uv__card-name" @click="detailId = u.id">{{ u.display_name }}</a>
+            <button type="button" class="lb-linkbtn uv__card-name" @click="detailId = u.id">{{ u.display_name }}</button>
             <LbStatusTag kind="user" :status="u.status" />
           </template>
 
@@ -597,7 +597,7 @@ onMounted(load)
               <!-- 首字头像只是扫读用的记号,颜色固定中性:按名字散列出彩色会被读成某种分组。 -->
               <span class="uv__avatar" aria-hidden="true">{{ (record.display_name || '?').slice(0, 1).toUpperCase() }}</span>
               <div class="uv__who-text">
-                <a class="uv__name" @click="detailId = record.id">{{ record.display_name }}</a>
+                <button type="button" class="lb-linkbtn uv__name" @click="detailId = record.id">{{ record.display_name }}</button>
                 <div class="uv__code lb-tabular">
                   {{ record.user_code }}
                   <template v-if="record.portal_account">· {{ record.portal_account.username }}</template>

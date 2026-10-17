@@ -438,18 +438,18 @@ const columns = [
           </template>
         </div>
         <div class="xp__card-ops" @click.stop>
-          <a :class="{ 'xp__dim': busy[src.id] }" @click="confirmSync(src)">
+          <button type="button" class="lb-linkbtn" :class="{ 'xp__dim': busy[src.id] }" @click="confirmSync(src)">
             {{ busy[src.id] === '同步' ? '同步中…' : '同步' }}
-          </a>
-          <a @click="sourceModal.target = src; sourceModal.open = true">编辑</a>
-          <a @click="openExpirySource(src)">续费</a>
-          <a class="xp__danger" @click="confirmDeleteSource(src)">删除</a>
+          </button>
+          <button type="button" class="lb-linkbtn" @click="sourceModal.target = src; sourceModal.open = true">编辑</button>
+          <button type="button" class="lb-linkbtn" @click="openExpirySource(src)">续费</button>
+          <button type="button" class="lb-linkbtn xp__danger" @click="confirmDeleteSource(src)">删除</button>
         </div>
       </div>
 
-      <div class="xp__card xp__card--add" @click="sourceModal.target = null; sourceModal.open = true">
+      <button type="button" class="xp__card xp__card--add" @click="sourceModal.target = null; sourceModal.open = true">
         + 添加代理源
-      </div>
+      </button>
     </div>
 
     <section>
@@ -473,9 +473,9 @@ const columns = [
       <LbRowCard v-for="p in visible" :key="p.id">
         <template #head>
           <span class="xp__sort lb-mono">#{{ p.sort_order }}</span>
-          <a class="xp__name" @click="proxyModal.target = p; proxyModal.open = true">
+          <button type="button" class="lb-linkbtn xp__name" @click="proxyModal.target = p; proxyModal.open = true">
             {{ p.final_display_name }}
-          </a>
+          </button>
           <LbStatusTag kind="externalProxy" :status="p.status" />
         </template>
         <div class="xp__addr lb-mono">{{ p.server }}:{{ p.port }} · {{ p.access_tier_name }}</div>
@@ -488,15 +488,15 @@ const columns = [
         </div>
         <div class="xp__note">
           商家到期 <LbStatusTag :meta="expiryStatusMeta(p.expiry)" />
-          <a @click="openExpiryProxy(p)">续费</a>
+          <button type="button" class="lb-linkbtn" @click="openExpiryProxy(p)">续费</button>
         </div>
         <div v-if="sourceExpiredNote(p)" class="xp__warn">{{ sourceExpiredNote(p) }}</div>
         <template #foot>
-          <a @click="proxyModal.target = p; proxyModal.open = true">编辑</a>
-          <a @click="toggleSubscription(p)">
+          <button type="button" class="lb-linkbtn" @click="proxyModal.target = p; proxyModal.open = true">编辑</button>
+          <button type="button" class="lb-linkbtn" @click="toggleSubscription(p)">
             {{ p.subscription_enabled ? '停止下发' : '恢复下发' }}
-          </a>
-          <a class="xp__danger" @click="deleteTarget = p">删除</a>
+          </button>
+          <button type="button" class="lb-linkbtn xp__danger" @click="deleteTarget = p">删除</button>
         </template>
       </LbRowCard>
       <LbEmptyState
@@ -532,9 +532,9 @@ const columns = [
           <span class="xp__sort lb-mono" :title="`排序值 ${record.sort_order}`">
             #{{ record.sort_order }}
           </span>
-          <a @click="proxyModal.target = record; proxyModal.open = true">
+          <button type="button" class="lb-linkbtn" @click="proxyModal.target = record; proxyModal.open = true">
             {{ record.final_display_name }}
-          </a>
+          </button>
           <span v-if="record.name !== record.final_display_name" class="xp__inner">
             {{ record.name }}
           </span>
@@ -566,7 +566,7 @@ const columns = [
         <template v-else-if="column.key === 'addr'">
           <div class="xp__addr lb-mono">{{ record.server }}:{{ record.port }}</div>
           <div class="xp__note">
-            <a @click="showCredentials(record)">查看凭据</a>
+            <button type="button" class="lb-linkbtn" @click="showCredentials(record)">查看凭据</button>
             <template v-if="record.last_check_at">
               · 上次检查
               <span :class="record.last_check_ok ? 'xp__ok' : 'xp__danger'">
@@ -585,11 +585,11 @@ const columns = [
         </template>
 
         <template v-else-if="column.key === 'vendor'">
-          <a class="xp__vendor" @click="openExpiryProxy(record)">
+          <button type="button" class="lb-linkbtn xp__vendor" @click="openExpiryProxy(record)">
             <LbStatusTag :meta="expiryStatusMeta(record.expiry)" />
             <span v-if="record.expiry?.inherited" class="xp__note">跟随来源</span>
             <span v-if="record.expiry?.auto_renew && record.expiry?.expires_at" class="xp__note">自动续费</span>
-          </a>
+          </button>
         </template>
 
         <template v-else-if="column.key === 'sub'">
@@ -731,6 +731,7 @@ const columns = [
   display: flex;
   align-items: center;
   justify-content: center;
+  font: inherit;
   color: var(--text3);
   box-shadow: none;
   border: 1px dashed var(--sep);

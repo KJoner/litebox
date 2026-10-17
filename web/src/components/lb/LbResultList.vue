@@ -52,9 +52,9 @@ defineExpose({ done, failed, running })
         </span>
         <span class="lb-result__detail lb-clamp-2">{{ it.detail ?? '—' }}</span>
         <span>
-          <a v-if="retryable && it.ok === false" class="lb-result__retry" @click="$emit('retry', it)">
+          <button type="button" v-if="retryable && it.ok === false" class="lb-linkbtn lb-result__retry" @click="$emit('retry', it)">
             重试
-          </a>
+          </button>
         </span>
       </div>
     </div>

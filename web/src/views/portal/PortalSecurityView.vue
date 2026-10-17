@@ -195,7 +195,7 @@ function deviceName(s: PortalSession): string {
               <!-- 当前设备不给「下线」:点它等于自己把自己踢出去,
                    真想这么做时该用的是「退出全部设备」。 -->
               <span v-if="s.current" class="pv__muted">—</span>
-              <a v-else @click="revoke(s)">下线</a>
+              <button type="button" class="lb-linkbtn" v-else @click="revoke(s)">下线</button>
             </div>
           </div>
         </div>

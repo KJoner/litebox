@@ -1374,7 +1374,7 @@ const needsPortForward = computed(() =>
             <section class="nd__card">
               <div class="nd__card-head">
                 <span class="nd__card-head-title">身份与地址</span>
-                <a class="nd__card-link" @click="editOpen = true">编辑节点 ›</a>
+                <button type="button" class="lb-linkbtn nd__card-link" @click="editOpen = true">编辑节点 ›</button>
               </div>
               <div class="nd__card-body">
                 <div class="nd__kv">
@@ -1454,7 +1454,7 @@ const needsPortForward = computed(() =>
                     text="商家账单的到期时间,与「流量」里的周期重置时间是两回事。面板只提醒、不代为扣款;「自动续费」登记的是商家那边已经开着的状态,到期前照样提醒,好确认它真的续上了。"
                   />
                 </span>
-                <a class="nd__card-link" @click="expiryOpen = true">续费 / 修改 ›</a>
+                <button type="button" class="lb-linkbtn nd__card-link" @click="expiryOpen = true">续费 / 修改 ›</button>
               </div>
               <div class="nd__card-body">
                 <div v-if="!node.expiry || node.expiry.state === 'UNSET'" class="nd__card-note nd__expiry-empty">
@@ -1517,7 +1517,7 @@ const needsPortForward = computed(() =>
                       · 那时管理地址还没改,结果说的是旧机器
                     </template>
                   </span>
-                  <a class="nd__card-link" @click="goTab('entries')">服务卡片与启停 ›</a>
+                  <button type="button" class="lb-linkbtn nd__card-link" @click="goTab('entries')">服务卡片与启停 ›</button>
                 </span>
               </div>
               <div class="nd__card-body">

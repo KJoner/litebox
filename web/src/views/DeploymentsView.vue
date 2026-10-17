@@ -222,7 +222,7 @@ const columns = [
         :tone="stats.failed ? 'danger' : 'default'"
       >
         <template #foot>
-          <a v-if="stats.failed" class="dp__link" @click="filters.onlyFailed = true">只看失败 ›</a>
+          <button type="button" v-if="stats.failed" class="lb-linkbtn dp__link" @click="filters.onlyFailed = true">只看失败 ›</button>
           <span v-else>近 7 天没有失败</span>
         </template>
       </LbMetricCard>

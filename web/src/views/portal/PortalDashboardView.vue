@@ -164,7 +164,7 @@ const usedParts = computed(() => {
             <span class="pd__metric-unit">个</span>
           </div>
           <div class="pd__metric-foot">
-            <a class="pd__link" @click="router.push('/user/nodes')">查看节点 ›</a>
+            <RouterLink class="pd__link" to="/user/nodes">查看节点 ›</RouterLink>
           </div>
         </div>
       </section>
