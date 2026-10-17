@@ -9,6 +9,7 @@ import {
 } from '@/api/client'
 import { formatBytes } from '@/utils/format'
 import { LbEmptyState, LbStatusTag, LbTimeText, portalNodeStatusMeta, LbInfoTip,} from '@/components/lb'
+import { NODE_TRAFFIC_NOTE } from './quotaPeriod'
 
 /**
  * 我的节点。用户要判断的是「现在该连哪个」。
@@ -77,7 +78,10 @@ const summary = computed(() => {
       <div class="lb-page__title-wrap">
         <h1 class="lb-page__title">
           <span>我的节点</span>
-          <LbInfoTip text="只列当前能用、在订阅里的节点。流量数字按 UTC 日统计;标着「IPv6」的节点在订阅里有两条,指向同一台机器。" :width="280" />
+          <LbInfoTip
+            :text="`只列当前能用、在订阅里的节点。${NODE_TRAFFIC_NOTE}同一台机器上的几个节点显示的是这台机器上的同一份总量,不要相加。标着「IPv6」的节点在订阅里有两条,指向同一台机器。`"
+            :width="300"
+          />
         </h1>
         <div class="lb-page__summary">{{ summary }}。</div>
       </div>
@@ -105,7 +109,8 @@ const summary = computed(() => {
       列表展示(不再用卡片)。只列当前能用、在订阅里的节点 ——
       维护中与已停用的机器本来就不在订阅里,这里不显示。
     -->
-    <div v-else-if="visibleNodes.length" class="pn__list">
+    <div v-else-if="visibleNodes.length" class="pn__note" data-testid="node-traffic-note">{{ NODE_TRAFFIC_NOTE }}</div>
+    <div v-if="!loading && !loadError && !hasNone && visibleNodes.length" class="pn__list">
       <div v-for="n in visibleNodes" :key="n.id" class="pn__row">
         <div class="pn__row-main">
           <div class="pn__row-head">
@@ -117,8 +122,8 @@ const summary = computed(() => {
             <span v-if="n.unmetered" class="pn__row-tag">不计流量</span>
           </div>
           <div class="pn__row-meta lb-tabular">
-            {{ n.protocol.toUpperCase() }} · 端口 {{ n.public_port }} · 更新
-            <LbTimeText :value="n.last_seen_at" empty="暂无数据" />
+            {{ n.protocol.toUpperCase() }} · 端口 {{ n.public_port }} · 最近有流量
+            <LbTimeText :value="n.last_seen_at" empty="暂无记录" />
           </div>
           <div v-if="n.supports_ipv6" class="pn__row-hint">
             你的订阅里这个节点有两条:IPv4 和 IPv6,指向同一台机器,任选其一。
@@ -127,9 +132,9 @@ const summary = computed(() => {
           <div v-if="n.public_remark" class="pn__row-remark">{{ n.public_remark }}</div>
         </div>
         <div class="pn__row-stats">
-          <div><span>今日</span><b class="lb-tabular">{{ formatBytes(n.today_bytes) }}</b></div>
-          <div><span>本月</span><b class="lb-tabular">{{ formatBytes(n.month_bytes) }}</b></div>
-          <div><span>累计</span><b class="lb-tabular">{{ formatBytes(n.total_bytes) }}</b></div>
+          <div title="UTC 今日 00:00 起"><span>今日</span><b class="lb-tabular">{{ formatBytes(n.today_bytes) }}</b></div>
+          <div title="UTC 自然月,1 日 00:00 起;不是额度周期"><span>本月 UTC</span><b class="lb-tabular">{{ formatBytes(n.month_bytes) }}</b></div>
+          <div title="开通以来的全部记录,重置额度不清零"><span>累计</span><b class="lb-tabular">{{ formatBytes(n.total_bytes) }}</b></div>
         </div>
       </div>
     </div>
@@ -200,6 +205,13 @@ const summary = computed(() => {
 }
 .pn__section-note {
   font-size: var(--fs-xs);
+  color: var(--text3);
+}
+.pn__note {
+  padding: 0 4px;
+  margin-bottom: -8px;
+  font-size: var(--fs-xs);
+  line-height: 1.6;
   color: var(--text3);
 }
 
