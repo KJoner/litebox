@@ -6,6 +6,10 @@ name: ci
 #
 # 前端测试全程不连任何后端:接口一律由 web/e2e/fixtures 里的固定数据回答,
 # 写操作没有显式模拟就判失败。这里不需要、也不应该配置任何节点或面板地址。
+#
+# 运行环境固定 ubuntu-24.04,不用 ubuntu-latest:后者从 2026-10-19 起迁到 Ubuntu 26,
+# 而 `playwright install --with-deps` 按发行版装系统依赖,Playwright 1.63 认不认得新版本
+# 没验证过。换发行版要和升级 Playwright 一起做,在功能分支上看一次 CI 再合。
 
 on:
   push:
@@ -21,7 +25,7 @@ concurrency:
 
 jobs:
   go:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -40,7 +44,7 @@ jobs:
         run: go test ./... -count=1
 
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
