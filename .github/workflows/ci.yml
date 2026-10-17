@@ -27,6 +27,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # web/embed.go 嵌入 web/dist,而 dist 不进仓库(.gitignore)。这个 job 不构建前端,
+      # 不放一个占位页的话 go vet 第一步就报 pattern all:dist: no matching files found。
+      - name: 前端占位产物
+        run: mkdir -p web/dist && echo '<!doctype html><title>LiteBox</title>' > web/dist/index.html
       - name: go vet
         run: go vet ./...
       # phase0/ 是 Phase 0 的一次性验证探针,原样留档,不在格式检查范围里。
