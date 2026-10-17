@@ -29,8 +29,8 @@ import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
  * 左侧锚点导航而不是 Tab:几组内容都不长,Tab 会让人为了确认一个值来回切;
  * 锚点让整页可滚、可 Ctrl+F。
  *
- * V18:每组 = 外置标题 + 生效徽标 + 20px 圆角卡;卡内是分组列表;
- * 帮助文案全部收进标题旁或字段旁的 ⓘ。
+ * UI 2.0:每组 = 外置标题 + 生效徽标 + 一张设置卡;卡内分组列表不自带边框(卡里套框是双层框),
+ * 行线贴满卡片,保存按钮在带底色的卡片底栏;帮助文案全部收进标题旁或字段旁的 ⓘ。
  */
 const auth = useAuthStore()
 const router = useRouter()

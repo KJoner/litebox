@@ -16,7 +16,9 @@ import { LbIcon, LbTimeText, type LbIconName } from '@/components/lb'
  * 每次都要从头读一遍才能找到目标。分组之后「用户」「节点」永远在中间那块。
  *
  * 折叠:顶栏左侧的按钮手动切换,偏好存 localStorage;没设过偏好时按宽度自动
- * (≥1280 展开、768–1279 折叠成图标条,不自动隐藏 —— 隐藏之后管理员会找不到导航)。
+ * (≥1440 展开、768–1439 折叠成图标条,不自动隐藏 —— 隐藏之后管理员会找不到导航)。
+ * 阈值取 1440 而不是 1280:节点、用户、入口几张表连勾选列在内要 1050~1110 宽,
+ * 1280 / 1366 的笔记本上侧栏展开时内容区只有 990~1078,表格只能横向滚动。
  * <768 顶栏汉堡 + 抽屉。
  */
 const auth = useAuthStore()
@@ -123,7 +125,7 @@ const narrow = computed(() => width.value < 768)
 const collapsed = computed(() => {
   if (narrow.value) return false
   if (siderPref.value) return siderPref.value === 'collapsed'
-  return width.value < 1280
+  return width.value < 1440
 })
 const drawerOpen = ref(false)
 

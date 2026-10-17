@@ -513,7 +513,7 @@ function conclusion(d: DeploymentRecord): string {
         :state="alertsError && !attention.length ? 'error' : loading && !loadedAt ? 'loading' : 'ready'"
         :value="attention.length"
         unit="项"
-        :tone="badCount ? 'danger' : warnCount ? 'warning' : 'success'"
+        :tone="alertsError ? 'default' : badCount ? 'danger' : warnCount ? 'warning' : 'success'"
       >
         <template #foot>
           <template v-if="attention.length">
