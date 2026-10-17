@@ -11,7 +11,8 @@ import { color } from '@/theme/tokens'
  * 失败步骤的输出用等宽 + 保留换行:那是拨测的原始输出,
  * 折行重排之后就不是它了。
  *
- * V18:--surface2 圆角 14 的步骤列表,22px 圆形状态图标,每行 lb-step 依次入场。
+ * UI 2.0:--surface2 底的步骤列表,22px 圆形状态图标,每行 lb-step 入场(错开 25ms、封顶 8 行 ——
+ * 18 步的部署按 60ms 错开要一秒多才出完)。
  */
 defineProps<{ record: DeploymentRecord }>()
 

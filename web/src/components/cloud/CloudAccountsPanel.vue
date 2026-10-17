@@ -19,8 +19,8 @@ import { cloudUsageLevel, GIB } from './cloudMeta'
  * 所以额度与阈值挂在这里(国际 / 内地两个池子),而"超了怎么办"挂在节点上。
  * Secret 永远不回显:编辑时留空表示不改。
  *
- * V18:每个账号一张 20px 圆角卡;说明文案收进 ⓘ;轮询与时区是一张分组列表卡;
- * 新建 / 编辑走 Sheet(分组列表)。
+ * UI 2.0:每个账号一张细边框卡;说明文案收进 ⓘ;轮询与时区是一张设置卡
+ * (分组列表不自带边框、底栏带底色,与设置页同一形态);新建 / 编辑走弹窗。
  */
 const accounts = ref<CloudAccount[]>([])
 const lastRun = ref('')

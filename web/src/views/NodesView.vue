@@ -487,7 +487,7 @@ const columns = [
   { title: '服务巡检', key: 'health', width: 146 },
   { title: '本周期流量', key: 'cycle', width: 180 },
   { title: '到期时间', key: 'expiry', width: 150 },
-  { title: '操作', key: 'actions', width: 112, fixed: 'right' as const },
+  { title: '操作', key: 'actions', width: 124, fixed: 'right' as const },
 ]
 
 /**
@@ -795,7 +795,7 @@ const keyOpen = ref(false)
           :pagination="pager.options.value"
           row-key="id"
           size="small"
-          :scroll="{ x: 1080 }"
+          :scroll="{ x: 1092 }"
         >
           <template #bodyCell="{ column, record }">
             <!-- 编号 = 业务排序号(不是数据库主键),点击就地改。 -->
@@ -1077,15 +1077,24 @@ const keyOpen = ref(false)
   font-size: var(--fs-xs);
 }
 
+/* 长 IPv6 / 长域名在 176 宽的列里放不下:地址省略、完整值在 title,复制按钮始终可见。 */
 .nv__hostcell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
 }
 .nv__hosttext {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-sm);
   color: var(--text);
+}
+.nv__copybtn {
+  flex: none;
 }
 .nv__copybtn {
   opacity: 0.6;

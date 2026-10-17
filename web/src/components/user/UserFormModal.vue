@@ -15,8 +15,8 @@ import { fromBytes, toBytes, type LbQuotaUnit } from './quota'
  *   标识字段  新建显示「自动分配」;编辑显示真值且只读。
  *   主按钮    「创建用户」/「保存」,后者无改动时禁用。
  *
- * V18:iOS Sheet —— 三栏头由 antd-tune.css 给;正文是几段分组列表
- * (130px 标签 | 控件),帮助文案收进标签旁的 ⓘ;底部居中一句摘要。
+ * 版式:标准弹窗(UI 2.0 起标题左对齐、取消 / 保存在右下角的底栏,V18 的三栏头已删);
+ * 正文是几段分组列表(130px 标签 | 控件),帮助文案收进标签旁的 ⓘ;底部居中一句摘要。
  */
 const props = defineProps<{
   open: boolean

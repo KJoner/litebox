@@ -16,8 +16,8 @@ import { color } from '@/theme/tokens'
  *   minus    短横   = 已跳过
  *
  * 颜色全是 CSS 变量引用(tokens.ts 的 color),深色模式下自动换成深色版语义色;
- * 浅底是语义色的 12%(深色 18%)alpha,已经在 tokens.css 里算好。
- * V18 起标签**没有边框**,所以这里也没有 bd 字段。
+ * 浅底是语义色的 10%(深色 13%)alpha,已经在 tokens.css 里算好。
+ * 描边由 LbStatusTag 按 currentColor 现算(UI 2.0),所以这里没有 bd 字段。
  */
 export type LbShape =
   | 'dot' | 'cross' | 'triangle' | 'spinner' | 'pause'

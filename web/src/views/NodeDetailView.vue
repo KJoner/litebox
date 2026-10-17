@@ -2424,11 +2424,6 @@ const needsPortForward = computed(() =>
   line-height: 1.25;
 }
 
-.nd__sub {
-  font-size: var(--fs-sm);
-  color: var(--text3);
-}
-
 .nd__actions {
   display: flex;
   align-items: center;
@@ -2565,10 +2560,6 @@ const needsPortForward = computed(() =>
 .nd__charts-2 .nd__chart {
   margin-bottom: 16px;
   min-width: 0;
-}
-
-.nd__records-title {
-  margin-bottom: 10px;
 }
 
 .nd__maint {
