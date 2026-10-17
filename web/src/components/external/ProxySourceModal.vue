@@ -456,7 +456,7 @@ async function doSave() {
   display: inline-block;
   margin-left: 6px;
   padding: 0 5px;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   background: var(--fill);
   color: var(--text2);
   font-size: var(--fs-2xs);

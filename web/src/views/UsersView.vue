@@ -378,8 +378,13 @@ onMounted(load)
         <div class="lb-page__summary">{{ summaryLine }}</div>
       </div>
       <div class="lb-page__actions">
-        <a-button :loading="loading" @click="load">刷新</a-button>
-        <a-button type="primary" @click="openCreate">+ 新增用户</a-button>
+        <a-button :loading="loading" aria-label="刷新" title="刷新" @click="load">
+          <template #icon><LbIcon name="refresh" :size="15" /></template>
+        </a-button>
+        <a-button type="primary" @click="openCreate">
+          <template #icon><LbIcon name="plus" :size="15" /></template>
+          新增用户
+        </a-button>
       </div>
     </div>
 
@@ -395,8 +400,8 @@ onMounted(load)
     </div>
 
     <section class="lb-metrics">
-      <LbMetricCard label="有效用户" :state="metricState" :value="stats.active" :total="stats.total" :hint="inactiveNote" />
-      <LbMetricCard label="7 天内到期" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
+      <LbMetricCard label="有效用户" icon="users" :state="metricState" :value="stats.active" :total="stats.total" :hint="inactiveNote" />
+      <LbMetricCard label="7 天内到期" icon="calendar" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
         <template #foot>
           <a v-if="stats.expiring" class="uv__link" @click="filters.expiringSoon = true">筛选 ›</a>
           <span v-else>近期没有人到期</span>
@@ -404,6 +409,7 @@ onMounted(load)
       </LbMetricCard>
       <LbMetricCard
         label="流量超 80%"
+        icon="gauge"
         tip="按用户额度算,不限量的用户不计。达到 100% 时账号自动停用并触发受影响节点重新部署。"
         :state="metricState"
         :value="stats.near"
@@ -416,6 +422,7 @@ onMounted(load)
       </LbMetricCard>
       <LbMetricCard
         label="累计已用流量"
+        icon="activity"
         :state="metricState"
         :value="formatBytes(stats.monthBytes).split(' ')[0]"
         :unit="formatBytes(stats.monthBytes).split(' ')[1]"
@@ -586,11 +593,17 @@ onMounted(load)
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a class="uv__name" @click="detailId = record.id">{{ record.display_name }}</a>
-            <div class="uv__code lb-tabular">
-              {{ record.user_code }}
-              <template v-if="record.portal_account">· {{ record.portal_account.username }}</template>
-              <template v-else>· 未开通登录</template>
+            <div class="uv__who">
+              <!-- 首字头像只是扫读用的记号,颜色固定中性:按名字散列出彩色会被读成某种分组。 -->
+              <span class="uv__avatar" aria-hidden="true">{{ (record.display_name || '?').slice(0, 1).toUpperCase() }}</span>
+              <div class="uv__who-text">
+                <a class="uv__name" @click="detailId = record.id">{{ record.display_name }}</a>
+                <div class="uv__code lb-tabular">
+                  {{ record.user_code }}
+                  <template v-if="record.portal_account">· {{ record.portal_account.username }}</template>
+                  <template v-else>· 未开通登录</template>
+                </div>
+              </div>
             </div>
           </template>
 
@@ -784,6 +797,30 @@ onMounted(load)
 .uv__pager {
   align-self: center;
   padding: 4px 0 2px;
+}
+
+.uv__who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.uv__who-text {
+  min-width: 0;
+}
+.uv__avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface3);
+  border: 1px solid var(--sep);
+  color: var(--text2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .uv__name {

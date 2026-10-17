@@ -970,10 +970,8 @@ const probeTip = computed(
 
 .st__anchors-title {
   padding: 8px 12px 6px;
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 500;
   color: var(--text3);
 }
 
@@ -981,7 +979,7 @@ const probeTip = computed(
   height: 32px;
   padding: 0 12px;
   border: none;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-btn);
   background: transparent;
   color: var(--text2);
   font-size: var(--fs-sm);
@@ -989,7 +987,7 @@ const probeTip = computed(
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background 0.2s, color 0.2s;
+  transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .st__anchor:hover {
@@ -1010,7 +1008,7 @@ const probeTip = computed(
   max-width: 820px;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--sp-6);
 }
 
 .st__order-state {
@@ -1024,10 +1022,33 @@ const probeTip = computed(
   color: var(--text3);
 }
 
+/*
+ * 设置卡(UI 2.0):卡片里的分组列表不再自带边框 —— 卡片套一个带边框的分组是双层框,
+ * 行与行改用细线分隔并贴满卡片左右;保存那一排是带 --surface2 底的卡片底栏。
+ */
 .st__card {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+  padding-bottom: 0;
+}
+.st__card > .lb-group {
+  margin: 0 calc(-1 * var(--sp-5));
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.st__card > .lb-group :deep(.lb-group__row),
+.st__card > .lb-group > .lb-group__row {
+  padding-left: var(--sp-5);
+  padding-right: var(--sp-5);
+}
+.st__card > .lb-group + .st__sub-head {
+  margin-top: var(--sp-2);
+}
+.st__card > :last-child:not(.st__actions) {
+  margin-bottom: var(--sp-5);
 }
 
 /* 分组列表里的输入框:白底、1px --sep、圆角 10。 */
@@ -1084,25 +1105,27 @@ const probeTip = computed(
   gap: 6px;
   flex-wrap: wrap;
 }
+/* 事件开关:细边框矩形,选中 = 品牌浅底 + 品牌描边(与筛选条上的开关同一种形态)。 */
 .st__kind {
-  padding: 5px 12px;
-  border: none;
-  border-radius: var(--r-pill);
-  background: var(--fill);
+  padding: 4px 10px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-btn);
+  background: var(--surface);
   color: var(--text3);
   font-size: var(--fs-sm);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
 }
 .st__kind:hover {
-  background: var(--fill2);
+  border-color: var(--fill2);
   color: var(--text);
 }
 .st__kind--on,
 .st__kind--on:hover {
   background: var(--brand-bg);
+  border-color: var(--brand-border);
   color: var(--brand);
 }
 
@@ -1110,7 +1133,9 @@ const probeTip = computed(
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 4px 0;
+  margin: 0 calc(-1 * var(--sp-5));
+  padding: 10px var(--sp-5) 0;
+  border-top: 1px solid var(--sep2);
   font-size: var(--fs-base);
   font-weight: 600;
 }
@@ -1181,6 +1206,11 @@ const probeTip = computed(
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+  margin: var(--sp-1) calc(-1 * var(--sp-5)) 0;
+  padding: 10px var(--sp-5);
+  border-top: 1px solid var(--sep2);
+  background: var(--surface2);
+  border-radius: 0 0 var(--r-card) var(--r-card);
 }
 .st__actions-tip {
   margin-right: auto;

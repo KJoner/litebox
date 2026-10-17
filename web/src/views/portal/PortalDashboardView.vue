@@ -234,7 +234,7 @@ const usedParts = computed(() => {
 
 <style scoped>
 .pd {
-  gap: 20px;
+  gap: var(--sp-5);
 }
 
 .pd__skel {
@@ -260,9 +260,17 @@ const usedParts = computed(() => {
   color: var(--text);
 }
 
+/* 门户的指标格自己是卡片(.lb-metric 的样式在 LbMetricCard 的 scoped 里,这里用不上)。 */
 .pd__metric {
-  gap: 12px;
-  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
 }
 .pd__metric-label {
   display: flex;
@@ -288,9 +296,9 @@ const usedParts = computed(() => {
 }
 .pd__metric-value {
   font-size: var(--fs-metric);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
 }
 .pd__metric-value--sm {
   font-size: var(--fs-metric);
@@ -306,8 +314,8 @@ const usedParts = computed(() => {
   color: var(--text3);
 }
 .pd__metric-foot {
-  font-size: var(--fs-sm);
-  color: var(--text2);
+  font-size: var(--fs-xs);
+  color: var(--text3);
 }
 .pd__link {
   font-weight: 500;
@@ -337,14 +345,17 @@ const usedParts = computed(() => {
 }
 
 .pd__adjs-head {
-  padding: 18px 22px 0;
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
   font-size: var(--fs-md);
   font-weight: 600;
 }
 .pd__adjs {
   display: flex;
   flex-direction: column;
-  padding-top: 8px;
 }
 
 .pd__adj {
@@ -352,7 +363,7 @@ const usedParts = computed(() => {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 12px 22px;
+  padding: 12px var(--sp-5);
 }
 
 .pd__adj + .pd__adj {
@@ -380,10 +391,10 @@ const usedParts = computed(() => {
 
 @media (max-width: 767px) {
   .pd__metric {
-    padding: 16px 18px;
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
   }
   .pd__metric-value {
-    font-size: var(--fs-metric);
+    font-size: 24px;
   }
 }
 </style>

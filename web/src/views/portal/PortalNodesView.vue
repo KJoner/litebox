@@ -116,7 +116,7 @@ const summary = computed(() => {
             <span v-if="n.supports_ipv6" class="pn__row-tag">IPv6</span>
             <span v-if="n.unmetered" class="pn__row-tag">不计流量</span>
           </div>
-          <div class="pn__row-meta lb-mono">
+          <div class="pn__row-meta lb-tabular">
             {{ n.protocol.toUpperCase() }} · 端口 {{ n.public_port }} · 更新
             <LbTimeText :value="n.last_seen_at" empty="暂无数据" />
           </div>
@@ -127,9 +127,9 @@ const summary = computed(() => {
           <div v-if="n.public_remark" class="pn__row-remark">{{ n.public_remark }}</div>
         </div>
         <div class="pn__row-stats">
-          <div><span>今日</span><b class="lb-mono">{{ formatBytes(n.today_bytes) }}</b></div>
-          <div><span>本月</span><b class="lb-mono">{{ formatBytes(n.month_bytes) }}</b></div>
-          <div><span>累计</span><b class="lb-mono">{{ formatBytes(n.total_bytes) }}</b></div>
+          <div><span>今日</span><b class="lb-tabular">{{ formatBytes(n.today_bytes) }}</b></div>
+          <div><span>本月</span><b class="lb-tabular">{{ formatBytes(n.month_bytes) }}</b></div>
+          <div><span>累计</span><b class="lb-tabular">{{ formatBytes(n.total_bytes) }}</b></div>
         </div>
       </div>
     </div>
@@ -213,12 +213,14 @@ const summary = computed(() => {
   gap: 16px;
   padding: 16px;
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
 
 .pn__card {
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
@@ -228,6 +230,7 @@ const summary = computed(() => {
   display: flex;
   flex-direction: column;
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
   overflow: hidden;
@@ -238,7 +241,7 @@ const summary = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 22px;
+  padding: 14px var(--sp-5);
   border-top: 1px solid var(--sep2);
   transition: background 0.15s;
 }
@@ -271,7 +274,7 @@ const summary = computed(() => {
 .pn__row-tier {
   padding: 2px 9px;
   background: var(--fill);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text2);
@@ -280,7 +283,7 @@ const summary = computed(() => {
 .pn__row-tag {
   padding: 2px 9px;
   background: var(--brand-bg);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--brand);

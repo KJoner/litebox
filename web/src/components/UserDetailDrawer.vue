@@ -1130,7 +1130,7 @@ const adjustColumns = [
 
 .ud__name {
   font-size: var(--fs-xl);
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -0.02em;
 }
 
@@ -1183,6 +1183,7 @@ const adjustColumns = [
 .ud__card {
   background: var(--surface);
   border-radius: var(--r-card);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   overflow: hidden;
 }
@@ -1192,7 +1193,10 @@ const adjustColumns = [
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 18px 22px 0;
+  flex-wrap: wrap;
+  min-height: 48px;
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
   font-size: var(--fs-md);
   font-weight: 600;
 }
@@ -1209,14 +1213,16 @@ const adjustColumns = [
 
 .ud__card-head--plain {
   margin-top: 20px;
-  padding: 0 4px 10px;
+  min-height: 0;
+  padding: 0 0 10px;
+  border-bottom: none;
 }
 
 .ud__card-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 22px 20px;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
 }
 
 .ud__facts {
@@ -1309,7 +1315,7 @@ const adjustColumns = [
   gap: 8px;
   padding: 6px 12px;
   background: var(--surface2);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   font-size: var(--fs-sm);
   font-weight: 500;
 }
@@ -1324,6 +1330,7 @@ const adjustColumns = [
 .ud__bynode {
   background: var(--surface);
   border-radius: var(--r-card);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   overflow: hidden;
 }
@@ -1410,6 +1417,7 @@ const adjustColumns = [
   flex-direction: column;
   background: var(--surface);
   border-radius: var(--r-card);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   overflow: hidden;
 }

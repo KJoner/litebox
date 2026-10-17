@@ -3,19 +3,19 @@ import { computed } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { usePortalStore } from '@/stores/portal'
-import { useThemeStore } from '@/stores/theme'
-import { LbIcon } from '@/components/lb'
+import { useThemeStore, type ThemePreference } from '@/stores/theme'
+import { LbIcon, type LbIconName } from '@/components/lb'
 
 /**
- * 用户门户布局。毛玻璃顶栏 + 分段控件式导航 —— 栏目只有五个,
- * 而且用户多半在手机上打开,侧边栏会吃掉一半宽度。
+ * 用户门户布局(UI 2.0)。实底顶栏 + 横向栏目导航,内容区居中 960 宽 ——
+ * 栏目只有五个,而且用户多半在手机上打开,侧边栏会吃掉一半宽度。
  *
  * 门户与后台是两套界面语言:后台是高密度表格、给一个人一天看十次;
- * 门户是低密度单栏、给十个人一个月看两次。同一套 Token,不同的密度与词汇。
+ * 门户是低密度单栏、给十个人一个月看两次。同一套令牌,不同的密度与词汇。
  * 门户里不出现技术字段(UUID、hash、rev、sha256),也不出现管理员才懂的词。
  *
- * V18:顶栏 52px 毛玻璃,左 Logo + 「用户中心」,中间四个导航项是分段控件,
- * 右侧用户名 + 安全设置 + 退出;内容区 max-width 960。窄屏下分段导航横向可滚。
+ * 栏目是下划线导航(与后台的页面级 Tabs 同一种形态);「安全设置」并进栏目,
+ * 主题与退出收进右上角的用户菜单。窄屏下栏目换到第二行、可横向滚动。
  */
 const portal = usePortalStore()
 const themeStore = useThemeStore()
@@ -24,11 +24,12 @@ const route = useRoute()
 
 const selected = computed(() => route.name as string)
 
-const menuItems = [
-  { key: 'portal-dashboard', label: '概览' },
-  { key: 'portal-subscription', label: '我的订阅' },
-  { key: 'portal-nodes', label: '我的节点' },
-  { key: 'portal-traffic', label: '我的流量' },
+const menuItems: { key: string; label: string; icon: LbIconName }[] = [
+  { key: 'portal-dashboard', label: '概览', icon: 'layout-grid' },
+  { key: 'portal-subscription', label: '我的订阅', icon: 'link' },
+  { key: 'portal-nodes', label: '我的节点', icon: 'server' },
+  { key: 'portal-traffic', label: '我的流量', icon: 'activity' },
+  { key: 'portal-security', label: '安全设置', icon: 'shield' },
 ]
 
 /**
@@ -36,20 +37,37 @@ const menuItems = [
  * 把它们摆在那儿只会换来一句「没有权限」—— 而用户此刻该做的只有一件事。
  */
 const mustChange = computed(() => !!portal.identity?.must_change_password)
-const visibleItems = computed(() => (mustChange.value ? [] : menuItems))
+const visibleItems = computed(() =>
+  mustChange.value ? menuItems.filter((m) => m.key === 'portal-security') : menuItems,
+)
 
 async function go(key: string) {
   if (key !== route.name) await router.push({ name: key })
 }
 
-async function onLogout() {
-  try {
-    await portal.logout()
-    message.success('已退出登录')
-  } catch {
-    message.warning('退出登录时出错,已在本地清除状态')
+const themeOptions: { key: ThemePreference; label: string; icon: LbIconName }[] = [
+  { key: 'light', label: '浅色', icon: 'sun' },
+  { key: 'dark', label: '深色', icon: 'moon' },
+  { key: 'system', label: '跟随系统', icon: 'monitor' },
+]
+
+async function onUserMenu({ key }: { key: string | number }) {
+  if (key === 'logout') {
+    try {
+      await portal.logout()
+      message.success('已退出登录')
+    } catch {
+      message.warning('退出登录时出错,已在本地清除状态')
+    }
+    await router.replace({ name: 'portal-login' })
+    return
   }
-  await router.replace({ name: 'portal-login' })
+  if (key === 'security') {
+    await go('portal-security')
+    return
+  }
+  const t = themeOptions.find((o) => `theme-${o.key}` === key)
+  if (t) themeStore.setPreference(t.key)
 }
 
 /**
@@ -65,47 +83,64 @@ const initials = computed(() => {
 <template>
   <div class="pl">
     <header class="pl__header">
-      <div class="pl__brand" @click="go(mustChange ? 'portal-security' : 'portal-dashboard')">
-        <span class="pl__logo">LB</span>
-        <span class="pl__brand-name">用户中心</span>
-      </div>
+      <div class="pl__bar">
+        <div class="pl__brand" @click="go(mustChange ? 'portal-security' : 'portal-dashboard')">
+          <span class="pl__logo">LB</span>
+          <span class="pl__brand-name">用户中心</span>
+        </div>
 
-      <nav v-if="visibleItems.length" class="pl__nav lb-seg lb-seg--sm" aria-label="栏目">
-        <button
-          v-for="m in visibleItems"
-          :key="m.key"
-          type="button"
-          class="lb-seg__item pl__item"
-          :class="{ 'lb-seg__item--on': selected === m.key }"
-          :aria-current="selected === m.key ? 'page' : undefined"
-          @click="go(m.key)"
-        >
-          {{ m.label }}
-        </button>
-      </nav>
-      <span v-else class="pl__nav-spacer" />
+        <nav class="pl__nav" aria-label="栏目">
+          <button
+            v-for="m in visibleItems"
+            :key="m.key"
+            type="button"
+            class="pl__item"
+            :class="{ 'pl__item--on': selected === m.key }"
+            :aria-current="selected === m.key ? 'page' : undefined"
+            @click="go(m.key)"
+          >
+            <LbIcon :name="m.icon" :size="15" />
+            {{ m.label }}
+          </button>
+        </nav>
 
-      <div class="pl__user">
-        <button
-          type="button"
-          class="pl__iconbtn"
-          :aria-label="themeStore.mode === 'dark' ? '切换到浅色' : '切换到深色'"
-          :title="themeStore.mode === 'dark' ? '切换到浅色' : '切换到深色'"
-          @click="themeStore.toggle()"
-        >
-          <LbIcon :name="themeStore.mode === 'dark' ? 'sun' : 'moon'" :size="16" />
-        </button>
-        <span class="pl__avatar">{{ initials }}</span>
-        <span class="pl__name">{{ portal.identity?.display_name }}</span>
-        <button
-          type="button"
-          class="pl__ghost"
-          :class="{ 'pl__ghost--on': selected === 'portal-security' }"
-          @click="go('portal-security')"
-        >
-          安全设置
-        </button>
-        <button type="button" class="pl__ghost pl__ghost--brand" @click="onLogout">退出</button>
+        <a-dropdown :trigger="['click']" placement="bottomRight">
+          <button type="button" class="pl__user" aria-label="账户菜单">
+            <span class="pl__avatar">{{ initials }}</span>
+            <span class="pl__name">{{ portal.identity?.display_name }}</span>
+            <LbIcon name="chevron-down" :size="14" class="pl__caret" />
+          </button>
+          <template #overlay>
+            <a-menu :selected-keys="[`theme-${themeStore.preference}`]" @click="onUserMenu">
+              <a-menu-item-group>
+                <template #title>
+                  <div class="pl__who">
+                    <span class="pl__who-name">{{ portal.identity?.display_name }}</span>
+                    <span class="pl__who-sub">{{ portal.identity?.username }}</span>
+                  </div>
+                </template>
+              </a-menu-item-group>
+              <a-menu-divider />
+              <a-menu-item key="security">
+                <span class="pl__menu-item"><LbIcon name="shield" :size="15" />安全设置</span>
+              </a-menu-item>
+              <a-menu-divider />
+              <a-menu-item-group title="外观">
+                <a-menu-item v-for="o in themeOptions" :key="`theme-${o.key}`">
+                  <span class="pl__menu-item">
+                    <LbIcon :name="o.icon" :size="15" />
+                    {{ o.label }}
+                    <LbIcon v-if="themeStore.preference === o.key" name="check" :size="14" class="pl__menu-check" />
+                  </span>
+                </a-menu-item>
+              </a-menu-item-group>
+              <a-menu-divider />
+              <a-menu-item key="logout">
+                <span class="pl__menu-item"><LbIcon name="log-out" :size="15" />退出登录</span>
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
       </div>
     </header>
 
@@ -131,15 +166,19 @@ const initials = computed(() => {
   position: sticky;
   top: 0;
   z-index: 20;
+  background: var(--surface);
+  border-bottom: 1px solid var(--sep);
+}
+
+.pl__bar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  height: 52px;
-  padding: 0 24px;
-  background: var(--glass);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  border-bottom: 1px solid var(--sep);
+  gap: var(--sp-6);
+  max-width: 1008px;
+  height: var(--header-h);
+  margin: 0 auto;
+  padding: 0 var(--sp-6);
+  box-sizing: border-box;
 }
 
 .pl__brand {
@@ -151,66 +190,96 @@ const initials = computed(() => {
 }
 
 .pl__logo {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--r-btn);
-  background: linear-gradient(145deg, var(--brand), var(--brand-hover));
-  color: #fff;
+  background: var(--brand);
+  color: var(--on-brand);
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: -0.02em;
-  box-shadow: 0 2px 6px rgba(37, 99, 184, 0.3);
 }
 
 .pl__brand-name {
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
+/* 栏目:下划线导航,高度与顶栏一致,选中项底部 2px 品牌色。 */
 .pl__nav {
-  margin: 0 auto;
-  max-width: 100%;
+  display: flex;
+  align-self: stretch;
+  gap: var(--sp-1);
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
 .pl__nav::-webkit-scrollbar {
   display: none;
 }
-.pl__nav-spacer {
-  flex: 1;
-}
 
 .pl__item {
-  padding: 0 14px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color var(--dur-fast);
+}
+.pl__item:hover {
+  color: var(--text);
+}
+.pl__item--on {
+  color: var(--text);
+  font-weight: 600;
+}
+.pl__item--on::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--brand);
+}
+.pl__item :deep(.lb-icon) {
+  color: var(--text3);
+}
+.pl__item--on :deep(.lb-icon) {
+  color: var(--brand);
 }
 
 .pl__user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-.pl__iconbtn {
-  width: 28px;
-  height: 28px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: var(--sp-2);
+  flex: none;
+  height: 36px;
+  padding: 0 8px 0 4px;
   border: none;
-  border-radius: 50%;
+  border-radius: var(--r-btn);
   background: transparent;
-  color: var(--text2);
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s;
-}
-.pl__iconbtn:hover {
-  background: var(--fill);
   color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+.pl__user:hover {
+  background: var(--fill);
 }
 
 .pl__avatar {
@@ -227,50 +296,54 @@ const initials = computed(() => {
 }
 
 .pl__name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-sm);
-  color: var(--text2);
+  font-weight: 500;
+}
+.pl__caret {
+  color: var(--text3);
 }
 
-.pl__ghost {
-  height: 28px;
-  padding: 0 12px;
-  border: none;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--text2);
-  font-size: var(--fs-sm);
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.2s, color 0.2s;
+.pl__who {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0;
 }
-.pl__ghost:hover {
-  background: var(--fill);
-  color: var(--text);
-}
-.pl__ghost--on {
-  background: var(--fill);
-  color: var(--text);
+.pl__who-name {
+  font-size: var(--fs-base);
   font-weight: 600;
+  color: var(--text);
 }
-.pl__ghost--brand {
-  color: var(--brand);
+.pl__who-sub {
+  font-size: var(--fs-xs);
+  color: var(--text3);
 }
-.pl__ghost--brand:hover {
+.pl__menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 140px;
+}
+.pl__menu-check {
+  margin-left: auto;
   color: var(--brand);
 }
 
 .pl__content {
   flex: 1;
   width: 100%;
-  max-width: 960px;
+  max-width: 1008px;
   margin: 0 auto;
-  padding: 28px 24px 48px;
+  padding: var(--sp-6) var(--sp-6) var(--sp-12);
   box-sizing: border-box;
-  animation: lb-fadeup 0.4s var(--ease);
+  animation: lb-fadeup var(--dur) var(--ease);
 }
 
 .pl__footer {
-  padding: 16px;
+  padding: var(--sp-4);
   text-align: center;
   font-size: var(--fs-xs);
   color: var(--text3);
@@ -278,35 +351,34 @@ const initials = computed(() => {
 
 /* 门户的主战场是手机,不是「适配一下」。 */
 @media (max-width: 767px) {
-  .pl__header {
-    height: auto;
-    min-height: 52px;
+  .pl__bar {
     flex-wrap: wrap;
-    gap: 8px 12px;
-    padding: 8px 12px;
+    height: auto;
+    gap: 0 var(--sp-3);
+    padding: 0 var(--sp-3);
   }
-
-  .pl__brand-name,
-  .pl__name {
-    display: none;
+  .pl__brand {
+    height: 52px;
   }
-
-  .pl__nav {
-    order: 3;
-    width: 100%;
-    margin: 0;
-  }
-
   .pl__user {
     margin-left: auto;
   }
-
-  .pl__item {
-    line-height: 32px;
+  .pl__name {
+    display: none;
   }
-
+  .pl__nav {
+    order: 3;
+    flex: 1 1 100%;
+    height: 44px;
+    margin: 0 calc(-1 * var(--sp-3));
+    padding: 0 var(--sp-1);
+    border-top: 1px solid var(--sep2);
+  }
+  .pl__item {
+    padding: 0 10px;
+  }
   .pl__content {
-    padding: 16px 16px 32px;
+    padding: var(--sp-4) var(--sp-4) var(--sp-8);
   }
 }
 </style>

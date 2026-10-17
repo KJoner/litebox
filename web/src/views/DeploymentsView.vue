@@ -10,6 +10,7 @@ import {
   LbRowCard,
   LbStatusTag,
   LbTimeText,
+  LbIcon,
   LbInfoTip,
   LbSectionTitle,
 } from '@/components/lb'
@@ -204,14 +205,18 @@ const columns = [
         </div>
       </div>
       <div class="lb-page__actions">
-        <a-button :loading="loading" @click="load">刷新</a-button>
+        <a-button :loading="loading" @click="load">
+          <template #icon><LbIcon name="refresh" :size="15" /></template>
+          刷新
+        </a-button>
       </div>
     </div>
 
     <section class="lb-metrics">
-      <LbMetricCard label="近 7 天部署" :state="metricState" :value="stats.total" unit="次" />
+      <LbMetricCard label="近 7 天部署" icon="upload" :state="metricState" :value="stats.total" unit="次" />
       <LbMetricCard
         label="失败"
+        icon="alert-triangle"
         :state="metricState"
         :value="stats.failed"
         :tone="stats.failed ? 'danger' : 'default'"
@@ -223,6 +228,7 @@ const columns = [
       </LbMetricCard>
       <LbMetricCard
         label="自动回滚成功率"
+        icon="rotate-ccw"
         :state="metricState"
         :value="stats.rollbackOK"
         :total="stats.rollbackTotal"
@@ -230,6 +236,7 @@ const columns = [
       />
       <LbMetricCard
         label="中位耗时"
+        icon="hourglass"
         :state="metricState"
         :value="stats.median === null ? '—' : (stats.median / 1000).toFixed(1)"
         unit="秒"

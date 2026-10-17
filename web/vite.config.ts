@@ -46,7 +46,9 @@ export default defineConfig({
         changeOrigin: true,
       },
       // 订阅是公开路由,不在 /api 下。调试订阅内容时要能直接打开。
-      '/sub': {
+      // 键用正则 ^/sub/:写成前缀 '/sub' 的话,管理页 /subscription-profiles 也会被
+      // 转给后端,拿到的是后端二进制里嵌的那份旧前端。
+      '^/sub/': {
         target: process.env.LITEBOX_DEV_API ?? 'http://127.0.0.1:8080',
         changeOrigin: true,
       },

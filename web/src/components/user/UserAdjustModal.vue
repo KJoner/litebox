@@ -383,7 +383,7 @@ async function submit() {
 .ua__chip {
   padding: 5px 12px;
   border: none;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-btn);
   background: var(--fill);
   color: var(--text2);
   font-size: var(--fs-sm);

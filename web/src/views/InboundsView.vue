@@ -21,6 +21,7 @@ import { LbEmptyState, LbRowCard, LbStatusTag, configStatusMeta, lbDangerConfirm
   LbInfoTip,
   LbSectionTitle,
   LbIcon,
+  type LbIconName,
 } from '@/components/lb'
 import type { LbStatusMeta } from '@/components/lb/statusMeta'
 import { configState, needsDeploy } from '@/components/lb/derive'
@@ -150,6 +151,14 @@ const kindLabel: Record<Row['kind'], string> = {
   nginx: '自建 · nginx 转发',
   realm: '自建 · realm 转发',
   external: '外部代理',
+}
+/** 类型图标(UI 2.0)。只是帮助扫读的记号,类型名照样写在旁边。 */
+const kindIcon: Record<Row['kind'], LbIconName> = {
+  singbox: 'zap',
+  mieru: 'layers',
+  nginx: 'route',
+  realm: 'route',
+  external: 'box',
 }
 const isSelf = (r: Row): r is SingBoxRow | MieruRow | RelayRow => r.kind !== 'external'
 const isRelay = (r: Row): r is RelayRow => r.kind === 'nginx' || r.kind === 'realm'
@@ -822,15 +831,15 @@ function createOn(nodeID: number) {
 // 列宽之和压在 1180 以内,不固定任何列:右侧固定的「操作」列在表格超宽时会盖住
 // 它左边那几列(V18 那条规矩),而这一页左边恰恰是「出口去向」与「全局排序」。
 // 协议标记并进「入口」格、访问等级并进「出口去向」格 —— 每格两行,列数少两列。
+// 「类型」不再单独一列:图标 + 类型名并进「入口」那一格(UI 2.0)。列宽之和压在 1120 以内。
 const columns = [
-  { title: '类型', key: 'kind', width: 100 },
-  { title: '入口', key: 'name', width: 230 },
+  { title: '入口', key: 'name', width: 270 },
   { title: '所属', key: 'owner', width: 150 },
-  { title: '端口 / 地址', key: 'port', width: 130 },
+  { title: '端口 / 地址', key: 'port', width: 140 },
   { title: '出口去向 · 等级', key: 'exit', width: 170 },
   { title: '全局排序', key: 'order', width: 90 },
-  { title: '状态', key: 'state', width: 140 },
-  { title: '操作', key: 'ops', width: 190 },
+  { title: '状态', key: 'state', width: 150 },
+  { title: '操作', key: 'ops', width: 120, align: 'right' as const },
 ]
 </script>
 
@@ -856,8 +865,15 @@ const columns = [
              Mieru 入口(端口段冲突检测要用),而那要先挑机器。
              走节点详情的「入口与转发」Tab —— 那里三类的按钮各占一行,
              而且离要改的东西最近。外部代理在它自己的页面上新增。 -->
+        <a-button :loading="loading" aria-label="刷新" title="刷新" @click="load">
+          <template #icon><LbIcon name="refresh" :size="15" /></template>
+        </a-button>
         <a-dropdown :disabled="!nodeOptions.length">
-          <a-button type="primary">新增 sing-box 入口</a-button>
+          <a-button type="primary">
+            <template #icon><LbIcon name="plus" :size="15" /></template>
+            新增 sing-box 入口
+            <LbIcon name="chevron-down" :size="14" class="iv__caret" />
+          </a-button>
           <template #overlay>
             <a-menu>
               <a-menu-item v-for="o in nodeOptions" :key="o.value" @click="createOn(o.value)">
@@ -866,7 +882,6 @@ const columns = [
             </a-menu>
           </template>
         </a-dropdown>
-        <a-button :loading="loading" @click="load">刷新</a-button>
       </div>
     </div>
 
@@ -986,7 +1001,7 @@ const columns = [
       :loading="loading"
       row-key="key"
       size="small"
-      :scroll="{ x: 1180 }"
+      :scroll="{ x: 1090 }"
       :pagination="{ pageSize: 30, hideOnSinglePage: true }"
     >
       <template #emptyText>
@@ -994,20 +1009,28 @@ const columns = [
         <span v-else />
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'kind'">
-          <span class="iv__kind" :class="{ 'iv__kind--external': (record as Row).kind === 'external' }">
-            {{ kindLabel[(record as Row).kind] }}
-          </span>
-        </template>
-
-        <template v-else-if="column.key === 'name'">
-          <div class="iv__name">
-            {{ rowName(record as Row) }}
-            <LbStatusTag v-if="(record as Row).kind !== 'external'" :meta="addressFamilyMeta(rowHasIPv6(record as Row))" />
-          </div>
-          <div class="iv__sub">
-            <LbStatusTag :meta="rowProtocolMeta(record as Row)" />
-            <span class="iv__dim lb-mono">{{ rowSub(record as Row) }}</span>
+        <template v-if="column.key === 'name'">
+          <div class="iv__entry">
+            <span
+              class="iv__kind-icon"
+              :class="{ 'iv__kind-icon--external': (record as Row).kind === 'external' }"
+              :title="kindLabel[(record as Row).kind]"
+            >
+              <LbIcon :name="kindIcon[(record as Row).kind]" :size="15" />
+            </span>
+            <div class="iv__entry-text">
+              <div class="iv__name">
+                <span class="lb-ellipsis">{{ rowName(record as Row) }}</span>
+                <LbStatusTag v-if="(record as Row).kind !== 'external'" :meta="addressFamilyMeta(rowHasIPv6(record as Row))" />
+              </div>
+              <div class="iv__sub">
+                <span class="iv__kind" :class="{ 'iv__kind--external': (record as Row).kind === 'external' }">
+                  {{ kindLabel[(record as Row).kind] }}
+                </span>
+                <LbStatusTag :meta="rowProtocolMeta(record as Row)" />
+                <span class="iv__dim lb-mono">{{ rowSub(record as Row) }}</span>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -1060,13 +1083,15 @@ const columns = [
         <template v-else-if="column.key === 'ops'">
           <!-- 操作按类型分派:外部代理只给适用的几样,不显示「安装 sing-box」
                「重启节点」这类对它无效的按钮;转发的编辑在节点详情里。 -->
-          <a-space v-if="(record as Row).kind === 'external'" :size="4" wrap>
-            <a-button size="small" :disabled="!!running" @click="openEdit(record as Row)">编辑</a-button>
-            <a-button size="small" :disabled="!!running" @click="checkExternal((record as ExternalRow).proxy)">检查</a-button>
-            <a-dropdown :disabled="!!running">
-              <a-button size="small">更多</a-button>
+          <div v-if="(record as Row).kind === 'external'" class="iv__ops">
+            <a-button size="small" class="lb-btn-ghost" :disabled="!!running" @click="openEdit(record as Row)">编辑</a-button>
+            <a-dropdown :disabled="!!running" placement="bottomRight">
+              <a-button size="small" class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text" aria-label="更多操作" title="更多操作">
+                <LbIcon name="more" :size="16" />
+              </a-button>
               <template #overlay>
                 <a-menu>
+                  <a-menu-item @click="checkExternal((record as ExternalRow).proxy)">检查连通性</a-menu-item>
                   <a-menu-item @click="toggleExternalSub((record as ExternalRow).proxy)">
                     {{ (record as ExternalRow).proxy.subscription_enabled ? '停发订阅' : '恢复下发' }}
                   </a-menu-item>
@@ -1077,38 +1102,39 @@ const columns = [
                 </a-menu>
               </template>
             </a-dropdown>
-          </a-space>
-          <a-space v-else-if="isRelay(record as Row)" :size="4" wrap>
-            <a-button size="small" :disabled="!!running" @click="goNode(record as Row)">进入机器</a-button>
-            <a-button size="small" :disabled="!!running" @click="deployRelays(record as RelayRow)">下发转发</a-button>
-            <a-dropdown :disabled="!!running">
-              <a-button size="small">更多</a-button>
+          </div>
+          <div v-else-if="isRelay(record as Row)" class="iv__ops">
+            <a-button size="small" class="lb-btn-ghost" :disabled="!!running" @click="goNode(record as Row)">进入机器</a-button>
+            <a-dropdown :disabled="!!running" placement="bottomRight">
+              <a-button size="small" class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text" aria-label="更多操作" title="更多操作">
+                <LbIcon name="more" :size="16" />
+              </a-button>
               <template #overlay>
                 <a-menu>
+                  <a-menu-item @click="deployRelays(record as RelayRow)">
+                    下发这台机器的{{ (record as Row).kind === 'realm' ? ' realm(重启)' : ' nginx 转发(reload)' }}
+                  </a-menu-item>
                   <a-menu-item @click="openSort(record as Row)">调整排序</a-menu-item>
                   <a-menu-item @click="goNode(record as Row)">编辑 / 删除(节点详情)</a-menu-item>
                 </a-menu>
               </template>
             </a-dropdown>
-          </a-space>
-          <a-space v-else :size="4" wrap>
-            <a-button size="small" :disabled="!!running" @click="openEdit(record as Row)">编辑</a-button>
-            <a-button size="small" :disabled="!!running" @click="openChain(record as SingBoxRow | MieruRow)">出口</a-button>
-            <!-- **下发那一档按类型分。** sing-box 是整台机器一次(踢掉这台机器上
-                 全部 sing-box 入口的连接),Mieru 是逐入口各下各的(只断那一个)
-                 —— 两者的后果差得很远,放在同一个按钮下面只能写一句废话。 -->
-            <a-button
-              v-if="(record as Row).kind === 'mieru'"
-              size="small"
-              :disabled="!!running"
-              @click="deployMieru(record as MieruRow)"
-            >
-              下发
-            </a-button>
-            <a-dropdown :disabled="!!running">
-              <a-button size="small">更多</a-button>
+          </div>
+          <div v-else class="iv__ops">
+            <a-button size="small" class="lb-btn-ghost" :disabled="!!running" @click="openEdit(record as Row)">编辑</a-button>
+            <a-dropdown :disabled="!!running" placement="bottomRight">
+              <a-button size="small" class="lb-btn-circle lb-btn-ghost lb-btn-ghost--text" aria-label="更多操作" title="更多操作">
+                <LbIcon name="more" :size="16" />
+              </a-button>
               <template #overlay>
                 <a-menu>
+                  <a-menu-item @click="openChain(record as SingBoxRow | MieruRow)">出口去向</a-menu-item>
+                  <!-- **下发那一档按类型分。** sing-box 是整台机器一次(踢掉这台机器上
+                       全部 sing-box 入口的连接),Mieru 是逐入口各下各的(只断那一个)
+                       —— 两者的后果差得很远,放在同一个菜单项下面只能写一句废话。 -->
+                  <a-menu-item v-if="(record as Row).kind === 'mieru'" @click="deployMieru(record as MieruRow)">
+                    下发这个 Mieru 入口(只断它)
+                  </a-menu-item>
                   <a-menu-item @click="openSort(record as Row)">调整排序</a-menu-item>
                   <a-menu-item
                     v-if="
@@ -1135,7 +1161,7 @@ const columns = [
                 </a-menu>
               </template>
             </a-dropdown>
-          </a-space>
+          </div>
         </template>
       </template>
     </a-table>
@@ -1233,21 +1259,58 @@ const columns = [
 .iv__error {
   margin: 12px 20px 0;
 }
+.iv__entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.iv__entry-text {
+  min-width: 0;
+}
+.iv__kind-icon {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-tile);
+  background: var(--surface2);
+  border: 1px solid var(--sep);
+  color: var(--text2);
+}
+.iv__kind-icon--external {
+  background: var(--purple-bg);
+  border-color: transparent;
+  color: var(--purple);
+}
 .iv__name {
-  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 600;
   color: var(--text);
+}
+.iv__caret {
+  margin-inline-start: 4px;
+  opacity: 0.8;
+}
+.iv__ops {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
 }
 .iv__kind {
   display: inline-block;
-  padding: 1px 7px;
-  border-radius: var(--r-sm);
-  background: var(--fill);
   font-size: var(--fs-xs);
-  color: var(--text2);
+  color: var(--text3);
   white-space: nowrap;
 }
 .iv__kind--external {
-  background: var(--purple-bg);
   color: var(--purple);
 }
 .iv__order {
