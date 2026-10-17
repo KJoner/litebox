@@ -2402,7 +2402,8 @@ export const api = {
       version: string
       /**
        * false 表示节点上已经是同一个二进制,什么都没换。true 而服务正在跑时,
-       * 跑着的仍是旧的那一个,要等它下一次启动(下发、重启都算)才换过去。
+       * 跑着的仍是旧的那一个,要等它下一次启动(强制重新下发、重启都算;配置没变时
+       * 普通下发会跳过重启,不算)才换过去。
        */
       uploaded: boolean
       init_system: string
