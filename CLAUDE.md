@@ -3128,6 +3128,13 @@ Modern SaaS Dashboard + Infrastructure Console:中性灰阶、细边框、轻阴
 * 不通过字符串拼接生成 JSON,必须用结构体序列化;
 * 不通过字符串拼接执行远程 shell,所有远程参数严格校验;
 * 所有数据库变更必须使用迁移,不得修改已应用的迁移文件(迁移框架会用哈希拦截);
+* **迁移哈希按 LF 算,同时认 CRLF 与嵌入时的原始字节**(`Migration.Matches`),
+  迁移文件由 `.gitattributes` 固定 LF 检出。在此之前哈希按原始字节算,而 Windows 上
+  `core.autocrlf=true` 检出的是 CRLF —— 在那里编出来的二进制与 Linux 编的互相拒绝对方的库
+  (「迁移 … 的内容在应用后被修改」),SQL 一个字节都没变。**只放过换行这一种差异**,
+  别的任何改动照样拒绝;库里已有的记录不改写(回滚到旧二进制之后它还要认得自己那一份)。
+  `migrate_eol_test.go` 钉着这三条,外加「嵌入的迁移文件里没有 CR」—— 那一条在 Windows
+  上失败,通常是工作区在加 `.gitattributes` 之前检出的,删掉文件重新 checkout 即可;
 * 每个阶段完成后必须运行测试并更新文档。
 
 ## 代码约定
