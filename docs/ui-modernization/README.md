@@ -11,6 +11,7 @@
 | [02-page-plan.md](02-page-plan.md) | 五批任务拆分、数据源与不变量清单 |
 | [03-progress.md](03-progress.md) | 逐批交付记录:改了什么、关键决策、构建、自检、遗留 |
 | ~~`screenshots/before/` · `screenshots/after/`~~ | 已删除:含真实管理地址 |
+| [04-ui-2.0.1.md](04-ui-2.0.1.md) | **UI 2.0.1 稳定性与体验收尾**:修复清单、Playwright 回归测试、真机验收、体积、风险与合并建议 |
 
 ## 提交
 
