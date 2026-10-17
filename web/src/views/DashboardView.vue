@@ -688,7 +688,9 @@ function conclusion(d: DeploymentRecord): string {
             </a-button>
           </div>
           <ul v-if="attention.length" class="dv__attn-list">
-            <li v-for="a in attention" :key="a.key" class="dv__attn-item" @click="router.push(a.to)">
+            <!-- 整条是一个真链接:Tab 能到、回车能点、能在新标签页打开。 -->
+            <li v-for="a in attention" :key="a.key">
+              <RouterLink class="dv__attn-item" :to="a.to">
               <span class="dv__attn-icon" :class="`dv__attn-icon--${a.level}`">
                 <LbIcon :name="a.icon" :size="15" />
               </span>
@@ -703,6 +705,7 @@ function conclusion(d: DeploymentRecord): string {
                 {{ a.action }}
                 <LbIcon name="chevron-right" :size="14" />
               </span>
+              </RouterLink>
             </li>
           </ul>
           <div v-else-if="!attnFailed.length" class="dv__attn-ok">
@@ -730,7 +733,7 @@ function conclusion(d: DeploymentRecord): string {
           </h2>
           <div class="lb-card__desc">CPU / 内存 / 磁盘取最近一次采样;过期或改过管理地址之前的数据显示为灰色</div>
         </div>
-        <a class="dv__link" @click="router.push('/nodes')">全部节点 <LbIcon name="chevron-right" :size="14" /></a>
+        <RouterLink class="dv__link" to="/nodes">全部节点 <LbIcon name="chevron-right" :size="14" /></RouterLink>
       </div>
 
       <div v-if="nodesError && nodes.length" class="dv__colerr">
@@ -776,10 +779,11 @@ function conclusion(d: DeploymentRecord): string {
         </div>
         <div v-for="r in nodeRows" :key="r.n.id" class="dv__nrow" role="row" @click="router.push(`/nodes/${r.n.id}`)">
           <div class="dv__ncell-name" role="cell">
-            <div class="dv__nname">
+            <!-- 整行点击只照顾鼠标;键盘与读屏走名字上这个真链接。stop 免得行上再跳一次。 -->
+            <RouterLink class="dv__nname" :to="`/nodes/${r.n.id}`" @click.stop>
               <span class="lb-dot" :style="{ '--dot': dotColor(r.n) }" />
               <span class="lb-ellipsis">{{ r.n.display_name }}</span>
-            </div>
+            </RouterLink>
             <!-- 运行与配置分两个标签:一台在跑旧配置、部署失败的机器,
                  挤在一格里只显示「部署失败」,看不出它其实还在服务用户。 -->
             <div class="dv__ntags">
@@ -814,9 +818,9 @@ function conclusion(d: DeploymentRecord): string {
         </div>
       </div>
 
-      <!-- 手机:每台一张紧凑卡 -->
+      <!-- 手机与平板:每台一张紧凑卡 -->
       <div v-else class="dv__ncards">
-        <div v-for="r in nodeRows" :key="r.n.id" class="dv__ncard" @click="router.push(`/nodes/${r.n.id}`)">
+        <RouterLink v-for="r in nodeRows" :key="r.n.id" class="dv__ncard" :to="`/nodes/${r.n.id}`">
           <div class="dv__nname">
             <span class="lb-dot" :style="{ '--dot': dotColor(r.n) }" />
             <span class="lb-ellipsis">{{ r.n.display_name }}</span>
@@ -838,7 +842,7 @@ function conclusion(d: DeploymentRecord): string {
             :quota-bytes="cycles[r.n.id]?.quota_bytes ?? r.n.traffic_quota_bytes"
             :warning-level="cycles[r.n.id]?.warning_level"
           />
-        </div>
+        </RouterLink>
       </div>
     </section>
 
@@ -846,7 +850,7 @@ function conclusion(d: DeploymentRecord): string {
     <section class="lb-card lb-card--flush">
       <div class="lb-card__head">
         <h2 class="lb-card__title">最近部署</h2>
-        <a class="dv__link" @click="router.push('/deployments')">全部记录 <LbIcon name="chevron-right" :size="14" /></a>
+        <RouterLink class="dv__link" to="/deployments">全部记录 <LbIcon name="chevron-right" :size="14" /></RouterLink>
       </div>
       <div v-if="deployError && deploys.length" class="dv__colerr">
         <LbIcon name="info" :size="14" />
@@ -864,7 +868,7 @@ function conclusion(d: DeploymentRecord): string {
           <LbStatusTag kind="deploy" :status="d.status" />
           <div class="dv__deploy-body">
             <div class="dv__deploy-title">
-              <a @click="router.push(`/nodes/${d.node_id}/deploys`)">{{ nodeName(d.node_id) }}</a>
+              <RouterLink :to="`/nodes/${d.node_id}/deploys`">{{ nodeName(d.node_id) }}</RouterLink>
               <span class="lb-chip">rev {{ d.revision }}</span>
             </div>
             <div class="dv__deploy-msg lb-clamp-2">{{ conclusion(d) }}</div>
@@ -1016,6 +1020,7 @@ function conclusion(d: DeploymentRecord): string {
   gap: var(--sp-3);
   padding: 10px var(--sp-3);
   border-radius: var(--r-btn);
+  color: var(--text);
   cursor: pointer;
   transition: background var(--dur-fast);
 }
@@ -1213,6 +1218,7 @@ function conclusion(d: DeploymentRecord): string {
   gap: 10px;
   padding: 14px var(--sp-4);
   border-bottom: 1px solid var(--sep2);
+  color: var(--text);
 }
 .dv__ncard:last-child {
   border-bottom: none;

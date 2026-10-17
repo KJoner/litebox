@@ -757,11 +757,11 @@ const adjustColumns = [
               <div class="ud__card-head">
                 门户登录账号
                 <span class="ud__card-links">
-                  <a v-if="user.portal_account" @click="openAccountForm">重设密码</a>
-                  <a v-if="user.portal_account" @click="toggleLogin">
+                  <button type="button" class="lb-linkbtn" v-if="user.portal_account" @click="openAccountForm">重设密码</button>
+                  <button type="button" class="lb-linkbtn" v-if="user.portal_account" @click="toggleLogin">
                     {{ user.portal_account.login_enabled ? '关闭门户登录' : '开启门户登录' }}
-                  </a>
-                  <a v-else @click="openAccountForm">开通</a>
+                  </button>
+                  <button type="button" class="lb-linkbtn" v-else @click="openAccountForm">开通</button>
                 </span>
               </div>
               <div v-if="user.portal_account" class="ud__card-body">
@@ -797,8 +797,8 @@ const adjustColumns = [
                 </div>
 
                 <div class="ud__acct-ops">
-                  <a @click="confirmRevokeSessions">踢出全部会话</a>
-                  <a class="ud__danger" @click="confirmDeleteAccount">删除登录账号</a>
+                  <button type="button" class="lb-linkbtn" @click="confirmRevokeSessions">踢出全部会话</button>
+                  <button type="button" class="lb-linkbtn ud__danger" @click="confirmDeleteAccount">删除登录账号</button>
                 </div>
               </div>
               <div v-else class="ud__card-body">

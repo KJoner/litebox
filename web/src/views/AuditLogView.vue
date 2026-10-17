@@ -546,7 +546,7 @@ const columns = [
             <span class="lb-mono">{{ record.client_ip || '系统任务' }}</span>
             <div v-if="loginFailureBurst(record) > 2" class="al__burst">
               该 IP 近 1 小时第 {{ loginFailureBurst(record) }} 次
-              <a @click="filters.keyword = record.client_ip">按此 IP 筛选</a>
+              <button type="button" class="lb-linkbtn" @click="filters.keyword = record.client_ip">按此 IP 筛选</button>
             </div>
           </template>
 
@@ -651,7 +651,7 @@ const columns = [
   color: var(--bad);
 }
 
-.al__burst a {
+.al__burst .lb-linkbtn {
   margin-left: 4px;
 }
 

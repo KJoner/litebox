@@ -581,13 +581,13 @@ const keyOpen = ref(false)
       />
       <LbMetricCard label="待部署" icon="upload" :state="metricState" :value="stats.pending" :tone="stats.pending ? 'warning' : 'default'">
         <template #foot>
-          <a v-if="stats.pending" class="nv__link" @click="filters.config = 'PENDING'">筛选 ›</a>
+          <button type="button" v-if="stats.pending" class="lb-linkbtn nv__link" @click="filters.config = 'PENDING'">筛选 ›</button>
           <span v-else>配置都已同步</span>
         </template>
       </LbMetricCard>
       <LbMetricCard label="即将到期 / 已到期" icon="calendar" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
         <template #foot>
-          <a v-if="stats.expiring" class="nv__link" @click="filters.expiry = 'SOON'">筛选 ›</a>
+          <button type="button" v-if="stats.expiring" class="lb-linkbtn nv__link" @click="filters.expiry = 'SOON'">筛选 ›</button>
           <span v-else>没有要续费的</span>
         </template>
       </LbMetricCard>
@@ -714,7 +714,7 @@ const keyOpen = ref(false)
           <LbRowCard v-for="n in pager.slice(visible)" :key="n.id">
             <template #head>
               <span class="nv__meta lb-tabular">#{{ n.sort_order }}</span>
-              <a class="nv__card-name" @click="openDetail(n.id)">{{ n.name }}</a>
+              <RouterLink class="nv__card-name" :to="`/nodes/${n.id}`">{{ n.name }}</RouterLink>
               <span v-if="n.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
               <LbStatusTag kind="node" :status="n.status" />
             </template>
@@ -725,7 +725,7 @@ const keyOpen = ref(false)
             </div>
             <div class="nv__host lb-mono">
               {{ n.host }}
-              <a class="nv__copy" @click="copyHost(n.host)">复制</a>
+              <button type="button" class="lb-linkbtn nv__copy" @click="copyHost(n.host)">复制</button>
             </div>
             <div class="nv__stack nv__stack--row">
               <span class="nv__reset">巡检</span>
@@ -744,11 +744,11 @@ const keyOpen = ref(false)
             </template>
             <div class="nv__stack nv__stack--row">
               <span class="nv__reset">到期</span>
-              <a class="nv__expiry" @click="expiryTarget = n">
+              <button type="button" class="lb-linkbtn nv__expiry" @click="expiryTarget = n">
                 <LbStatusTag :meta="expiryStatusMeta(n.expiry)" />
                 <span v-if="expiryCell(n).date" class="nv__reset">{{ expiryCell(n).date }}</span>
                 <span v-if="expiryCell(n).auto" class="lb-chip nv__chip">自动续费</span>
-              </a>
+              </button>
             </div>
 
             <template #foot>
@@ -812,19 +812,19 @@ const keyOpen = ref(false)
                 @press-enter="commitSortEdit"
                 @blur="commitSortEdit"
               />
-              <a
+              <button type="button"
                 v-else
-                class="nv__sort lb-tabular"
+                class="lb-linkbtn nv__sort lb-tabular"
                 title="排序号,决定订阅与门户里的先后;点击修改"
                 @click="startSortEdit(record)"
               >
                 #{{ record.sort_order }}
-              </a>
+              </button>
             </template>
 
             <template v-else-if="column.key === 'node'">
               <div class="nv__name-row">
-                <a class="nv__name" @click="openDetail(record.id)">{{ record.name }}</a>
+                <RouterLink class="nv__name" :to="`/nodes/${record.id}`">{{ record.name }}</RouterLink>
                 <span v-if="record.role === 'RELAY'" class="lb-chip nv__chip">中转</span>
               </div>
               <!-- 运行状态与配置状态仍是两个独立标签,只是从两列挪到名字旁边。 -->
@@ -904,11 +904,11 @@ const keyOpen = ref(false)
 
             <!-- 供应商到期,与流量重置时间分开两列,互不混用。 -->
             <template v-else-if="column.key === 'expiry'">
-              <a class="nv__expiry" title="续费 / 修改到期时间" @click="expiryTarget = record">
+              <button type="button" class="lb-linkbtn nv__expiry" title="续费 / 修改到期时间" @click="expiryTarget = record">
                 <LbStatusTag :meta="expiryStatusMeta(record.expiry)" />
                 <span v-if="expiryCell(record).date" class="nv__reset lb-tabular">{{ expiryCell(record).date }}</span>
                 <span v-if="expiryCell(record).auto" class="lb-chip nv__chip" title="已登记商家自动续费:面板不代为扣款,到期仍会提醒">自动续费</span>
-              </a>
+              </button>
             </template>
 
             <template v-else-if="column.key === 'actions'">

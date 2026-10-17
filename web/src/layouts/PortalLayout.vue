@@ -84,10 +84,10 @@ const initials = computed(() => {
   <div class="pl">
     <header class="pl__header">
       <div class="pl__bar">
-        <div class="pl__brand" @click="go(mustChange ? 'portal-security' : 'portal-dashboard')">
+        <RouterLink class="pl__brand" :to="{ name: mustChange ? 'portal-security' : 'portal-dashboard' }">
           <span class="pl__logo">LB</span>
           <span class="pl__brand-name">用户中心</span>
-        </div>
+        </RouterLink>
 
         <nav class="pl__nav" aria-label="栏目">
           <button
@@ -187,6 +187,10 @@ const initials = computed(() => {
   gap: 10px;
   flex: none;
   cursor: pointer;
+  color: var(--text);
+}
+.pl__brand:hover {
+  color: var(--text);
 }
 
 .pl__logo {

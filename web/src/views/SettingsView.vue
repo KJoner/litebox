@@ -841,7 +841,7 @@ const probeTip = computed(
                   <td class="lb-tabular">{{ t.level }}</td>
                   <td class="st__tier-desc">{{ t.description || '—' }}</td>
                   <td class="lb-tabular st__tier-use">{{ tierUsage(t).users }} 用户 / {{ tierUsage(t).inbounds }} 入口</td>
-                  <td class="st__tier-act"><a @click="openTier(t)">编辑</a></td>
+                  <td class="st__tier-act"><button type="button" class="lb-linkbtn" @click="openTier(t)">编辑</button></td>
                 </tr>
               </tbody>
             </table>
@@ -1278,7 +1278,7 @@ const probeTip = computed(
 .st__tier-act {
   text-align: right;
 }
-.st__tier-act a {
+.st__tier-act .lb-linkbtn {
   font-weight: 500;
 }
 

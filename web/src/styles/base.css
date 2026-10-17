@@ -43,6 +43,34 @@ a:hover {
   color: var(--brand-hover);
 }
 
+/*
+ * 长得像链接、做的是页内动作的按钮(UI 2.0.1)。原来这类地方写的是没有 href 的
+ * <a @click>:Tab 键到不了、回车点不动,读屏软件也不知道它能点。跳页的改成
+ * RouterLink(真链接,能新标签页打开),其余的改成 <button class="lb-linkbtn">。
+ * 外观与上面的 a 一致,组件里原来给它的类(颜色、字号)照样生效。
+ */
+.lb-linkbtn {
+  appearance: none;
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  color: var(--brand);
+  cursor: pointer;
+  transition: color var(--dur-fast);
+}
+.lb-linkbtn:hover {
+  color: var(--brand-hover);
+}
+.lb-linkbtn:disabled {
+  color: var(--text3);
+  cursor: not-allowed;
+}
+
 button {
   font-family: inherit;
 }

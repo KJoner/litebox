@@ -202,9 +202,9 @@ function confirmRestore() {
     </div>
 
     <div class="tn__toggle">
-      <a @click="showAll = !showAll">
+      <button type="button" class="lb-linkbtn" @click="showAll = !showAll">
         {{ showAll ? `只看需要留意的 ${notable.length} 项` : `显示全部 ${report.items.length} 项` }}
-      </a>
+      </button>
       <span v-if="report.tuned_at" class="tn__stamp">
         节点上现有的配置生成于 {{ report.tuned_at }}
       </span>

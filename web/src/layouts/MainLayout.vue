@@ -318,7 +318,7 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
             <LbIcon name="chevron-right" :size="14" class="ml__crumb-sep" />
           </template>
           <template v-if="crumb.parent">
-            <a class="ml__crumb-link" @click="go(crumb.parent.key)">{{ crumb.parent.label }}</a>
+            <RouterLink class="ml__crumb-link" :to="{ name: crumb.parent.key }">{{ crumb.parent.label }}</RouterLink>
             <LbIcon name="chevron-right" :size="14" class="ml__crumb-sep" />
           </template>
           <span class="ml__crumb-page" aria-current="page">{{ crumb.page }}</span>
@@ -394,6 +394,7 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
           type="button"
           class="ml__item ml__item--tall"
           :class="{ 'ml__item--on': navKey === it.key }"
+          :aria-current="navKey === it.key ? 'page' : undefined"
           @click="go(it.key)"
         >
           <LbIcon :name="it.icon" :size="18" />

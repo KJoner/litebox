@@ -534,6 +534,10 @@ function goNode(r: Row) {
 function goExternal() {
   router.push('/external-proxies')
 }
+/** 「所属」那一栏的链接:自建的去那台机器的入口 Tab,外部代理去外部代理页。 */
+function nodeEntriesPath(r: Row): string {
+  return isSelf(r) ? `/nodes/${r.node.id}/entries` : '/external-proxies'
+}
 
 // ---------------------------------------------------------------- 弹窗
 
@@ -948,15 +952,15 @@ const columns = [
         </template>
 
         <div class="iv__dim">
-          <a v-if="isSelf(r)" @click="goNode(r)">{{ rowOwner(r) }}</a>
-          <a v-else @click="goExternal">{{ rowOwner(r) }}</a>
+          <RouterLink v-if="isSelf(r)" :to="nodeEntriesPath(r)">{{ rowOwner(r) }}</RouterLink>
+          <RouterLink v-else to="/external-proxies">{{ rowOwner(r) }}</RouterLink>
           · {{ rowPortText(r) }}
           · {{ rowTier(r) }}
         </div>
         <div class="iv__dim">
           {{ exitText(r) }} ·
           {{ rowInSub(r) ? '在订阅里' : '不在订阅里' }}
-          · 排序 <a class="lb-tabular" @click="openSort(r)">{{ globalText(r) }}</a>
+          · 排序 <button type="button" class="lb-linkbtn lb-tabular" @click="openSort(r)">{{ globalText(r) }}</button>
         </div>
         <div>
           <!-- 配置状态只对 sing-box 行成立:Mieru 是另一个进程、另一份配置。 -->
@@ -1036,8 +1040,8 @@ const columns = [
         </template>
 
         <template v-else-if="column.key === 'owner'">
-          <a v-if="isSelf(record as Row)" @click="goNode(record as Row)">{{ rowOwner(record as Row) }}</a>
-          <a v-else @click="goExternal">{{ rowOwner(record as Row) }}</a>
+          <RouterLink v-if="isSelf(record as Row)" :to="nodeEntriesPath(record as Row)">{{ rowOwner(record as Row) }}</RouterLink>
+          <RouterLink v-else to="/external-proxies">{{ rowOwner(record as Row) }}</RouterLink>
           <div v-if="isSelf(record as Row)" class="iv__dim">{{ (record as SingBoxRow).node.host }}</div>
           <div v-else class="iv__dim">外部代理页管理源与同步</div>
         </template>
@@ -1054,7 +1058,7 @@ const columns = [
         <!-- 全局排序值:GLOBAL 方案下是一个数;旧方案下写明「机器几 · 入口几」,
              点一下打开调整弹窗 —— 自建入口要选清楚改的是机器还是入口。 -->
         <template v-else-if="column.key === 'order'">
-          <a class="iv__order lb-tabular" title="调整排序" @click="openSort(record as Row)">{{ globalText(record as Row) }}</a>
+          <button type="button" class="lb-linkbtn iv__order lb-tabular" title="调整排序" @click="openSort(record as Row)">{{ globalText(record as Row) }}</button>
         </template>
 
         <template v-else-if="column.key === 'state'">
