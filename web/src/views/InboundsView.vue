@@ -839,7 +839,8 @@ const columns = [
   { title: '出口去向 · 等级', key: 'exit', width: 170 },
   { title: '全局排序', key: 'order', width: 90 },
   { title: '状态', key: 'state', width: 150 },
-  { title: '操作', key: 'ops', width: 120, align: 'right' as const },
+  // 固定在右侧:768 宽下这张表要横向滚,不固定的话「编辑 / ···」在屏幕外(UI 2.0.1)。
+  { title: '操作', key: 'ops', width: 120, align: 'right' as const, fixed: 'right' as const },
 ]
 </script>
 

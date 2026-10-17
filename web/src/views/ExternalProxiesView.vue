@@ -351,7 +351,8 @@ const columns = [
   { title: '可用截止', key: 'expiry', width: 170 },
   { title: '商家到期', key: 'vendor', width: 150 },
   { title: '订阅', key: 'sub', width: 80 },
-  { title: '操作', key: 'ops', width: 150 },
+  // 固定在右侧:768 宽下这张表要横向滚,不固定的话操作在屏幕外(UI 2.0.1)。
+  { title: '操作', key: 'ops', width: 150, fixed: 'right' as const },
 ]
 </script>
 
