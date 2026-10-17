@@ -263,17 +263,23 @@ function stop() {
 <style scoped>
 .cc {
   background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-card);
   box-shadow: var(--shadow);
   overflow: hidden;
+  min-width: 0;
 }
+/* 卡头与节点详情的 .nd__card-head 同一规格:16/600、下边一条细线。 */
 .cc__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 22px 0;
-  font-size: var(--fs-md);
+  flex-wrap: wrap;
+  min-height: 52px;
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 .cc__head-title {
@@ -290,20 +296,22 @@ function stop() {
 .cc__body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 22px 20px;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
 }
 .cc__alert {
   border-radius: var(--r-group);
-  padding: 12px 14px;
+  padding: 10px 14px;
   font-size: var(--fs-sm);
   line-height: 1.6;
 }
 .cc__alert--warn {
   background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
 }
 .cc__alert--danger {
   background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
 }
 .cc__kv {
   display: grid;

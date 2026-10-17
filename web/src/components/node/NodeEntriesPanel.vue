@@ -1098,7 +1098,9 @@ const mieruCard = computed<ServiceCardModel>(() => {
   let primary: ServiceCardAction[]
   if (phase === 'UNKNOWN') primary = [pendingPrimary]
   else if (fresh || phase === 'UNREACHABLE' || inst.length === 0) {
-    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh, onClick: installMieru }]
+    // 「安装」只在这台机器确实有 Mieru 入口时做成主按钮:没有入口的机器不装 mita 是常态,
+    // 四张卡片里三颗蓝色大按钮并排,读起来像「这些都该装」。
+    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh && mierus.value.length > 0, onClick: installMieru }]
   } else if (phase === 'RUNNING') {
     primary = [
       { label: '停止全部', danger: true, onClick: () => controlMieruAllConfirmed('stop') },
@@ -1190,7 +1192,7 @@ const nginxCard = computed<ServiceCardModel>(() => {
   let primary: ServiceCardAction[]
   if (phase === 'UNKNOWN') primary = [pendingPrimary]
   else if (fresh || phase === 'UNREACHABLE') {
-    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh, onClick: installNginx }]
+    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh && relays.value.some((r) => r.engine !== 'REALM'), onClick: installNginx }]
   } else if (phase === 'RUNNING') {
     primary = [
       { label: '停止', danger: true, onClick: () => controlNginxConfirmed('stop') },
@@ -1238,7 +1240,7 @@ const realmCard = computed<ServiceCardModel>(() => {
   let primary: ServiceCardAction[]
   if (phase === 'UNKNOWN') primary = [pendingPrimary]
   else if (fresh || phase === 'UNREACHABLE') {
-    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh, onClick: installRealm }]
+    primary = [{ label: fresh ? '安装' : '重新安装', primary: fresh && realmRuleCount.value > 0, onClick: installRealm }]
   } else if (phase === 'RUNNING') {
     primary = [
       { label: '停止', danger: true, onClick: stopRealm },
@@ -2027,20 +2029,29 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 整个面板是一张卡:头部(标题 + 新增)一条细线隔开,服务卡片在一条 --surface2 的
+   底带上,入口表格贴满卡片左右边(负外边距抵掉卡片内距)。 */
 .nr {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-5) var(--sp-5);
+  background: var(--surface);
   border: 1px solid var(--sep);
   border-radius: var(--r-card);
-  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+  margin-bottom: var(--sp-4);
+  min-width: 0;
 }
 .nr__head {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-height: 52px;
+  margin: 0 calc(-1 * var(--sp-5));
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
 }
 
 /* 四张服务卡片并排。230 是底排「下发配置 / 检查 / 卸载」三颗不换行的下限;
@@ -2049,6 +2060,21 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 12px;
+  margin: 0 calc(-1 * var(--sp-5));
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--surface2);
+  border-top: 1px solid var(--sep2);
+  border-bottom: 1px solid var(--sep2);
+}
+/* 紧跟头部时贴上去(中间有「探测失败」提示时不贴,免得盖住它)。 */
+.nr__head + .nr__svc {
+  margin-top: calc(-1 * var(--sp-4));
+  border-top: none;
+}
+.nr > :deep(.ant-table-wrapper) {
+  /* AntD 给 wrapper 写了 width: 100%,stretch 不生效,负外边距之外还要把宽度补回来。 */
+  width: calc(100% + 2 * var(--sp-5));
+  margin: 0 calc(-1 * var(--sp-5));
 }
 
 .nr__cards {
@@ -2057,6 +2083,7 @@ onMounted(async () => {
   gap: 8px;
 }
 .nr__title {
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
@@ -2065,10 +2092,12 @@ onMounted(async () => {
 .nr__kind {
   display: inline-block;
   padding: 0 6px;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   background: var(--fill);
   color: var(--text2);
   font-size: var(--fs-2xs);
+  font-weight: 500;
+  line-height: 18px;
   letter-spacing: 0.02em;
 }
 
@@ -2097,7 +2126,7 @@ onMounted(async () => {
   padding: 10px 12px;
   border: 1px solid var(--sep);
   border-radius: var(--r-group);
-  background: #fafbfc;
+  background: var(--surface2);
 }
 .nr__sb-head {
   display: flex;
@@ -2134,6 +2163,9 @@ onMounted(async () => {
   line-height: 1.6;
 }
 .nr__warn {
+  padding: 8px 12px;
+  border-radius: var(--r-btn);
+  background: var(--bad-bg);
   font-size: var(--fs-xs);
   color: var(--bad);
 }

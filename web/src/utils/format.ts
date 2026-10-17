@@ -11,6 +11,12 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(digits)} ${units[i]}`
 }
 
+/** 每秒字节数 → 「1.25 MB/s」。采样里的 net_rx_bps / net_tx_bps 是字节每秒。 */
+export function formatRate(bytesPerSecond: number | null | undefined): string {
+  if (bytesPerSecond === null || bytesPerSecond === undefined) return '—'
+  return `${formatBytes(bytesPerSecond)}/s`
+}
+
 /** 额度为 0 表示不限量。 */
 export function formatQuota(bytes: number): string {
   return bytes > 0 ? formatBytes(bytes) : '不限'
