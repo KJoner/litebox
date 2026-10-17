@@ -124,6 +124,11 @@ const recheck = useNodeRecheck(() => reload())
 const tierLoadError = ref(false)
 
 const deployments = ref<DeploymentRecord[]>([])
+/**
+ * 部署记录读失败。原来失败时清成空列表,页面写着「还没有部署记录」,概览上那条
+ * 「最近一次部署失败」的横幅也跟着消失 —— 读不到被说成了没有。失败时保留上一次的结果。
+ */
+const deploymentsError = ref(false)
 const daily = ref<DailyPoint[]>([])
 const cycle = ref<NodeCycleUsage | null>(null)
 const trafficError = ref(false)
@@ -405,7 +410,10 @@ const protocolMismatch = computed(() =>
 )
 
 async function load(id: number) {
-  loading.value = true
+  // 已经在看这台机器时就地刷新,不切回骨架。探测、调优这类检查跑完会顺手 reload(),
+  // 而切回骨架会把整屏 —— 连同刚弹出来的结果弹窗 —— 卸载再挂上:弹窗闪一下、
+  // 滚动位置丢掉,那一瞬间按 ESC 也落空。只有第一次进来或换了一台机器才显示骨架。
+  if (node.value?.id !== id) loading.value = true
   loadError.value = null
   try {
     node.value = await api.node(id)
@@ -421,10 +429,7 @@ async function load(id: number) {
   }
   loading.value = false
 
-  api
-    .nodeDeployments(id, 50)
-    .then((r) => (deployments.value = r.items))
-    .catch(() => (deployments.value = []))
+  void loadDeployments(id)
   trafficError.value = false
   metered.value = true
   notMeteredReason.value = ''
@@ -447,6 +452,15 @@ async function load(id: number) {
 
 function reload() {
   if (nodeId.value !== null) load(nodeId.value)
+}
+
+async function loadDeployments(id: number) {
+  deploymentsError.value = false
+  try {
+    deployments.value = (await api.nodeDeployments(id, 50)).items
+  } catch {
+    deploymentsError.value = true
+  }
 }
 
 
@@ -975,6 +989,7 @@ watch(
     panel.value = ''
     metricsHistory.value = []
     deployments.value = []
+    deploymentsError.value = false
     cycle.value = null
     // **不重置 tab** —— 换的是节点,而地址里带着的 tab 是访问者的意图。
     // 直接打开 /nodes/3/entries 却落在概览上,等于把分享出去的地址废掉一半。
@@ -2209,11 +2224,21 @@ const needsPortForward = computed(() =>
             <span v-if="deployments.length" class="nd__card-note">点一行展开每一步的结果</span>
           </div>
           <LbEmptyState
-            v-if="deployments.length === 0"
+            v-if="deploymentsError && deployments.length === 0"
+            variant="error"
+            title="无法加载部署记录"
+            description="不显示「还没有部署记录」—— 读不到不等于没有。"
+            @retry="nodeId !== null && loadDeployments(nodeId)"
+          />
+          <LbEmptyState
+            v-else-if="deployments.length === 0"
             variant="empty"
             title="还没有部署记录"
             description="执行第一次部署后,这里会记录每一步的结果。"
           />
+          <div v-else-if="deploymentsError" class="nd__card-warn">
+            部署记录本次刷新读取失败,下面是上一次读到的结果。
+          </div>
           <a-table
             v-else
             :columns="deployColumns"
@@ -2615,6 +2640,14 @@ const needsPortForward = computed(() =>
   color: var(--ok);
 }
 
+.nd__card-warn {
+  margin: var(--sp-3) var(--sp-5) 0;
+  padding: 8px 12px;
+  border-radius: var(--r-btn);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}
 .nd__panel-warn {
   padding: 10px 14px;
   background: var(--warn-bg);
