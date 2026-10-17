@@ -47,6 +47,13 @@ import { useNarrow } from '@/composables/useNarrow'
  * 挂掉整页都只弹一条三秒吐司,而卡片渲染的是 `summary?.traffic_month ?? 0`,页面稳稳地
  * 显示「本月流量 0 B」。读不到和真的是零长得一模一样,这是最容易骗到管理员的一种失败。
  *
+ * **任何一个来源读失败,结论都不能是「一切正常」**(UI 2.0.1)。原来只有预警读失败才会
+ * 改口,而节点(含商家到期)、部署记录、代理源与外部代理的到期读失败时,清单少了那几类
+ * 照样说「没有需要处理的事」。现在失败的来源统一收进 failedSources:顶部一条提示列出
+ * 是哪几项、给一个只重试它们的按钮;已经读到的严重项照常排在前面,结论仍以它们为准。
+ * 刷新时某一项读失败,保留上一次读到的结果 —— 一条已知的「已到期」不该因为一次网络抖动
+ * 从清单里消失。
+ *
  * **只读库里已有的采样与巡检结果,不触发任何 SSH**(CLAUDE.md「仪表盘节点卡片只读数据库」)。
  */
 const router = useRouter()
@@ -72,6 +79,8 @@ const deployError = ref(false)
 
 /** 外部代理与代理源的商家到期。它们不在 dashboardAlerts 里(那边只管可用截止时间)。 */
 const vendorExpiry = ref<{ key: string; name: string; cat: string; to: string; v: ExpiryView }[]>([])
+const sourceExpiryError = ref(false)
+const proxyExpiryError = ref(false)
 
 const daily = ref<DailyPoint[]>([])
 const dailyError = ref(false)
@@ -85,7 +94,6 @@ async function loadSummary() {
   try {
     summary.value = await api.dashboardSummary()
   } catch {
-    summary.value = null
     summaryError.value = true
   }
 }
@@ -96,8 +104,7 @@ async function loadAlerts() {
     alerts.value = (await api.dashboardAlerts()).items
   } catch {
     // 取不到预警时不能当成「没有预警」显示一句「一切正常」—— 那是在替一个
-    // 没读到的列表打包票。清单上明说读取失败。
-    alerts.value = []
+    // 没读到的列表打包票。清单上明说读取失败;上一次读到的预警留着。
     alertsError.value = true
   }
 }
@@ -108,7 +115,6 @@ async function loadNodes() {
   try {
     nodes.value = (await api.nodes()).items
   } catch {
-    nodes.value = []
     nodesError.value = true
     return
   }
@@ -142,18 +148,29 @@ async function loadNodes() {
     api
       .trafficStatus()
       .then((r) => (syncErrors.value = Object.fromEntries(r.failing_nodes.map((f) => [f.node_id, f.error]))))
-      .catch(() => (syncErrors.value = {})),
+      .catch(() => {
+        // 原来静默清空:同步失败的徽标从巡检那一列消失,看起来就像同步正常。
+        syncErrors.value = {}
+        miss('流量同步状态')
+      }),
   ])
 }
 
 async function loadVendorExpiry() {
-  // 附加信息:取不到就不列,不让整个清单进错误态。
+  // 两类各自成败:一类读失败不让另一类也跟着消失,读失败的那一类保留上一次的条目,
+  // 并记进 failedSources —— 原来是静默不列,清单因此少了那一类还说「没有需要处理的事」。
+  sourceExpiryError.value = false
+  proxyExpiryError.value = false
   const [p, s] = await Promise.allSettled([api.externalProxies({ includeExcluded: false }), api.proxySources()])
+  const keep = (prefix: string) => vendorExpiry.value.filter((x) => x.key.startsWith(prefix))
   const out: typeof vendorExpiry.value = []
   if (s.status === 'fulfilled') {
     for (const src of s.value.items) {
       if (src.expiry) out.push({ key: `src-${src.id}`, name: src.name, cat: '代理源', to: '/external-proxies', v: src.expiry })
     }
+  } else {
+    sourceExpiryError.value = true
+    out.push(...keep('src-'))
   }
   if (p.status === 'fulfilled') {
     // 跟随来源的条目不单独列:来源那一条已经代表了它们(与提醒的去重规则一致)。
@@ -162,6 +179,9 @@ async function loadVendorExpiry() {
         out.push({ key: `ext-${x.id}`, name: x.display_name, cat: '外部代理', to: '/external-proxies', v: x.expiry })
       }
     }
+  } else {
+    proxyExpiryError.value = true
+    out.push(...keep('ext-'))
   }
   vendorExpiry.value = out
 }
@@ -171,7 +191,6 @@ async function loadDeploys() {
   try {
     deploys.value = (await api.deployments(100)).items
   } catch {
-    deploys.value = []
     deployError.value = true
   }
 }
@@ -197,14 +216,49 @@ async function load() {
 watch(range, loadDaily)
 onMounted(load)
 
+// ---------- 部分失败 ----------
+
+interface FailedSource {
+  label: string
+  /** 这一项是不是「需要处理」清单的来源。是的话,清单与结论都可能不完整。 */
+  attention: boolean
+  retry: () => Promise<void>
+}
+
+const failedSources = computed<FailedSource[]>(() => {
+  const out: FailedSource[] = []
+  if (alertsError.value) out.push({ label: '预警', attention: true, retry: loadAlerts })
+  if (nodesError.value) out.push({ label: '节点列表(含节点商家到期)', attention: true, retry: loadNodes })
+  if (deployError.value) out.push({ label: '部署记录', attention: true, retry: loadDeploys })
+  if (sourceExpiryError.value) out.push({ label: '代理源到期', attention: true, retry: loadVendorExpiry })
+  if (proxyExpiryError.value) out.push({ label: '外部代理到期', attention: true, retry: loadVendorExpiry })
+  if (summaryError.value) out.push({ label: '概览指标', attention: false, retry: loadSummary })
+  if (dailyError.value) out.push({ label: '流量趋势', attention: false, retry: loadDaily })
+  for (const c of columnErrors.value) out.push({ label: c, attention: false, retry: loadNodes })
+  return out
+})
+const attnFailed = computed(() => failedSources.value.filter((f) => f.attention))
+const failedLabels = (list: FailedSource[]) => list.map((f) => f.label).join('、')
+
+const retrying = ref(false)
+/** 只重试读失败的那几项;同一个加载函数只跑一次(列级失败都归 loadNodes)。 */
+async function retryFailed() {
+  retrying.value = true
+  try {
+    await Promise.all([...new Set(failedSources.value.map((f) => f.retry))].map((fn) => fn()))
+  } finally {
+    retrying.value = false
+  }
+}
+
 // ---------- 指标 ----------
 
 const metricState = computed(() =>
-  summaryError.value ? 'error' : loading.value && !summary.value ? 'loading' : summary.value ? 'ready' : 'empty',
+  summary.value ? 'ready' : summaryError.value ? 'error' : loading.value ? 'loading' : 'empty',
 )
 
 const nodeMetricState = computed(() =>
-  nodesError.value ? 'error' : loading.value && !nodes.value.length ? 'loading' : nodes.value.length ? 'ready' : 'empty',
+  nodes.value.length ? 'ready' : nodesError.value ? 'error' : loading.value ? 'loading' : 'empty',
 )
 
 const offlineCount = computed(() => nodes.value.filter((n) => n.status === 'OFFLINE').length)
@@ -315,12 +369,23 @@ const attention = computed<AttentionItem[]>(() => {
 const badCount = computed(() => attention.value.filter((a) => a.level === 'bad').length)
 const warnCount = computed(() => attention.value.filter((a) => a.level === 'warn').length)
 
-/** 一句话结论。严重项才算「要处理」;只有预警时说清楚没有紧急事项。 */
+/**
+ * 一句话结论。严重项才算「要处理」;只有预警时说清楚没有紧急事项。
+ *
+ * 已经读到的严重项优先 —— 部署记录读失败不该把「有 2 件事需要处理」降成一句含糊的
+ * 「部分读取失败」。没有严重项时,任何一项读失败都不能说「一切正常」:清单的来源读失败
+ * 是「不知道有没有」,其余几项读失败是「不知道是不是全都正常」。
+ */
 const headline = computed(() => {
   if (loading.value && !loadedAt.value) return { tone: 'muted', text: '正在汇总各项数据…' }
-  if (alertsError.value) return { tone: 'warn', text: '预警读取失败,下面的清单可能不完整' }
   if (badCount.value) return { tone: 'bad', text: `有 ${badCount.value} 件事需要处理` }
+  if (attnFailed.value.length) {
+    return warnCount.value
+      ? { tone: 'warn', text: `${warnCount.value} 条预警;部分数据读取失败,清单可能不完整` }
+      : { tone: 'warn', text: '部分数据读取失败,无法确认是否有需要处理的事' }
+  }
   if (warnCount.value) return { tone: 'warn', text: `${warnCount.value} 条预警,暂无紧急事项` }
+  if (failedSources.value.length) return { tone: 'warn', text: '部分数据读取失败,无法确认一切正常' }
   return { tone: 'ok', text: '一切正常,没有需要处理的事' }
 })
 
@@ -447,7 +512,7 @@ function conclusion(d: DeploymentRecord): string {
             :width="320"
           />
         </h1>
-        <div class="lb-page__summary dv__headline">
+        <div class="lb-page__summary dv__headline" data-testid="dashboard-headline">
           <span class="lb-dot" :class="`dv__dot--${headline.tone}`" />
           <span class="dv__headline-text">{{ headline.text }}</span>
           <span v-if="nodeLine" class="dv__headline-sub">· {{ nodeLine }}</span>
@@ -458,6 +523,30 @@ function conclusion(d: DeploymentRecord): string {
         <a-button :loading="loading" @click="load">
           <template #icon><LbIcon name="refresh" :size="15" /></template>
           刷新
+        </a-button>
+      </div>
+    </div>
+
+    <!-- 部分失败:说清楚是哪几项没读到,只重试它们。已经读到的照常显示。 -->
+    <div
+      v-if="failedSources.length && !(loading && !loadedAt)"
+      class="lb-notice dv__partial"
+      role="alert"
+      data-testid="dashboard-partial-failure"
+    >
+      <span class="lb-notice__icon lb-notice__icon--warn"><LbIcon name="circle-alert" :size="18" /></span>
+      <div class="lb-notice__body">
+        <div class="lb-notice__title">部分数据读取失败</div>
+        <div class="lb-notice__text">
+          {{ failedLabels(failedSources) }}没有读到。{{
+            attnFailed.length ? '「需要处理」清单与上方结论可能不完整;' : ''
+          }}已经读到的数据照常显示,读失败的部分保留上一次的结果或显示为「—」,不是零。
+        </div>
+      </div>
+      <div class="lb-notice__actions">
+        <a-button size="small" :loading="retrying" @click="retryFailed">
+          <template #icon><LbIcon name="refresh" :size="14" /></template>
+          重试失败项
         </a-button>
       </div>
     </div>
@@ -510,17 +599,18 @@ function conclusion(d: DeploymentRecord): string {
         label="需要处理"
         icon="bell"
         tip="预警(用户到期 / 超额、节点额度、监控过期、云账号、外部代理)+ 商家到期 + 近 7 天失败部署。"
-        :state="alertsError && !attention.length ? 'error' : loading && !loadedAt ? 'loading' : 'ready'"
+        :state="attnFailed.length && !attention.length ? 'error' : loading && !loadedAt ? 'loading' : 'ready'"
         :value="attention.length"
         unit="项"
-        :tone="alertsError ? 'default' : badCount ? 'danger' : warnCount ? 'warning' : 'success'"
+        :tone="badCount ? 'danger' : attnFailed.length ? 'default' : warnCount ? 'warning' : 'success'"
       >
         <template #foot>
           <template v-if="attention.length">
             <span v-if="badCount" class="dv__count dv__count--bad">{{ badCount }} 项严重</span>
             <span v-if="warnCount" class="dv__count dv__count--warn">{{ warnCount }} 项预警</span>
           </template>
-          <span v-else>没有待处理事项</span>
+          <span v-if="attnFailed.length" class="dv__count dv__count--warn">清单不完整</span>
+          <span v-else-if="!attention.length">没有待处理事项</span>
         </template>
       </LbMetricCard>
     </section>
@@ -588,10 +678,12 @@ function conclusion(d: DeploymentRecord): string {
           <a-skeleton active :title="false" :paragraph="{ rows: 4 }" />
         </div>
         <template v-else>
-          <div v-if="alertsError" class="dv__attn-error">
+          <div v-if="attnFailed.length" class="dv__attn-error" role="alert">
             <LbIcon name="circle-alert" :size="15" />
-            <span>预警读取失败,清单只含商家到期与部署 ——</span>
-            <a @click="loadAlerts">重试</a>
+            <span>{{ failedLabels(attnFailed) }}读取失败,清单可能不完整</span>
+            <a-button type="link" size="small" class="dv__attn-retry" :loading="retrying" @click="retryFailed">
+              重试
+            </a-button>
           </div>
           <ul v-if="attention.length" class="dv__attn-list">
             <li v-for="a in attention" :key="a.key" class="dv__attn-item" @click="router.push(a.to)">
@@ -611,10 +703,13 @@ function conclusion(d: DeploymentRecord): string {
               </span>
             </li>
           </ul>
-          <div v-else-if="!alertsError" class="dv__attn-ok">
+          <div v-else-if="!attnFailed.length" class="dv__attn-ok">
             <span class="dv__attn-ok-icon"><LbIcon name="circle-check" :size="20" /></span>
             <div class="dv__attn-ok-title">没有需要处理的事</div>
             <div class="dv__attn-ok-text">预警、商家到期与近 7 天的部署都正常。</div>
+          </div>
+          <div v-else class="dv__attn-partial">
+            已读到的数据里没有需要处理的事,但上面几项没有读到,不能据此认为一切正常。
           </div>
         </template>
       </section>
@@ -636,13 +731,17 @@ function conclusion(d: DeploymentRecord): string {
         <a class="dv__link" @click="router.push('/nodes')">全部节点 <LbIcon name="chevron-right" :size="14" /></a>
       </div>
 
-      <div v-if="columnErrors.length && !nodesError" class="dv__colerr">
+      <div v-if="nodesError && nodes.length" class="dv__colerr">
+        <LbIcon name="info" :size="14" />
+        节点列表本次刷新读取失败,下面是上一次读到的结果。
+      </div>
+      <div v-else-if="columnErrors.length && !nodesError" class="dv__colerr">
         <LbIcon name="info" :size="14" />
         {{ columnErrors.join('、') }}读取失败,对应的列显示为「—」,不是零。
       </div>
 
       <LbEmptyState
-        v-if="nodesError"
+        v-if="nodesError && !nodes.length"
         variant="error"
         title="无法加载节点列表"
         description="不显示「暂无数据」—— 那会被读成一台机器都没有。"
@@ -747,7 +846,11 @@ function conclusion(d: DeploymentRecord): string {
         <h2 class="lb-card__title">最近部署</h2>
         <a class="dv__link" @click="router.push('/deployments')">全部记录 <LbIcon name="chevron-right" :size="14" /></a>
       </div>
-      <LbEmptyState v-if="deployError" variant="error" title="无法加载部署记录" @retry="loadDeploys" />
+      <div v-if="deployError && deploys.length" class="dv__colerr">
+        <LbIcon name="info" :size="14" />
+        部署记录本次刷新读取失败,下面是上一次读到的结果。
+      </div>
+      <LbEmptyState v-if="deployError && !deploys.length" variant="error" title="无法加载部署记录" @retry="loadDeploys" />
       <LbEmptyState
         v-else-if="!loading && deploys.length === 0"
         variant="empty"
@@ -797,6 +900,15 @@ function conclusion(d: DeploymentRecord): string {
 }
 .dv__dot--muted {
   --dot: var(--text3);
+}
+
+@media (max-width: 767px) {
+  .dv__partial {
+    flex-wrap: wrap;
+  }
+  .dv__partial .lb-notice__actions {
+    margin-left: 44px;
+  }
 }
 
 .dv__updated {
@@ -877,8 +989,16 @@ function conclusion(d: DeploymentRecord): string {
   color: var(--warn);
   font-size: var(--fs-xs);
 }
-.dv__attn-error a {
+.dv__attn-retry {
+  height: auto;
+  padding: 0 2px;
+  font-size: var(--fs-xs);
   font-weight: 500;
+}
+.dv__attn-partial {
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  font-size: var(--fs-sm);
+  color: var(--text3);
 }
 
 .dv__attn-list {
