@@ -213,5 +213,8 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
   color: var(--text2);
   white-space: pre-wrap;
   overflow-x: auto;
+  /* 与进度弹窗同一条:长日志在自己的框里滚,不把后面的步骤推出屏幕。 */
+  max-height: 280px;
+  overflow-y: auto;
 }
 </style>

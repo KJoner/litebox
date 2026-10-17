@@ -683,6 +683,12 @@ textarea.ant-input {
   margin-top: var(--sp-3);
   font-size: var(--fs-base);
   color: var(--text2);
+  /* Modal.info / error 收的多是字符串:引导结果是几段用 
+
+ 拼起来的说明,
+     后端的错误也常带换行与长路径。不保留换行的话几段话挤成一坨。 */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .ant-modal-confirm .ant-modal-confirm-btns {
   margin-top: var(--sp-5);
