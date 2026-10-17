@@ -110,7 +110,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
           v-for="(s, i) in steps"
           :key="i"
           class="nop__row"
-          :style="{ animationDelay: `${i * 60}ms` }"
+          :style="{ animationDelay: `${Math.min(i, 8) * 25}ms` }"
         >
           <span class="nop__dot" :class="{ 'nop__dot--pulse': running }" />
           <span class="nop__row-name">{{ s }}</span>
@@ -123,7 +123,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
           v-for="(s, i) in deploy.steps"
           :key="i"
           class="nop__row nop__row--deploy"
-          :style="{ animationDelay: `${i * 60}ms` }"
+          :style="{ animationDelay: `${Math.min(i, 8) * 25}ms` }"
         >
           <span class="nop__icon" :style="{ background: stepMeta[s.status]?.bg ?? color.neutralBg }">
             <LbShapeIcon
@@ -228,7 +228,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   padding: 10px 14px;
   font-size: var(--fs-base);
   color: var(--text2);
-  animation: lb-step 0.35s var(--ease) both;
+  animation: lb-step var(--dur) var(--ease) both;
 }
 .nop__row + .nop__row {
   border-top: 1px solid var(--sep);

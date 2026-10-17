@@ -551,29 +551,41 @@ const keyOpen = ref(false)
         <div class="lb-page__summary">{{ summaryLine }}</div>
       </div>
       <div class="lb-page__actions">
-        <a-button @click="keyOpen = true">SSH 公钥</a-button>
-        <a-button :loading="loading" @click="load">刷新</a-button>
-        <a-button :loading="runningHealth" @click="runHealthNow">立即巡检</a-button>
-        <a-button type="primary" @click="openCreate">+ 添加节点</a-button>
+        <a-button @click="keyOpen = true">
+          <template #icon><LbIcon name="key" :size="15" /></template>
+          SSH 公钥
+        </a-button>
+        <a-button :loading="runningHealth" @click="runHealthNow">
+          <template #icon><LbIcon name="activity" :size="15" /></template>
+          立即巡检
+        </a-button>
+        <a-button :loading="loading" aria-label="刷新" title="刷新" @click="load">
+          <template #icon><LbIcon name="refresh" :size="15" /></template>
+        </a-button>
+        <a-button type="primary" @click="openCreate">
+          <template #icon><LbIcon name="plus" :size="15" /></template>
+          添加节点
+        </a-button>
       </div>
     </div>
 
     <section class="lb-metrics">
       <LbMetricCard
         label="在线节点"
+        icon="server"
         :state="metricState"
         :value="stats.online"
         :total="stats.total"
         empty-hint="尚未添加节点"
         :hint="offlineCount ? `${offlineCount} 台离线` : stats.total ? '全部在线' : undefined"
       />
-      <LbMetricCard label="待部署" :state="metricState" :value="stats.pending" :tone="stats.pending ? 'warning' : 'default'">
+      <LbMetricCard label="待部署" icon="upload" :state="metricState" :value="stats.pending" :tone="stats.pending ? 'warning' : 'default'">
         <template #foot>
           <a v-if="stats.pending" class="nv__link" @click="filters.config = 'PENDING'">筛选 ›</a>
           <span v-else>配置都已同步</span>
         </template>
       </LbMetricCard>
-      <LbMetricCard label="即将到期 / 已到期" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
+      <LbMetricCard label="即将到期 / 已到期" icon="calendar" :state="metricState" :value="stats.expiring" :tone="stats.expiring ? 'warning' : 'default'">
         <template #foot>
           <a v-if="stats.expiring" class="nv__link" @click="filters.expiry = 'SOON'">筛选 ›</a>
           <span v-else>没有要续费的</span>
@@ -581,6 +593,7 @@ const keyOpen = ref(false)
       </LbMetricCard>
       <LbMetricCard
         label="本周期流量合计"
+        icon="activity"
         tip="按各节点自己的周期边界与计费口径汇总。双向计费的机器已按口径折算;中转主机不计。"
         :state="cycleError ? 'error' : metricState"
         :value="formatBytes(stats.cycleUsed).split(' ')[0]"
@@ -624,7 +637,8 @@ const keyOpen = ref(false)
 
     <section>
       <LbSectionTitle title="全部节点" :count="`${visible.length} / ${nodes.length} 台`" />
-      <div class="lb-card lb-card--flush">
+      <!-- 手机上卡片自己就是一张张卡,外面不再套一层卡片(见 .nv__list--narrow)。 -->
+      <div class="lb-card lb-card--flush nv__list" :class="{ 'nv__list--narrow': narrow }">
         <LbFilterBar :active-count="activeFilterCount" @clear="clearFilters">
           <a-input v-model:value="filters.keyword" placeholder="内部名称 / 订阅名称 / 地址" allow-clear>
             <template #prefix><LbIcon name="search" :size="14" /></template>
@@ -1016,8 +1030,9 @@ const keyOpen = ref(false)
 }
 
 .nv__name {
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text);
 }
 .nv__name:hover {
@@ -1121,13 +1136,31 @@ const keyOpen = ref(false)
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px;
+  padding: 12px 0 0;
+}
+
+/* 手机:外层卡片退成透明容器,工具条自己成一张卡,下面直接是节点卡片。 */
+.nv__list--narrow {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  overflow: visible;
+}
+.nv__list--narrow :deep(.lb-filter),
+.nv__list--narrow :deep(.lb-batch) {
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-card);
+}
+.nv__list--narrow :deep(.lb-batch) {
+  margin-top: 10px;
+  background: var(--brand-bg);
 }
 
 .nv__card-name {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
 }

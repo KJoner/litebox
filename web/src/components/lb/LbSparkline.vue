@@ -10,7 +10,7 @@ import { formatBytes, formatUTCDay } from '@/utils/format'
  * 折线用灰虚线跨过缺口(面积不填),柱状用空心虚线柱。
  *
  * UI 2.0:线 --brand 2px round + 一次 lb-draw 入场;面积 --brand 18%→0 渐变;
- * 峰值点 r5 描 --surface;柱圆角 2,峰值 --brand、其余 --brand-bg,逐柱 lb-growy;
+ * 峰值点 r5 描 --surface;柱圆角 2,峰值 --brand、其余 --brand 35% 不透明度,逐柱 lb-growy;
  * 网格 --sep2;X 轴标签由调用方放在 #axis 插槽。
  */
 export interface LbPoint {
@@ -199,7 +199,8 @@ const tipStyle = computed(() => {
           :width="barW"
           :height="p.y === null ? 8 : bottom - p.y"
           rx="2"
-          :fill="p.y === null ? 'var(--fill)' : p.value === max ? 'var(--brand)' : 'var(--brand-bg)'"
+          :fill="p.y === null ? 'var(--fill)' : 'var(--brand)'"
+          :fill-opacity="p.y === null || p.value === max ? 1 : 0.35"
           :stroke="p.y === null ? 'var(--text3)' : 'none'"
           :stroke-dasharray="p.y === null ? '2 2' : undefined"
           stroke-width="1"

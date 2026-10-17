@@ -684,7 +684,10 @@ button {
   .lb-page__summary {
     font-size: var(--fs-sm);
   }
+  /* 按钮组单独占一行并允许换行:桌面上的 flex: none 在手机上会让四颗按钮
+     按内容宽度排成一行,把最后一颗推出屏幕。 */
   .lb-page__actions {
+    flex: 1 1 100%;
     flex-wrap: wrap;
   }
   .lb-card {

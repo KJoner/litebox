@@ -1682,8 +1682,11 @@ export interface BatchAdjustResult {
 
 export interface DashboardAlert {
   level: 'warning' | 'error'
-  /** V17 起多了云账号一类(CDT 用量超阈值 / 查询失败)。 */
-  category: 'user' | 'node' | 'cloud_account'
+  /**
+   * V17 起多了云账号一类(CDT 用量超阈值 / 查询失败);外部代理的源与条目
+   * (到期、同步连续失败)早在 V4 就会出现在这里,类型上一直漏写了这两种。
+   */
+  category: 'user' | 'node' | 'cloud_account' | 'proxy_source' | 'external_proxy'
   target: string
   target_id: number
   message: string

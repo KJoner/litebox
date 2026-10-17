@@ -15,6 +15,7 @@ export { default as LbRowCard } from './LbRowCard.vue'
 export { default as LbInfoTip } from './LbInfoTip.vue'
 export { default as LbSectionTitle } from './LbSectionTitle.vue'
 export { default as LbIcon } from './LbIcon.vue'
+export { default as LbUsageBar } from './LbUsageBar.vue'
 
 export { lbDangerConfirm } from './lbDangerConfirm'
 export type { LbDangerConfirmOptions } from './lbDangerConfirm'

@@ -129,6 +129,43 @@ const paths = computed(() =>
   }),
 )
 
+/**
+ * 单序列时在线下铺一层极淡的面积(UI 2.0,Beszel 式)。按与折线完全相同的规则切段:
+ * 断档处不填 —— 面积跨过一段没有采样的时间,等于在那里画了一段不存在的数据。
+ * 多序列不铺:几层半透明面积叠在一起,谁在上谁在下就读不清了。
+ */
+const areas = computed(() => {
+  if (props.series.length !== 1) return []
+  const s = props.series[0]!
+  const base = padding.top + plotHeight.value
+  const segs: [number, number][][] = []
+  let cur: [number, number][] = []
+  let prevT = NaN
+  for (let i = 0; i < pointCount.value; i++) {
+    const t = times.value[i]!
+    const v = s.values[i]
+    if (!Number.isFinite(t) || v === null || v === undefined) {
+      if (cur.length > 1) segs.push(cur)
+      cur = []
+      continue
+    }
+    if (Number.isFinite(prevT) && t - prevT > gapThreshold.value) {
+      if (cur.length > 1) segs.push(cur)
+      cur = []
+    }
+    cur.push([xAt(t), yAt(v)])
+    prevT = t
+  }
+  if (cur.length > 1) segs.push(cur)
+  return segs.map((seg) => ({
+    color: s.color,
+    d:
+      `M${seg[0]![0].toFixed(1)},${base} ` +
+      seg.map(([x, y]) => `L${x.toFixed(1)},${y.toFixed(1)}`).join(' ') +
+      ` L${seg[seg.length - 1]![0].toFixed(1)},${base} Z`,
+  }))
+})
+
 /** 单独的点(前后都断开)画成小圆点,否则一条孤立的采样在图上什么都看不见。 */
 const lonePoints = computed(() => {
   const out: { x: number; y: number; color: string }[] = []
@@ -268,6 +305,7 @@ const defaultFormat = (v: number) => formatBytes(v)
           />
         </g>
 
+        <path v-for="(a, i) in areas" :key="`a${i}`" :d="a.d" class="area" :style="{ fill: a.color }" />
         <path v-for="p in paths" :key="p.name" :d="p.d" class="line" :style="{ stroke: p.color }" />
         <circle
           v-for="(lp, i) in lonePoints"
@@ -356,9 +394,14 @@ const defaultFormat = (v: number) => formatBytes(v)
 
 .line {
   fill: none;
-  stroke-width: 2.2;
+  stroke-width: 2;
   stroke-linejoin: round;
   stroke-linecap: round;
+}
+
+.area {
+  fill-opacity: 0.1;
+  stroke: none;
 }
 
 .crosshair {

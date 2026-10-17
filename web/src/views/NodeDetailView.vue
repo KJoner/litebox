@@ -865,6 +865,48 @@ const netSeries = computed(() => [
 const formatPercent = (v: number) => `${v.toFixed(0)}%`
 const formatRate = (v: number) => `${formatBytes(v)}/s`
 
+function formatUptime(seconds: number): string {
+  if (!seconds || seconds < 0) return '—'
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  if (d > 0) return `${d} 天 ${h} 小时`
+  const m = Math.floor((seconds % 3600) / 60)
+  return h > 0 ? `${h} 小时 ${m} 分` : `${m} 分钟`
+}
+
+/**
+ * 「当前资源」四格(Beszel 式):CPU / 内存 / 磁盘 / 网络。前三格带使用率条,
+ * 颜色按 threshold 三档;网络没有分母,不画条(画了只能是一个编出来的比例)。
+ */
+const resCells = computed(() => {
+  const m = latest.value
+  if (!m) return []
+  return [
+    { label: 'CPU', icon: 'cpu' as const, pct: m.cpu_percent, value: `${m.cpu_percent.toFixed(0)}%`, sub: `负载 ${m.load1.toFixed(2)}` },
+    {
+      label: '内存',
+      icon: 'memory-stick' as const,
+      pct: memPercent(m),
+      value: `${memPercent(m).toFixed(0)}%`,
+      sub: `${formatBytes(m.mem_used_kb * 1024)} / ${formatBytes(m.mem_total_kb * 1024)}`,
+    },
+    {
+      label: '磁盘',
+      icon: 'hard-drive' as const,
+      pct: diskPercent(m),
+      value: `${diskPercent(m).toFixed(0)}%`,
+      sub: `${formatBytes(m.disk_used_kb * 1024)} / ${formatBytes(m.disk_total_kb * 1024)}`,
+    },
+    {
+      label: '网络',
+      icon: 'network' as const,
+      pct: null,
+      value: `↓ ${formatRate(m.net_rx_bps)}`,
+      sub: `↑ ${formatRate(m.net_tx_bps)} · 已运行 ${formatUptime(m.uptime_seconds)}`,
+    },
+  ]
+})
+
 // ---------- 派生展示 ----------
 
 const runMeta = computed(() => (node.value ? nodeBadges(node.value, latest.value?.collected_at) : []))
@@ -994,20 +1036,17 @@ const needsPortForward = computed(() =>
 
 <template>
   <div class="lb-page nd">
-    <!-- 返回链接不是装饰:整页之后浏览器的后退键会离开整个面板,
-         而管理员多半只是想回到列表。
-         不做成完整面包屑 —— 顶栏已经有一条「分组 / 节点详情」,
-         再来一条只是把同一句话说两遍。 -->
-    <RouterLink class="nd__back" :to="{ name: 'nodes' }">
-      <span class="nd__back-chevron">‹</span>自建节点
-    </RouterLink>
-
-    <!-- 顶部只放四样:内部名称、编号、状态标签、主操作(V20)。
+        <!-- 顶部只放四样:内部名称、编号、状态标签、主操作(V20)。
          地址、端口、订阅名称这些都在概览的「身份与地址」里 —— 标题下面
          原来那一行把六样东西用「·」串起来,排查时要先在里面数到第几段。 -->
     <div class="nd__bar">
       <div class="nd__head">
         <div class="nd__title">
+          <!-- 返回按钮不是装饰:整页之后浏览器的后退键会离开整个面板,
+               而管理员多半只是想回到列表。顶栏面包屑里也能点回去,这里是离手最近的那个。 -->
+          <RouterLink class="nd__back" :to="{ name: 'nodes' }" aria-label="返回自建节点" title="返回自建节点">
+            <LbIcon name="arrow-left" :size="16" />
+          </RouterLink>
           <h1 class="nd__name">{{ node?.name || '节点详情' }}</h1>
           <template v-if="node">
             <span class="nd__sort lb-tabular" title="编号 = 排序号,决定订阅与门户里的先后;在列表里点击可改">
@@ -1337,22 +1376,22 @@ const needsPortForward = computed(() =>
                   </div>
                   <div>
                     <span>订阅 IPv4</span>
-                    <b class="lb-mono">
-                      {{ node.subscription_host }}
-                      <template v-if="!node.sub_ipv4_address">— 跟随管理地址</template>
+                    <b>
+                      <span class="lb-mono">{{ node.subscription_host }}</span>
+                      <span v-if="!node.sub_ipv4_address" class="nd__dim"> · 跟随管理地址</span>
                     </b>
                   </div>
                   <div>
                     <span>IPv6</span>
-                    <b class="lb-mono">
-                      <template v-if="node.ipv6_address">[{{ node.ipv6_address }}]</template>
-                      <template v-else>未配置(订阅中只有 IPv4 条目)</template>
+                    <b>
+                      <span v-if="node.ipv6_address" class="lb-mono">[{{ node.ipv6_address }}]</span>
+                      <span v-else class="nd__dim">未配置(订阅中只有 IPv4 条目)</span>
                     </b>
                   </div>
                   <div><span>架构</span><b class="lb-mono">{{ node.arch || '未探测' }}</b></div>
                   <div>
                     <span>内存</span>
-                    <b class="lb-mono">{{ node.mem_total_mb ? node.mem_total_mb + ' MB' : '未探测' }}</b>
+                    <b class="lb-tabular">{{ node.mem_total_mb ? node.mem_total_mb + ' MB' : '未探测' }}</b>
                   </div>
                   <template v-if="!isRelay">
                     <div>
@@ -1364,9 +1403,9 @@ const needsPortForward = computed(() =>
                          超时值取后端给的,不在前端按内存自己推。 -->
                     <div>
                       <span>UDP 会话超时</span>
-                      <b class="lb-mono">
-                        {{ node.udp_timeout || 'sing-box 默认 5m' }}
-                        <template v-if="node.udp_timeout">(按内存压短)</template>
+                      <b>
+                        <span class="lb-mono">{{ node.udp_timeout || '5m' }}</span>
+                        <span class="nd__dim">{{ node.udp_timeout ? ' · 按内存压短' : ' · sing-box 默认' }}</span>
                       </b>
                     </div>
                     <div class="nd__kv-wide">
@@ -1533,7 +1572,7 @@ const needsPortForward = computed(() =>
             </section>
 
             <!-- 云实例(V17):只对绑了阿里云实例的机器显示。用量是账号级的,卡片里写明。 -->
-            <CloudInstanceCard v-if="node.cloud" :node="node" @changed="reload" />
+            <CloudInstanceCard v-if="node.cloud" class="nd__card--span" :node="node" @changed="reload" />
           </div>
         </a-tab-pane>
 
@@ -1854,7 +1893,7 @@ const needsPortForward = computed(() =>
                   :warning-level="cycle.warning_level"
                   size="md"
                 />
-                <div class="nd__kv">
+                <div class="nd__kv nd__kv--4">
                   <!-- 两个口径都摆出来。只给折算值的话,管理员对不上 sing-box 的
                        数字;只给原值的话,又对不上 VPS 商的账单。 -->
                   <div>
@@ -2033,33 +2072,23 @@ const needsPortForward = computed(() =>
                 title="还没有采样"
                 description="采集按固定间隔在后台进行,也可以点右上角的「采集资源」立刻取一次。"
               />
-              <div v-else class="nd__usage">
-                <div v-for="u in [
-                  { label: 'CPU', pct: latest.cpu_percent, sub: `负载 ${latest.load1.toFixed(2)}` },
-                  {
-                    label: '内存',
-                    pct: memPercent(latest),
-                    sub: `${formatBytes(latest.mem_used_kb * 1024)} / ${formatBytes(latest.mem_total_kb * 1024)}`,
-                  },
-                  {
-                    label: '磁盘',
-                    pct: diskPercent(latest),
-                    sub: `${formatBytes(latest.disk_used_kb * 1024)} / ${formatBytes(latest.disk_total_kb * 1024)}`,
-                  },
-                ]" :key="u.label" class="nd__usage-row">
-                  <span class="nd__usage-label">{{ u.label }}</span>
-                  <span class="nd__usage-mid">
-                    <span class="nd__usage-track">
-                      <span
-                        class="nd__usage-fill"
-                        :style="{ width: Math.min(u.pct, 100) + '%', background: usageColor(u.pct) }"
-                      />
-                    </span>
-                    <span class="lb-tabular nd__usage-sub">{{ u.sub }}</span>
+              <div v-else class="nd__res">
+                <div v-for="u in resCells" :key="u.label" class="nd__res-cell">
+                  <div class="nd__res-head">
+                    <LbIcon :name="u.icon" :size="15" />
+                    <span>{{ u.label }}</span>
+                  </div>
+                  <div class="nd__res-value lb-tabular" :style="{ color: u.pct !== null && u.pct >= threshold.usageWarn ? usageColor(u.pct) : undefined }">
+                    {{ u.value }}
+                  </div>
+                  <span v-if="u.pct !== null" class="nd__usage-track">
+                    <span
+                      class="nd__usage-fill"
+                      :style="{ width: Math.min(u.pct, 100) + '%', background: usageColor(u.pct) }"
+                    />
                   </span>
-                  <span class="lb-tabular nd__usage-pct" :style="{ color: usageColor(u.pct) }">
-                    {{ u.pct.toFixed(0) }}%
-                  </span>
+                  <span v-else class="nd__usage-track nd__usage-track--none" />
+                  <div class="nd__res-sub lb-tabular">{{ u.sub }}</div>
                 </div>
               </div>
             </div>
@@ -2174,7 +2203,11 @@ const needsPortForward = computed(() =>
             </div>
           </section>
 
-          <div class="nd__chart-title nd__records-title">部署记录</div>
+          <section class="nd__card">
+          <div class="nd__card-head">
+            <span class="nd__card-head-title">部署记录</span>
+            <span v-if="deployments.length" class="nd__card-note">点一行展开每一步的结果</span>
+          </div>
           <LbEmptyState
             v-if="deployments.length === 0"
             variant="empty"
@@ -2208,6 +2241,7 @@ const needsPortForward = computed(() =>
               <DeployStepList :record="record" />
             </template>
           </a-table>
+          </section>
         </a-tab-pane>
       </a-tabs>
     </template>
@@ -2333,29 +2367,36 @@ const needsPortForward = computed(() =>
 </template>
 
 <style scoped>
-/* 整页容器。间距比列表页紧一档:标题下面紧跟着的是横幅与工具条。 */
+/* 整页容器。间距比列表页紧一档:标题下面紧跟着的是横幅与 Tab。 */
 .nd {
-  gap: 18px;
+  gap: var(--sp-4);
 }
 
+/* 返回:32px 方形图标按钮,与标题同一行。 */
 .nd__back {
-  align-self: flex-start;
+  flex: none;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: var(--fs-base);
-  font-weight: 500;
+  justify-content: center;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-btn);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text2);
+  transition: background var(--dur-fast), color var(--dur-fast);
 }
-.nd__back-chevron {
-  font-size: var(--fs-xl);
-  line-height: 1;
+.nd__back:hover {
+  background: var(--surface2);
+  color: var(--text);
 }
 
 /* 标题与操作按钮同一行。窄屏换行 —— 桌面的紧凑排布可以缩间距,
    但不能把主按钮挤出可视区。 */
 .nd__bar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
@@ -2371,16 +2412,16 @@ const needsPortForward = computed(() =>
 .nd__title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
 .nd__name {
-  margin: 0;
-  font-size: var(--fs-metric);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
+  margin: 0 2px 0 4px;
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .nd__sub {
@@ -2395,9 +2436,9 @@ const needsPortForward = computed(() =>
   flex: none;
 }
 .nd__more.ant-btn {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
   color: var(--text2);
 }
 
@@ -2410,7 +2451,8 @@ const needsPortForward = computed(() =>
 
 .nd__fail {
   align-items: flex-start;
-  padding: 18px 20px;
+  padding: var(--sp-4) var(--sp-5);
+  border-color: var(--bad-border);
 }
 
 .nd__fail-title {
@@ -2479,9 +2521,12 @@ const needsPortForward = computed(() =>
 }
 
 .nd__sort {
-  font-size: var(--fs-sm);
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
+  background: var(--fill);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--text3);
+  color: var(--text2);
 }
 
 /* 概览网格里横跨整行的卡片(服务现状)。 */
@@ -2580,8 +2625,9 @@ const needsPortForward = computed(() =>
 }
 
 .nd__panel-warn {
-  padding: 12px 14px;
+  padding: 10px 14px;
   background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
   border-radius: var(--r-group);
   font-size: var(--fs-sm);
   line-height: 1.7;
@@ -2592,6 +2638,7 @@ const needsPortForward = computed(() =>
   margin: 0;
   padding: 12px 14px;
   background: var(--surface2);
+  border: 1px solid var(--sep2);
   border-radius: var(--r-input);
   font-size: var(--fs-xs);
   line-height: 1.7;
@@ -2603,7 +2650,7 @@ const needsPortForward = computed(() =>
 .nd__kv {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px 20px;
+  gap: 14px 20px;
 }
 
 .nd__kv > div {
@@ -2615,6 +2662,12 @@ const needsPortForward = computed(() =>
 
 .nd__kv-wide {
   grid-column: 1 / -1;
+}
+.nd__kv--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.nd__kv--4 .nd__kv-wide {
+  grid-column: auto;
 }
 
 .nd__kv span {
@@ -2631,12 +2684,14 @@ const needsPortForward = computed(() =>
 
 /* 「配置不落盘」开关行:卡片内的 --surface2 圆角 12 块。 */
 .nd__ram {
+  display: flex;
   flex-direction: row !important;
   align-items: center;
   gap: 12px !important;
   padding: 12px 14px;
   background: var(--surface2);
-  border-radius: var(--r-card);
+  border: 1px solid var(--sep2);
+  border-radius: var(--r-group);
 }
 .nd__ram-text {
   flex: 1;
@@ -2666,6 +2721,7 @@ const needsPortForward = computed(() =>
 .nd__diff {
   padding: 12px 14px;
   background: var(--surface2);
+  border: 1px solid var(--sep2);
   border-radius: var(--r-group);
   font-family: var(--mono);
   font-size: var(--fs-xs);
@@ -2680,13 +2736,12 @@ const needsPortForward = computed(() =>
   color: var(--bad);
 }
 
-/* 上面三张(连接与端口 / 本周期流量 / 资源,有云实例时四张)基本定高,
-   340 的下限让它们在 1120 的内容宽里排成一行;入口那一张单独占一整行,
-   高度随入口数走,不再拖着旁边的卡片一起变长。 */
+/* 概览固定两列:身份与地址 | 到期与续费,服务现状与云实例各占一整行。
+   auto-fit 在 1150 宽里会排出三列,两张卡片右边空出一整列。 */
 .nd__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
 }
 
 .nd__card--wide {
@@ -2716,6 +2771,7 @@ const needsPortForward = computed(() =>
   min-width: 0;
   padding: 12px 14px 14px;
   background: var(--surface2);
+  border: 1px solid var(--sep2);
   border-radius: var(--r-group);
 }
 
@@ -2739,10 +2795,13 @@ const needsPortForward = computed(() =>
 /* 种类标记,中性色:它说的是"这是哪一类入口",不是状态。 */
 .nd__ib-kind {
   padding: 0 6px;
-  border-radius: var(--r-pill);
-  background: var(--fill);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--sep);
   color: var(--text2);
   font-size: var(--fs-2xs);
+  font-weight: 500;
+  line-height: 18px;
 }
 
 .nd__ib-kv {
@@ -2751,18 +2810,24 @@ const needsPortForward = computed(() =>
 
 .nd__card {
   background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-card);
   box-shadow: var(--shadow);
   overflow: hidden;
+  min-width: 0;
 }
 
+/* 卡头:标题 16/600 + 右侧链接或说明,下边一条细线把它与内容分开。 */
 .nd__card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 22px 0;
-  font-size: var(--fs-md);
+  flex-wrap: wrap;
+  min-height: 52px;
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 .nd__card-head-title {
@@ -2785,13 +2850,14 @@ const needsPortForward = computed(() =>
 .nd__card-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 22px 20px;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
 }
 
 .nd__card-foot {
-  padding: 12px 22px 16px;
+  padding: 12px var(--sp-5);
   border-top: 1px solid var(--sep2);
+  background: var(--surface2);
   font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text3);
@@ -2822,18 +2888,65 @@ const needsPortForward = computed(() =>
 
 .nd__usage-track {
   display: block;
-  height: 8px;
+  height: 6px;
   background: var(--track);
-  border-radius: var(--r-input);
+  border-radius: var(--r-pill);
   overflow: hidden;
+}
+.nd__usage-track--none {
+  background: transparent;
+  border-top: 1px dashed var(--sep);
+  border-radius: 0;
+  height: 0;
+  margin: 3px 0;
 }
 
 .nd__usage-fill {
   display: block;
-  height: 8px;
-  border-radius: var(--r-input);
+  height: 6px;
+  border-radius: var(--r-pill);
   transform-origin: left;
   animation: lb-grow 0.8s var(--ease);
+}
+
+/* 「当前资源」四格:Beszel 式的小指标块,竖线分隔。 */
+.nd__res {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-5)) calc(-1 * var(--sp-5));
+}
+.nd__res-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+.nd__res-cell + .nd__res-cell {
+  border-left: 1px solid var(--sep2);
+}
+.nd__res-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text3);
+}
+.nd__res-value {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nd__res-sub {
+  font-size: var(--fs-xs);
+  color: var(--text3);
+  overflow-wrap: anywhere;
 }
 
 .nd__usage-pct {
@@ -2849,16 +2962,18 @@ const needsPortForward = computed(() =>
 }
 
 .nd__chart {
-  margin-bottom: 16px;
-  padding: 18px 22px 20px;
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
   background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-card);
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .nd__chart-title {
   margin-bottom: 10px;
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 .nd__chart-title .nd__card-note {
@@ -2881,6 +2996,7 @@ const needsPortForward = computed(() =>
   flex-wrap: wrap;
   padding: 16px;
   background: var(--surface2);
+  border: 1px dashed var(--sep);
   border-radius: var(--r-group);
   color: var(--text2);
   font-size: var(--fs-sm);
@@ -2928,10 +3044,12 @@ const needsPortForward = computed(() =>
 
 .nd__deploy-verdict--ok {
   background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
 }
 
 .nd__deploy-verdict--bad {
   background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
 }
 
 .nd__deploy-foot {
@@ -2978,12 +3096,33 @@ const needsPortForward = computed(() =>
   color: var(--text3);
 }
 
+@media (max-width: 1100px) {
+  .nd__res {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .nd__res-cell:nth-child(3) {
+    border-left: none;
+  }
+  .nd__res-cell:nth-child(n + 3) {
+    border-top: 1px solid var(--sep2);
+  }
+}
+
 @media (max-width: 767px) {
   .nd__name {
-    font-size: var(--fs-2xl);
+    font-size: 20px;
+  }
+  .nd__res-cell {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+  .nd__res {
+    margin: -14px -16px -16px;
   }
   .nd__kv {
     grid-template-columns: 1fr;
+  }
+  .nd__kv--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .nd__grid {
     grid-template-columns: 1fr;
@@ -2992,7 +3131,7 @@ const needsPortForward = computed(() =>
     grid-template-columns: 1fr;
   }
   .nd__card-head {
-    padding: 14px 16px 0;
+    padding: 10px 16px;
   }
   .nd__card-body {
     padding: 14px 16px 16px;

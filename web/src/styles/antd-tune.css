@@ -274,6 +274,18 @@
   color: var(--on-brand);
   border-color: transparent;
 }
+/* 按钮里的 LbIcon(SVG,不是 .anticon)与文字之间留间距、垂直居中。AntD 只给 .anticon
+   这一档留了 margin,我们的线性图标拿不到。 */
+.ant-btn > .lb-icon {
+  vertical-align: -3px;
+}
+.ant-btn > .lb-icon:not(:last-child) {
+  margin-inline-end: 6px;
+}
+.ant-btn > .lb-icon + span {
+  margin-inline-start: 0;
+}
+
 /* 下拉按钮组(a-dropdown-button)的两半之间留一条细线,而不是两枚独立按钮的双边框。 */
 .ant-btn-group .ant-btn-primary:not(:first-child):not(:disabled) {
   border-inline-start-color: rgba(255, 255, 255, 0.35);

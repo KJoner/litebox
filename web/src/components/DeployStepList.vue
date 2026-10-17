@@ -55,7 +55,7 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
         v-for="(s, i) in record.steps"
         :key="i"
         class="ds__step"
-        :style="{ animationDelay: `${i * 60}ms` }"
+        :style="{ animationDelay: `${Math.min(i, 8) * 25}ms` }"
       >
         <span
           class="ds__step-icon"
@@ -155,7 +155,7 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 12px;
   padding: 12px 16px;
-  animation: lb-step 0.35s var(--ease) both;
+  animation: lb-step var(--dur) var(--ease) both;
 }
 
 .ds__step + .ds__step {

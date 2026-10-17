@@ -111,10 +111,11 @@ defineProps<{ card: ServiceCardModel; busy: boolean }>()
   flex-direction: column;
   gap: 10px;
   min-width: 0;
-  padding: 14px 16px 16px;
+  padding: 14px var(--sp-4) var(--sp-4);
   background: var(--surface);
-  border-radius: var(--r-group);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-xs);
 }
 
 .sc__head {
@@ -143,8 +144,9 @@ defineProps<{ card: ServiceCardModel; busy: boolean }>()
   white-space: nowrap;
 }
 
-/* 大按钮:一颗撑满,两颗平分。40 高比行内按钮高一档 ——
-   它是这张卡片上最重的一个动作,要与底排那三颗分得开。 */
+/* 大按钮:一颗撑满,两颗平分。36 高(默认控件高度)比底排的 28 高一档 ——
+   它是这张卡片上最重的一个动作,要与底排那三颗分得开。主按钮色只给
+   「这台机器确实需要」的那一下(见 NodeEntriesPanel),不是每张卡片都蓝。 */
 .sc__primary {
   display: flex;
   gap: 8px;
@@ -155,7 +157,7 @@ defineProps<{ card: ServiceCardModel; busy: boolean }>()
   min-width: 0;
 }
 .sc__primary :deep(.ant-btn) {
-  height: 40px;
+  height: 36px;
   font-size: var(--fs-base);
 }
 /* 下拉按钮是两颗拼起来的,主体那颗要撑满剩余宽度。 */
