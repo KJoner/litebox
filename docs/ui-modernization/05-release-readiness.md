@@ -4,7 +4,8 @@
 > 敏感信息按**方案 A(向前修复,不改写公开 master 历史)**处理。
 > 结论:**A. 可以合并** —— 敏感数据清理、迁移哈希兼容、CI 隐患都已解决;`feat/ui-2.0` 已推送,
 > GitHub Actions 全绿,Draft PR [#1](https://github.com/KJoner/litebox/pull/1) 已创建,可以转为 Ready for Review。
-> **合并 master 即发布**,合并时机由仓库所有者决定;本轮没有合并、没有打 tag、没有部署生产。
+> **合并 master 即发布**。经仓库所有者授权,PR #1 已于 2026-10-17 快进合并进 master(`b1caf11`,
+> 原提交号不变),master 上的 CI 通过;没有打 tag、没有部署生产。
 
 ## 1. 分支与提交
 
@@ -211,7 +212,7 @@ f757de9 docs(ui): 发布前最终检查(本文件的第一版)
 | 1 | 高 | 公开 master 的当前版本仍含 64 张截图与真实地址(历史里永久保留) | 本 PR 合并时随第一个提交一起清掉;想更早缩小暴露面,可把 `2f23204` 单独开 PR 先合 |
 | 2 | 中 | 两台测试机未加固(口令登录开着,管理端点已公开) | 仓库所有者已决定本轮不处理、不作为前置条件;建议至少换掉 root 口令 |
 | 3 | 中 | 一台测试机的 SSH 主机密钥与记录不一致 | 经服务商控制台核实身份;核实前不接受新密钥、不纳入验证 |
-| 4 | 低 | `ubuntu-latest` 迁到 Ubuntu 26 后,Playwright 的 `install --with-deps` 可能要跟着调;几个 action 的 Node 20 弃用警告 | 需要时把 `runs-on` 固定成 `ubuntu-24.04`、升级 action 主版本 |
+| 4 | 低 | ~~`ubuntu-latest` 迁到 Ubuntu 26 后 Playwright 的 `install --with-deps` 可能要跟着调~~ —— 已把 `runs-on` 固定成 `ubuntu-24.04`;几个 action 的 Node 20 弃用警告仍在 | 换发行版时与升级 Playwright 一起做;需要时升级 action 主版本 |
 | 5 | 中 | 「配置一致跳过」的判据没有单元测试 | 后续把判据抽成纯函数并补测试 |
 | 6 | 低 | 旧的 Windows CRLF 构建不认修复后新应用的迁移(第 4 节「限制」) | 生产在 Linux 上构建,不受影响 |
 | 7 | 低 | 仪表盘「刷新」与「重试」并发时的请求先后 | 可后续加请求序号 |
