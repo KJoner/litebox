@@ -10,7 +10,7 @@
 | [01-design-system.md](01-design-system.md) | 设计规范:令牌(颜色 / 字号 / 间距 / 圆角 / 阴影 / 动效)与组件规格,附与 V18 的差异 |
 | [02-page-plan.md](02-page-plan.md) | 五批任务拆分、数据源与不变量清单 |
 | [03-progress.md](03-progress.md) | 逐批交付记录:改了什么、关键决策、构建、自检、遗留 |
-| `screenshots/before/` · `screenshots/after/` | 改造前 25 张 / 改造后 39 张(DPR 1,WebP) |
+| ~~`screenshots/before/` · `screenshots/after/`~~ | 已删除:含真实管理地址 |
 
 ## 提交
 
@@ -24,26 +24,9 @@
 
 ## 改造前后对照
 
-| 页面 | 改造前 | 改造后 |
-|---|---|---|
-| 仪表盘 | ![](screenshots/before/dashboard-light-1440.webp) | ![](screenshots/after/dashboard-light-1440.webp) |
-| 仪表盘 · 深色 | ![](screenshots/before/dashboard-dark-1440.webp) | ![](screenshots/after/dashboard-dark-1440.webp) |
-| 自建节点 | ![](screenshots/before/nodes-light-1440.webp) | ![](screenshots/after/nodes-light-1440.webp) |
-| 节点详情 · 概览 | ![](screenshots/before/node-overview-light-1440.webp) | ![](screenshots/after/node-overview-light-1440.webp) |
-| 节点详情 · 入口与转发 | ![](screenshots/before/node-entries-light-1440.webp) | ![](screenshots/after/node-entries-light-1440.webp) |
-| 节点详情 · 资源 | ![](screenshots/before/node-metrics-light-1440.webp) | ![](screenshots/after/node-metrics-light-1440.webp) |
-| 用户管理 | ![](screenshots/before/users-light-1440.webp) | ![](screenshots/after/users-light-1440.webp) |
-| 入口管理 | ![](screenshots/before/inbounds-light-1440.webp) | ![](screenshots/after/inbounds-light-1440.webp) |
-| 系统设置 | ![](screenshots/before/settings-light-1440.webp) | ![](screenshots/after/settings-light-1440.webp) |
-| 登录 | ![](screenshots/before/admin-login-light-1440.webp) | ![](screenshots/after/admin-login-error-light-1440.webp) |
-| 门户概览 | ![](screenshots/before/portal-dashboard-light-1440.webp) | ![](screenshots/after/portal-dashboard-light-1440.webp) |
-| 节点列表 · 手机 | ![](screenshots/before/nodes-light-390.webp) | ![](screenshots/after/nodes-light-390.webp) |
-| 节点详情 · 手机 | ![](screenshots/before/node-overview-light-390.webp) | ![](screenshots/after/node-overview-light-390.webp) |
-
-改造后的仪表盘、节点列表、用户列表截图里有一部分行是**浏览器里注入的模拟数据**
-(离线、部署失败、待部署、停发订阅、即将到期 / 已到期 / 自动续费、额度告警 / 耗尽、CPU 打满、
-采样过期、服务未运行、部署进行中 / 失败 / 已回滚),用来覆盖测试环境里造不出来的状态;
-模拟只在页面内拦截 `fetch`,没有改动任何节点或数据库。错误态截图(`state-*`)同理。
+原来这里是 13 组改造前后对照截图。它们从连着测试机的 scratch 面板截取,画面里有测试机的公网地址与
+`root@地址:端口` 管理通道,已从仓库删除(处理经过见 `05-release-readiness.md`)。
+当前界面的样子以 Playwright 截图基线为准:它们由完全虚构的演示数据渲染,见 `web/e2e/README.md`。
 
 ## 验收
 
