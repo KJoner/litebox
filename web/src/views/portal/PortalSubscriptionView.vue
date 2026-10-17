@@ -261,7 +261,7 @@ function regenerate() {
             </div>
             <div>
               <span>累计拉取</span>
-              <b class="lb-mono">{{ data.access_count }} 次</b>
+              <b class="lb-tabular">{{ data.access_count }} 次</b>
             </div>
           </div>
           <div class="ps__note">
@@ -293,12 +293,14 @@ function regenerate() {
 .ps__skel {
   padding: 16px;
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
 
 .ps__card {
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
   overflow: hidden;
@@ -310,7 +312,9 @@ function regenerate() {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 18px 22px 0;
+  min-height: 48px;
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
   font-size: var(--fs-md);
   font-weight: 600;
 }
@@ -325,11 +329,11 @@ function regenerate() {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px 22px 20px;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
 }
 
 .ps__unavailable {
-  padding: 18px 22px;
+  padding: var(--sp-4) var(--sp-5);
   background: var(--bad-bg);
 }
 

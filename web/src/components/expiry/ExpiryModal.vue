@@ -429,7 +429,7 @@ const absoluteInputFromCurrent = computed({
 }
 .xm__opt {
   border: none;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-btn);
   padding: 5px 13px;
   background: var(--fill);
   color: var(--text2);

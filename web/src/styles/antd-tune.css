@@ -18,7 +18,8 @@
 /* 表头:12px 500 --text3,--surface2 底。tableHeaderTextColor 派生自 colorTextHeading,
    而后者同时管卡片标题与弹窗标题 —— 那两处要的是 --text,不能一起改。 */
 .ant-table-wrapper .ant-table-thead > tr > th,
-.ant-table-wrapper .ant-table-thead > tr > td {
+.ant-table-wrapper .ant-table-thead > tr > td,
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-thead > tr > th {
   color: var(--text3);
   font-size: var(--fs-xs);
   font-weight: 500;
@@ -48,12 +49,18 @@
   padding: 12px;
   border-bottom: 1px solid var(--sep2);
 }
-.ant-table-wrapper .ant-table-thead > tr > th:first-child,
-.ant-table-wrapper .ant-table-tbody > tr > td:first-child {
+/* 首末列 16px。选择器带上 .ant-table(.ant-table-small):AntD 小号表格的内边距规则
+   是 .ant-table-wrapper .ant-table.ant-table-small …,少一个类就压不过它。 */
+.ant-table-wrapper .ant-table .ant-table-thead > tr > th:first-child,
+.ant-table-wrapper .ant-table .ant-table-tbody > tr > td:first-child,
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-thead > tr > th:first-child,
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-tbody > tr > td:first-child {
   padding-left: 16px;
 }
-.ant-table-wrapper .ant-table-thead > tr > th:last-child,
-.ant-table-wrapper .ant-table-tbody > tr > td:last-child {
+.ant-table-wrapper .ant-table .ant-table-thead > tr > th:last-child,
+.ant-table-wrapper .ant-table .ant-table-tbody > tr > td:last-child,
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-thead > tr > th:last-child,
+.ant-table-wrapper .ant-table.ant-table-small .ant-table-tbody > tr > td:last-child {
   padding-right: 16px;
 }
 .ant-table-wrapper .ant-table-tbody > tr:last-child > td {

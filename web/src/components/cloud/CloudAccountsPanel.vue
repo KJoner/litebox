@@ -518,14 +518,27 @@ const leadTip =
   padding: 0 4px;
 }
 
+/* 与设置页的设置卡同一种形态:分组不自带边框、行线贴满卡片、底栏带 --surface2 底。 */
 .ca__settings {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-3);
+  padding-bottom: 0;
 }
 .ca__settings-title {
   font-size: var(--fs-md);
   font-weight: 600;
+}
+.ca__settings > .lb-group {
+  margin: 0 calc(-1 * var(--sp-5));
+  border: none;
+  border-top: 1px solid var(--sep2);
+  border-radius: 0;
+  background: transparent;
+}
+.ca__settings > .lb-group > .lb-group__row {
+  padding-left: var(--sp-5);
+  padding-right: var(--sp-5);
 }
 .ca__row :deep(.ant-input) {
   width: 100%;
@@ -550,6 +563,13 @@ const leadTip =
 .ca__actions {
   display: flex;
   justify-content: flex-end;
+}
+.ca__settings > .ca__actions {
+  margin: 0 calc(-1 * var(--sp-5));
+  padding: 10px var(--sp-5);
+  border-top: 1px solid var(--sep2);
+  background: var(--surface2);
+  border-radius: 0 0 var(--r-card) var(--r-card);
 }
 
 .ca__sheet {

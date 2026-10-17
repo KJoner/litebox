@@ -12,6 +12,7 @@ import {
   type SubscriptionProfile,
 } from '@/api/client'
 import { LbEmptyState, LbRowCard, LbStatusTag, LbTimeText, lbDangerConfirm,
+  LbIcon,
   LbInfoTip,
   LbSectionTitle,
 } from '@/components/lb'
@@ -180,7 +181,10 @@ function kb(bytes: number) {
         </div>
       </div>
       <div class="lb-page__actions">
-        <a-button type="primary" @click="create">+ 新增配置</a-button>
+        <a-button type="primary" @click="create">
+          <template #icon><LbIcon name="plus" :size="15" /></template>
+          新增配置
+        </a-button>
       </div>
     </div>
 
@@ -340,6 +344,7 @@ function kb(bytes: number) {
 .sp__kind {
   padding: 12px 14px;
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
@@ -383,6 +388,7 @@ function kb(bytes: number) {
 .sp__card {
   padding: 16px;
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }

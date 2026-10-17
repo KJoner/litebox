@@ -252,6 +252,7 @@ function confirmRestore() {
   margin-top: 12px;
   padding: 12px 14px;
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
   display: flex;

@@ -131,16 +131,16 @@ const maxShare = computed(() =>
         <div class="pt__totals">
           <div class="pt__total">
             <span>合计</span>
-            <b class="lb-mono">{{ formatBytes(quota.used_total) }}</b>
+            <b class="lb-tabular">{{ formatBytes(quota.used_total) }}</b>
             <em>/ {{ formatQuota(quota.quota_bytes) }}</em>
           </div>
           <div class="pt__total">
             <span>上行</span>
-            <b class="lb-mono">{{ formatBytes(quota.used_uplink) }}</b>
+            <b class="lb-tabular">{{ formatBytes(quota.used_uplink) }}</b>
           </div>
           <div class="pt__total">
             <span>下行</span>
-            <b class="lb-mono">{{ formatBytes(quota.used_downlink) }}</b>
+            <b class="lb-tabular">{{ formatBytes(quota.used_downlink) }}</b>
           </div>
         </div>
         <LbQuotaBar
@@ -180,7 +180,7 @@ const maxShare = computed(() =>
         />
         <template v-else>
           <LbSparkline :points="points" type="bar" :height="130" />
-          <div class="pt__axis lb-mono">
+          <div class="pt__axis lb-tabular">
             <span v-for="(l, i) in axisLabels" :key="i">{{ l }}</span>
           </div>
           <div class="pt__gap-note">把鼠标放到柱子上,可以看到那一天用了多少。</div>
@@ -205,13 +205,13 @@ const maxShare = computed(() =>
           <div v-for="n in data.by_node" :key="n.node_id" class="pt__node">
             <div class="pt__node-head">
               <span class="lb-ellipsis">{{ n.display_name }}</span>
-              <span class="lb-mono pt__node-total">{{ formatBytes(n.total) }}</span>
-              <span class="lb-mono pt__node-pct">{{ n.percent.toFixed(0) }}%</span>
+              <span class="lb-tabular pt__node-total">{{ formatBytes(n.total) }}</span>
+              <span class="lb-tabular pt__node-pct">{{ n.percent.toFixed(0) }}%</span>
             </div>
             <div class="pt__node-track">
               <div class="pt__node-fill" :style="{ width: (n.percent / maxShare) * 100 + '%' }" />
             </div>
-            <div class="pt__node-dir lb-mono">
+            <div class="pt__node-dir lb-tabular">
               ↑ {{ formatBytes(n.uplink) }} · ↓ {{ formatBytes(n.downlink) }}
             </div>
           </div>
@@ -230,6 +230,7 @@ const maxShare = computed(() =>
   padding: 14px 18px;
   border-radius: var(--r-card);
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   font-size: var(--fs-base);
   line-height: 1.6;
@@ -249,6 +250,7 @@ const maxShare = computed(() =>
 
 .pt__card {
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
@@ -259,7 +261,9 @@ const maxShare = computed(() =>
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 18px 22px 0;
+  min-height: 48px;
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
   font-size: var(--fs-md);
   font-weight: 600;
 }
@@ -274,7 +278,7 @@ const maxShare = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px 22px 20px;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
 }
 
 .pt__totals {

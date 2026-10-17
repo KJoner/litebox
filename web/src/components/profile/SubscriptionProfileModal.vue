@@ -415,7 +415,7 @@ async function save() {
 .pm__note code {
   padding: 0 3px;
   background: var(--fill);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
 }
 
 .pm__switch {

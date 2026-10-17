@@ -66,32 +66,141 @@ const actionNames: Record<string, string> = {
   'traffic.sync': '同步流量',
   'settings.update': '修改面板设置',
   'tier.update': '修改访问等级',
+  // 以下是 V7 之后陆续加的动作。缺了中文名的话,这一列直接显示 external_proxy.update
+  // 这样的内部标识 —— 能看懂,但与上面那些对不齐。
+  'user.regenerate_ss_password': '重新生成 SS 密钥',
+  'user.regenerate_snell_key': '重新生成 Snell 密钥',
+  'node.addresses': '修改订阅地址池',
+  'node.recheck': '全面重检',
+  'node.config_in_ram': '切换配置存放位置',
+  'node.chain_apply': '启用链式出口',
+  'node.chain_clear': '解除链式出口',
+  'node.tcp_tune': 'TCP 调优',
+  'node.tcp_restore': '还原 TCP 参数',
+  'node.vnstat_install': '安装 vnStat',
+  'node.singbox_start': '启动 sing-box',
+  'node.singbox_stop': '停止 sing-box',
+  'node.singbox_uninstall': '卸载 sing-box',
+  'node.nginx_install': '安装 nginx',
+  'node.nginx_start': '启动 nginx',
+  'node.nginx_stop': '停止 nginx',
+  'node.nginx_restart': '重启 nginx',
+  'node.nginx_uninstall': '卸载 nginx',
+  'node.realm_install': '安装 realm',
+  'node.realm_stop': '停止 realm',
+  'node.realm_restart': '重启 realm',
+  'node.realm_uninstall': '卸载 realm',
+  'node.mieru_start': '启动 Mieru',
+  'node.mieru_stop': '停止 Mieru',
+  'node.mieru_restart': '重启 Mieru',
+  'node.mieru_uninstall': '卸载 Mieru',
+  'node.cloud_bind': '绑定云实例',
+  'node.cloud_unbind': '解绑云实例',
+  'node.cloud_start': '云实例开机',
+  'node.cloud_stop': '云实例停机',
+  'inbound.create': '新增入口',
+  'inbound.update': '编辑入口',
+  'inbound.delete': '删除入口',
+  'inbound.dest_check': '实测握手目标',
+  'inbound.endpoints': '修改入口地址条目',
+  'mieru_inbound.create': '新增 Mieru 入口',
+  'mieru_inbound.update': '编辑 Mieru 入口',
+  'mieru_inbound.delete': '删除 Mieru 入口',
+  'mieru_inbound.deploy': '下发 Mieru 入口',
+  'mieru_inbound.install': '安装 mita',
+  'mieru_inbound.chain': '设置 Mieru 出口',
+  'relay.create': '新增转发',
+  'relay.update': '编辑转发',
+  'relay.delete': '删除转发',
+  'relay.deploy': '下发 nginx 转发',
+  'realm.deploy': '下发 realm 转发',
+  'external_proxy.create': '新增外部代理',
+  'external_proxy.update': '编辑外部代理',
+  'external_proxy.delete': '删除外部代理',
+  'external_proxy.detach': '转为手工条目',
+  'external_proxy.replace_endpoint': '替换外部代理地址',
+  'external_proxy.set_locked_fields': '锁定字段',
+  'external_proxy.set_status': '修改外部代理状态',
+  'external_proxy.set_subscription': '外部代理订阅开关',
+  'external_proxy.view_credentials': '查看外部代理凭据',
+  'proxy_source.create': '新增代理源',
+  'proxy_source.update': '编辑代理源',
+  'proxy_source.delete': '删除代理源',
+  'proxy_source.import': '导入代理源',
+  'proxy_source.sync': '同步代理源',
+  'proxy_source.view_url': '查看代理源地址',
+  'subscription.order_migrate': '迁移订阅排序',
+  'subscription_profile.create': '新增订阅配置',
+  'subscription_profile.update': '编辑订阅配置',
+  'subscription_profile.delete': '删除订阅配置',
+  'subscription_profile.set_enabled': '订阅配置开关',
+  'expiry.update': '修改到期档案',
+  'expiry.renew': '登记续费',
+  'expiry.clear': '清除到期档案',
+  'cloud_account.create': '新增云账号',
+  'cloud_account.update': '编辑云账号',
+  'cloud_account.delete': '删除云账号',
 }
 
-type Category = 'user' | 'node' | 'deploy' | 'login' | 'traffic' | 'settings'
+type Category =
+  | 'user' | 'node' | 'deploy' | 'external' | 'subscription' | 'expiry'
+  | 'login' | 'traffic' | 'settings' | 'other'
 
 const categoryNames: Record<Category, string> = {
   user: '用户',
   node: '节点',
   deploy: '部署',
+  external: '外部代理',
+  subscription: '订阅',
+  expiry: '到期续费',
   login: '登录',
   traffic: '流量',
   settings: '设置',
+  other: '其他',
 }
 
 /**
- * 分类来自动作名前缀,node.deploy 单独提出来。
+ * 分类来自动作名前缀,三种「下发」单独提出来归「部署」。
  *
  * portal.* 归到「用户」而不是「登录」:它们是管理员对某个用户的门户账号做的操作,
  * 与 admin.login 那种「谁在登录面板」不是一回事。
+ *
+ * **认不出的前缀归「其他」,不归「登录」。** 原来的兜底是「登录」,于是入口、转发、
+ * 外部代理、订阅、云账号、到期续费这十几类动作全被算成登录 —— 管理员点「登录」
+ * 想看谁进过面板,看到的是一屏 external_proxy.update。
  */
 function categoryOf(action: string): Category {
-  if (action === 'node.deploy') return 'deploy'
+  if (
+    action === 'node.deploy' ||
+    action === 'relay.deploy' ||
+    action === 'realm.deploy' ||
+    action === 'mieru_inbound.deploy'
+  ) {
+    return 'deploy'
+  }
   if (action.startsWith('user.') || action.startsWith('portal.')) return 'user'
-  if (action.startsWith('node.')) return 'node'
+  if (
+    action.startsWith('node.') ||
+    action.startsWith('inbound.') ||
+    action.startsWith('mieru_inbound.') ||
+    action.startsWith('relay.')
+  ) {
+    return 'node'
+  }
+  if (action.startsWith('external_proxy.') || action.startsWith('proxy_source.')) return 'external'
+  if (action.startsWith('subscription')) return 'subscription'
+  if (action.startsWith('expiry.')) return 'expiry'
+  if (action.startsWith('admin.')) return 'login'
   if (action.startsWith('traffic.')) return 'traffic'
-  if (action.startsWith('settings.') || action.startsWith('tier.')) return 'settings'
-  return 'login'
+  if (
+    action.startsWith('settings.') ||
+    action.startsWith('tier.') ||
+    action.startsWith('cloud_account.') ||
+    action.startsWith('notify.')
+  ) {
+    return 'settings'
+  }
+  return 'other'
 }
 
 /** 目标列显示节点名 / 用户编号,不显示裸 ID。 */
@@ -280,8 +389,13 @@ const columns = [
         <div class="lb-page__summary">{{ logs.length }} 条记录,{{ logs.filter((l) => !l.succeeded).length }} 条失败。</div>
       </div>
       <div class="lb-page__actions">
-        <a-button :disabled="visible.length === 0" @click="exportCSV">导出 CSV</a-button>
-        <a-button :loading="loading" @click="load">刷新</a-button>
+        <a-button :loading="loading" aria-label="刷新" title="刷新" @click="load">
+          <template #icon><LbIcon name="refresh" :size="15" /></template>
+        </a-button>
+        <a-button :disabled="visible.length === 0" @click="exportCSV">
+          <template #icon><LbIcon name="download" :size="15" /></template>
+          导出 CSV
+        </a-button>
       </div>
     </div>
 
@@ -526,7 +640,7 @@ const columns = [
   flex: none;
   padding: 1px 5px;
   background: var(--fill);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   font-size: var(--fs-2xs);
   color: var(--text3);
 }

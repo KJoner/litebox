@@ -371,9 +371,15 @@ const columns = [
         </div>
       </div>
       <div class="lb-page__actions">
-        <a-button @click="load">刷 新</a-button>
-        <a-button @click="proxyModal.target = null; proxyModal.open = true">添加代理</a-button>
+        <a-button aria-label="刷新" title="刷新" @click="load">
+          <template #icon><LbIcon name="refresh" :size="15" /></template>
+        </a-button>
+        <a-button @click="proxyModal.target = null; proxyModal.open = true">
+          <template #icon><LbIcon name="plus" :size="15" /></template>
+          添加代理
+        </a-button>
         <a-button type="primary" @click="sourceModal.target = null; sourceModal.open = true">
+          <template #icon><LbIcon name="download" :size="15" /></template>
           导入订阅源
         </a-button>
       </div>
@@ -596,7 +602,7 @@ const columns = [
 
         <template v-else-if="column.key === 'ops'">
           <a-button size="small" @click="proxyModal.target = record; proxyModal.open = true">
-            编 辑
+            编辑
           </a-button>
           <a-dropdown>
             <a-button size="small" style="margin-left: 6px">···</a-button>
@@ -706,6 +712,7 @@ const columns = [
   flex: 0 0 auto;
   width: 220px;
   padding: 14px 20px;
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
   background: var(--surface);
@@ -773,7 +780,7 @@ const columns = [
   display: inline-block;
   margin-right: 6px;
   padding: 0 4px;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   background: var(--fill);
   color: var(--text2);
   font-size: var(--fs-2xs);
@@ -809,7 +816,7 @@ const columns = [
 }
 .xp__lock {
   padding: 0 5px;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   background: var(--fill);
   color: var(--text2);
   font-size: var(--fs-2xs);

@@ -187,7 +187,7 @@ function deviceName(s: PortalSession): string {
               <span class="lb-ellipsis" :title="deviceName(s)">{{ deviceName(s) }}</span>
               <span v-if="s.current" class="pv__session-cur">当前设备</span>
             </div>
-            <div class="pv__session-meta lb-mono">
+            <div class="pv__session-meta lb-tabular">
               {{ s.client_ip || '—' }} · 最近活动 <LbTimeText :value="s.last_seen_at" /> · 过期
               {{ s.expires_at.slice(0, 10) }}
             </div>
@@ -235,6 +235,7 @@ function deviceName(s: PortalSession): string {
 
 .pv__card {
   background: var(--surface);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
@@ -245,7 +246,9 @@ function deviceName(s: PortalSession): string {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 18px 22px 0;
+  min-height: 48px;
+  padding: 10px var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
   font-size: var(--fs-md);
   font-weight: 600;
 }
@@ -254,7 +257,7 @@ function deviceName(s: PortalSession): string {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px 22px 20px;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
 }
 
 .pv__card-body :deep(.ant-form-item) {
