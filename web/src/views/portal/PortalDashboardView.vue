@@ -9,6 +9,7 @@ import {
 } from '@/api/client'
 import { formatBytes, formatQuota } from '@/utils/format'
 import { LbEmptyState, LbIcon, LbInfoTip, LbQuotaBar, LbStatusTag, LbTimeText } from '@/components/lb'
+import { quotaPeriod, QUOTA_PERIOD_TIP } from './quotaPeriod'
 
 /**
  * 概览。这一页只回答一句话:我还能不能用。
@@ -125,12 +126,12 @@ const usedParts = computed(() => {
       <!-- 指标条:额度 / 到期 / 可用节点。 -->
       <section class="lb-metrics">
         <div class="lb-metric pd__metric">
+          <!-- 原来叫「本月流量」:它其实是额度周期内的用量,与「我的节点」里按 UTC
+               自然月算的「本月」撞名,两边一对就像算错了。口径见 quotaPeriod.ts。 -->
           <div class="pd__metric-label">
-            本月流量
-            <span v-if="data.next_reset_at" class="pd__metric-note">
-              <LbTimeText :value="data.next_reset_at" mode="cycle" /> 重置
-            </span>
-            <span v-else class="pd__metric-note">不自动重置</span>
+            额度已用
+            <LbInfoTip :text="QUOTA_PERIOD_TIP" :width="300" />
+            <span class="pd__metric-note" data-testid="quota-period">{{ quotaPeriod(data) }}</span>
           </div>
           <div class="pd__metric-row">
             <span class="pd__metric-value lb-tabular" :class="{ 'pd__metric-value--warn': warningLevel === 'WARNING', 'pd__metric-value--bad': warningLevel === 'DANGER' || warningLevel === 'EXCEEDED' }">
@@ -186,8 +187,8 @@ const usedParts = computed(() => {
             <!-- 不限量时不算剩余,也不显示一个假的百分比。 -->
             <b class="lb-kv__v">{{ data.used_percent === null ? '不限量' : formatBytes(data.remaining) }}</b>
           </div>
-          <div class="lb-kv__item"><span class="lb-kv__k">上行</span><b class="lb-kv__v">{{ formatBytes(data.used_uplink) }}</b></div>
-          <div class="lb-kv__item"><span class="lb-kv__k">下行</span><b class="lb-kv__v">{{ formatBytes(data.used_downlink) }}</b></div>
+          <div class="lb-kv__item"><span class="lb-kv__k">本周期上行</span><b class="lb-kv__v">{{ formatBytes(data.used_uplink) }}</b></div>
+          <div class="lb-kv__item"><span class="lb-kv__k">本周期下行</span><b class="lb-kv__v">{{ formatBytes(data.used_downlink) }}</b></div>
           <div class="lb-kv__item">
             <span class="lb-kv__k">最近重置</span>
             <b class="lb-kv__v"><LbTimeText :value="data.last_reset_at" empty="从未" /></b>

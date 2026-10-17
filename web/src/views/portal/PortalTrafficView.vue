@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { portalApi, ApiError, type PortalDashboard, type PortalTraffic } from '@/api/client'
 import { formatBytes, formatQuota } from '@/utils/format'
 import { LbEmptyState, LbQuotaBar, LbSparkline, LbTimeText, type LbPoint, LbInfoTip,} from '@/components/lb'
+import { quotaPeriod, QUOTA_PERIOD_TIP } from './quotaPeriod'
 
 /**
  * 我的流量。只有 7 与 30 两档 —— 后端也只接受这两个值,
@@ -130,7 +131,7 @@ const maxShare = computed(() =>
       <div class="pt__card-body">
         <div class="pt__totals">
           <div class="pt__total">
-            <span>合计</span>
+            <span>额度已用 <LbInfoTip :text="QUOTA_PERIOD_TIP" :width="300" /></span>
             <b class="lb-tabular">{{ formatBytes(quota.used_total) }}</b>
             <em>/ {{ formatQuota(quota.quota_bytes) }}</em>
           </div>
@@ -153,9 +154,7 @@ const maxShare = computed(() =>
         <div class="pt__quota-foot">
           <span v-if="quota.used_percent === null">不限量</span>
           <span v-else>剩余 {{ formatBytes(quota.remaining) }}</span>
-          <span v-if="quota.next_reset_at">
-            · <LbTimeText :value="quota.next_reset_at" mode="cycle" /> 重置
-          </span>
+          <span data-testid="quota-period"> · 额度周期 {{ quotaPeriod(quota) }}</span>
         </div>
       </div>
     </section>
@@ -192,7 +191,10 @@ const maxShare = computed(() =>
     </section>
 
     <section class="pt__card">
-      <div class="pt__card-head"><span>按节点</span></div>
+      <div class="pt__card-head">
+        <span>按节点</span>
+        <span class="pt__card-note">最近 {{ days }} 天 · 按 UTC 日</span>
+      </div>
       <div class="pt__card-body">
         <LbEmptyState
           v-if="!data || data.by_node.length === 0"
