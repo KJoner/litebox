@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -67,11 +68,11 @@ func (s *Server) handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 	// 「无记录」里再分出「采集失败」:调度器最近一轮在那台机器上失败了,
 	// 那段时间的用量不是零,是没采到 —— 两者在账本里长得一模一样,只有调度器知道。
 	if s.scheduler != nil {
-		_, failing := s.scheduler.Status()
+		failing := s.scheduler.Status().Failing
 		for i := range report.NoData {
-			if msg, ok := failing[report.NoData[i].NodeID]; ok {
+			if f, ok := failing[report.NoData[i].NodeID]; ok {
 				report.NoData[i].Reason = "collect_failed"
-				report.NoData[i].Detail = msg
+				report.NoData[i].Detail = f.Error
 			}
 		}
 	}
@@ -198,15 +199,29 @@ func (s *Server) handleSiteDailyTraffic(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleTrafficStatus 返回同步调度的健康状况。
+//
+// last_run 只在一轮跑完时才有,而失败是在一轮中途写入的 —— 所以另给
+// running / last_started 与每条失败的 failed_at,页面据此说「首轮同步进行中」,
+// 而不是同时显示「N 个节点同步失败」与「尚未运行」。
 func (s *Server) handleTrafficStatus(w http.ResponseWriter, r *http.Request) {
-	lastRun, failing := s.scheduler.Status()
-	items := make([]map[string]any, 0, len(failing))
-	for nodeID, msg := range failing {
-		items = append(items, map[string]any{"node_id": nodeID, "error": msg})
+	st := s.scheduler.Status()
+	items := make([]map[string]any, 0, len(st.Failing))
+	for nodeID, f := range st.Failing {
+		items = append(items, map[string]any{
+			"node_id":   nodeID,
+			"error":     f.Error,
+			"failed_at": f.At.UTC().Format(time.RFC3339),
+		})
 	}
-	body := map[string]any{"failing_nodes": items}
-	if !lastRun.IsZero() {
-		body["last_run"] = lastRun.UTC().Format("2006-01-02T15:04:05Z07:00")
+	sort.Slice(items, func(i, j int) bool {
+		return items[i]["node_id"].(int64) < items[j]["node_id"].(int64)
+	})
+	body := map[string]any{"failing_nodes": items, "running": st.Running}
+	if !st.LastRun.IsZero() {
+		body["last_run"] = st.LastRun.UTC().Format(time.RFC3339)
+	}
+	if !st.LastStarted.IsZero() {
+		body["last_started"] = st.LastStarted.UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, body)
 }
