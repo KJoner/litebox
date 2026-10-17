@@ -8,8 +8,7 @@ import { computed, ref, watch } from 'vue'
  * 要求输入的是**内部名称**而不是展示名称 —— 内部名称唯一,展示名称可以重复。
  * 名称不匹配时主按钮保持禁用(而不是点了报错)。
  *
- * V18:危险 Sheet —— 影响范围是 --bad-bg 圆角 14 的条,确认按钮是 --bad 实底胶囊
- * 留在底部(danger 按钮不进三栏头,见 antd-tune.css)。
+ * UI 2.0:影响范围是 --bad-bg 底 + 细描边的条,确认按钮是 --bad 实底,在右下角。
  */
 const props = withDefaults(
   defineProps<{
@@ -81,15 +80,16 @@ watch(
 }
 
 .lb-nc__impacts {
-  padding: 12px 14px;
+  padding: 10px 14px;
   background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
   border-radius: var(--r-group);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.75;
   color: var(--text);
 }
 .lb-nc__impacts-title {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--bad);
   margin-bottom: 4px;
@@ -102,7 +102,7 @@ watch(
 }
 
 .lb-nc__prompt {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
@@ -110,9 +110,9 @@ watch(
   padding: 1px 6px;
   margin-left: 4px;
   background: var(--fill);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text);
   user-select: all;
 }

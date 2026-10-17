@@ -4,7 +4,7 @@
  * 「接口 500」,前两种要引导,第三种要重试。
  *
  * 尤其 error:表格保持空白,不显示「暂无数据」—— 那会被读成「一条都没有」。
- * V18:卡片内 48px 内距居中,操作按钮用幽灵胶囊,错误态图标底块 --bad-bg。
+ * UI 2.0:卡片内 48px 内距居中,操作按钮用次要按钮,错误态图标底块 --bad-bg。
  */
 withDefaults(
   defineProps<{
@@ -73,23 +73,24 @@ defineEmits<{ (e: 'retry'): void; (e: 'clear'): void }>()
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 48px 20px;
+  gap: var(--sp-2);
+  padding: var(--sp-12) var(--sp-5);
   text-align: center;
   color: var(--text3);
 }
 
 .lb-empty__tile {
-  width: 38px;
-  height: 38px;
-  border-radius: var(--r-tile);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-group);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 2px;
 }
 .lb-empty__tile--muted {
-  background: var(--fill);
+  background: var(--surface2);
+  border: 1px solid var(--sep);
   color: var(--text3);
 }
 .lb-empty__tile--bad {
@@ -98,14 +99,14 @@ defineEmits<{ (e: 'retry'): void; (e: 'clear'): void }>()
 }
 
 .lb-empty__title {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
 
 .lb-empty__desc {
   max-width: 320px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.65;
   color: var(--text3);
   text-wrap: pretty;
@@ -118,7 +119,7 @@ defineEmits<{ (e: 'retry'): void; (e: 'clear'): void }>()
 }
 
 .lb-empty__meta {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 </style>

@@ -1016,7 +1016,7 @@ const keyOpen = ref(false)
 }
 
 .nv__name {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
@@ -1029,7 +1029,7 @@ const keyOpen = ref(false)
 }
 
 .nv__sort {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text2);
   text-decoration: underline dotted;
@@ -1040,12 +1040,12 @@ const keyOpen = ref(false)
 }
 
 .nv__meta {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .nv__chip {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   padding: 1px 7px;
 }
 
@@ -1055,11 +1055,11 @@ const keyOpen = ref(false)
   gap: 6px;
   flex-wrap: wrap;
   margin-top: 3px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text2);
 }
 .nv__copy {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 
 .nv__hostcell {
@@ -1069,7 +1069,7 @@ const keyOpen = ref(false)
   min-width: 0;
 }
 .nv__hosttext {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .nv__copybtn {
@@ -1092,7 +1092,7 @@ const keyOpen = ref(false)
   gap: 10px;
 }
 .nv__hname {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
@@ -1127,13 +1127,13 @@ const keyOpen = ref(false)
 .nv__card-name {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
 
 .nv__card-maint {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--purple);
 }
 
@@ -1144,7 +1144,7 @@ const keyOpen = ref(false)
 
 .nv__maint {
   max-width: 160px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--purple);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1152,13 +1152,13 @@ const keyOpen = ref(false)
 }
 
 .nv__busy {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--brand);
 }
 
 .nv__reset {
   margin-top: 2px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -1171,7 +1171,7 @@ const keyOpen = ref(false)
 
 .nv__key-note {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text2);
 }
@@ -1179,9 +1179,9 @@ const keyOpen = ref(false)
 .nv__key-note code {
   padding: 1px 5px;
   background: var(--fill);
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .nv__batch-foot {

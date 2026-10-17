@@ -970,7 +970,7 @@ const probeTip = computed(
 
 .st__anchors-title {
   padding: 8px 12px 6px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -984,7 +984,7 @@ const probeTip = computed(
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--text2);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   font-weight: 500;
   text-align: left;
@@ -1017,10 +1017,10 @@ const probeTip = computed(
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .st__order-dim {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -1070,11 +1070,11 @@ const probeTip = computed(
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .st__muted {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -1090,7 +1090,7 @@ const probeTip = computed(
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text3);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -1111,7 +1111,7 @@ const probeTip = computed(
   align-items: center;
   gap: 10px;
   padding: 4px 4px 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -1137,7 +1137,7 @@ const probeTip = computed(
   border-radius: var(--r-input);
   background: var(--fill);
   color: var(--bad);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -1162,7 +1162,7 @@ const probeTip = computed(
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .st__result-err {
   color: var(--bad);
@@ -1187,7 +1187,7 @@ const probeTip = computed(
 }
 
 .st__dirty {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--warn);
 }
@@ -1199,12 +1199,12 @@ const probeTip = computed(
   width: 100%;
   min-width: 640px;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .st__tiers th {
   padding: 12px;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text3);
   border-bottom: 1px solid var(--sep2);
@@ -1232,7 +1232,7 @@ const probeTip = computed(
   background: var(--surface2);
 }
 .st__tier-code {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 .st__tier-name {
@@ -1258,7 +1258,7 @@ const probeTip = computed(
   gap: 14px;
 }
 .st__sheet-note {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
   text-align: center;
 }

@@ -231,7 +231,7 @@ const maxShare = computed(() =>
   border-radius: var(--r-card);
   background: var(--surface);
   box-shadow: var(--shadow);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   line-height: 1.6;
 }
 
@@ -260,12 +260,12 @@ const maxShare = computed(() =>
   gap: 12px;
   flex-wrap: wrap;
   padding: 18px 22px 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .pt__card-note {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
@@ -291,36 +291,36 @@ const maxShare = computed(() =>
 }
 
 .pt__total span {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .pt__total b {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .pt__total em {
   font-style: normal;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .pt__quota-foot {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .pt__axis {
   display: flex;
   justify-content: space-between;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
 .pt__gap-note {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text3);
 }
@@ -341,7 +341,7 @@ const maxShare = computed(() =>
   display: flex;
   align-items: baseline;
   gap: 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .pt__node-head > span:first-child {
@@ -362,18 +362,18 @@ const maxShare = computed(() =>
 .pt__node-track {
   height: 6px;
   background: var(--sep2);
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   overflow: hidden;
 }
 
 .pt__node-fill {
   height: 6px;
   background: var(--brand);
-  border-radius: 3px;
+  border-radius: var(--r-xs);
 }
 
 .pt__node-dir {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -390,7 +390,7 @@ const maxShare = computed(() =>
   }
 
   .pt__total b {
-    font-size: 15px;
+    font-size: var(--fs-md);
   }
 }
 </style>

@@ -453,12 +453,12 @@ const leadTip =
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 .ca__empty-desc {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text2);
   line-height: 1.5;
 }
@@ -478,11 +478,11 @@ const leadTip =
   flex-wrap: wrap;
 }
 .ca__name {
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .ca__ak {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .ca__spacer {
@@ -499,7 +499,7 @@ const leadTip =
   }
 }
 .ca__pool-title {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text2);
   margin-bottom: 6px;
@@ -508,7 +508,7 @@ const leadTip =
   align-items: center;
 }
 .ca__meta {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 .ca__foot {
@@ -524,7 +524,7 @@ const leadTip =
   gap: 14px;
 }
 .ca__settings-title {
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .ca__row :deep(.ant-input) {
@@ -558,7 +558,7 @@ const leadTip =
   gap: 16px;
 }
 .ca__help {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
   line-height: 1.6;
   margin-top: 4px;
@@ -574,11 +574,11 @@ const leadTip =
   padding: 12px 14px;
   background: var(--surface2);
   border-radius: var(--r-group);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .ca__test-row {
   color: var(--text3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 @media (max-width: 767px) {

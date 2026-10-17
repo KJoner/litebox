@@ -470,13 +470,13 @@ const columns = [
 
 .al__title {
   margin: 0;
-  font-size: 19px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 
 .al__sub {
   margin-top: 3px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -493,14 +493,14 @@ const columns = [
   border-radius: var(--r-input);
   background: var(--surface);
   color: var(--text2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
 }
 
 .al__cat span {
   margin-left: 4px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -519,7 +519,7 @@ const columns = [
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .al__cat-tag {
@@ -527,13 +527,13 @@ const columns = [
   padding: 1px 5px;
   background: var(--fill);
   border-radius: var(--r-pill);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
 .al__burst {
   margin-top: 2px;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--bad);
 }
 
@@ -542,13 +542,13 @@ const columns = [
 }
 
 .al__detail {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.65;
   color: var(--text2);
 }
 
 .al__more {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 
 .al__muted {
@@ -561,7 +561,7 @@ const columns = [
 
 .al__day {
   padding: 12px 2px 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text3);
 }
@@ -576,12 +576,12 @@ const columns = [
 .al__card-name {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 
 .al__card-meta {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 

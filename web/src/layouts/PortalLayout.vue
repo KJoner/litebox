@@ -156,17 +156,17 @@ const initials = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
+  border-radius: var(--r-btn);
   background: linear-gradient(145deg, var(--brand), var(--brand-hover));
   color: #fff;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: -0.02em;
   box-shadow: 0 2px 6px rgba(37, 99, 184, 0.3);
 }
 
 .pl__brand-name {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -222,12 +222,12 @@ const initials = computed(() => {
   border-radius: 50%;
   background: var(--brand-bg);
   color: var(--brand);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
 }
 
 .pl__name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
@@ -238,7 +238,7 @@ const initials = computed(() => {
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--text2);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
   transition: background 0.2s, color 0.2s;
@@ -272,7 +272,7 @@ const initials = computed(() => {
 .pl__footer {
   padding: 16px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 

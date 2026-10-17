@@ -22,3 +22,38 @@
 * 侧栏同步状态刚重启时显示「1 个节点同步失败 · 上次 尚未运行」,失败数与时间来自两个来源。
 
 **对下一批的影响**:第二批改全局令牌与覆盖层,所有页面会同时变样;逐页布局在第三、四批做。
+
+---
+
+## 第二批 · 设计基础
+
+**改了什么**
+
+| 文件 | 内容 |
+|---|---|
+| `styles/tokens.css` | 重写:新色板(浅 `#F8FAFC` / 深 `#0B0F14`)、语义色补 `-border`、8 级字号、4/8 间距、圆角(新增 `--r-btn` / `--r-sm` / `--r-xs`)、阴影四档、动效时长、布局尺寸;关键帧去掉弹跳 |
+| `theme/tokens.ts` | `palette` 与 CSS 同步;新增 `fontSize` / `controlHeight`;`radius` 加 `xs` / `sm` / `btn` |
+| `theme/antd.ts` | 字号 14、控件 36、按钮圆角 8(去胶囊)、表头与行 hover 统一走 `colorFillAlter`、反色 Tooltip、动效时长 |
+| `stores/theme.ts` | 三档:浅色 / 深色 / 跟随系统,跟随系统**持续**监听 `prefers-color-scheme`;老版本存的值原样沿用 |
+| `styles/antd-tune.css` | 重写:表格(表头底色、12px 行距)、按钮、输入(光环、错误态)、下划线页面 Tabs、分段控件、弹窗(去掉 `:has()` 三栏头,标题左对齐、底栏右对齐带底色)、贴边抽屉(关闭按钮固定最右)、卡片式吐司、带描边的 Alert |
+| `styles/base.css` | 骨架类按新规格重写,类名一个不改:`.lb-card` 加边框与 `__head` / `__desc` / `__actions`;`.lb-metrics` 改成独立卡片网格;`.lb-group` 改成细边框容器;`.lb-chip` 改成矩形;新增 `.lb-dot`、`.lb-muted`、`.lb-chip--outline` |
+| 全部 `.vue` 的 `<style>` | 脚本把 441 处 `font-size: Npx` 映射到 `var(--fs-*)`、24 处写死圆角映射到 `var(--r-*)`(映射表见 01 §3) |
+| lb 组件 | `LbMetricCard` 成为独立卡片并支持 `icon`;`LbStatusTag` 胶囊加同色细描边;`LbSectionTitle` 16px;`LbEmptyState` / `LbRowCard` / `LbFilterBar` / `LbBatchBar` / `LbQuotaBar` / `LbCopyField` / `LbNameConfirm` / `lbDangerConfirm` 间距与边框;`LbIcon` 补 23 个图标;`LbSparkline` 线宽与渐变减淡,并修掉渐变 id 全部撞成 `lb-spark-1` 的问题(改用 `useId`) |
+| `layouts/MainLayout.vue` | 重写:侧栏 240 / 64、浅蓝选中、分组、手动折叠(偏好存 localStorage,没设过按宽度自动)+ 折叠后 Tooltip;顶栏实底、折叠按钮、三级面包屑(详情页可点回列表)、主题三档菜单、用户菜单;手机抽屉里也有同步状态 |
+| `App.vue` | 关掉 AntD 两字按钮自动插空格(「刷 新」) |
+
+**关键决策**
+
+* 杠杆放在令牌与全局覆盖层:类名、组件 API 一个不改,所有页面同时换上新外观,逐页工作只做布局。
+* 字号令牌化用确定性脚本而不是手改:500 处手改必然漏,而脚本的映射表可以写进文档、可以复查。
+* 删掉 V18 的弹窗三栏头:它依赖「底栏恰好两枚按钮」切换版式,同一类弹窗会出现两种形态。
+
+**构建**:`vue-tsc` 通过,`vite build` 通过。JS 2135.6 KB(基线 2128.2,+0.3%),CSS 441.5 KB(基线 431.2,+2.4%)。
+
+**自检**:仪表盘、节点列表、节点详情(深色)、用户抽屉 + 编辑弹窗(深色)、节点列表(390)、门户概览都能正常渲染,
+所有入口仍在。
+
+**遗留 / 对下一批的影响**
+
+* 页面自己 scoped 的卡片(节点详情的 `.nd__card` 等)还没有边框,第三批随页面一起改。
+* 节点列表手机视图是「卡片里套卡片」;门户的指标条依赖旧 `.lb-metrics` 的卡片外观 —— 分别在第三、四批处理。

@@ -6,7 +6,7 @@
  * 而不是全表,批量停用漏掉或多带上几个人,代价完全不对等。
  *
  * 切换筛选时页面应当清空选择 —— 调用方监听筛选变化后 emit clear。
- * V18:与工具条同规格(14px 20px),底色 --brand-bg,按钮 28px 胶囊。
+ * UI 2.0:与工具条同规格,底色 --brand-bg,按钮 28px。
  */
 withDefaults(
   defineProps<{
@@ -46,21 +46,21 @@ defineEmits<{ (e: 'clear'): void }>()
 .lb-batch {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  padding: 12px 20px;
+  padding: 10px var(--sp-4);
   background: var(--brand-bg);
   border-bottom: 1px solid var(--sep2);
 }
 
 .lb-batch__count {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--brand);
 }
 
 .lb-batch__note {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text2);
 }
 
@@ -74,7 +74,7 @@ defineEmits<{ (e: 'clear'): void }>()
 
 @media (max-width: 767px) {
   .lb-batch {
-    padding: 10px 14px;
+    padding: 10px var(--sp-3);
   }
 }
 </style>

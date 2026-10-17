@@ -264,7 +264,7 @@ function confirmRestore() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .tn__title {
@@ -275,7 +275,7 @@ function confirmRestore() {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -284,7 +284,7 @@ function confirmRestore() {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text2);
 }
 
@@ -293,7 +293,7 @@ function confirmRestore() {
 }
 
 .tn__basis {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   line-height: 1.7;
   color: var(--text3);
 }
@@ -303,7 +303,7 @@ function confirmRestore() {
   background: var(--warn-bg);
   border: 1px solid var(--warn-bg);
   border-radius: var(--r-group);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.75;
   color: var(--warn);
 }
@@ -313,7 +313,7 @@ function confirmRestore() {
   background: var(--bad-bg);
   border: 1px solid var(--bad-bg);
   border-radius: var(--r-group);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.75;
   color: var(--bad);
 }
@@ -327,7 +327,7 @@ function confirmRestore() {
 .tn__group {
   padding: 6px 11px;
   background: var(--surface2);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   color: var(--text2);
 }
@@ -348,7 +348,7 @@ function confirmRestore() {
 }
 
 .tn__key {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text);
 }
 
@@ -357,7 +357,7 @@ function confirmRestore() {
   align-items: baseline;
   gap: 6px;
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 .tn__cur {
@@ -373,19 +373,19 @@ function confirmRestore() {
 }
 
 .tn__why {
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
 .tn__detail {
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   line-height: 1.65;
   color: var(--warn);
 }
 
 .tn__none {
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -394,16 +394,16 @@ function confirmRestore() {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 
 .tn__stamp {
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
 .tn__notes {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.75;
   color: var(--text2);
 }
@@ -426,7 +426,7 @@ function confirmRestore() {
 
 .tn__acts-note {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 

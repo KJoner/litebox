@@ -13,10 +13,14 @@ const antd = computed(() => antdTheme(themeStore.mode))
 <template>
   <!--
     视觉全部通过 ConfigProvider :theme 下发,加一份 styles/antd-tune.css 补 Token
-    够不到的几处(表格、弹窗三栏头、吐司横幅)。颜色一律来自 styles/tokens.css 的
-    CSS 变量,组件的 scoped CSS 里不再出现散落的十六进制色值。
+    够不到的几处(表格、下划线 Tabs、弹窗底栏、贴边抽屉、卡片吐司)。颜色、字号、圆角
+    一律来自 styles/tokens.css 的 CSS 变量,组件的 scoped CSS 里不再出现散落的字面值。
   -->
-  <a-config-provider :locale="zhCN" :theme="antd">
+  <!--
+    auto-insert-space-in-button 关掉:AntD 默认在两个汉字的按钮里插一个空格(「刷 新」),
+    与其它按钮的字距不一致,也不是中文排版的习惯。
+  -->
+  <a-config-provider :locale="zhCN" :theme="antd" :auto-insert-space-in-button="false">
     <a href="#lb-main" class="lb-skip-link">跳到主内容</a>
     <RouterView />
   </a-config-provider>

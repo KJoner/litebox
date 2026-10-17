@@ -99,12 +99,12 @@ defineExpose({ done, failed, running })
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .lb-result__head {
   border-bottom: 1px solid var(--sep);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text3);
 }
@@ -133,12 +133,12 @@ defineExpose({ done, failed, running })
 }
 
 .lb-result__retry {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 
 .lb-result__foot {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text);
   background: var(--warn-bg);

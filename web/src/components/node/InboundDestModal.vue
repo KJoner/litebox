@@ -97,18 +97,18 @@ async function run() {
 /* 颜色只允许用 tokens.ts 里已有的值:text3 / danger。 */
 .idm__hint {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
 .idm__warn {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--bad);
 }
 .idm__result {
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }

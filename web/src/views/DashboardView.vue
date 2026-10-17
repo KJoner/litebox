@@ -526,7 +526,7 @@ function alertGo(a: DashboardAlert) {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text3);
 }
@@ -539,13 +539,13 @@ function alertGo(a: DashboardAlert) {
 }
 
 .dv__trend-peak-value {
-  font-size: 28px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   letter-spacing: -0.03em;
 }
 
 .dv__trend-peak-note {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -553,7 +553,7 @@ function alertGo(a: DashboardAlert) {
   display: flex;
   justify-content: space-between;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -581,7 +581,7 @@ function alertGo(a: DashboardAlert) {
 }
 
 .dv__node-name {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
@@ -590,7 +590,7 @@ function alertGo(a: DashboardAlert) {
 }
 
 .dv__node-sub {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
   margin-top: 2px;
   display: flex;
@@ -599,7 +599,7 @@ function alertGo(a: DashboardAlert) {
   flex-wrap: wrap;
 }
 .dv__node-sub :deep(.lb-time) {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .dv__node-tags {
@@ -641,24 +641,24 @@ function alertGo(a: DashboardAlert) {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .dv__deploy-rev {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
 
 .dv__deploy-msg {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text2);
 }
 
 .dv__deploy-rb {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--warn);
 }
 

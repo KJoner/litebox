@@ -7,7 +7,7 @@
  * 它不负责过滤数据 —— 过滤仍在页面的 computed 里(用户 10 人量级,推到 SQL
  * 只会多出一层查询拼装代码)。它只持有「有几条筛选生效」并渲染清除入口。
  *
- * V18:搜索框 240×32 --fill 底圆角 10;下拉是 32px --fill chip;布尔筛选用
+ * UI 2.0:搜索框 260×32 白底细边框圆角 8;下拉是 32px 同规格的按钮式选择器;布尔筛选用
  * iOS 开关(a-switch size="small")+ 文字,不再用 checkbox。这些都是对
  * 插槽里 AntD 控件的 :deep 覆盖,页面不用改控件类型,换个容器就生效。
  */
@@ -40,20 +40,20 @@ defineEmits<{ (e: 'clear'): void }>()
 .lb-filter {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  padding: 14px 20px;
+  padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--sep2);
 }
 
 .lb-filter__clear {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
 .lb-filter__count {
   margin-left: auto;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -61,7 +61,7 @@ defineEmits<{ (e: 'clear'): void }>()
    有几页直接用 <div class="lb-filter"> 拼工具条,scoped 的 :deep 管不到它们。 */
 @media (max-width: 767px) {
   .lb-filter {
-    padding: 12px 14px;
+    padding: var(--sp-3);
   }
 }
 </style>

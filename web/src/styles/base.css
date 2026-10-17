@@ -1,6 +1,6 @@
 /*
- * 只放无法通过 Token 表达的东西:字体栈、焦点环、reduced-motion、
- * 页面级动效与几条工具类。颜色一律 var(--xxx)(见 tokens.css)。
+ * 只放无法通过 Token 表达的东西:字体栈、焦点环、reduced-motion、页面骨架类与工具类。
+ * 颜色、字号、圆角、间距一律 var(--xxx)(见 tokens.css 与 docs/ui-modernization/01-design-system.md)。
  */
 
 html,
@@ -16,9 +16,11 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: var(--fs-base);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* 深色 / 浅色切换那 400ms 里让底色与文字过渡;平时不挂 —— 常驻的 transition
@@ -26,13 +28,13 @@ body {
 html.lb-theme-switching,
 html.lb-theme-switching body,
 html.lb-theme-switching .ant-layout,
-html.lb-theme-switching .ant-card {
-  transition: background 0.35s, color 0.35s, background-color 0.35s;
+html.lb-theme-switching .lb-card {
+  transition: background 0.3s, color 0.3s, background-color 0.3s, border-color 0.3s;
 }
 
 a {
   color: var(--brand);
-  transition: color 0.15s;
+  transition: color var(--dur-fast);
 }
 a:hover {
   color: var(--brand-hover);
@@ -42,14 +44,29 @@ button {
   font-family: inherit;
 }
 
+::selection {
+  background: var(--brand-bg);
+}
+
+/* 细滚动条:系统默认那条粗灰条在深色卡片上很扎眼。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--fill2) transparent;
+}
+
 /* 数字、ID、地址、端口、时间戳一律等宽 + tabular-nums,表格里才对得齐。 */
 .lb-mono {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+  font-size: 0.93em;
 }
 
 .lb-tabular {
   font-variant-numeric: tabular-nums;
+}
+
+.lb-muted {
+  color: var(--text3);
 }
 
 /* 单行省略。技术串(hash/token)请用组件里的中段省略,不要用这个。 */
@@ -84,28 +101,29 @@ button {
   background: var(--surface);
   border: 1px solid var(--sep);
   border-radius: var(--r-input);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .lb-skip-link:focus {
   left: 8px;
 }
 
-/* ---------- 页面级模式(有稿页与按模式页共用) ---------- */
+/* ---------- 页面骨架 ---------- */
 
-/* 页面进入:根节点淡入上移。 */
+/* 页面进入:根节点轻淡入。不做位移很大的动画 —— 会让每次切页都像在加载。 */
 .lb-page {
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  animation: lb-fadeup 0.4s var(--ease);
+  gap: var(--sp-6);
+  animation: lb-fadeup var(--dur) var(--ease);
+  min-width: 0;
 }
 
-/* 头部:h1 + 一句话摘要 | 右侧按钮组。 */
+/* 头部:标题 + 一句话说明 | 右侧按钮组。 */
 .lb-page__head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
 }
 .lb-page__title-wrap {
@@ -113,80 +131,108 @@ button {
   flex: 1 1 360px;
 }
 .lb-page__eyebrow {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text3);
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-1);
   font-variant-numeric: tabular-nums;
 }
 .lb-page__title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   margin: 0;
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--text);
 }
 .lb-page__summary {
-  margin-top: 6px;
-  font-size: 15px;
+  margin-top: var(--sp-1);
+  font-size: var(--fs-base);
   color: var(--text2);
 }
 .lb-page__actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex: none;
   flex-wrap: nowrap;
 }
 
-/* 卡片:无边框 + 极浅阴影。可交互卡加 lb-card--hover。 */
+/* 卡片:细边框 + 极轻阴影。可交互卡加 lb-card--hover。 */
 .lb-card {
   background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-card);
   box-shadow: var(--shadow);
-  padding: 18px 22px 20px;
+  padding: var(--sp-5);
+  min-width: 0;
 }
 .lb-card--flush {
   padding: 0;
   overflow: hidden;
 }
 .lb-card--sm {
-  border-radius: 16px;
-  padding: 14px 20px;
+  padding: var(--sp-4);
 }
 .lb-card--hover {
-  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+  transition: border-color var(--dur-fast), box-shadow var(--dur) var(--ease);
 }
 .lb-card--hover:hover {
-  transform: translateY(-2px);
+  border-color: var(--fill2);
   box-shadow: var(--shadow-hover);
 }
 .lb-card__title {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
-  margin: 0 0 14px;
+  margin: 0 0 var(--sp-4);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
+  color: var(--text);
+}
+/* 卡头:标题(+ 说明)| 右侧操作。表格卡里它带下边线、内边距与卡片对齐。 */
+.lb-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+.lb-card--flush > .lb-card__head {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--sep2);
+}
+.lb-card__head .lb-card__title {
+  margin: 0;
+}
+.lb-card__desc {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text3);
+}
+.lb-card__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
 }
 
-/* 指标条:一张卡内的分隔栅格,分隔线用 box-shadow 画,折行时仍正确。 */
+/* 指标卡网格:每格是一张独立卡片(LbMetricCard 自带卡片外观)。 */
 .lb-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  overflow: hidden;
-  background: var(--surface);
-  border-radius: var(--r-card);
-  box-shadow: var(--shadow);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-4);
 }
 
 /* 双栏卡片区。 */
 .lb-grid-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: 16px;
+  gap: var(--sp-4);
 }
 @media (max-width: 767px) {
   .lb-grid-2 {
@@ -194,51 +240,53 @@ button {
   }
 }
 
-/* 分组列表(表单 / 键值):--surface2 底、圆角 14 的容器,行间 1px --sep。 */
+/* 分组列表(表单 / 键值):细边框容器,行间 1px --sep2。 */
 .lb-group {
-  background: var(--surface2);
+  background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-group);
   overflow: hidden;
 }
 .lb-group__row {
   display: grid;
-  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
+  grid-template-columns: minmax(110px, 160px) minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  min-height: 48px;
-  padding: 8px 16px;
+  gap: var(--sp-3);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-4);
 }
 .lb-group__row + .lb-group__row {
-  border-top: 1px solid var(--sep);
+  border-top: 1px solid var(--sep2);
 }
 .lb-group__label {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 13.5px;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
   font-weight: 500;
+  color: var(--text2);
 }
 .lb-group__value {
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-variant-numeric: tabular-nums;
 }
 .lb-group__value--mono {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 @media (max-width: 767px) {
   .lb-group__row {
     grid-template-columns: 1fr;
-    gap: 4px;
-    padding: 10px 14px;
+    gap: var(--sp-1);
+    padding: 10px var(--sp-3);
   }
 }
 
 /* 键值格(详情卡内 2 列 / 4 列)。 */
 .lb-kv {
   display: grid;
-  gap: 12px 16px;
+  gap: var(--sp-3) var(--sp-4);
 }
 .lb-kv--2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -249,15 +297,15 @@ button {
 .lb-kv__item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 .lb-kv__k {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .lb-kv__v {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   min-width: 0;
@@ -269,17 +317,19 @@ button {
   }
 }
 
-/* 中性 chip(等级、协议、rev)。 */
+/* 中性 chip(等级、协议、rev):圆角 6 的矩形 —— 与状态胶囊在形状上分开,
+   chip 是元数据,胶囊是状态。 */
 .lb-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 9px;
-  border-radius: var(--r-pill);
+  gap: var(--sp-1);
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
   background: var(--fill);
   color: var(--text2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
+  line-height: 18px;
   white-space: nowrap;
 }
 .lb-chip--brand {
@@ -302,19 +352,23 @@ button {
   background: var(--purple-bg);
   color: var(--purple);
 }
+.lb-chip--outline {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--sep);
+}
 
-/* 幽灵胶囊按钮(--fill 底)。AntD 按钮上加 class 即可。 */
+/* 次要按钮(--fill 底)。AntD 按钮上加 class 即可。 */
 .lb-btn-ghost.ant-btn,
 .lb-btn-ghost.ant-btn:not(:disabled):not(.ant-btn-disabled) {
   background: var(--fill);
   border-color: transparent;
-  color: var(--brand);
+  color: var(--text);
   box-shadow: none;
   font-weight: 500;
 }
 .lb-btn-ghost.ant-btn:not(:disabled):not(.ant-btn-disabled):hover {
   background: var(--fill2);
-  color: var(--brand);
+  color: var(--text);
   border-color: transparent;
 }
 .lb-btn-ghost--text.ant-btn:not(:disabled):not(.ant-btn-disabled),
@@ -326,34 +380,35 @@ button {
   color: var(--bad);
 }
 
-/* 圆形图标按钮(28–34px 正圆)。 */
+/* 方形图标按钮(28 / 32px,圆角 8)。类名沿用 V18 的 circle,调用方不用改。 */
 .lb-btn-circle.ant-btn {
   width: 28px;
   height: 28px;
   min-width: 28px;
   padding: 0;
-  border-radius: 50%;
+  border-radius: var(--r-btn);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
 }
 
-/* 通知 / 告警条(替代 a-alert 与左色条卡)。 */
+/* 通知 / 告警条。 */
 .lb-notice {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
-  padding: 16px 20px;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
   background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-card);
   box-shadow: var(--shadow);
 }
 .lb-notice__icon {
   flex: none;
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--r-tile);
   display: inline-flex;
   align-items: center;
@@ -382,100 +437,99 @@ button {
 .lb-notice__title {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  font-size: 15px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 .lb-notice__cat {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
 .lb-notice__text {
-  margin-top: 3px;
-  font-size: 13.5px;
-  line-height: 1.5;
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
   color: var(--text2);
 }
 .lb-notice__actions {
   flex: none;
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: center;
 }
 
-/* 分段控件(Tab / 周期 / 单选)。 */
+/* 分段控件(卡内的周期 / 单选切换)。 */
 .lb-seg {
   display: inline-flex;
   padding: 3px;
   background: var(--fill);
-  border-radius: 11px;
-  font-size: 13px;
+  border-radius: var(--r-seg);
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .lb-seg--sm {
   padding: 2px;
-  border-radius: 9px;
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
 }
 .lb-seg__item {
   border: none;
   background: transparent;
   color: var(--text2);
-  line-height: 30px;
-  padding: 0 18px;
-  border-radius: 8px;
+  line-height: 28px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: all 0.22s var(--ease);
+  transition: background var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast);
   white-space: nowrap;
   font: inherit;
 }
 .lb-seg--sm .lb-seg__item {
-  line-height: 26px;
-  padding: 0 12px;
-  border-radius: 7px;
+  line-height: 24px;
+  padding: 0 10px;
+}
+.lb-seg__item:hover {
+  color: var(--text);
 }
 .lb-seg__item--on {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--sep2);
 }
 
 /* 表格卡工具条(LbFilterBar 与直接写 .lb-filter 的页面共用)。 */
 .lb-filter {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
-  padding: 14px 20px;
+  padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--sep2);
 }
-/* 搜索框:240 宽、32 高、--fill 底、无边框。 */
+/* 搜索框:240 宽、32 高、细边框。 */
 .lb-filter .ant-input-affix-wrapper,
 .lb-filter .ant-input-search .ant-input-affix-wrapper {
-  width: 240px;
+  width: 260px;
   max-width: 100%;
   height: 32px;
   padding: 0 10px;
-  background: var(--fill);
-  border-color: transparent;
+  background: var(--surface);
+  border-color: var(--sep);
   border-radius: var(--r-input);
-  box-shadow: none;
+  box-shadow: var(--shadow-xs);
 }
 .lb-filter .ant-input-affix-wrapper:hover {
-  background: var(--fill2);
-  border-color: transparent;
+  border-color: var(--fill2);
 }
 .lb-filter .ant-input-affix-wrapper-focused,
 .lb-filter .ant-input-affix-wrapper:focus-within {
-  background: var(--surface);
   border-color: var(--brand) !important;
-  box-shadow: 0 0 0 3px var(--brand-bg) !important;
+  box-shadow: var(--focus-ring) !important;
 }
 .lb-filter .ant-input-affix-wrapper .ant-input {
   background: transparent;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .lb-filter .ant-input-affix-wrapper .ant-input-prefix {
   color: var(--text3);
@@ -484,20 +538,19 @@ button {
 .lb-filter .ant-input-search .ant-input-group-addon {
   display: none;
 }
-/* 下拉筛选:32px --fill chip,文字 13px。 */
+/* 下拉筛选:32px 细边框按钮式。 */
 .lb-filter .ant-select:not(.ant-select-customize-input) .ant-select-selector {
   height: 32px;
   padding: 0 10px 0 12px;
-  background: var(--fill);
-  border-color: transparent;
+  background: var(--surface);
+  border-color: var(--sep);
   border-radius: var(--r-input);
-  box-shadow: none;
-  font-size: 13px;
+  box-shadow: var(--shadow-xs);
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .lb-filter .ant-select:not(.ant-select-disabled):hover .ant-select-selector {
-  background: var(--fill2);
-  border-color: transparent;
+  border-color: var(--fill2);
 }
 .lb-filter .ant-select-focused:not(.ant-select-disabled) .ant-select-selector {
   border-color: var(--brand) !important;
@@ -509,36 +562,41 @@ button {
   height: 30px;
 }
 .lb-filter .ant-select .ant-select-arrow {
-  color: var(--text2);
+  color: var(--text3);
   font-size: 10px;
 }
-/* 布尔筛选:小开关 + 文字。checkbox 也顺手压成 iOS 风格。 */
+/* 布尔筛选:小开关 + 文字。 */
 .lb-filter .ant-checkbox-wrapper,
 .lb-filter .lb-filter__toggle {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   height: 32px;
-  padding: 0 12px;
-  background: var(--fill);
+  padding: 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-input);
-  font-size: 13px;
+  box-shadow: var(--shadow-xs);
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text2);
   cursor: pointer;
   user-select: none;
+  transition: border-color var(--dur-fast), background var(--dur-fast);
 }
 .lb-filter .ant-checkbox-wrapper:hover,
 .lb-filter .lb-filter__toggle:hover {
-  background: var(--fill2);
+  border-color: var(--fill2);
 }
 .lb-filter .ant-checkbox-wrapper-checked,
 .lb-filter .lb-filter__toggle--on {
   color: var(--text);
+  background: var(--brand-bg);
+  border-color: var(--brand-border);
 }
 @media (max-width: 767px) {
   .lb-filter {
-    padding: 12px 14px;
+    padding: var(--sp-3);
   }
   .lb-filter .ant-input-affix-wrapper {
     width: 100%;
@@ -549,10 +607,11 @@ button {
 .lb-effect {
   display: inline-flex;
   align-items: center;
-  padding: 3px 9px;
-  border-radius: var(--r-pill);
-  font-size: 11.5px;
+  padding: 1px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-2xs);
   font-weight: 600;
+  line-height: 18px;
   white-space: nowrap;
 }
 .lb-effect--now {
@@ -575,14 +634,26 @@ button {
 /* 就地校验错误条。 */
 .lb-error-strip {
   display: flex;
-  gap: 12px;
+  gap: var(--sp-3);
   align-items: flex-start;
-  padding: 12px 14px;
+  padding: var(--sp-3) 14px;
   border-radius: var(--r-group);
   background: var(--bad-bg);
-  font-size: 13px;
+  border: 1px solid var(--bad-border);
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  animation: lb-pop 0.2s var(--ease);
+  animation: lb-pop var(--dur) var(--ease);
+}
+
+/* 状态点(Beszel 式的「在线 / 离线」小圆点)。颜色由调用方给 --dot。 */
+.lb-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dot, var(--text3));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot, var(--text3)) 18%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -605,18 +676,22 @@ button {
     min-height: 44px;
   }
   .lb-page {
-    gap: 20px;
+    gap: var(--sp-4);
   }
   .lb-page__title {
-    font-size: 26px;
+    font-size: 20px;
   }
   .lb-page__summary {
-    font-size: 14px;
+    font-size: var(--fs-sm);
   }
   .lb-page__actions {
     flex-wrap: wrap;
   }
   .lb-card {
-    padding: 16px 16px 18px;
+    padding: var(--sp-4);
+  }
+  .lb-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-3);
   }
 }

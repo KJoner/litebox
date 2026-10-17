@@ -300,19 +300,19 @@ async function runClear(i: NodeInbound) {
 /* 颜色只允许用 tokens.ts 里已有的值:text3 / danger。 */
 .icm__hint {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
 .icm__warn {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--bad);
 }
 .icm__now {
   margin-top: 12px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 </style>
