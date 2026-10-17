@@ -351,6 +351,63 @@ const attention = computed<AttentionItem[]>(() => {
     const it = expiryItem(e.key, e.name, e.cat, e.to, e.v)
     if (it) out.push(it)
   }
+  // 服务巡检与流量同步(UI 2.0.1)。原来它们不进清单:一台巡检「连不上」、同步一直失败的
+  // 机器,结论照样写着「一切正常」。级别按 V10 的口径 —— 服务确实没在跑、自动恢复失败是
+  // 严重;SSH 连不上只是「不知道」(可能在重启),同步失败不影响用户连接,两者是预警。
+  for (const r of nodeRows.value) {
+    const id = r.n.id
+    const h = health.value[id]
+    if (h && !r.health.preChange) {
+      const stopped = r.health.items.filter((i) => i.state === 'STOPPED')
+      if (h.recover_error) {
+        out.push({
+          key: `h${id}`,
+          level: 'bad',
+          icon: 'alert-triangle',
+          title: r.n.display_name,
+          cat: '节点 · 服务巡检',
+          text: `自动恢复失败:${h.recover_error}`,
+          to: `/nodes/${id}`,
+          action: '查看节点',
+        })
+      } else if (stopped.length) {
+        out.push({
+          key: `h${id}`,
+          level: 'bad',
+          icon: 'alert-triangle',
+          title: r.n.display_name,
+          cat: '节点 · 服务巡检',
+          text: `${stopped.map((i) => i.name).join('、')} 没在运行`,
+          to: `/nodes/${id}`,
+          action: '查看节点',
+        })
+      } else if (r.health.items.some((i) => i.state === 'UNREACHABLE')) {
+        out.push({
+          key: `h${id}`,
+          level: 'warn',
+          icon: 'server',
+          title: r.n.display_name,
+          cat: '节点 · 服务巡检',
+          text: '巡检连不上这台机器:SSH 不通,服务是死是活还不知道 —— 可能只是在重启',
+          to: `/nodes/${id}`,
+          action: '查看节点',
+        })
+      }
+    }
+    const syncError = syncErrors.value[id]
+    if (syncError) {
+      out.push({
+        key: `s${id}`,
+        level: 'warn',
+        icon: 'activity',
+        title: r.n.display_name,
+        cat: '节点 · 流量同步',
+        text: `流量同步失败(数据库未改动,恢复后连同这段一起入账):${syncError.split('\n')[0]}`,
+        to: `/nodes/${id}`,
+        action: '查看节点',
+      })
+    }
+  }
   if (failedDeploys.value.length) {
     const names = [...new Set(failedDeploys.value.map((d) => nodeName(d.node_id)))]
     out.push({
@@ -510,7 +567,7 @@ function conclusion(d: DeploymentRecord): string {
         <h1 class="lb-page__title">
           <span>仪表盘</span>
           <LbInfoTip
-            :text="`结论取自预警、商家到期与近 7 天失败部署:有严重项时写「有 N 件事需要处理」。周期边界均为 UTC 00:00,本月自 ${monthStart} 起;节点额度只预警,不会停服。`"
+            :text="`结论取自预警、商家到期、近 7 天失败部署、服务巡检与流量同步:有严重项时写「有 N 件事需要处理」。周期边界均为 UTC 00:00,本月自 ${monthStart} 起;节点额度只预警,不会停服。`"
             :width="320"
           />
         </h1>
@@ -600,7 +657,7 @@ function conclusion(d: DeploymentRecord): string {
       <LbMetricCard
         label="需要处理"
         icon="bell"
-        tip="预警(用户到期 / 超额、节点额度、监控过期、云账号、外部代理)+ 商家到期 + 近 7 天失败部署。"
+        tip="预警(用户到期 / 超额、节点额度、监控过期、云账号、外部代理)+ 商家到期 + 近 7 天失败部署 + 服务巡检(服务没在跑、连不上)+ 流量同步失败。"
         :state="attnFailed.length && !attention.length ? 'error' : loading && !loadedAt ? 'loading' : 'ready'"
         :value="attention.length"
         unit="项"
@@ -711,7 +768,7 @@ function conclusion(d: DeploymentRecord): string {
           <div v-else-if="!attnFailed.length" class="dv__attn-ok">
             <span class="dv__attn-ok-icon"><LbIcon name="circle-check" :size="20" /></span>
             <div class="dv__attn-ok-title">没有需要处理的事</div>
-            <div class="dv__attn-ok-text">预警、商家到期与近 7 天的部署都正常。</div>
+            <div class="dv__attn-ok-text">预警、商家到期、近 7 天的部署、服务巡检与流量同步都正常。</div>
           </div>
           <div v-else class="dv__attn-partial">
             已读到的数据里没有需要处理的事,但上面几项没有读到,不能据此认为一切正常。
