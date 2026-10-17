@@ -767,13 +767,13 @@ onMounted(load)
 .uv__card-name {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
 
 .uv__card-sub {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -787,7 +787,7 @@ onMounted(load)
 }
 
 .uv__name {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
@@ -797,7 +797,7 @@ onMounted(load)
 
 .uv__code {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -809,7 +809,7 @@ onMounted(load)
 }
 
 .uv__flag {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -819,18 +819,18 @@ onMounted(load)
 
 .uv__nonode {
   color: var(--bad);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
 .uv__count {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
 .uv__extra,
 .uv__muted {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
@@ -841,11 +841,11 @@ onMounted(load)
   gap: 2px;
 }
 .uv__expiry-days {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .uv__expiry :deep(.lb-time) {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 

@@ -2,7 +2,7 @@
 import LbInfoTip from './LbInfoTip.vue'
 
 /**
- * 卡片外置的分组标题:左 19px 700 标题(+ 可选 ⓘ),右侧动作链接或 12.5px 计数。
+ * 卡片外置的分组标题:左 16px 600 标题(+ 可选 ⓘ),右侧动作链接或 13px 计数。
  *
  * 列表 / 表格类卡片的标题不放卡片内 —— 卡片上方 `padding: 0 4px 12px`,
  * 与设计稿「全部节点 · 5 / 5 台」那一行一致。
@@ -50,40 +50,43 @@ const effectLabel = {
 <style scoped>
 .lb-section {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 0 4px 12px;
+  gap: var(--sp-3);
+  padding: 0 0 var(--sp-3);
   flex-wrap: wrap;
+  min-height: 32px;
 }
 .lb-section__title {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.3;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+  color: var(--text);
   min-width: 0;
 }
 .lb-section--sub .lb-section__title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   letter-spacing: 0;
 }
 .lb-section--sub {
-  padding: 0 0 10px;
+  padding: 0 0 var(--sp-2);
+  min-height: 0;
 }
 .lb-section__extra {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .lb-section__count {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 400;
   color: var(--text3);
 }

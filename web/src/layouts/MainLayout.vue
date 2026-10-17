@@ -4,18 +4,20 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import { useThemeStore } from '@/stores/theme'
+import { useThemeStore, type ThemePreference } from '@/stores/theme'
 import { LbIcon, LbTimeText, type LbIconName } from '@/components/lb'
 
 /**
- * 后台布局(V18 iOS 风格壳)。白侧栏 232px + 1px 右边线,不用深色 Sider ——
- * 深色块与「浅灰底 + 白内容区」的方向直接冲突。顶栏 52px 毛玻璃。
+ * 后台布局(UI 2.0)。白侧栏 240px + 1px 右边线,顶栏 56px 实底 + 下边线,
+ * 内容区 --bg 底 —— 「L 形外框 + 浅灰内容区」是云控制台最常见的骨架,
+ * 卡片在内容区里靠细边框分层。
  *
  * 侧栏分三组(总览 / 资源 / 运维):九个平铺的菜单项没有层级,
  * 每次都要从头读一遍才能找到目标。分组之后「用户」「节点」永远在中间那块。
  *
- * 断点三档,与表格的断点一致:
- *   >=1280 展开 232px;768–1279 折叠成图标条(不自动隐藏);<768 顶栏汉堡 + 抽屉。
+ * 折叠:顶栏左侧的按钮手动切换,偏好存 localStorage;没设过偏好时按宽度自动
+ * (≥1280 展开、768–1279 折叠成图标条,不自动隐藏 —— 隐藏之后管理员会找不到导航)。
+ * <768 顶栏汉堡 + 抽屉。
  */
 const auth = useAuthStore()
 const themeStore = useThemeStore()
@@ -34,7 +36,6 @@ const NAV_PARENT: Record<string, string> = {
 }
 
 const navKey = computed(() => NAV_PARENT[route.name as string] ?? (route.name as string))
-const selectedKeys = computed(() => [navKey.value])
 
 /** 侧栏计数。取不到就不显示 —— 显示 0 会被读成「一个都没有」。 */
 const counts = ref<{
@@ -87,32 +88,77 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
   },
 ])
 
-/** 面包屑:一级是分组名,二级是页面名。分组名不可点 —— 它不是页面。 */
+/**
+ * 面包屑:分组 / 列表页 / 详情页。分组名不可点 —— 它不是页面;
+ * 详情页时中间那一级是列表页,可以点回去。
+ */
 const crumb = computed(() => {
   for (const g of groups.value) {
     const hit = g.items.find((i) => i.key === navKey.value)
-    // 详情页借列表页的分组,但页面名取自己的 —— 顶栏写着「自建节点」
-    // 而地址在 /nodes/3 上,会让人以为点错了。
-    if (hit) {
-      return {
-        group: g.title,
-        page: navKey.value === route.name ? hit.label : ((route.meta.title as string) ?? hit.label),
-      }
+    if (!hit) continue
+    const isDetail = navKey.value !== route.name
+    return {
+      group: g.title,
+      parent: isDetail ? { key: hit.key, label: hit.label } : null,
+      page: isDetail ? ((route.meta.title as string) ?? hit.label) : hit.label,
     }
   }
-  return { group: '', page: (route.meta.title as string) ?? '' }
+  return { group: '', parent: null, page: (route.meta.title as string) ?? '' }
 })
 
-const collapsed = ref(false)
+// ---------- 折叠 ----------
+
+const SIDER_KEY = 'litebox.sider'
+function readSiderPref(): 'expanded' | 'collapsed' | null {
+  try {
+    const v = localStorage.getItem(SIDER_KEY)
+    return v === 'expanded' || v === 'collapsed' ? v : null
+  } catch {
+    return null
+  }
+}
+const siderPref = ref(readSiderPref())
+const width = ref(window.innerWidth)
+const narrow = computed(() => width.value < 768)
+const collapsed = computed(() => {
+  if (narrow.value) return false
+  if (siderPref.value) return siderPref.value === 'collapsed'
+  return width.value < 1280
+})
 const drawerOpen = ref(false)
-const narrow = ref(false)
+
+function toggleSider() {
+  if (narrow.value) {
+    drawerOpen.value = true
+    return
+  }
+  siderPref.value = collapsed.value ? 'expanded' : 'collapsed'
+  try {
+    localStorage.setItem(SIDER_KEY, siderPref.value)
+  } catch {
+    /* 存不下就只在这次会话里生效 */
+  }
+}
 
 function onResize() {
-  const w = window.innerWidth
-  narrow.value = w < 768
-  // 768–1279 折叠成图标条。不自动隐藏 —— 隐藏之后管理员会找不到导航在哪。
-  collapsed.value = w >= 768 && w < 1280
+  width.value = window.innerWidth
 }
+
+// ---------- 主题 ----------
+
+const themeOptions: { key: ThemePreference; label: string; icon: LbIconName }[] = [
+  { key: 'light', label: '浅色', icon: 'sun' },
+  { key: 'dark', label: '深色', icon: 'moon' },
+  { key: 'system', label: '跟随系统', icon: 'monitor' },
+]
+const themeIcon = computed<LbIconName>(
+  () => themeOptions.find((o) => o.key === themeStore.preference)?.icon ?? 'monitor',
+)
+function onTheme({ key }: { key: string | number }) {
+  themeStore.setPreference(key as ThemePreference)
+}
+
+// ---------- 数据 ----------
 
 async function loadMeta() {
   // 侧栏计数是装饰性的,任何一个取不到都不该影响页面本身。
@@ -141,7 +187,6 @@ async function loadMeta() {
 }
 
 onMounted(() => {
-  onResize()
   window.addEventListener('resize', onResize)
   loadMeta()
 })
@@ -152,7 +197,8 @@ async function go(key: string) {
   if (key !== route.name) await router.push({ name: key })
 }
 
-async function onLogout() {
+async function onUserMenu({ key }: { key: string | number }) {
+  if (key !== 'logout') return
   try {
     await auth.logout()
     message.success('已退出登录')
@@ -163,85 +209,133 @@ async function onLogout() {
 }
 
 const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUpperCase())
+const syncText = computed(() =>
+  sync.value?.failing ? `${sync.value.failing} 个节点同步失败` : '流量同步正常',
+)
 </script>
 
 <template>
-  <div class="ml">
-    <!-- 窄屏走抽屉,桌面走常驻侧栏。两者共用同一份菜单模板。 -->
-    <aside v-if="!narrow" class="ml__sider" :class="{ 'ml__sider--mini': collapsed }">
+  <div class="ml" :class="{ 'ml--mini': collapsed }">
+    <!-- 窄屏走抽屉,桌面走常驻侧栏。两者共用同一份菜单结构。 -->
+    <aside v-if="!narrow" class="ml__sider">
       <div class="ml__brand">
         <span class="ml__logo">LB</span>
-        <span v-if="!collapsed" class="ml__brand-name">LiteBox</span>
+        <span v-if="!collapsed" class="ml__brand-text">
+          <span class="ml__brand-name">LiteBox</span>
+          <span class="ml__brand-sub">节点管理</span>
+        </span>
       </div>
 
-      <nav class="ml__nav">
+      <nav class="ml__nav" aria-label="主导航">
         <template v-for="g in groups" :key="g.title">
           <div v-if="!collapsed" class="ml__group">{{ g.title }}</div>
           <div v-else class="ml__group-gap" />
-          <button
-            v-for="it in g.items"
-            :key="it.key"
-            class="ml__item"
-            :class="{ 'ml__item--on': selectedKeys[0] === it.key, 'ml__item--mini': collapsed }"
-            :title="collapsed ? it.label : undefined"
-            @click="go(it.key)"
-          >
-            <LbIcon :name="it.icon" />
-            <span v-if="!collapsed" class="ml__item-text">{{ it.label }}</span>
-            <span
-              v-if="it.badge && !collapsed"
-              class="ml__badge lb-tabular"
-              :class="{ 'ml__badge--danger': it.danger }"
+          <a-tooltip v-for="it in g.items" :key="it.key" :title="collapsed ? it.label : undefined" placement="right">
+            <button
+              type="button"
+              class="ml__item"
+              :class="{ 'ml__item--on': navKey === it.key }"
+              :aria-current="navKey === it.key ? 'page' : undefined"
+              :aria-label="it.label"
+              @click="go(it.key)"
             >
-              {{ it.badge }}
-            </span>
-            <span v-else-if="it.badge && collapsed && it.danger" class="ml__dot" />
-          </button>
+              <LbIcon :name="it.icon" :size="18" />
+              <span v-if="!collapsed" class="ml__item-text">{{ it.label }}</span>
+              <span
+                v-if="it.badge && !collapsed"
+                class="ml__badge lb-tabular"
+                :class="{ 'ml__badge--danger': it.danger }"
+              >
+                {{ it.badge }}
+              </span>
+              <span v-else-if="it.badge && collapsed && it.danger" class="ml__dot" />
+            </button>
+          </a-tooltip>
         </template>
       </nav>
 
       <!-- 后台任务还活不活着,只有这里看得出来。 -->
-      <div v-if="sync && !collapsed" class="ml__sync">
-        <span class="ml__sync-dot" :class="{ 'ml__sync-dot--bad': sync.failing }" />
-        <div class="ml__sync-text">
-          <div class="ml__sync-title">
-            {{ sync.failing ? `${sync.failing} 个节点同步失败` : '流量同步正常' }}
-          </div>
-          <div class="ml__sync-time">
-            上次 <LbTimeText :value="sync.lastRun ?? null" empty="尚未运行" />
+      <a-tooltip v-if="sync" :title="collapsed ? syncText : undefined" placement="right">
+        <div class="ml__sync" :class="{ 'ml__sync--mini': collapsed }">
+          <span class="lb-dot" :style="{ '--dot': sync.failing ? 'var(--bad)' : 'var(--ok)' }" />
+          <div v-if="!collapsed" class="ml__sync-text">
+            <div class="ml__sync-title">{{ syncText }}</div>
+            <div class="ml__sync-time">
+              上次 <LbTimeText :value="sync.lastRun ?? null" empty="尚未运行" />
+            </div>
           </div>
         </div>
-      </div>
-      <div v-else-if="sync && collapsed" class="ml__sync ml__sync--mini" :title="sync.failing ? `${sync.failing} 个节点同步失败` : '流量同步正常'">
-        <span class="ml__sync-dot" :class="{ 'ml__sync-dot--bad': sync.failing }" />
-      </div>
+      </a-tooltip>
     </aside>
 
     <div class="ml__main">
       <header class="ml__header">
-        <button v-if="narrow" type="button" class="ml__iconbtn lb-touch-target" aria-label="打开导航" @click="drawerOpen = true">
-          <LbIcon name="menu" :size="18" />
+        <button
+          type="button"
+          class="ml__iconbtn lb-touch-target"
+          :aria-label="narrow ? '打开导航' : collapsed ? '展开侧栏' : '收起侧栏'"
+          :title="narrow ? '打开导航' : collapsed ? '展开侧栏' : '收起侧栏'"
+          @click="toggleSider"
+        >
+          <LbIcon :name="narrow ? 'menu' : 'panel-left'" :size="18" />
         </button>
-        <div class="ml__crumb">
+        <span v-if="!narrow" class="ml__vsep" />
+        <nav class="ml__crumb" aria-label="面包屑">
           <template v-if="crumb.group && !narrow">
             <span class="ml__crumb-group">{{ crumb.group }}</span>
-            <span class="ml__crumb-sep">›</span>
+            <LbIcon name="chevron-right" :size="14" class="ml__crumb-sep" />
           </template>
-          <span class="ml__crumb-page">{{ crumb.page }}</span>
-        </div>
-        <div class="ml__user">
-          <button
-            type="button"
-            class="ml__iconbtn"
-            :aria-label="themeStore.mode === 'dark' ? '切换到浅色' : '切换到深色'"
-            :title="themeStore.mode === 'dark' ? '切换到浅色' : '切换到深色'"
-            @click="themeStore.toggle()"
-          >
-            <LbIcon :name="themeStore.mode === 'dark' ? 'sun' : 'moon'" :size="16" />
-          </button>
-          <span class="ml__avatar">{{ initials }}</span>
-          <span v-if="!narrow" class="ml__username">{{ auth.admin?.username }}</span>
-          <button type="button" class="ml__logout" @click="onLogout">退出登录</button>
+          <template v-if="crumb.parent">
+            <a class="ml__crumb-link" @click="go(crumb.parent.key)">{{ crumb.parent.label }}</a>
+            <LbIcon name="chevron-right" :size="14" class="ml__crumb-sep" />
+          </template>
+          <span class="ml__crumb-page" aria-current="page">{{ crumb.page }}</span>
+        </nav>
+
+        <div class="ml__tools">
+          <a-dropdown :trigger="['click']" placement="bottomRight">
+            <button type="button" class="ml__iconbtn" aria-label="切换主题" title="主题">
+              <LbIcon :name="themeIcon" :size="17" />
+            </button>
+            <template #overlay>
+              <a-menu :selected-keys="[themeStore.preference]" class="ml__menu" @click="onTheme">
+                <a-menu-item v-for="o in themeOptions" :key="o.key">
+                  <span class="ml__menu-item">
+                    <LbIcon :name="o.icon" :size="15" />
+                    <span>{{ o.label }}</span>
+                    <LbIcon v-if="themeStore.preference === o.key" name="check" :size="14" class="ml__menu-check" />
+                  </span>
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
+
+          <a-dropdown :trigger="['click']" placement="bottomRight">
+            <button type="button" class="ml__user" aria-label="账户菜单">
+              <span class="ml__avatar">{{ initials }}</span>
+              <span v-if="!narrow" class="ml__username">{{ auth.admin?.username }}</span>
+              <LbIcon v-if="!narrow" name="chevron-down" :size="14" class="ml__user-caret" />
+            </button>
+            <template #overlay>
+              <a-menu class="ml__menu" @click="onUserMenu">
+                <a-menu-item-group>
+                  <template #title>
+                    <div class="ml__menu-who">
+                      <span class="ml__menu-name">{{ auth.admin?.username }}</span>
+                      <span class="ml__menu-role">管理员</span>
+                    </div>
+                  </template>
+                </a-menu-item-group>
+                <a-menu-divider />
+                <a-menu-item key="logout">
+                  <span class="ml__menu-item">
+                    <LbIcon name="log-out" :size="15" />
+                    <span>退出登录</span>
+                  </span>
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
         </div>
       </header>
 
@@ -251,25 +345,26 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
     </div>
   </div>
 
-  <!-- 窄屏导航。菜单项 48px,点完自动收起。 -->
-  <a-drawer v-model:open="drawerOpen" placement="left" :width="260" :body-style="{ padding: '8px 12px' }" class="ml__drawer">
+  <!-- 窄屏导航。菜单项 44px,点完自动收起。 -->
+  <a-drawer v-model:open="drawerOpen" placement="left" :width="264" :body-style="{ padding: '8px 12px' }" class="ml__drawer">
     <template #title>
       <span class="ml__brand ml__brand--drawer">
         <span class="ml__logo">LB</span>
         <span class="ml__brand-name">LiteBox</span>
       </span>
     </template>
-    <nav class="ml__nav">
+    <nav class="ml__nav" aria-label="主导航">
       <template v-for="g in groups" :key="g.title">
         <div class="ml__group">{{ g.title }}</div>
         <button
           v-for="it in g.items"
           :key="it.key"
+          type="button"
           class="ml__item ml__item--tall"
-          :class="{ 'ml__item--on': selectedKeys[0] === it.key }"
+          :class="{ 'ml__item--on': navKey === it.key }"
           @click="go(it.key)"
         >
-          <LbIcon :name="it.icon" />
+          <LbIcon :name="it.icon" :size="18" />
           <span class="ml__item-text">{{ it.label }}</span>
           <span v-if="it.badge" class="ml__badge lb-tabular" :class="{ 'ml__badge--danger': it.danger }">
             {{ it.badge }}
@@ -277,6 +372,13 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
         </button>
       </template>
     </nav>
+    <div v-if="sync" class="ml__sync ml__sync--drawer">
+      <span class="lb-dot" :style="{ '--dot': sync.failing ? 'var(--bad)' : 'var(--ok)' }" />
+      <div class="ml__sync-text">
+        <div class="ml__sync-title">{{ syncText }}</div>
+        <div class="ml__sync-time">上次 <LbTimeText :value="sync.lastRun ?? null" empty="尚未运行" /></div>
+      </div>
+    </div>
   </a-drawer>
 </template>
 
@@ -291,135 +393,155 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
  * 侧栏与顶栏都吸附在视口上,不跟着内容滚。
  *
  * 用 sticky 而不是 fixed:fixed 会脱离文档流,得再给内容区补一个等宽的
- * margin-left,而侧栏有展开 232 / 折叠 64 两种宽度,补错一次就是内容被压在
+ * margin-left,而侧栏有展开 / 折叠两种宽度,补错一次就是内容被压在
  * 侧栏底下。sticky 仍然占位,宽度变化自动跟着走。
  */
 .ml__sider {
   position: sticky;
   top: 0;
   flex: none;
-  width: 232px;
+  width: var(--sider-w);
   height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--surface);
   border-right: 1px solid var(--sep);
-  transition: width 0.25s var(--ease), background 0.35s;
+  transition: width var(--dur-slow) var(--ease);
 }
-
-.ml__sider--mini {
-  width: 64px;
+.ml--mini .ml__sider {
+  width: var(--sider-w-mini);
 }
 
 .ml__brand {
-  height: 60px;
+  height: var(--header-h);
   flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 20px;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--sep2);
 }
-.ml__sider--mini .ml__brand {
+.ml--mini .ml__brand {
   justify-content: center;
   padding: 0;
 }
 .ml__brand--drawer {
   height: auto;
   padding: 0;
+  border: none;
 }
 
 .ml__logo {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
-  background: linear-gradient(145deg, var(--brand), var(--brand-hover));
-  color: var(--surface);
-  font-size: 12px;
+  border-radius: var(--r-btn);
+  background: var(--brand);
+  color: var(--on-brand);
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: -0.02em;
-  box-shadow: 0 2px 6px rgba(37, 99, 184, 0.3);
 }
 
+.ml__brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
 .ml__brand-name {
-  font-size: 17px;
+  font-size: var(--fs-md);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
   color: var(--text);
+}
+.ml__brand-sub {
+  font-size: var(--fs-2xs);
+  color: var(--text3);
 }
 
 .ml__nav {
   flex: 1;
-  padding: 6px 12px;
+  padding: var(--sp-2) var(--sp-3);
   display: flex;
   flex-direction: column;
   gap: 2px;
   overflow-y: auto;
   min-height: 0;
 }
-.ml__sider--mini .ml__nav {
-  padding: 6px 10px;
+.ml--mini .ml__nav {
+  padding: var(--sp-2) 10px;
+  align-items: center;
 }
 
 .ml__group {
-  padding: 14px 12px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  padding: var(--sp-3) 10px 6px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
   color: var(--text3);
 }
 .ml__group-gap {
-  height: 12px;
+  height: 1px;
+  width: 24px;
+  margin: 10px auto;
+  background: var(--sep);
 }
 
 .ml__item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   height: 36px;
-  padding: 0 12px;
+  padding: 0 10px;
   border: none;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-btn);
   background: transparent;
   color: var(--text2);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 0.2s, color 0.2s, transform 0.15s;
+  transition: background var(--dur-fast), color var(--dur-fast);
 }
-
+.ml__item :deep(.lb-icon) {
+  color: var(--text3);
+  transition: color var(--dur-fast);
+}
 .ml__item:hover {
   background: var(--fill);
   color: var(--text);
 }
-.ml__item:active {
-  transform: scale(0.98);
+.ml__item:hover :deep(.lb-icon) {
+  color: var(--text2);
 }
 
+/* 选中 = 浅蓝底 + 蓝字 + 600。不用实底蓝:那会成为一屏里最重的元素,抢走内容的注意力。 */
 .ml__item--on,
 .ml__item--on:hover {
-  background: var(--brand);
-  color: var(--surface);
+  background: var(--brand-bg);
+  color: var(--brand);
   font-weight: 600;
 }
+.ml__item--on :deep(.lb-icon),
+.ml__item--on:hover :deep(.lb-icon) {
+  color: var(--brand);
+}
 
-.ml__item--mini {
+.ml--mini .ml__item {
   justify-content: center;
-  width: 44px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  margin: 0 auto;
-  position: relative;
 }
 
 .ml__item--tall {
-  height: 48px;
-  font-size: 14px;
+  height: 44px;
 }
 
 .ml__item-text {
@@ -434,20 +556,21 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
   flex: none;
   min-width: 20px;
   padding: 0 6px;
-  border-radius: 10px;
+  border-radius: var(--r-pill);
   background: var(--fill);
-  color: var(--text2);
-  font-size: 11px;
+  color: var(--text3);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   line-height: 18px;
   text-align: center;
 }
 .ml__item--on .ml__badge {
-  background: rgba(255, 255, 255, 0.25);
-  color: var(--surface);
+  background: var(--surface);
+  color: var(--brand);
 }
 
-.ml__badge--danger {
+.ml__badge--danger,
+.ml__item--on .ml__badge--danger {
   background: var(--bad-bg);
   color: var(--bad);
 }
@@ -455,49 +578,37 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
 .ml__dot {
   position: absolute;
   top: 8px;
-  right: 9px;
+  right: 8px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--bad);
+  box-shadow: 0 0 0 2px var(--surface);
 }
 
 .ml__sync {
   flex: none;
-  margin: 12px;
-  padding: 12px 14px;
+  margin: var(--sp-3);
+  padding: 10px var(--sp-3);
   border-radius: var(--r-group);
+  border: 1px solid var(--sep);
   background: var(--surface2);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
 }
 .ml__sync--mini {
   justify-content: center;
-  padding: 10px;
-  margin: 12px 10px;
+  padding: 10px 0;
+  margin: var(--sp-3) 10px;
 }
-
-.ml__sync-dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 5px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--ok);
-  box-shadow: 0 0 0 3px rgba(27, 122, 75, 0.15);
-}
-.ml__sync--mini .ml__sync-dot {
-  margin-top: 0;
-}
-.ml__sync-dot--bad {
-  background: var(--bad);
-  box-shadow: 0 0 0 3px rgba(180, 41, 29, 0.15);
+.ml__sync--drawer {
+  margin: var(--sp-4) 2px 0;
 }
 
 .ml__sync-text {
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   color: var(--text);
 }
 .ml__sync-title {
@@ -505,7 +616,7 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
 }
 
 .ml__sync-time {
-  font-size: 11.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
   margin-top: 1px;
 }
@@ -522,65 +633,97 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
   top: 0;
   /* 盖住滚上来的内容,但要低于抽屉(1000)与弹窗(1000)。 */
   z-index: 20;
-  height: 52px;
+  height: var(--header-h);
   flex: none;
-  padding: 0 32px;
+  padding: 0 var(--sp-6) 0 var(--sp-4);
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: var(--glass);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  gap: var(--sp-2);
+  background: var(--surface);
   border-bottom: 1px solid var(--sep);
+}
+
+.ml__vsep {
+  width: 1px;
+  height: 18px;
+  background: var(--sep);
+  margin: 0 4px;
 }
 
 .ml__crumb {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .ml__crumb-group {
   color: var(--text3);
 }
+.ml__crumb-link {
+  color: var(--text3);
+  cursor: pointer;
+}
+.ml__crumb-link:hover {
+  color: var(--text);
+}
 
 .ml__crumb-sep {
   color: var(--text3);
-  font-size: 11px;
+  opacity: 0.7;
 }
 
 .ml__crumb-page {
   font-weight: 600;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ml__user {
+.ml__tools {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   margin-left: auto;
 }
 
 .ml__iconbtn {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 50%;
+  border-radius: var(--r-btn);
   background: transparent;
   color: var(--text2);
   cursor: pointer;
-  transition: background 0.2s, color 0.2s;
+  transition: background var(--dur-fast), color var(--dur-fast);
 }
 .ml__iconbtn:hover {
   background: var(--fill);
   color: var(--text);
+}
+
+.ml__user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 8px 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+}
+.ml__user:hover {
+  background: var(--fill);
 }
 
 .ml__avatar {
@@ -592,44 +735,57 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
   border-radius: 50%;
   background: var(--brand-bg);
   color: var(--brand);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
 }
 
 .ml__username {
-  font-size: 13px;
-  color: var(--text2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.ml__user-caret {
+  color: var(--text3);
 }
 
-.ml__logout {
-  height: 28px;
-  padding: 0 12px;
-  border: none;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--brand);
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.2s;
+.ml__menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 132px;
 }
-.ml__logout:hover {
-  background: var(--fill);
+.ml__menu-check {
+  margin-left: auto;
+  color: var(--brand);
+}
+.ml__menu-who {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0;
+}
+.ml__menu-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text);
+}
+.ml__menu-role {
+  font-size: var(--fs-xs);
+  color: var(--text3);
 }
 
 .ml__content {
   width: 100%;
-  max-width: 1440px;
-  padding: 28px 32px 48px;
+  max-width: var(--content-max);
+  padding: var(--page-pad) var(--page-pad) var(--sp-12);
   box-sizing: border-box;
+  min-width: 0;
 }
 
 @media (max-width: 767px) {
   .ml__header {
-    padding: 0 12px;
+    padding: 0 var(--sp-3) 0 var(--sp-2);
   }
   .ml__content {
-    padding: 16px 12px 32px;
+    padding: var(--sp-4) var(--sp-4) var(--sp-8);
   }
 }
 </style>

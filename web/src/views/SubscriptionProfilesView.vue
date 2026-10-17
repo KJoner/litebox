@@ -319,14 +319,14 @@ function kb(bytes: number) {
 
 .sp__title {
   margin: 0;
-  font-size: 19px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 
 .sp__sub {
   margin-top: 3px;
   max-width: 720px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.75;
   color: var(--text3);
 }
@@ -352,7 +352,7 @@ function kb(bytes: number) {
 }
 
 .sp__kind-name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -361,7 +361,7 @@ function kb(bytes: number) {
   background: var(--ok-bg);
   border: 1px solid var(--ok-bg);
   border-radius: var(--r-pill);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--ok);
 }
 
@@ -370,12 +370,12 @@ function kb(bytes: number) {
   background: var(--fill);
   border: 1px solid var(--sep);
   border-radius: var(--r-pill);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text2);
 }
 
 .sp__kind-body {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.75;
   color: var(--text3);
 }
@@ -394,17 +394,17 @@ function kb(bytes: number) {
 }
 
 .sp__cell-name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
 .sp__cell-meta {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .sp__cell-desc {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text2);
 }

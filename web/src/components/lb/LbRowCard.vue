@@ -8,8 +8,8 @@
  * 底栏是动作区:桌面上的 28px 行内按钮在手指下全部不合格,
  * 这里一律 36px 起(成组)或 44px(单独)。缩小间距可以,缩小命中区不行。
  *
- * V18:20px 圆角 + --shadow,不再有左侧色条 —— 危险态靠头部的状态标签说话,
- * 外框只加一圈极淡的 --bad-bg 描边。
+ * UI 2.0:12px 圆角 + 细边框,不再有左侧色条 —— 危险态靠头部的状态标签说话,
+ * 外框描边换成 --bad-border。
  */
 defineProps<{ danger?: boolean }>()
 </script>
@@ -27,12 +27,14 @@ defineProps<{ danger?: boolean }>()
   display: flex;
   flex-direction: column;
   background: var(--surface);
+  border: 1px solid var(--sep);
   border-radius: var(--r-card);
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .lb-rowcard--danger {
-  box-shadow: var(--shadow), 0 0 0 1px var(--bad-bg);
+  border-color: var(--bad-border);
 }
 
 .lb-rowcard__head {
@@ -40,8 +42,8 @@ defineProps<{ danger?: boolean }>()
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 16px 18px 0;
-  font-size: 14px;
+  padding: 14px var(--sp-4) 0;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -49,15 +51,15 @@ defineProps<{ danger?: boolean }>()
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 18px 14px;
-  font-size: 13px;
+  padding: 10px var(--sp-4) 14px;
+  font-size: var(--fs-sm);
 }
 
 .lb-rowcard__foot {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 18px 16px;
+  padding: 10px var(--sp-4) 14px;
   border-top: 1px solid var(--sep2);
 }
 

@@ -1129,13 +1129,13 @@ const adjustColumns = [
 }
 
 .ud__name {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
 .ud__sub {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 400;
   color: var(--text3);
 }
@@ -1148,7 +1148,7 @@ const adjustColumns = [
 .ud__extra :deep(.ant-btn-sm) {
   height: 32px;
   padding: 0 14px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .ud__extra :deep(.ud__more.ant-btn) {
   width: 32px;
@@ -1170,7 +1170,7 @@ const adjustColumns = [
   margin-bottom: 16px;
 }
 .ud__banner-text {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
 }
 
@@ -1193,14 +1193,14 @@ const adjustColumns = [
   justify-content: space-between;
   gap: 12px;
   padding: 18px 22px 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .ud__card-links {
   display: flex;
   gap: 14px;
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .ud__count {
   color: var(--text3);
@@ -1237,12 +1237,12 @@ const adjustColumns = [
 }
 
 .ud__facts span {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .ud__facts b {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -1258,7 +1258,7 @@ const adjustColumns = [
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
@@ -1267,7 +1267,7 @@ const adjustColumns = [
   padding: 12px 14px;
   background: var(--surface2);
   border-radius: var(--r-group);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text2);
 }
@@ -1285,7 +1285,7 @@ const adjustColumns = [
 .ud__acct-ops {
   display: flex;
   gap: 16px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
@@ -1310,13 +1310,13 @@ const adjustColumns = [
   padding: 6px 12px;
   background: var(--surface2);
   border-radius: var(--r-pill);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
 .ud__node em {
   font-style: normal;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
@@ -1334,7 +1334,7 @@ const adjustColumns = [
   align-items: center;
   gap: 10px;
   padding: 14px 20px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .ud__bynode-row + .ud__bynode-row {
@@ -1342,7 +1342,7 @@ const adjustColumns = [
 }
 
 .ud__bynode-dir {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
   text-align: right;
 }
@@ -1366,11 +1366,11 @@ const adjustColumns = [
   margin-bottom: 12px;
 }
 .ud__range-stat-label {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .ud__range-stat-value {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 .ud__bynode-head {
@@ -1397,7 +1397,7 @@ const adjustColumns = [
   align-items: center;
   gap: 10px;
   padding: 6px 0;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 @media (max-width: 767px) {
   .ud__range-stats {
@@ -1434,12 +1434,12 @@ const adjustColumns = [
 }
 
 .ud__log-action {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .ud__log-detail {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text2);
 }

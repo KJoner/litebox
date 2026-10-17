@@ -343,7 +343,7 @@ async function doSave() {
 /* 颜色只允许用 tokens.ts 里已有的那几个值 —— 这里是 text1 / text3 / warning。 */
 .mfm__where {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .mfm__dim {
@@ -354,7 +354,7 @@ async function doSave() {
 }
 .mfm__hint {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
@@ -364,13 +364,13 @@ async function doSave() {
 /* 端口数不一致是「值得看一眼」而不是「错了」,所以用 warning 不用 danger。 */
 .mfm__warn {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--warn);
 }
 .mfm__inline {
   margin-left: 8px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 </style>

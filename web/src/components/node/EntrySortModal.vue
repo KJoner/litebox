@@ -188,7 +188,7 @@ async function save() {
 }
 .es__label {
   margin-bottom: 6px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 .es__warn {
@@ -196,7 +196,7 @@ async function save() {
 }
 .es__hint {
   margin-top: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text3);
 }
@@ -204,7 +204,7 @@ async function save() {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--sep2);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 </style>

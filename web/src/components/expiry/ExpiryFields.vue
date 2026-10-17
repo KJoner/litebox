@@ -127,13 +127,13 @@ const leadPlaceholder = computed(
 <style scoped>
 .xf__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
 .xf__inline {
   margin-left: 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 .xf--compact :deep(.ant-form-item) {

@@ -1126,7 +1126,7 @@ async function doSubmit() {
 
 .nf__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
@@ -1135,7 +1135,7 @@ async function doSubmit() {
    「这一栏是灰的」——尤其是关闭态,和禁用态长得很像。 */
 .nf__inline {
   margin-left: 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
@@ -1162,14 +1162,14 @@ async function doSubmit() {
   background: var(--surface2);
   border: 1px solid var(--sep2);
   border-radius: var(--r-group);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text2);
 }
 
 .nf__foot {
   padding-top: 4px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 </style>

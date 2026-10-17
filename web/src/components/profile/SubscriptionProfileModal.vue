@@ -396,7 +396,7 @@ async function save() {
 }
 
 .pm__label {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text);
 }
@@ -406,7 +406,7 @@ async function save() {
 }
 
 .pm__help {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.75;
   color: var(--text3);
 }
@@ -423,7 +423,7 @@ async function save() {
   align-items: center;
   gap: 8px;
   height: 32px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -440,13 +440,13 @@ async function save() {
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
 .pm__ph-note {
   font-weight: 400;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -464,7 +464,7 @@ async function save() {
   background: var(--surface);
   border: 1px solid var(--sep);
   border-radius: var(--r-input);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text2);
   cursor: pointer;
 }
@@ -494,7 +494,7 @@ async function save() {
 }
 
 .pm__size {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -507,7 +507,7 @@ async function save() {
   padding: 3px 9px;
   border: 1px solid var(--sep);
   border-radius: var(--r-input);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text2);
   cursor: pointer;
 }
@@ -528,7 +528,7 @@ async function save() {
   border: 1px solid var(--sep);
   border-radius: var(--r-group);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.65;
   color: var(--text);
   resize: vertical;
@@ -545,7 +545,7 @@ async function save() {
   background: var(--surface2);
   border: 1px solid var(--sep2);
   border-radius: var(--r-group);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.8;
   color: var(--text2);
   word-break: break-all;
@@ -566,7 +566,7 @@ async function save() {
   padding: 9px 12px;
   background: var(--surface2);
   border-bottom: 1px solid var(--sep2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -581,7 +581,7 @@ async function save() {
   gap: 16px;
   flex-wrap: wrap;
   padding: 9px 12px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -589,7 +589,7 @@ async function save() {
   padding: 11px 12px;
   background: var(--bad-bg);
   border-bottom: 1px solid var(--bad-bg);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.8;
   color: var(--bad);
 }
@@ -599,7 +599,7 @@ async function save() {
   background: var(--warn-bg);
   border-top: 1px solid var(--warn-bg);
   border-bottom: 1px solid var(--warn-bg);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.8;
   color: var(--warn);
 }
@@ -614,7 +614,7 @@ async function save() {
   margin: 0;
   padding: 12px;
   overflow: auto;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   white-space: pre;
 }

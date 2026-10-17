@@ -401,7 +401,7 @@ const absoluteInputFromCurrent = computed({
   padding: 24px 0;
   text-align: center;
   color: var(--text3);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .xm__group {
   margin-bottom: 18px;
@@ -417,7 +417,7 @@ const absoluteInputFromCurrent = computed({
 }
 .xm__title {
   margin: 18px 0 8px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   color: var(--text2);
 }
@@ -433,7 +433,7 @@ const absoluteInputFromCurrent = computed({
   padding: 5px 13px;
   background: var(--fill);
   color: var(--text2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
 }
@@ -456,12 +456,12 @@ const absoluteInputFromCurrent = computed({
   margin: 8px 0;
 }
 .xm__row--inherit {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 .xm__row-label {
   flex: 0 0 90px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 .xm__preview {
@@ -473,7 +473,7 @@ const absoluteInputFromCurrent = computed({
   padding: 10px 14px;
   border-radius: var(--r-group);
   background: var(--surface2);
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-variant-numeric: tabular-nums;
 }
 .xm__from {
@@ -486,11 +486,11 @@ const absoluteInputFromCurrent = computed({
   color: var(--text);
 }
 .xm__how {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .xm__help {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
@@ -503,7 +503,7 @@ const absoluteInputFromCurrent = computed({
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .xm__hist-row {
   display: grid;

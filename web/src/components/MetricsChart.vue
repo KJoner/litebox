@@ -374,7 +374,7 @@ const defaultFormat = (v: number) => formatBytes(v)
 
 .axis-text text {
   fill: var(--text3);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -383,9 +383,9 @@ const defaultFormat = (v: number) => formatBytes(v)
   pointer-events: none;
   background: var(--surface);
   border: 1px solid var(--sep);
-  border-radius: 10px;
+  border-radius: var(--r-group);
   padding: 8px 11px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   box-shadow: var(--shadow-lg);
   white-space: nowrap;
   z-index: 2;
@@ -394,7 +394,7 @@ const defaultFormat = (v: number) => formatBytes(v)
 
 .tooltip-time {
   color: var(--text3);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   margin-bottom: 4px;
   font-variant-numeric: tabular-nums;
 }
@@ -428,7 +428,7 @@ const defaultFormat = (v: number) => formatBytes(v)
   gap: 16px;
   justify-content: center;
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -443,6 +443,6 @@ const defaultFormat = (v: number) => formatBytes(v)
   align-items: center;
   justify-content: center;
   color: var(--text3);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 </style>

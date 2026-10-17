@@ -221,14 +221,14 @@ function deviceName(s: PortalSession): string {
 }
 
 .pv__force-title {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--warn);
 }
 
 .pv__force-body {
   margin-top: 5px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.8;
   color: var(--warn);
 }
@@ -246,7 +246,7 @@ function deviceName(s: PortalSession): string {
   gap: 12px;
   flex-wrap: wrap;
   padding: 18px 22px 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
@@ -263,7 +263,7 @@ function deviceName(s: PortalSession): string {
 
 .pv__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -276,7 +276,7 @@ function deviceName(s: PortalSession): string {
   background: var(--surface2);
   border: 1px solid var(--sep2);
   border-radius: var(--r-group);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.8;
   color: var(--text2);
 }
@@ -303,7 +303,7 @@ function deviceName(s: PortalSession): string {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .pv__session-cur {
@@ -312,13 +312,13 @@ function deviceName(s: PortalSession): string {
   background: var(--brand-bg);
   border: 1px solid var(--brand-bg);
   border-radius: var(--r-pill);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--brand-hover);
 }
 
 .pv__session-meta {
   grid-column: 1;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -326,7 +326,7 @@ function deviceName(s: PortalSession): string {
   grid-row: 1 / 3;
   grid-column: 2;
   align-self: center;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .pv__muted {

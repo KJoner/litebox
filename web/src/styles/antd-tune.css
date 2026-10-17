@@ -1,90 +1,107 @@
 /*
- * 只放 ant-design-vue 4.2.6 的 Token 系统够不到的东西。
+ * 只放 ant-design-vue 4.2.6 的 Token 系统够不到的东西(UI 2.0)。
  *
- * 为什么会有这个文件:设计规范要求「不写覆盖 .ant-* 的全局样式表」,那是照
- * AntD React v5 的 component token 覆盖度写的。本版本里 Table 与 Card 在自己的
- * styleFn 里用 mergeToken 重算派生 token,components.Table / components.Card
- * 传进去的值会被当场盖掉 —— 换句话说这几项根本没有 Token 通道。
- * V18 的 iOS 风格又多了几样 Token 表达不了的东西:弹窗的三栏头(取消 | 标题 | 保存
- * 同一行)、浮动抽屉、吐司胶囊横幅、分段控件式的 Tab / 分页。
+ * 为什么会有这个文件:本版本里 Table 与 Card 在自己的 styleFn 里用 mergeToken
+ * 重算派生 token,components.Table / components.Card 传进去的值会被当场盖掉 ——
+ * 这几项根本没有 Token 通道。还有一些形态 Token 表达不了:下划线式页面 Tabs、
+ * 分段控件、卡片式吐司、带底色的弹窗底栏、贴边抽屉的头部。
  *
  * 规则:每加一条都要说明「为什么不能走 Token」。凡是 Token 能表达的一律回
- * theme/antd.ts。颜色一律 var(--xxx)(tokens.css),不在这里发明新色。
+ * theme/antd.ts。颜色、字号、圆角一律 var(--xxx)(tokens.css),不在这里发明新值。
+ *
+ * V18 的 iOS 三栏弹窗头(:has() 把「取消 / 确定」搬到标题行)在 UI 2.0 删掉了:
+ * 它按「底栏恰好两枚按钮」切换版式,同一类弹窗会出现两种形态。现在所有弹窗一种形态。
  */
 
 /* ============================================================ 表格 */
 
-/* 表头:12px 500 --text3,无底色(colorFillAlter 已给成面色),下边 1px --sep2。
-   tableHeaderTextColor 派生自 colorTextHeading,而后者同时管卡片标题与弹窗标题。 */
+/* 表头:12px 500 --text3,--surface2 底。tableHeaderTextColor 派生自 colorTextHeading,
+   而后者同时管卡片标题与弹窗标题 —— 那两处要的是 --text,不能一起改。 */
 .ant-table-wrapper .ant-table-thead > tr > th,
 .ant-table-wrapper .ant-table-thead > tr > td {
   color: var(--text3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   padding: 10px 12px;
-  background: transparent;
-  border-bottom: 1px solid var(--sep2);
+  background: var(--surface2);
+  border-bottom: 1px solid var(--sep);
+  white-space: nowrap;
 }
 .ant-table-wrapper .ant-table-thead > tr > th::before {
   display: none;
 }
-/* 排序中的列不再整列铺灰底:那一列在浅灰卡片上会像被选中了一样。 */
-.ant-table-wrapper .ant-table-thead > tr > th.ant-table-column-sort,
-.ant-table-wrapper .ant-table-tbody > tr > td.ant-table-column-sort,
-.ant-table-wrapper .ant-table-thead > tr > th.ant-table-column-has-sorters:hover {
+/* 排序中的列不整列铺灰底:那一列会像被选中了一样。 */
+.ant-table-wrapper .ant-table-tbody > tr > td.ant-table-column-sort {
   background: transparent;
+}
+.ant-table-wrapper .ant-table-thead > tr > th.ant-table-column-sort,
+.ant-table-wrapper .ant-table-thead > tr > th.ant-table-column-has-sorters:hover {
+  background: var(--surface2);
 }
 .ant-table-wrapper .ant-table-column-sorter {
   color: var(--text3);
 }
 
-/* 行:14px 12px,分隔 --sep2;首末列 20px 贴齐卡片内距。 */
+/* 行:12px 内边距,分隔 --sep2;首末列 16px 贴齐卡片内距。 */
 .ant-table-wrapper .ant-table.ant-table-small .ant-table-tbody > tr > td,
 .ant-table-wrapper .ant-table .ant-table-tbody > tr > td {
-  padding: 14px 12px;
+  padding: 12px;
   border-bottom: 1px solid var(--sep2);
 }
 .ant-table-wrapper .ant-table-thead > tr > th:first-child,
 .ant-table-wrapper .ant-table-tbody > tr > td:first-child {
-  padding-left: 20px;
+  padding-left: 16px;
 }
 .ant-table-wrapper .ant-table-thead > tr > th:last-child,
 .ant-table-wrapper .ant-table-tbody > tr > td:last-child {
-  padding-right: 20px;
+  padding-right: 16px;
 }
 .ant-table-wrapper .ant-table-tbody > tr:last-child > td {
   border-bottom: none;
 }
-
-/* 行 hover 走 --surface2。tableRowHoverBg 派生自 colorFillAlter,而那一项已经
-   被表头「无底色」占用了,两者要的值不同,只能在这里分开。 */
 .ant-table-wrapper .ant-table-tbody > tr.ant-table-row:hover > td,
 .ant-table-wrapper .ant-table-tbody > tr > td.ant-table-cell-row-hover {
   background: var(--surface2);
 }
-.ant-table-wrapper .ant-table-tbody > tr.ant-table-row-selected > td {
+.ant-table-wrapper .ant-table-tbody > tr.ant-table-row-selected > td,
+.ant-table-wrapper .ant-table-tbody > tr.ant-table-row-selected:hover > td {
   background: var(--brand-bg);
 }
 
 .ant-table-wrapper .ant-table {
   background: transparent;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .ant-table-wrapper .ant-table-container {
+  border-radius: 0;
+}
+.ant-table-wrapper .ant-table-container table > thead > tr:first-child > *:first-child,
+.ant-table-wrapper .ant-table-container table > thead > tr:first-child > *:last-child {
   border-radius: 0;
 }
 .ant-table-wrapper .ant-table-cell-fix-left,
 .ant-table-wrapper .ant-table-cell-fix-right {
   background: var(--surface);
 }
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-left,
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-right {
+  background: var(--surface2);
+}
+.ant-table-wrapper .ant-table-placeholder .ant-table-cell {
+  color: var(--text3);
+}
 
-/* 勾选框:16px 圆角 5,1.5px --fill2。Checkbox 在本版本没有 ComponentToken。 */
+/* 勾选框:16px 圆角 4。Checkbox 在本版本没有 ComponentToken。 */
 .ant-checkbox .ant-checkbox-inner {
   width: 16px;
   height: 16px;
-  border-radius: 5px;
-  border: 1.5px solid var(--fill2);
+  border-radius: var(--r-xs);
+  border: 1px solid var(--fill2);
   background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+.ant-checkbox-wrapper:not(.ant-checkbox-wrapper-disabled):hover .ant-checkbox-inner {
+  border-color: var(--brand);
 }
 .ant-checkbox-checked .ant-checkbox-inner,
 .ant-checkbox-indeterminate .ant-checkbox-inner {
@@ -94,19 +111,19 @@
   background: var(--brand);
 }
 .ant-checkbox-checked::after {
-  border-radius: 5px;
+  border-radius: var(--r-xs);
 }
 
-/* 分页:卡片底 12px 20px,分段控件式页码。Pagination 的 item 圆角与边框
-   在本版本由 borderRadius + colorBorder 派生,画不出「外框 --fill + 选中块白底」。 */
+/* 分页:表格卡底 10px 16px,小方块页码。Pagination 的 item 外观在本版本由
+   borderRadius + colorBorder 派生,给不出「选中 = 品牌浅底 + 品牌字、无边框」。 */
 .ant-table-wrapper .ant-table-pagination.ant-pagination {
   margin: 0;
-  padding: 12px 20px;
+  padding: 10px 16px;
   border-top: 1px solid var(--sep2);
   align-items: center;
 }
 .ant-pagination {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .ant-pagination .ant-pagination-total-text {
   color: var(--text3);
@@ -115,9 +132,9 @@
 .ant-pagination .ant-pagination-item,
 .ant-pagination .ant-pagination-prev .ant-pagination-item-link,
 .ant-pagination .ant-pagination-next .ant-pagination-item-link {
-  border: none;
-  background: var(--fill);
-  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--r-sm);
   color: var(--text2);
   font-variant-numeric: tabular-nums;
 }
@@ -127,14 +144,16 @@
 .ant-pagination .ant-pagination-item:hover,
 .ant-pagination .ant-pagination-prev:hover .ant-pagination-item-link,
 .ant-pagination .ant-pagination-next:hover .ant-pagination-item-link {
-  background: var(--fill2);
+  background: var(--fill);
 }
-.ant-pagination .ant-pagination-item-active {
-  background: var(--surface);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+.ant-pagination .ant-pagination-item-active,
+.ant-pagination .ant-pagination-item-active:hover {
+  background: var(--brand-bg);
+  border-color: transparent;
 }
-.ant-pagination .ant-pagination-item-active a {
-  color: var(--text);
+.ant-pagination .ant-pagination-item-active a,
+.ant-pagination .ant-pagination-item-active:hover a {
+  color: var(--brand);
   font-weight: 600;
 }
 .ant-pagination.ant-pagination-mini .ant-pagination-item,
@@ -142,92 +161,97 @@
 .ant-pagination.ant-pagination-mini .ant-pagination-next {
   min-width: 28px;
   height: 28px;
-  line-height: 28px;
-  margin-inline-end: 4px;
+  line-height: 26px;
+  margin-inline-end: 2px;
 }
 .ant-pagination .ant-pagination-options .ant-select-selector {
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 
 /* ============================================================ 卡片 */
 
-/* 卡片:无边框 + --shadow,圆角 20。Card 的 styleFn 重算派生 token,边框与
-   阴影都传不进去。卡头 15/600,内距 18px 22px 20px;表格卡自己给 body-style 0。 */
+/* a-card(目前页面用的是 .lb-card,这里保证两者一致)。Card 的 styleFn 重算派生
+   token,边框与阴影都传不进去。 */
 .ant-card {
-  border: none;
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow);
   border-radius: var(--r-card);
 }
 .ant-card > .ant-card-head {
   min-height: 52px;
-  padding: 0 22px;
-  font-size: 15px;
+  padding: 0 var(--sp-5);
+  font-size: var(--fs-lg);
   font-weight: 600;
   border-bottom: 1px solid var(--sep2);
 }
 .ant-card > .ant-card-head .ant-card-extra {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .ant-card > .ant-card-body {
-  padding: 18px 22px 20px;
+  padding: var(--sp-5);
 }
 .ant-card.ant-card-small > .ant-card-head {
   min-height: 44px;
-  padding: 0 16px;
-  font-size: 14px;
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-base);
 }
 .ant-card.ant-card-small > .ant-card-body {
-  padding: 14px 16px 16px;
+  padding: var(--sp-4);
 }
 
-/* 描述列表:标签底 --surface2、分隔 --sep2、圆角 14。Descriptions 在本版本
-   没有 ComponentToken,labelBg 无处可传。 */
+/* 描述列表:标签底 --surface2、分隔 --sep2。Descriptions 在本版本没有 ComponentToken。 */
 .ant-descriptions-bordered .ant-descriptions-view {
-  border-color: var(--sep2);
+  border-color: var(--sep);
   border-radius: var(--r-group);
   overflow: hidden;
 }
 .ant-descriptions-bordered .ant-descriptions-item-label {
   background: var(--surface2);
-  color: var(--text2);
-  font-size: 12.5px;
+  color: var(--text3);
+  font-size: var(--fs-sm);
   border-inline-end-color: var(--sep2) !important;
 }
 .ant-descriptions-bordered .ant-descriptions-row {
   border-bottom-color: var(--sep2);
 }
 .ant-descriptions-bordered .ant-descriptions-item-content {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   border-inline-end-color: var(--sep2) !important;
 }
 
 /* ============================================================ 按钮 */
 
-/* 主按钮带品牌阴影、500 字重;按下 scale(.97)。Button 在本版本没有
-   fontWeight / primaryShadow 这两个 token(5.0 那一代还没有)。 */
+/* 500 字重、极轻阴影;按下 scale(.98)。Button 在本版本没有 fontWeight / primaryShadow token。 */
 .ant-btn {
   font-weight: 500;
-  transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.15s var(--ease), box-shadow 0.2s;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast),
+    transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast);
 }
 .ant-btn:not(:disabled):active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 .ant-btn-primary:not(:disabled):not(.ant-btn-disabled) {
   box-shadow: var(--shadow-brand);
 }
 .ant-btn-primary.ant-btn-dangerous:not(:disabled):not(.ant-btn-disabled) {
-  box-shadow: 0 4px 12px rgba(180, 41, 29, 0.22);
+  box-shadow: var(--shadow-xs);
 }
 .ant-btn-default:not(:disabled):not(.ant-btn-disabled) {
-  box-shadow: none;
+  box-shadow: var(--shadow-xs);
   border-color: var(--sep);
   background: var(--surface);
+  color: var(--text);
 }
 .ant-btn-default:not(:disabled):not(.ant-btn-disabled):hover {
-  background: var(--fill);
+  background: var(--surface2);
   color: var(--text);
-  border-color: var(--sep);
+  border-color: var(--fill2);
+}
+.ant-btn-default.ant-btn-dangerous:not(:disabled):not(.ant-btn-disabled),
+.ant-btn-default.ant-btn-dangerous:not(:disabled):not(.ant-btn-disabled):hover {
+  color: var(--bad);
+  border-color: var(--bad-border);
 }
 .ant-btn-text:not(:disabled):not(.ant-btn-disabled):hover,
 .ant-btn-link:not(:disabled):not(.ant-btn-disabled):hover {
@@ -236,22 +260,29 @@
 .ant-btn-link {
   padding-inline: 8px;
 }
+.ant-btn-sm {
+  font-size: var(--fs-sm);
+}
 .ant-btn:disabled,
 .ant-btn.ant-btn-disabled {
-  opacity: 0.4;
-  cursor: default;
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .ant-btn-primary:disabled,
 .ant-btn-primary.ant-btn-disabled {
   background: var(--brand);
-  color: #fff;
+  color: var(--on-brand);
   border-color: transparent;
+}
+/* 下拉按钮组(a-dropdown-button)的两半之间留一条细线,而不是两枚独立按钮的双边框。 */
+.ant-btn-group .ant-btn-primary:not(:first-child):not(:disabled) {
+  border-inline-start-color: rgba(255, 255, 255, 0.35);
 }
 
 /* ============================================================ 输入 */
 
-/* 输入框:36 高、圆角 10、focus 3px --brand-bg 光环。Input 在本版本没有
-   ComponentToken(`Input?: {}`),hover / focus 边框只能这样给。 */
+/* 输入框:36 高、圆角 8、focus 3px 光环。Input 在本版本没有 ComponentToken,
+   hover / focus 边框只能这样给。 */
 .ant-input,
 .ant-input-affix-wrapper,
 .ant-input-number,
@@ -260,7 +291,8 @@
 .ant-picker {
   background: var(--surface);
   border-color: var(--sep);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
+  box-shadow: var(--shadow-xs);
 }
 .ant-input:hover,
 .ant-input-affix-wrapper:hover,
@@ -278,12 +310,27 @@
 .ant-select-focused:not(.ant-select-disabled):not(.ant-select-customize-input) .ant-select-selector,
 .ant-picker-focused {
   border-color: var(--brand) !important;
-  box-shadow: 0 0 0 3px var(--brand-bg) !important;
+  box-shadow: var(--focus-ring) !important;
+}
+/* 校验失败的框:边框 --bad,光环用语义浅底。 */
+.ant-form-item-has-error .ant-input,
+.ant-form-item-has-error .ant-input-affix-wrapper,
+.ant-form-item-has-error .ant-input-number,
+.ant-form-item-has-error .ant-select:not(.ant-select-customize-input) .ant-select-selector,
+.ant-input-status-error,
+.ant-input-affix-wrapper-status-error {
+  border-color: var(--bad) !important;
+}
+.ant-input-affix-wrapper > .ant-input,
+.ant-input-number-affix-wrapper > .ant-input-number,
+.ant-input-group .ant-input {
+  box-shadow: none;
 }
 .ant-input::placeholder,
 .ant-input-number-input::placeholder,
 .ant-select-selection-placeholder {
   color: var(--text3);
+  opacity: 0.85;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -294,49 +341,72 @@
 .ant-input-sm,
 .ant-input-affix-wrapper-sm,
 .ant-select-sm:not(.ant-select-customize-input) .ant-select-selector {
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .ant-input[disabled],
 .ant-input-disabled,
+.ant-input-number-disabled,
 .ant-select-disabled:not(.ant-select-customize-input) .ant-select-selector {
-  background: var(--fill);
+  background: var(--surface3);
   color: var(--text3);
-  border-color: transparent;
+  border-color: var(--sep);
+  box-shadow: none;
 }
 textarea.ant-input {
   line-height: 1.6;
   padding: 8px 12px;
 }
+.ant-input-group-addon {
+  background: var(--surface2);
+  border-color: var(--sep);
+  color: var(--text3);
+  font-size: var(--fs-sm);
+}
 
-/* 下拉面板:圆角 14、--shadow-lg、项圆角 8。 */
+/* 下拉面板:圆角 10、--shadow-lg、项圆角 6。 */
 .ant-select-dropdown,
 .ant-dropdown .ant-dropdown-menu,
 .ant-picker-dropdown .ant-picker-panel-container {
   border-radius: var(--r-group);
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--sep);
-  padding: 6px;
+  padding: 4px;
 }
 .ant-select-dropdown .ant-select-item,
-.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item {
-  border-radius: 8px;
-  font-size: 13px;
-  padding: 7px 10px;
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item,
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu-title {
+  border-radius: var(--r-sm);
+  font-size: var(--fs-base);
+  padding: 6px 10px;
+  min-height: 32px;
+}
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-group-title {
+  padding: 6px 10px 2px;
+  font-size: var(--fs-xs);
+  color: var(--text3);
+}
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-divider {
+  margin: 4px 0;
+  background: var(--sep2);
 }
 .ant-select-dropdown .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
   background: var(--brand-bg);
   color: var(--brand);
   font-weight: 500;
 }
-.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-danger:hover {
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-danger:not(.ant-dropdown-menu-item-disabled):hover {
   background: var(--bad);
+  color: #fff;
+}
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-disabled {
+  opacity: 0.5;
 }
 
-/* 开关:22×36,关闭 --fill2、白色圆钮带阴影。Switch 在本版本没有 ComponentToken。 */
+/* 开关:20 × 36,关闭 --fill2、白色圆钮带阴影。Switch 在本版本没有 ComponentToken。 */
 .ant-switch {
   min-width: 36px;
-  height: 22px;
-  line-height: 22px;
+  height: 20px;
+  line-height: 20px;
   background: var(--fill2);
 }
 .ant-switch:hover:not(.ant-switch-disabled) {
@@ -347,29 +417,29 @@ textarea.ant-input {
   background: var(--brand);
 }
 .ant-switch .ant-switch-handle {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   top: 2px;
   inset-inline-start: 2px;
 }
 .ant-switch.ant-switch-checked .ant-switch-handle {
-  inset-inline-start: calc(100% - 20px);
+  inset-inline-start: calc(100% - 18px);
 }
 .ant-switch .ant-switch-handle::before {
   border-radius: 50%;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
 }
 .ant-switch.ant-switch-small {
-  min-width: 30px;
-  height: 18px;
-  line-height: 18px;
+  min-width: 28px;
+  height: 16px;
+  line-height: 16px;
 }
 .ant-switch.ant-switch-small .ant-switch-handle {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
 }
 .ant-switch.ant-switch-small.ant-switch-checked .ant-switch-handle {
-  inset-inline-start: calc(100% - 16px);
+  inset-inline-start: calc(100% - 14px);
 }
 .ant-switch .ant-switch-inner {
   padding-inline: 0;
@@ -379,379 +449,319 @@ textarea.ant-input {
    一类 token,画不出「外框 --fill + 选中块白底带阴影」。 */
 .ant-radio-group:has(> .ant-radio-button-wrapper) {
   display: inline-flex;
+  flex-wrap: wrap;
   padding: 2px;
   background: var(--fill);
-  border-radius: 9px;
+  border-radius: var(--r-seg);
   gap: 0;
 }
 .ant-radio-button-wrapper {
   height: 28px;
-  line-height: 26px;
-  padding: 0 14px;
+  line-height: 28px;
+  padding: 0 12px;
   border: none !important;
   background: transparent;
   color: var(--text2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
-  border-radius: 7px;
-  transition: all 0.22s var(--ease);
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast);
 }
 .ant-radio-button-wrapper:not(:first-child)::before {
   display: none;
 }
 .ant-radio-button-wrapper:first-child,
 .ant-radio-button-wrapper:last-child {
-  border-radius: 7px;
+  border-radius: var(--r-sm);
 }
 .ant-radio-button-wrapper:hover {
   color: var(--text);
 }
-.ant-radio-button-wrapper.ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled) {
+.ant-radio-button-wrapper.ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled),
+.ant-radio-button-wrapper.ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled):hover {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--sep2);
 }
 .ant-radio-button-wrapper.ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled):focus-within {
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--sep2);
 }
 
 /* 分段控件(a-segmented)同一套规格。 */
 .ant-segmented {
   padding: 2px;
   background: var(--fill);
-  border-radius: 9px;
+  border-radius: var(--r-seg);
 }
 .ant-segmented .ant-segmented-item {
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   color: var(--text2);
   font-weight: 500;
 }
-.ant-segmented .ant-segmented-item-selected {
+.ant-segmented .ant-segmented-item-selected,
+.ant-segmented .ant-segmented-thumb {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--sep2);
 }
 
 /* 普通单选 / 复选圆钮。 */
 .ant-radio-inner {
   border-color: var(--fill2);
-  border-width: 1.5px;
 }
 
-/* Tabs → 分段控件。Tabs 的 token 只有下划线那一套(inkBar、cardBg),没有
-   「选中块白底」这种形态,只能整个重画。 */
-.ant-tabs-top > .ant-tabs-nav::before,
-.ant-tabs-top > .ant-tabs-nav .ant-tabs-ink-bar {
-  display: none;
-}
+/* 页面级 Tabs → 下划线式(shadcn 的 line 变体)。本版本 Tabs 的 token 有 inkBar 颜色,
+   但没有「整条导航底线 --sep + 选中项字重」这一组,也给不了 tab 间距与高度。 */
 .ant-tabs-top > .ant-tabs-nav {
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-5);
 }
-.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap {
-  flex: none;
-  max-width: 100%;
-}
-.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
-  padding: 3px;
-  background: var(--fill);
-  border-radius: 11px;
-  gap: 0;
+.ant-tabs-top > .ant-tabs-nav::before {
+  border-bottom: 1px solid var(--sep);
 }
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab {
   margin: 0;
-  padding: 0 18px;
-  line-height: 30px;
-  border-radius: 8px;
-  font-size: 13px;
+  padding: 10px 2px;
+  font-size: var(--fs-base);
   font-weight: 500;
-  color: var(--text2);
-  transition: all 0.22s var(--ease);
+  color: var(--text3);
+  transition: color var(--dur-fast);
 }
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab + .ant-tabs-tab {
-  margin-left: 0;
+  margin-inline-start: var(--sp-6);
 }
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab:hover {
   color: var(--text);
 }
-.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab.ant-tabs-tab-active {
-  background: var(--surface);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-}
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
   color: var(--text);
   text-shadow: none;
+  font-weight: 600;
+}
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-ink-bar {
+  height: 2px;
+  background: var(--brand);
+  border-radius: 2px 2px 0 0;
 }
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-extra-content {
   margin-left: auto;
 }
 
-/* 表单:标签 13.5/500,帮助文字 12 --text3。 */
+/* 表单:标签 14/500,帮助文字 12 --text3。 */
 .ant-form-item .ant-form-item-label > label {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--text);
 }
 .ant-form-item .ant-form-item-extra {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
   margin-top: 4px;
 }
 .ant-form-item .ant-form-item-explain-error {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .ant-form-item {
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-4);
 }
 .ant-form-vertical .ant-form-item-label {
-  padding-bottom: 5px;
+  padding-bottom: 6px;
 }
 
-/* ============================================================ 弹窗 = Sheet */
+/* ============================================================ 弹窗 */
 
-/* 遮罩:黑 32% + 6px 模糊。Modal 的 colorBgMask 能改颜色,但 backdrop-filter
-   没有 token。 */
+/* 遮罩:不加模糊(整页毛玻璃在低端机器上掉帧,也让人分不清哪层在前)。 */
 .ant-modal-root .ant-modal-mask,
 .ant-drawer .ant-drawer-mask,
 .ant-image-preview-mask {
-  background: rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-}
-.ant-drawer .ant-drawer-mask {
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: var(--overlay);
 }
 
-/* 面板:圆角 22、--shadow-lg、lb-sheet 入场,内容区限高内滚。 */
+/* 面板:圆角 14、--shadow-lg、轻淡入,内容区限高内滚。Modal 的 token 管不到
+   flex 布局与「正文内滚、头尾固定」。 */
 .ant-modal .ant-modal-content {
   padding: 0;
   border-radius: var(--r-sheet);
+  border: 1px solid var(--sep);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
-  animation: lb-sheet 0.32s var(--ease);
+  animation: lb-sheet var(--dur-slow) var(--ease);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 80px);
+  max-height: calc(100vh - 64px);
 }
 .ant-modal {
   padding-bottom: 0;
-  top: 40px;
+  top: 32px;
 }
 .ant-modal .ant-modal-header {
   margin: 0;
-  padding: 18px 22px 14px;
+  padding: 16px 56px 14px 24px;
   border-bottom: 1px solid var(--sep2);
   background: transparent;
   flex: none;
-  position: relative;
-  text-align: center;
 }
 .ant-modal .ant-modal-title {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
-  line-height: 1.4;
-  padding: 0 56px;
+  line-height: 1.5;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ant-modal .ant-modal-body {
-  padding: 18px 22px 22px;
+  padding: var(--sp-5) var(--sp-6);
   overflow: auto;
   flex: 1;
   min-height: 0;
 }
 .ant-modal .ant-modal-close {
-  top: 16px;
-  inset-inline-end: 16px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--fill);
-  color: var(--text2);
+  top: 12px;
+  inset-inline-end: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-btn);
+  color: var(--text3);
 }
 .ant-modal .ant-modal-close:hover {
-  background: var(--fill2);
+  background: var(--fill);
   color: var(--text);
 }
 .ant-modal .ant-modal-close .ant-modal-close-x {
-  width: 28px;
-  height: 28px;
-  line-height: 28px;
-  font-size: 13px;
+  width: 32px;
+  height: 32px;
+  line-height: 32px;
+  font-size: var(--fs-base);
 }
 
-/*
- * iOS 三栏头:恰好两枚按钮(取消 / 确定)的标准底栏搬到标题那一行,
- * 左「取消」蓝字 15px、右「保存」蓝字 15px 600,都没有按钮底。
- * 只对「有标题 + 底栏恰好两枚按钮」的弹窗生效 —— 自定义底栏(三枚以上、
- * 或带说明文字)仍留在底部当普通胶囊,否则会叠在标题上。有了三栏头,
- * 右上角的 × 就多余了,一并藏掉;没有标准底栏的弹窗仍靠 × 关闭。
- */
-.ant-modal .ant-modal-content:has(> .ant-modal-header):has(> .ant-modal-footer > .ant-btn:first-child:nth-last-child(2)) > .ant-modal-close {
-  display: none;
-}
-.ant-modal .ant-modal-content:has(> .ant-modal-header) > .ant-modal-footer:has(> .ant-btn:first-child:nth-last-child(2)) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 54px;
-  margin: 0;
-  padding: 0 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  pointer-events: none;
-  background: transparent;
-  border: none;
-}
-.ant-modal .ant-modal-content:has(> .ant-modal-header) > .ant-modal-footer:has(> .ant-btn:first-child:nth-last-child(2)) > .ant-btn {
-  pointer-events: auto;
-  height: auto;
-  padding: 4px 0;
-  margin: 0 !important;
-  border: none;
-  background: transparent !important;
-  box-shadow: none !important;
-  font-size: 15px;
-  color: var(--brand);
-  font-weight: 400;
-}
-.ant-modal .ant-modal-content:has(> .ant-modal-header) > .ant-modal-footer:has(> .ant-btn:first-child:nth-last-child(2)) > .ant-btn:hover {
-  color: var(--brand-hover);
-}
-.ant-modal .ant-modal-content:has(> .ant-modal-header) > .ant-modal-footer:has(> .ant-btn:first-child:nth-last-child(2)) > .ant-btn-primary {
-  font-weight: 600;
-}
-.ant-modal .ant-modal-content:has(> .ant-modal-header) > .ant-modal-footer:has(> .ant-btn:first-child:nth-last-child(2)) > .ant-btn-dangerous {
-  color: var(--bad);
-}
-.ant-modal .ant-modal-content:has(> .ant-modal-header) > .ant-modal-footer:has(> .ant-btn:first-child:nth-last-child(2)) > .ant-btn:disabled {
-  opacity: 0.4;
-}
-
-/* 其余底栏:留在底部,按钮是胶囊。 */
+/* 底栏:右对齐、--surface2 底、上边线。 */
 .ant-modal .ant-modal-footer {
   margin: 0;
-  padding: 12px 22px 18px;
+  padding: 12px var(--sp-6);
   flex: none;
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  background: var(--surface2);
+  border-top: 1px solid var(--sep2);
 }
 .ant-modal .ant-modal-footer > .ant-btn + .ant-btn {
   margin-inline-start: 0;
 }
 
-/* Modal.confirm(lbDangerConfirm):没有 header,标题在 body 里。
-   确认按钮 --bad 实底胶囊留在底部;影响范围列表由调用方渲染。 */
+/* Modal.confirm(lbDangerConfirm):没有 header,标题在 body 里。 */
 .ant-modal-confirm .ant-modal-body {
-  padding: 22px 22px 18px;
+  padding: var(--sp-6) var(--sp-6) var(--sp-5);
 }
 .ant-modal-confirm .ant-modal-confirm-title {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 .ant-modal-confirm .ant-modal-confirm-content {
-  margin-top: 12px;
-  font-size: 13px;
+  margin-top: var(--sp-3);
+  font-size: var(--fs-base);
+  color: var(--text2);
 }
 .ant-modal-confirm .ant-modal-confirm-btns {
-  margin-top: 18px;
+  margin-top: var(--sp-5);
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .ant-modal-confirm .ant-modal-confirm-btns .ant-btn + .ant-btn {
   margin-inline-start: 0;
 }
 
-/* ============================================================ 抽屉:浮动面板 */
+/* ============================================================ 抽屉:贴边全高 */
 
-/* 面板离视口四边 12px、圆角 22、--bg 底,lb-slide-in 入场。Drawer 的
-   token 只管颜色与 padding,画不出「浮在遮罩上的圆角面板」。 */
-.ant-drawer-right > .ant-drawer-content-wrapper {
-  top: 12px;
-  bottom: 12px;
-  right: 12px;
-  height: auto;
-  max-width: calc(100% - 24px);
-  border-radius: var(--r-sheet);
+/* Drawer 的 token 只管颜色与 padding;头部的标题字号、关闭按钮的位置(右上)与
+   「正文 --bg 底让里面的卡片浮出来」都要在这里给。 */
+.ant-drawer-right > .ant-drawer-content-wrapper,
+.ant-drawer-left > .ant-drawer-content-wrapper {
   box-shadow: var(--shadow-lg);
-  overflow: hidden;
+}
+.ant-drawer-right > .ant-drawer-content-wrapper {
+  border-left: 1px solid var(--sep);
 }
 .ant-drawer-left > .ant-drawer-content-wrapper {
-  top: 12px;
-  bottom: 12px;
-  left: 12px;
-  height: auto;
-  max-width: calc(100% - 24px);
-  border-radius: var(--r-sheet);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
+  border-right: 1px solid var(--sep);
 }
 .ant-drawer-open.ant-drawer-right .ant-drawer-content {
-  animation: lb-slide-in 0.38s var(--ease-sheet);
+  animation: lb-slide-in var(--dur-slow) var(--ease-sheet);
 }
 .ant-drawer .ant-drawer-content {
   background: var(--bg);
 }
 .ant-drawer .ant-drawer-header {
-  padding: 18px 22px;
-  background: var(--glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  padding: 14px var(--sp-5);
+  background: var(--surface);
   border-bottom: 1px solid var(--sep);
 }
+/* 关闭按钮挪到最右(AntD 默认在标题左边,且与 extra 不在同一层)。
+   header-title 设成 display: contents,让标题、extra、关闭按钮成为同一个 flex 容器的
+   兄弟,才能用 order 把 × 排到 extra 的后面。 */
+.ant-drawer .ant-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 .ant-drawer .ant-drawer-header-title {
-  gap: 14px;
+  display: contents;
 }
 .ant-drawer .ant-drawer-title {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  order: 0;
+  flex: 1;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  min-width: 0;
+}
+.ant-drawer .ant-drawer-extra {
+  order: 1;
+}
+.ant-drawer .ant-drawer-header .ant-drawer-close {
+  order: 2;
 }
 .ant-drawer .ant-drawer-close {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   margin: 0;
   padding: 0;
-  border-radius: 50%;
-  background: var(--fill);
-  color: var(--text2);
+  border-radius: var(--r-btn);
+  color: var(--text3);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: var(--fs-base);
   flex: none;
 }
 .ant-drawer .ant-drawer-close:hover {
-  background: var(--fill2);
+  background: var(--fill);
   color: var(--text);
 }
 .ant-drawer .ant-drawer-body {
-  padding: 18px 22px 24px;
+  padding: var(--sp-5);
 }
 .ant-drawer .ant-drawer-extra {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: center;
+}
+.ant-drawer .ant-drawer-footer {
+  padding: 12px var(--sp-5);
+  background: var(--surface);
+  border-top: 1px solid var(--sep);
 }
 @media (max-width: 767px) {
   .ant-drawer-right > .ant-drawer-content-wrapper,
   .ant-drawer-left > .ant-drawer-content-wrapper {
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
     max-width: 100%;
-    border-radius: 0;
   }
   .ant-drawer .ant-drawer-body {
-    padding: 14px 14px 20px;
+    padding: var(--sp-4);
   }
   .ant-modal {
     top: 12px;
@@ -761,14 +771,23 @@ textarea.ant-input {
   .ant-modal .ant-modal-content {
     max-height: calc(100vh - 24px);
   }
+  .ant-modal .ant-modal-body {
+    padding: var(--sp-4);
+  }
+  .ant-modal .ant-modal-header {
+    padding: 14px 52px 12px var(--sp-4);
+  }
+  .ant-modal .ant-modal-footer {
+    padding: 12px var(--sp-4);
+  }
 }
 
-/* ============================================================ Toast:胶囊横幅 */
+/* ============================================================ 吐司:小卡片 */
 
-/* 顶部居中、毛玻璃、圆角 999;左 26px 圆形语义色底 + 白色图标。
-   Message 的 token 只有 contentBg / contentPadding,圆角与图标形态给不了。 */
+/* 顶部居中的小卡片,左侧语义色图标,轻淡入不弹跳。Message 的 token 只有
+   contentBg / contentPadding,边框、圆角与入场方式给不了。 */
 .ant-message {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .ant-message .ant-message-notice {
   padding: 4px 0;
@@ -776,57 +795,47 @@ textarea.ant-input {
 .ant-message .ant-message-notice-content {
   display: inline-flex;
   align-items: center;
-  padding: 12px 18px 12px 14px;
-  background: var(--glass);
-  backdrop-filter: saturate(180%) blur(24px);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 14px;
+  background: var(--surface);
   border: 1px solid var(--sep);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-group);
   box-shadow: var(--shadow-lg);
   color: var(--text);
   font-weight: 500;
-  animation: lb-banner 0.55s var(--ease);
+  text-align: left;
+  animation: lb-toast var(--dur) var(--ease);
 }
 .ant-message .ant-message-custom-content {
   display: inline-flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.5;
 }
 .ant-message .ant-message-custom-content > .anticon {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 13px;
+  font-size: 16px;
   margin-inline-end: 0;
-  background: var(--brand);
+  margin-top: 2px;
+  color: var(--brand);
 }
 .ant-message .ant-message-success > .anticon {
-  background: var(--ok);
+  color: var(--ok);
 }
 .ant-message .ant-message-error > .anticon {
-  background: var(--bad);
+  color: var(--bad);
 }
 .ant-message .ant-message-warning > .anticon {
-  background: var(--warn);
-}
-.ant-message .ant-message-info > .anticon,
-.ant-message .ant-message-loading > .anticon {
-  background: var(--brand);
+  color: var(--warn);
 }
 
 /* ============================================================ 其它 */
 
-/* Alert:去左色条,改成圆角 14 的语义浅底条。Alert 的 token 只有各色的
-   bg / border,画不出「无边框 + 12% alpha 底」。 */
+/* Alert:语义浅底 + 1px 语义描边、圆角 10。Alert 的 token 只有各色的 bg / border
+   派生,给不出与 tokens.css 一致的 10% 底与 28% 描边。 */
 .ant-alert {
-  border: none;
   border-radius: var(--r-group);
-  padding: 12px 14px;
-  font-size: 13px;
+  padding: 10px 14px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   align-items: flex-start;
 }
@@ -836,55 +845,54 @@ textarea.ant-input {
 }
 .ant-alert-info {
   background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
 }
 .ant-alert-info .ant-alert-icon {
   color: var(--brand);
 }
 .ant-alert-success {
   background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
 }
 .ant-alert-success .ant-alert-icon {
   color: var(--ok);
 }
 .ant-alert-warning {
   background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
 }
 .ant-alert-warning .ant-alert-icon {
   color: var(--warn);
 }
 .ant-alert-error {
   background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
 }
 .ant-alert-error .ant-alert-icon {
   color: var(--bad);
 }
 .ant-alert .ant-alert-message {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
 .ant-alert .ant-alert-description {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
-/* Tooltip:浅底深字,与 LbInfoTip 一致。 */
+/* Tooltip:反色、圆角 6、12px。颜色走 Tooltip 的 colorBgDefault,这里只给字号与内边距
+   (本版本 Tooltip 没有 fontSize / padding token)。 */
 .ant-tooltip .ant-tooltip-inner {
-  background: var(--surface);
-  color: var(--text2);
-  border: 1px solid var(--sep);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   box-shadow: var(--shadow-lg);
-  font-size: 12.5px;
-  line-height: 1.6;
-  padding: 8px 12px;
-}
-.ant-tooltip .ant-tooltip-arrow::before,
-.ant-tooltip .ant-tooltip-arrow::after {
-  background: var(--surface);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  padding: 6px 10px;
+  min-height: 0;
 }
 
-/* Popconfirm / Popover 面板。 */
+/* Popover 面板。 */
 .ant-popover .ant-popover-inner {
   border-radius: var(--r-group);
   box-shadow: var(--shadow-lg);
@@ -895,15 +903,15 @@ textarea.ant-input {
 .ant-tag {
   border: none;
   border-radius: var(--r-pill);
-  padding-inline: 9px;
+  padding-inline: 8px;
   font-weight: 500;
   line-height: 20px;
 }
 
-/* 骨架屏圆角跟随分组列表。 */
+/* 骨架屏:--surface3 底、圆角 6。 */
 .ant-skeleton .ant-skeleton-title,
 .ant-skeleton .ant-skeleton-paragraph > li {
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 
 /* Progress 轨道。 */
@@ -913,15 +921,15 @@ textarea.ant-input {
 
 /* Collapse。 */
 .ant-collapse {
-  border: none;
-  background: var(--surface2);
+  border: 1px solid var(--sep);
+  background: var(--surface);
   border-radius: var(--r-group);
 }
 .ant-collapse > .ant-collapse-item {
-  border-bottom-color: var(--sep);
+  border-bottom-color: var(--sep2);
 }
 .ant-collapse .ant-collapse-content {
-  border-top-color: var(--sep);
+  border-top-color: var(--sep2);
   background: transparent;
 }
 

@@ -1,62 +1,110 @@
 /*
- * LiteBox iOS 风格改版 · 设计令牌(CSS 变量版)。
- * 与 docs/开发计划/v18/design_handoff_ios_restyle/tokens.css 一致,
- * 多出的只有 --purple-bg / --neutral 两组(设计稿里语义浅底一律按「色 12% alpha」算,
- * 这里把算好的值写死,免得每个组件各自 color-mix 一遍)。
+ * LiteBox UI 2.0 · 设计令牌(唯一来源)。规格见 docs/ui-modernization/01-design-system.md。
  *
- * 用法:<html data-theme="light" | "dark">。AntD 那一侧由 theme/antd.ts 读 tokens.ts
- * 里的同一份实值 —— ConfigProvider 要按实值推导派生色,认不得 var()。
+ * 方向是 Modern SaaS Dashboard + Infrastructure Console:中性灰阶、细边框、轻阴影。
+ * 颜色的实值在 theme/tokens.ts 的 palette 里还有一份镜像 —— AntD 的 ConfigProvider
+ * 要按实值推导派生色,认不得 var()。改这里的颜色必须同步改那边。
+ *
+ * 用法:<html data-theme="light" | "dark">(stores/theme.ts 负责写;「跟随系统」
+ * 也是先解析成这两个值之一再写上去,CSS 这一侧永远只认两种)。
+ *
+ * scoped CSS 里不写十六进制色、不写 px 字号与圆角,一律 var(--…)。
  */
 :root {
-  /* 表面 */
-  --bg: #F5F5F7;            /* 页面底 */
-  --surface: #FFFFFF;       /* 卡片 */
-  --surface2: #F5F5F7;      /* 卡片内的分组列表底 / 行 hover */
-  --fill: rgba(0,0,0,.05);  /* 幽灵按钮、chip、输入框底 */
-  --fill2: rgba(0,0,0,.09); /* 上者的 hover / 开关关闭态 */
-  --sep: rgba(0,0,0,.09);   /* 分隔线(强) */
-  --sep2: rgba(0,0,0,.05);  /* 分隔线(弱,表格行) */
-  --glass: rgba(255,255,255,.78); /* 顶栏 / Toast 毛玻璃底,配 backdrop-filter: saturate(180%) blur(20px) */
-  --track: rgba(0,0,0,.07); /* 进度条轨道 */
+  /* ---------- 表面 ---------- */
+  --bg: #F8FAFC;              /* 页面底 */
+  --surface: #FFFFFF;         /* 卡片、侧栏、顶栏、弹窗 */
+  --surface2: #F8FAFC;        /* 卡内嵌入区、表头、行 hover、弹窗底栏 */
+  --surface3: #F1F5F9;        /* 更深一层的嵌入(代码块、骨架) */
+  --fill: rgba(15,23,42,.05); /* 次要按钮、chip、开关关闭态 */
+  --fill2: rgba(15,23,42,.09);/* 上者 hover */
+  --sep: #E2E8F0;             /* 边框 */
+  --sep2: #EEF2F6;            /* 弱分隔(表格行、卡内分组) */
+  --track: rgba(15,23,42,.07);/* 进度条轨道 */
+  --glass: rgba(255,255,255,.86); /* 只给吸顶条在滚动时的底(不做整页毛玻璃) */
+  --overlay: rgba(15,23,42,.45);  /* 弹窗 / 抽屉遮罩 */
 
-  /* 文字三级 */
-  --text: #1D1D1F;
-  --text2: #5F5F66;
-  --text3: #86868B;
+  /* ---------- 文字 ---------- */
+  --text: #0F172A;
+  --text2: #475569;
+  --text3: #64748B;           /* 元数据、表头;对白底 4.8 : 1 */
+  --text-inverse: #F8FAFC;    /* 反色 Tooltip 上的字 */
+  --tooltip-bg: #0F172A;
 
-  /* 品牌蓝(保留原值) */
+  /* ---------- 品牌 ---------- */
   --brand: #2563B8;
   --brand-hover: #1D4F96;
   --brand-bg: #EEF4FC;
+  --brand-border: rgba(37,99,184,.28);
+  --on-brand: #FFFFFF;        /* 品牌实底上的字 */
 
-  /* 语义色(保留原值;浅色底一律 color 上 12% alpha 版) */
-  --ok: #1B7A4B;   --ok-bg: rgba(27,122,75,.12);
-  --warn: #92610A; --warn-bg: rgba(146,97,10,.12);
-  --bad: #B4291D;  --bad-bg: rgba(180,41,29,.12);
-  --purple: #5F52A0; --purple-bg: rgba(95,82,160,.12); /* 停发订阅 / 维护中 */
-  --neutral: #5F5F66; --neutral-bg: rgba(0,0,0,.05);   /* 中性标签:已停用 / 未知 */
+  /* ---------- 语义色:前景 / 浅底 / 描边 ---------- */
+  --ok: #1B7A4B;     --ok-bg: rgba(27,122,75,.10);    --ok-border: rgba(27,122,75,.28);
+  --warn: #92610A;   --warn-bg: rgba(180,120,10,.11); --warn-border: rgba(146,97,10,.30);
+  --bad: #B4291D;    --bad-bg: rgba(180,41,29,.09);   --bad-border: rgba(180,41,29,.28);
+  --purple: #5F52A0; --purple-bg: rgba(95,82,160,.10); --purple-border: rgba(95,82,160,.28);
+  --neutral: #64748B; --neutral-bg: rgba(15,23,42,.05);
 
-  /* 阴影:卡片极浅,浮层重 */
-  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
-  --shadow-hover: 0 2px 4px rgba(0,0,0,.05), 0 14px 36px rgba(0,0,0,.09);
-  --shadow-lg: 0 12px 40px rgba(0,0,0,.16);
-  --shadow-brand: 0 4px 12px rgba(37,99,184,.25); /* 主按钮 */
+  /* ---------- 阴影:细边框为主、阴影为辅 ---------- */
+  --shadow-xs: 0 1px 2px rgba(15,23,42,.04);
+  --shadow: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.03);
+  --shadow-hover: 0 6px 16px -4px rgba(15,23,42,.10), 0 2px 4px -2px rgba(15,23,42,.05);
+  --shadow-lg: 0 16px 40px -12px rgba(15,23,42,.22), 0 4px 12px -4px rgba(15,23,42,.08);
+  --shadow-brand: 0 1px 2px rgba(37,99,184,.25);
+  --focus-ring: 0 0 0 3px rgba(37,99,184,.18);
 
-  /* 圆角 */
-  --r-card: 20px;   /* 页面卡片 */
-  --r-sheet: 22px;  /* 弹窗 / 抽屉 */
-  --r-group: 14px;  /* 卡片内分组列表 / Tooltip */
-  --r-tile: 12px;   /* 38px 图标底块 */
-  --r-input: 10px;  /* 输入框 / 搜索框 / chip */
-  --r-seg: 9px;     /* 分段控件外框(内选中块 7px) */
-  --r-pill: 999px;  /* 按钮、标签、导航项 */
+  /* ---------- 圆角 ---------- */
+  --r-xs: 4px;      /* 进度条内块、小色块 */
+  --r-sm: 6px;      /* chip、下拉项、分页按钮、Tooltip */
+  --r-btn: 8px;     /* 按钮 —— 不再是胶囊 */
+  --r-input: 8px;   /* 输入框、选择器、搜索框 */
+  --r-tile: 8px;    /* 图标底块 */
+  --r-seg: 8px;     /* 分段控件外框(内选中块 6px) */
+  --r-group: 10px;  /* 卡内分组、Alert、下拉面板、吐司 */
+  --r-card: 12px;   /* 卡片 */
+  --r-sheet: 14px;  /* 弹窗 */
+  --r-pill: 999px;  /* 只给状态标签、计数徽标、开关 */
 
-  /* 字体:系统栈,不再加载 IBM Plex */
-  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'PingFang SC', 'Helvetica Neue', 'Noto Sans SC', sans-serif;
+  /* ---------- 字号(8 级) ---------- */
+  --fs-2xs: 11px;    /* 角标、计数、图表刻度 */
+  --fs-xs: 12px;     /* 元数据、表头、标签、帮助文字 */
+  --fs-sm: 13px;     /* 次级正文、紧凑列表 */
+  --fs-base: 14px;   /* 默认正文、表格、按钮、输入框 */
+  --fs-md: 15px;     /* 强调正文、卡内小标题 */
+  --fs-lg: 16px;     /* 卡片标题、弹窗标题 */
+  --fs-xl: 18px;     /* 分组标题、抽屉标题 */
+  --fs-2xl: 24px;    /* 页面标题 */
+  --fs-metric: 28px; /* 重要指标数字 */
+
+  /* ---------- 间距(4 / 8 网格) ---------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+
+  /* ---------- 尺寸 ---------- */
+  --h-control: 36px;
+  --h-control-sm: 28px;
+  --h-control-lg: 40px;
+  --sider-w: 240px;
+  --sider-w-mini: 64px;
+  --header-h: 56px;
+  --content-max: 1440px;
+  --page-pad: 24px;
+
+  /* ---------- 字体 ---------- */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Helvetica Neue', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
   /* Windows 上没有 SF Mono / Menlo,Chrome 也不认 ui-monospace,不补 Consolas 会落到 Courier New。 */
-  --mono: 'SF Mono', ui-monospace, Menlo, Consolas, 'Cascadia Mono', monospace;
+  --mono: 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, Consolas, 'Cascadia Mono', monospace;
 
-  /* 动效 */
+  /* ---------- 动效 ---------- */
+  --dur-fast: 120ms; /* hover、颜色 */
+  --dur: 180ms;      /* 下拉、Tooltip、吐司 */
+  --dur-slow: 240ms; /* 弹窗、抽屉 */
   --ease: cubic-bezier(.2,.8,.2,1);
   --ease-sheet: cubic-bezier(.32,.72,0,1);
 
@@ -64,44 +112,57 @@
 }
 
 [data-theme="dark"] {
-  --bg: #000000;
-  --surface: #1C1C1E;
-  --surface2: #2C2C2E;
-  --fill: rgba(255,255,255,.08);
-  --fill2: rgba(255,255,255,.14);
-  --sep: rgba(255,255,255,.12);
-  --sep2: rgba(255,255,255,.07);
-  --glass: rgba(28,28,30,.78);
-  --track: rgba(255,255,255,.1);
-  --text: #F5F5F7;
-  --text2: #A1A1A6;
-  --text3: #8E8E93;
+  --bg: #0B0F14;
+  --surface: #121923;
+  --surface2: #161F2B;
+  --surface3: #1B2533;
+  --fill: rgba(148,163,184,.10);
+  --fill2: rgba(148,163,184,.16);
+  --sep: #263241;
+  --sep2: #1C2633;
+  --track: rgba(148,163,184,.14);
+  --glass: rgba(18,25,35,.88);
+  --overlay: rgba(2,6,12,.62);
+
+  --text: #F1F5F9;
+  --text2: #CBD5E1;
+  --text3: #94A3B8;
+  --text-inverse: #0F172A;
+  --tooltip-bg: #E2E8F0;
+
   --brand: #5B9AF0;
   --brand-hover: #7DB0F5;
-  --brand-bg: rgba(91,154,240,.18);
-  --ok: #4CC38A;   --ok-bg: rgba(76,195,138,.18);
-  --warn: #E0A526; --warn-bg: rgba(224,165,38,.18);
-  --bad: #F0665C;  --bad-bg: rgba(240,102,92,.18);
-  --purple: #B3A6F0; --purple-bg: rgba(179,166,240,.18);
-  --neutral: #A1A1A6; --neutral-bg: rgba(255,255,255,.08);
-  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.4);
-  --shadow-hover: 0 2px 4px rgba(0,0,0,.5), 0 14px 36px rgba(0,0,0,.6);
-  --shadow-lg: 0 12px 48px rgba(0,0,0,.7);
-  --shadow-brand: 0 4px 12px rgba(91,154,240,.3);
+  --brand-bg: rgba(91,154,240,.14);
+  --brand-border: rgba(91,154,240,.36);
+  --on-brand: #FFFFFF;
+
+  --ok: #4CC38A;     --ok-bg: rgba(76,195,138,.13);    --ok-border: rgba(76,195,138,.32);
+  --warn: #E0A526;   --warn-bg: rgba(224,165,38,.13);  --warn-border: rgba(224,165,38,.32);
+  --bad: #F0665C;    --bad-bg: rgba(240,102,92,.13);   --bad-border: rgba(240,102,92,.34);
+  --purple: #B3A6F0; --purple-bg: rgba(179,166,240,.13); --purple-border: rgba(179,166,240,.32);
+  --neutral: #94A3B8; --neutral-bg: rgba(148,163,184,.12);
+
+  /* 深色下阴影几乎看不见,分层靠背景三档与 --sep;浮层补一圈极淡的亮边。 */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.3);
+  --shadow: 0 1px 2px rgba(0,0,0,.35);
+  --shadow-hover: 0 8px 20px -6px rgba(0,0,0,.6);
+  --shadow-lg: 0 18px 48px -12px rgba(0,0,0,.75), 0 0 0 1px rgba(148,163,184,.08);
+  --shadow-brand: 0 1px 2px rgba(0,0,0,.4);
+  --focus-ring: 0 0 0 3px rgba(91,154,240,.28);
 
   color-scheme: dark;
 }
 
-/* 关键帧(设计稿原样) */
-@keyframes lb-fadeup { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
-@keyframes lb-pop    { from { opacity: 0; transform: translateY(-4px) scale(.96) } to { opacity: 1; transform: none } }
-@keyframes lb-sheet  { from { opacity: 0; transform: translateY(16px) scale(.97) } to { opacity: 1; transform: none } }
+/* 关键帧:都是一次性的轻量过渡,不做弹跳。 */
+@keyframes lb-fadeup { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+@keyframes lb-pop    { from { opacity: 0; transform: translateY(-2px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes lb-sheet  { from { opacity: 0; transform: scale(.98) } to { opacity: 1; transform: none } }
 @keyframes lb-fade   { from { opacity: 0 } to { opacity: 1 } }
-@keyframes lb-slide-in { from { transform: translateX(40px); opacity: 0 } to { transform: none; opacity: 1 } }
-@keyframes lb-banner { 0% { transform: translateY(-120%) scale(.96); opacity: 0 } 60% { transform: translateY(6px) scale(1) } 100% { transform: none; opacity: 1 } }
+@keyframes lb-slide-in { from { transform: translateX(24px); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes lb-toast  { from { transform: translateY(-6px); opacity: 0 } to { transform: none; opacity: 1 } }
 @keyframes lb-grow   { from { transform: scaleX(0) } to { transform: scaleX(1) } }
 @keyframes lb-growy  { from { transform: scaleY(0) } to { transform: scaleY(1) } }
-@keyframes lb-step   { from { opacity: 0; transform: translateX(-6px) } to { opacity: 1; transform: none } }
+@keyframes lb-step   { from { opacity: 0; transform: translateX(-4px) } to { opacity: 1; transform: none } }
 @keyframes lb-draw   { from { stroke-dashoffset: 1600 } to { stroke-dashoffset: 0 } }
 @keyframes lb-spin   { to { transform: rotate(360deg) } }
 @keyframes lb-pulse  { 0%,100% { opacity: .35 } 50% { opacity: 1 } }

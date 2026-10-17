@@ -707,7 +707,7 @@ const columns = [
   width: 220px;
   padding: 14px 20px;
   box-shadow: var(--shadow);
-  border-radius: 16px;
+  border-radius: var(--r-card);
   background: var(--surface);
   cursor: pointer;
   transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
@@ -729,11 +729,11 @@ const columns = [
   background: transparent;
 }
 .xp__card-name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 .xp__card-num {
-  font-size: 22px;
+  font-size: var(--fs-2xl);
   line-height: 1.2;
   font-family: var(--mono);
 }
@@ -744,7 +744,7 @@ const columns = [
   margin: 4px 0;
 }
 .xp__card-note {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   line-height: 1.6;
   color: var(--text3);
 }
@@ -752,11 +752,11 @@ const columns = [
   display: flex;
   gap: 10px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .xp__off {
   margin-left: 6px;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -776,19 +776,19 @@ const columns = [
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text2);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .xp__inner {
   margin-left: 6px;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 .xp__name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .xp__addr {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 .xp__tagrow {
@@ -799,12 +799,12 @@ const columns = [
 }
 .xp__note {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 .xp__warn {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--warn);
 }
 .xp__lock {
@@ -812,7 +812,7 @@ const columns = [
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text2);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
 }
 .xp__danger {
   color: var(--bad);
@@ -824,7 +824,7 @@ const columns = [
   color: var(--text3);
 }
 .xp__modal-p {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.8;
   color: var(--text2);
 }

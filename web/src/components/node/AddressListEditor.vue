@@ -90,7 +90,7 @@ function editAt(i: number, address: string) {
   padding: 0 6px;
 }
 .ale__empty {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: #8a94a6;
   padding: 2px 0;
 }
@@ -102,7 +102,7 @@ function editAt(i: number, address: string) {
   flex: 1;
 }
 .ale__hint {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }

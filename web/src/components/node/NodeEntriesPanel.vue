@@ -2033,7 +2033,7 @@ onMounted(async () => {
   gap: 12px;
   padding: 12px;
   border: 1px solid var(--sep);
-  border-radius: 16px;
+  border-radius: var(--r-card);
   margin-bottom: 12px;
 }
 .nr__head {
@@ -2068,14 +2068,14 @@ onMounted(async () => {
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text2);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.02em;
 }
 
 /* 入站 tag。它是 sing-box 配置与流量计数器里的标识,排查时要用,
    但对日常操作没有意义 —— 所以弱化,不与名字抢注意力。 */
 .nr__tag {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -2109,10 +2109,10 @@ onMounted(async () => {
   font-weight: 600;
 }
 .nr__sb-body {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 .nr__sb-sub {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
   line-height: 1.7;
 }
@@ -2123,27 +2123,27 @@ onMounted(async () => {
   flex: 1;
 }
 .nr__running {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .nr__note,
 .nr__hint {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
   margin: 0;
   line-height: 1.6;
 }
 .nr__warn {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--bad);
 }
 .nr__sub {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
   margin-left: 6px;
 }
 .nr__result {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   border-top: 1px dashed var(--sep);
   padding-top: 8px;

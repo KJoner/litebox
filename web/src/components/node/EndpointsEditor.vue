@@ -119,7 +119,7 @@ function add() {
   gap: 6px;
 }
 .ee__empty {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
   padding: 2px 0;

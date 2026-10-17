@@ -194,12 +194,12 @@ const summary = computed(() => {
   margin-bottom: -8px;
 }
 .pn__section-title {
-  font-size: 19px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 .pn__section-note {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -264,7 +264,7 @@ const summary = computed(() => {
 }
 
 .pn__row-name {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -272,7 +272,7 @@ const summary = computed(() => {
   padding: 2px 9px;
   background: var(--fill);
   border-radius: var(--r-pill);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text2);
 }
@@ -281,13 +281,13 @@ const summary = computed(() => {
   padding: 2px 9px;
   background: var(--brand-bg);
   border-radius: var(--r-pill);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--brand);
 }
 
 .pn__row-meta {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -296,7 +296,7 @@ const summary = computed(() => {
   padding: 8px 12px;
   background: var(--surface2);
   border-radius: var(--r-input);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text2);
 }
@@ -315,12 +315,12 @@ const summary = computed(() => {
 }
 
 .pn__row-stats span {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
 .pn__row-stats b {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 

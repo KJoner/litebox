@@ -403,13 +403,13 @@ const columns = [
 
 .dp__title {
   margin: 0;
-  font-size: 19px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 
 .dp__sub {
   margin-top: 3px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -420,7 +420,7 @@ const columns = [
 }
 
 .dp__host {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -434,12 +434,12 @@ const columns = [
 .dp__card-name {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .dp__card-rev {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -449,13 +449,13 @@ const columns = [
 }
 
 .dp__v1 {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
 .dp__v2 {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 .dp__v2--warn {

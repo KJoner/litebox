@@ -12,9 +12,8 @@ import { Modal } from 'ant-design-vue'
  * 为什么不把输入名称合进这里:一旦合并,重启这类可逆操作也要打字,
  * 管理员很快会变成无脑复制粘贴,真正不可逆的四个反而失去警示作用。
  *
- * V18:Sheet 规格(圆角 22、--shadow-lg,由 antd-tune.css 给 Modal.confirm),
- * 影响范围是语义浅底圆角 14 的条,确认按钮是实底胶囊。颜色全走 CSS 变量,
- * 深色模式下自动换。
+ * UI 2.0:弹窗规格由 antd-tune.css 给 Modal.confirm(圆角 14、--shadow-lg、按钮右对齐),
+ * 影响范围是语义浅底 + 细描边的条。颜色与字号全走 CSS 变量,深色模式下自动换。
  */
 export interface LbDangerConfirmOptions {
   title: string
@@ -41,6 +40,7 @@ export function lbDangerConfirm(o: LbDangerConfirmOptions) {
   const danger = (o.okType ?? 'danger') === 'danger'
   const tone = danger ? 'var(--bad)' : 'var(--warn)'
   const toneBg = danger ? 'var(--bad-bg)' : 'var(--warn-bg)'
+  const toneBorder = danger ? 'var(--bad-border)' : 'var(--warn-border)'
 
   Modal.confirm({
     title: o.title,
@@ -57,25 +57,25 @@ export function lbDangerConfirm(o: LbDangerConfirmOptions) {
         h(
           'div',
           {
-            style: `background:${toneBg};border-radius:var(--r-group);padding:12px 14px`,
+            style: `background:${toneBg};border:1px solid ${toneBorder};border-radius:var(--r-group);padding:10px 14px`,
           },
           [
             h(
               'div',
               {
-                style: `font-size:11.5px;font-weight:600;margin-bottom:4px;color:${tone}`,
+                style: `font-size:var(--fs-xs);font-weight:600;margin-bottom:4px;color:${tone}`,
               },
               '影响范围',
             ),
             h(
               'div',
-              { style: 'font-size:12.5px;line-height:1.75;color:var(--text)' },
+              { style: 'font-size:var(--fs-sm);line-height:1.75;color:var(--text)' },
               o.impacts.map((t) => h('div', ['· ', ...emphasize(t)])),
             ),
           ],
         ),
         o.footer
-          ? h('div', { style: 'font-size:12.5px;line-height:1.7;color:var(--text2)' }, emphasize(o.footer))
+          ? h('div', { style: 'font-size:var(--fs-sm);line-height:1.7;color:var(--text2)' }, emphasize(o.footer))
           : null,
       ]),
     onOk: o.onOk,

@@ -149,13 +149,13 @@ async function onSubmit() {
 .pg__logo {
   width: 56px;
   height: 56px;
-  border-radius: 17px;
+  border-radius: var(--r-card);
   background: linear-gradient(145deg, var(--brand), var(--brand-hover));
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.02em;
   box-shadow: 0 8px 24px rgba(37, 99, 184, 0.3);
@@ -163,7 +163,7 @@ async function onSubmit() {
 
 .pg__title {
   margin: 0;
-  font-size: 28px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1.1;
@@ -176,7 +176,7 @@ async function onSubmit() {
   padding: 3px 10px;
   border-radius: var(--r-pill);
   background: var(--fill);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text2);
 }
@@ -198,7 +198,7 @@ async function onSubmit() {
   flex: none;
   width: 28px;
   height: 28px;
-  border-radius: 9px;
+  border-radius: var(--r-btn);
   background: var(--bad-bg);
   color: var(--bad);
   display: inline-flex;
@@ -238,7 +238,7 @@ async function onSubmit() {
 }
 
 .pg__label {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 
@@ -249,7 +249,7 @@ async function onSubmit() {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-family: inherit;
   outline: none;
 }
@@ -264,7 +264,7 @@ async function onSubmit() {
 }
 
 .pg__toggle {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   white-space: nowrap;
   user-select: none;
@@ -273,10 +273,10 @@ async function onSubmit() {
 .pg__submit {
   height: 46px;
   border: none;
-  border-radius: 14px;
+  border-radius: var(--r-group);
   background: var(--brand);
   color: #fff;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -296,7 +296,7 @@ async function onSubmit() {
 
 .pg__foot {
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.9;
   color: var(--text3);
 }

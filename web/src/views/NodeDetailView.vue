@@ -2343,11 +2343,11 @@ const needsPortForward = computed(() =>
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 .nd__back-chevron {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   line-height: 1;
 }
 
@@ -2377,14 +2377,14 @@ const needsPortForward = computed(() =>
 
 .nd__name {
   margin: 0;
-  font-size: 34px;
+  font-size: var(--fs-metric);
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1.1;
 }
 
 .nd__sub {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -2414,13 +2414,13 @@ const needsPortForward = computed(() =>
 }
 
 .nd__fail-title {
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .nd__fail-body {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text2);
   white-space: pre-wrap;
@@ -2428,7 +2428,7 @@ const needsPortForward = computed(() =>
 
 .nd__fail-rb {
   margin-top: 6px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
@@ -2447,7 +2447,7 @@ const needsPortForward = computed(() =>
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .nd__health-label,
 .nd__tools-label {
@@ -2465,21 +2465,21 @@ const needsPortForward = computed(() =>
 }
 .nd__health-note--ok {
   color: var(--ok);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .nd__health-note--bad {
   color: var(--bad);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .nd__health-time {
   margin-left: auto;
   color: var(--text3);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .nd__sort {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text3);
 }
@@ -2527,7 +2527,7 @@ const needsPortForward = computed(() =>
 }
 
 .nd__maint {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--purple);
 }
 
@@ -2540,12 +2540,12 @@ const needsPortForward = computed(() =>
 }
 .nd__tools-label {
   margin-right: 4px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .nd__tools-running {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--brand);
 }
 
@@ -2560,22 +2560,22 @@ const needsPortForward = computed(() =>
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .nd__panel-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .nd__panel-note {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text3);
 }
 
 .nd__panel-ok {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--ok);
 }
 
@@ -2583,7 +2583,7 @@ const needsPortForward = computed(() =>
   padding: 12px 14px;
   background: var(--warn-bg);
   border-radius: var(--r-group);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text);
 }
@@ -2593,7 +2593,7 @@ const needsPortForward = computed(() =>
   padding: 12px 14px;
   background: var(--surface2);
   border-radius: var(--r-input);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text2);
   white-space: pre-wrap;
@@ -2618,12 +2618,12 @@ const needsPortForward = computed(() =>
 }
 
 .nd__kv span {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .nd__kv b {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -2636,7 +2636,7 @@ const needsPortForward = computed(() =>
   gap: 12px !important;
   padding: 12px 14px;
   background: var(--surface2);
-  border-radius: 12px;
+  border-radius: var(--r-card);
 }
 .nd__ram-text {
   flex: 1;
@@ -2649,17 +2649,17 @@ const needsPortForward = computed(() =>
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 13.5px !important;
+  font-size: var(--fs-base) !important;
   font-weight: 500;
   color: var(--text) !important;
 }
 .nd__ram-state {
-  font-size: 12px !important;
+  font-size: var(--fs-xs) !important;
   color: var(--text3) !important;
 }
 
 .nd__diff-sum {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 
@@ -2668,7 +2668,7 @@ const needsPortForward = computed(() =>
   background: var(--surface2);
   border-radius: var(--r-group);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.9;
 }
 
@@ -2727,12 +2727,12 @@ const needsPortForward = computed(() =>
 }
 
 .nd__ib-name {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .nd__ib-tag {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 
@@ -2742,7 +2742,7 @@ const needsPortForward = computed(() =>
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text2);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 .nd__ib-kv {
@@ -2762,7 +2762,7 @@ const needsPortForward = computed(() =>
   justify-content: space-between;
   gap: 12px;
   padding: 16px 22px 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .nd__card-head-title {
@@ -2771,13 +2771,13 @@ const needsPortForward = computed(() =>
   gap: 4px;
 }
 .nd__card-link {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   white-space: nowrap;
 }
 
 .nd__card-note {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
@@ -2792,7 +2792,7 @@ const needsPortForward = computed(() =>
 .nd__card-foot {
   padding: 12px 22px 16px;
   border-top: 1px solid var(--sep2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text3);
 }
@@ -2808,7 +2808,7 @@ const needsPortForward = computed(() =>
   grid-template-columns: 48px 1fr 52px;
   align-items: center;
   gap: 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .nd__usage-label {
@@ -2844,7 +2844,7 @@ const needsPortForward = computed(() =>
 .nd__usage-sub {
   display: block;
   margin-top: 4px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -2858,7 +2858,7 @@ const needsPortForward = computed(() =>
 
 .nd__chart-title {
   margin-bottom: 10px;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .nd__chart-title .nd__card-note {
@@ -2883,7 +2883,7 @@ const needsPortForward = computed(() =>
   background: var(--surface2);
   border-radius: var(--r-group);
   color: var(--text2);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .nd__deploying {
@@ -2905,13 +2905,13 @@ const needsPortForward = computed(() =>
 }
 
 .nd__deploying-title {
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .nd__deploying-note {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--text2);
 }
@@ -2923,7 +2923,7 @@ const needsPortForward = computed(() =>
   margin-bottom: 14px;
   padding: 14px 16px;
   border-radius: var(--r-group);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 
 .nd__deploy-verdict--ok {
@@ -2942,7 +2942,7 @@ const needsPortForward = computed(() =>
 
 .nd__boot-note {
   margin: 0 0 14px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text2);
 }
@@ -2952,13 +2952,13 @@ const needsPortForward = computed(() =>
 .nd__panel-note code {
   padding: 1px 5px;
   background: var(--fill);
-  border-radius: 5px;
-  font-size: 12px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
 }
 
 .nd__boot-help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -2968,7 +2968,7 @@ const needsPortForward = computed(() =>
 }
 
 .nd__diff-name {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text2);
 }
@@ -2980,7 +2980,7 @@ const needsPortForward = computed(() =>
 
 @media (max-width: 767px) {
   .nd__name {
-    font-size: 26px;
+    font-size: var(--fs-2xl);
   }
   .nd__kv {
     grid-template-columns: 1fr;

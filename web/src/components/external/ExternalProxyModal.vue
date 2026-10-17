@@ -453,7 +453,7 @@ async function submit() {
 }
 .ep__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text3);
 }

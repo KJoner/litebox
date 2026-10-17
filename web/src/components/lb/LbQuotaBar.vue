@@ -10,7 +10,7 @@ import { formatBytes, formatQuota } from '@/utils/format'
  *    两边各算一次迟早会在临界点上对不齐。
  * 3. usedBytes 读取失败时传 null,显示「—」而不是 0。读不到和真的是零不是一回事。
  *
- * V18:轨道 5px(详情大版本 8px)、填充首次渲染 lb-grow 0.8s。
+ * UI 2.0:轨道 6px(详情大版本 8px)、填充首次渲染 lb-grow 0.8s。
  */
 export type LbWarningLevel = 'UNLIMITED' | 'NORMAL' | 'WARNING' | 'DANGER' | 'EXCEEDED'
 
@@ -76,12 +76,12 @@ const level = computed(() => {
 }
 
 .lb-quota__value {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text);
 }
 .lb-quota--md .lb-quota__value {
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .lb-quota--warn .lb-quota__used {
   color: var(--warn);
@@ -96,14 +96,14 @@ const level = computed(() => {
 }
 
 .lb-quota__track {
-  height: 5px;
+  height: 6px;
   background: var(--track);
   border-radius: var(--r-pill);
   overflow: hidden;
 }
 .lb-quota--md .lb-quota__track {
   height: 8px;
-  border-radius: var(--r-input);
+  border-radius: var(--r-pill);
 }
 
 .lb-quota__track--empty {
@@ -125,7 +125,7 @@ const level = computed(() => {
 }
 
 .lb-quota__note {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 </style>

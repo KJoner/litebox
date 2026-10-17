@@ -386,7 +386,7 @@ async function submit() {
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -412,7 +412,7 @@ async function submit() {
 .ua__targets-head {
   padding: 10px 14px;
   border-bottom: 1px solid var(--sep);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text3);
 }
@@ -422,7 +422,7 @@ async function submit() {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .ua__target + .ua__target {
@@ -431,7 +431,7 @@ async function submit() {
 
 .ua__target-meta {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -451,7 +451,7 @@ async function submit() {
 }
 
 .ua__preview-title {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--brand);
 }
@@ -460,7 +460,7 @@ async function submit() {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   color: var(--text);
 }
 
@@ -470,26 +470,26 @@ async function submit() {
 }
 
 .ua__preview-note {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.65;
   color: var(--text2);
 }
 
 .ua__label-warn {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--bad);
 }
 
 .ua__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
 
 .ua__foot {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
   text-align: center;
 }

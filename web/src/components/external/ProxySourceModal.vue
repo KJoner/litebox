@@ -389,7 +389,7 @@ async function doSave() {
 }
 .ps__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text3);
 }
@@ -402,12 +402,12 @@ async function doSave() {
   margin-bottom: 12px;
   background: var(--fill);
   border-radius: var(--r-group);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.8;
 }
 .ps__note {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.75;
   color: var(--text2);
 }
@@ -415,7 +415,7 @@ async function doSave() {
   color: var(--warn);
 }
 .ps__errline {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   word-break: break-all;
 }
 .ps__dim {
@@ -446,10 +446,10 @@ async function doSave() {
   min-width: 0;
 }
 .ps__row-name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .ps__row-addr {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 .ps__tag {
@@ -459,7 +459,7 @@ async function doSave() {
   border-radius: var(--r-pill);
   background: var(--fill);
   color: var(--text2);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
 }
 .ps__tag--warn {
   background: var(--warn-bg);

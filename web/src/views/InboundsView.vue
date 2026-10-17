@@ -1240,9 +1240,9 @@ const columns = [
 .iv__kind {
   display: inline-block;
   padding: 1px 7px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--fill);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text2);
   white-space: nowrap;
 }
@@ -1256,7 +1256,7 @@ const columns = [
   text-underline-offset: 3px;
 }
 .iv__dim {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .iv__sub {
@@ -1273,7 +1273,7 @@ const columns = [
 }
 .iv__deploying {
   padding: 24px 8px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text3);
 }

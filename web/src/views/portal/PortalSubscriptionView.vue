@@ -311,12 +311,12 @@ function regenerate() {
   gap: 12px;
   flex-wrap: wrap;
   padding: 18px 22px 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .ps__card-note {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   color: var(--text3);
 }
@@ -334,14 +334,14 @@ function regenerate() {
 }
 
 .ps__unavailable-title {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--bad);
 }
 
 .ps__unavailable-body {
   margin-top: 5px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.8;
   color: var(--bad);
 }
@@ -352,7 +352,7 @@ function regenerate() {
   gap: 8px;
   padding: 14px 16px;
   background: var(--surface2);
-  border-radius: 16px;
+  border-radius: var(--r-card);
 }
 
 .ps__fmt--main {
@@ -367,7 +367,7 @@ function regenerate() {
 }
 
 .ps__fmt-name {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -375,18 +375,18 @@ function regenerate() {
   padding: 1px 6px;
   background: var(--brand);
   border-radius: var(--r-pill);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   color: var(--surface);
 }
 
 .ps__fmt-apps {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .ps__fmt-hint {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   color: var(--text2);
 }
@@ -396,7 +396,7 @@ function regenerate() {
   background: var(--fill);
   border: 1px solid var(--sep);
   border-radius: var(--r-group);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   line-height: 1.8;
   color: var(--text2);
 }
@@ -405,7 +405,7 @@ function regenerate() {
   padding: 12px 14px;
   background: var(--surface2);
   border-radius: var(--r-group);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text2);
 }
@@ -419,7 +419,7 @@ function regenerate() {
 .ps__steps {
   margin: 0;
   padding-left: 20px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 2;
   color: var(--text2);
 }
@@ -437,12 +437,12 @@ function regenerate() {
 }
 
 .ps__facts span {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
 .ps__facts b {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 </style>

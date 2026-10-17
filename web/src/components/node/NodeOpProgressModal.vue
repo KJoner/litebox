@@ -183,12 +183,12 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   animation: lb-spin 0.9s linear infinite;
 }
 .nop__running-title {
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .nop__hint {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--text2);
 }
@@ -199,7 +199,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   gap: 14px;
   padding: 14px 16px;
   border-radius: var(--r-group);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .nop__verdict--ok {
   background: var(--ok-bg);
@@ -226,7 +226,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   color: var(--text2);
   animation: lb-step 0.35s var(--ease) both;
 }
@@ -270,17 +270,17 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   gap: 10px;
 }
 .nop__row-name {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--text);
 }
 .nop__row-status {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 .nop__row-time {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .nop__detail {
@@ -288,7 +288,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   padding: 10px 12px;
   background: var(--surface);
   border-radius: var(--r-input);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.65;
   color: var(--text2);
   white-space: pre-wrap;
@@ -299,14 +299,14 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   padding: 12px 14px;
   border-radius: var(--r-group);
   background: var(--bad-bg);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .nop__note {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text3);
 }

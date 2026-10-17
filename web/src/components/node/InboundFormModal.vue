@@ -647,7 +647,7 @@ async function doSave() {
 /* 颜色只允许用 tokens.ts 里已有的那几个值 —— 这里是 text1 / text3 / danger。 */
 .ifm__where {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .ifm__dim {
@@ -655,13 +655,13 @@ async function doSave() {
 }
 .ifm__hint {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }
 .ifm__warn {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--bad);
 }
@@ -691,7 +691,7 @@ async function doSave() {
   gap: 8px;
   align-items: center;
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   border-top: 1px solid #E5E8EC;
 }
 .ifm__dest:first-child {

@@ -269,16 +269,16 @@ const usedParts = computed(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text3);
 }
 .pd__metric-note {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 .pd__metric-note :deep(.lb-time) {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 .pd__metric-row {
   display: flex;
@@ -287,13 +287,13 @@ const usedParts = computed(() => {
   flex-wrap: wrap;
 }
 .pd__metric-value {
-  font-size: 36px;
+  font-size: var(--fs-metric);
   font-weight: 700;
   letter-spacing: -0.04em;
   line-height: 1;
 }
 .pd__metric-value--sm {
-  font-size: 30px;
+  font-size: var(--fs-metric);
 }
 .pd__metric-value--warn {
   color: var(--warn);
@@ -302,11 +302,11 @@ const usedParts = computed(() => {
   color: var(--bad);
 }
 .pd__metric-unit {
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--text3);
 }
 .pd__metric-foot {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 .pd__link {
@@ -338,7 +338,7 @@ const usedParts = computed(() => {
 
 .pd__adjs-head {
   padding: 18px 22px 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .pd__adjs {
@@ -367,13 +367,13 @@ const usedParts = computed(() => {
 }
 
 .pd__adj-delta {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--ok);
 }
 
 .pd__adj-remark {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text2);
 }
@@ -383,7 +383,7 @@ const usedParts = computed(() => {
     padding: 16px 18px;
   }
   .pd__metric-value {
-    font-size: 30px;
+    font-size: var(--fs-metric);
   }
 }
 </style>

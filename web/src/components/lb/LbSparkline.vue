@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { formatBytes, formatUTCDay } from '@/utils/format'
 
 /**
@@ -9,8 +9,8 @@ import { formatBytes, formatUTCDay } from '@/utils/format'
  * 补 0 会让当天看起来「没人用」,插值会凭空造出一个从未存在的数字。
  * 折线用灰虚线跨过缺口(面积不填),柱状用空心虚线柱。
  *
- * V18:线 --brand 2.3px round + lb-draw 入场;面积 --brand 28%→0 渐变;
- * 峰值点 r5 描 --surface;柱圆角 3,峰值 --brand、其余 --brand-bg,逐柱 lb-growy;
+ * UI 2.0:线 --brand 2px round + 一次 lb-draw 入场;面积 --brand 18%→0 渐变;
+ * 峰值点 r5 描 --surface;柱圆角 2,峰值 --brand、其余 --brand-bg,逐柱 lb-growy;
  * 网格 --sep2;X 轴标签由调用方放在 #axis 插槽。
  */
 export interface LbPoint {
@@ -44,8 +44,8 @@ const props = withDefaults(
 const W = 800
 
 // 渐变 id 要按实例唯一:同一页上两张图共用一个 id,后一张会引到前一张的 defs。
-let seq = 0
-const uid = `lb-spark-${++seq}`
+// (原来在 script setup 里写 `let seq = 0; ++seq`,每个实例都从 0 起,id 全是 lb-spark-1。)
+const uid = `lb-spark-${useId()}`
 
 const max = computed(() => {
   const vals = props.points.map((p) => p.value).filter((v): v is number => v !== null)
@@ -172,7 +172,7 @@ const tipStyle = computed(() => {
     >
       <defs>
         <linearGradient :id="uid" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="var(--brand)" stop-opacity="0.28" />
+          <stop offset="0" stop-color="var(--brand)" stop-opacity="0.18" />
           <stop offset="1" stop-color="var(--brand)" stop-opacity="0" />
         </linearGradient>
       </defs>
@@ -198,7 +198,7 @@ const tipStyle = computed(() => {
           :y="p.y === null ? bottom - 8 : p.y"
           :width="barW"
           :height="p.y === null ? 8 : bottom - p.y"
-          rx="3"
+          rx="2"
           :fill="p.y === null ? 'var(--fill)' : p.value === max ? 'var(--brand)' : 'var(--brand-bg)'"
           :stroke="p.y === null ? 'var(--text3)' : 'none'"
           :stroke-dasharray="p.y === null ? '2 2' : undefined"
@@ -234,7 +234,7 @@ const tipStyle = computed(() => {
           :points="s"
           fill="none"
           stroke="var(--brand)"
-          stroke-width="2.3"
+          stroke-width="2"
           stroke-linejoin="round"
           stroke-linecap="round"
           vector-effect="non-scaling-stroke"
@@ -309,18 +309,18 @@ const tipStyle = computed(() => {
 
 .lb-spark__line {
   stroke-dasharray: 1600;
-  animation: lb-draw 1.4s var(--ease);
+  animation: lb-draw 0.9s var(--ease);
 }
 
 .lb-spark__area {
-  animation: lb-fade 1.2s var(--ease);
+  animation: lb-fade 0.8s var(--ease);
 }
 
 /* preserveAspectRatio="none" 下圆会被拉成椭圆;peak 点不参与缩放的办法是
    把它画小一点、靠描边撑视觉 —— 这里接受轻微变形,换不用第二层 SVG。 */
 .lb-spark__peak {
   animation: lb-fade 0.6s var(--ease) both;
-  animation-delay: 1s;
+  animation-delay: 0.6s;
 }
 
 .lb-spark__bar {
@@ -336,9 +336,9 @@ const tipStyle = computed(() => {
   padding: 8px 11px;
   background: var(--surface);
   border: 1px solid var(--sep);
-  border-radius: 10px;
+  border-radius: var(--r-group);
   box-shadow: var(--shadow-lg);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   white-space: nowrap;
   /* 读数框自己不能吃鼠标事件,否则鼠标移到它上面就触发 mouseleave,框会闪。 */
@@ -346,7 +346,7 @@ const tipStyle = computed(() => {
 }
 
 .lb-spark__tip-day {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   color: var(--text3);
 }
 

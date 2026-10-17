@@ -191,12 +191,12 @@ const columns = [
 <style scoped>
 .om__sum {
   margin-bottom: 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text2);
 }
 .om__rule {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 .om__err {
@@ -212,25 +212,25 @@ const columns = [
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text2);
 }
 .om__title {
   margin: 10px 0 6px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 .om__kind {
   display: inline-block;
   margin-right: 6px;
   padding: 0 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--fill);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .om__dim {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 .om__changed {

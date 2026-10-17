@@ -104,7 +104,7 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
   display: flex;
   flex-wrap: wrap;
   gap: 18px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
 }
 
@@ -122,7 +122,7 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
 }
 
 .ds__banner-title {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   margin-bottom: 4px;
   color: var(--text);
@@ -135,7 +135,7 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
 }
 
 .ds__banner-body {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
   color: var(--text);
   white-space: pre-wrap;
@@ -187,18 +187,18 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
 }
 
 .ds__step-name {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 
 .ds__step-status {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 
 .ds__step-time {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 
@@ -207,7 +207,7 @@ const stepMeta: Record<string, { shape: 'check' | 'cross' | 'minus'; fg: string;
   padding: 10px 12px;
   background: var(--surface);
   border-radius: var(--r-input);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.65;
   color: var(--text2);
   white-space: pre-wrap;

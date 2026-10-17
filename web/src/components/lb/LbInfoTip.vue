@@ -21,12 +21,12 @@ const props = withDefaults(
     width?: number
     /** 凭据类字段用实心警告图标。 */
     warn?: boolean
-    /** 图标尺寸,默认 16。 */
+    /** 图标尺寸,默认 14。 */
     size?: number
     /** 无障碍名称,默认「说明」。 */
     label?: string
   }>(),
-  { width: 280, warn: false, size: 16, label: '说明' },
+  { width: 280, warn: false, size: 14, label: '说明' },
 )
 
 // 全局钉住状态。放在模块级而不是 store:它不参与任何业务逻辑,也不需要持久化。
@@ -151,7 +151,7 @@ onBeforeUnmount(() => {
   vertical-align: middle;
   line-height: 0;
   border-radius: 50%;
-  transition: color 0.15s;
+  transition: color var(--dur-fast);
 }
 .lb-tip:hover,
 .lb-tip--on {
@@ -173,13 +173,13 @@ onBeforeUnmount(() => {
   border: 1px solid var(--sep);
   border-radius: var(--r-group);
   box-shadow: var(--shadow-lg);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.65;
   color: var(--text2);
   font-weight: 400;
   text-align: left;
   white-space: normal;
-  animation: lb-pop 0.18s var(--ease);
+  animation: lb-pop var(--dur) var(--ease);
   max-width: calc(100vw - 24px);
 }
 .lb-tip__bubble p {
@@ -194,9 +194,9 @@ onBeforeUnmount(() => {
 }
 .lb-tip__bubble code {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   padding: 0 4px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   background: var(--fill);
 }
 </style>

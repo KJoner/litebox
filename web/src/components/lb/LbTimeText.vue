@@ -57,7 +57,7 @@ const tone = computed(() => {
 
 <style scoped>
 .lb-time {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
@@ -72,7 +72,7 @@ const tone = computed(() => {
 }
 
 .lb-time__rel {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--text3);
 }
 </style>

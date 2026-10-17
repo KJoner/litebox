@@ -82,14 +82,14 @@ const ph = computed(
   padding: 1px 7px;
   background: var(--warn-bg);
   border-radius: var(--r-pill);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   color: var(--warn);
 }
 
 .lb-sens__help {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   color: var(--text3);
 }

@@ -443,7 +443,7 @@ async function submit() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .uf__day :deep(.uf__day-num) {
   width: 90px;
@@ -456,19 +456,19 @@ async function submit() {
   min-width: 0;
 }
 .uf__field-err {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--bad);
 }
 
 .uf__sub-head {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   padding: 0 4px;
   margin-bottom: -8px;
 }
 
 .uf__foot {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text3);
   text-align: center;
 }

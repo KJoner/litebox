@@ -128,14 +128,14 @@ defineProps<{ card: ServiceCardModel; busy: boolean }>()
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 600;
   white-space: nowrap;
 }
 
 /* 版本与现状:一行,超出省略 —— init 的原话可以很长,完整的放 title 里。 */
 .sc__detail {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--text3);
   overflow: hidden;
@@ -156,7 +156,7 @@ defineProps<{ card: ServiceCardModel; busy: boolean }>()
 }
 .sc__primary :deep(.ant-btn) {
   height: 40px;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 /* 下拉按钮是两颗拼起来的,主体那颗要撑满剩余宽度。 */
 .sc__primary :deep(.ant-dropdown-button > .ant-btn:first-child) {
@@ -172,6 +172,6 @@ defineProps<{ card: ServiceCardModel; busy: boolean }>()
 }
 .sc__actions :deep(.ant-btn) {
   padding-inline: 4px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 </style>
