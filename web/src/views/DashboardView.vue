@@ -58,6 +58,8 @@ import { useNarrow } from '@/composables/useNarrow'
  */
 const router = useRouter()
 const narrow = useNarrow()
+/** 节点健康那张栅格最小 980px:平板宽度下与其横向滚,不如直接用手机那套卡片。 */
+const compactNodes = useNarrow(1023)
 
 const summary = ref<DashboardSummary | null>(null)
 const summaryError = ref(false)
@@ -762,7 +764,7 @@ function conclusion(d: DeploymentRecord): string {
       </LbEmptyState>
 
       <!-- 桌面:表格式栅格 -->
-      <div v-else-if="!narrow" class="dv__nodes" role="table" aria-label="节点健康">
+      <div v-else-if="!compactNodes" class="dv__nodes" role="table" aria-label="节点健康">
         <div class="dv__nrow dv__nrow--head" role="row">
           <span role="columnheader">节点</span>
           <span role="columnheader">CPU</span>
