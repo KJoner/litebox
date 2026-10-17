@@ -1025,7 +1025,7 @@ const singBoxCard = computed<ServiceCardModel>(() => {
     actions: [
       {
         label: '下发配置',
-        onClick: deploySingBox,
+        onClick: () => deploySingBox(),
         disabled: relay ? '中转机上没有 sing-box 配置' : '',
       },
       checkAction,
