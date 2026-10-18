@@ -233,7 +233,10 @@ func (e *Engine) RunOnce(ctx context.Context) RoundStatus {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
-	targets, err := e.store.list(ctx, `WHERE enabled = 1 AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL) ORDER BY id`)
+	// 只取入口目标:出站序列由 OutboundEngine 在节点本机测,这里一条都不能碰 ——
+	// 否则主控会自己去 ping 那些公共目标,而结果被记成「节点出站」。
+	targets, err := e.store.list(ctx, `WHERE enabled = 1 AND direction = 'INGRESS'
+		AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL) ORDER BY id`)
 	if err != nil {
 		st.LastError = err.Error()
 		e.logger.Error("读取探测目标失败", "error", err)
@@ -359,7 +362,7 @@ func (e *Engine) RunOnce(ctx context.Context) RoundStatus {
 		return st
 	}
 	for _, m := range toSend {
-		e.emit(ctx, m.t, m.u, m.kind, m.result)
+		emitProbe(ctx, e.notifier, e.logger, e.nodeName, e.baseURL, m.t, m.u, m.kind, m.result)
 	}
 	e.maybePrune(ctx, start)
 	return st
@@ -462,15 +465,16 @@ const (
 
 // decideAlert 是告警状态机,纯函数。
 //
-//   - 连续失败达到阈值才进 DOWN,一次抖动不推;成功一次就恢复;
+//   - 连续失败达到阈值才进 DOWN,一次抖动不推;可达一次就恢复(ICMP 部分丢包也算可达);
 //   - 每次进 DOWN 只推一条,恢复只推一条 —— 状态持久化在目标行上,面板重启也不会重推;
 //   - 免打扰时段里只记状态不推送,时段结束后:还在失败的补一条「失败」;
 //     「失败」已经推出去、而在时段里恢复了的补一条「恢复」;失败与恢复都发生在时段里的,一条都不推;
-//   - 未执行(SKIPPED,如云实例停机)不改变计数 —— 停着的机器不是网络故障。
+//   - 未执行(SKIPPED,如云实例停机)、采集失败、工具不可用、目标受限都不改变计数 ——
+//     停着的机器不是网络故障,连不上机器也不等于目标不通。
 func decideAlert(a alertState, st Status, threshold int, quiet bool, now string) (alertState, []string) {
 	switch {
 	case st == StatusSkipped:
-	case st == StatusOK:
+	case st.Reachable():
 		a.consecutive = 0
 		if a.state == "DOWN" {
 			a.state, a.since = "OK", ""
@@ -514,44 +518,4 @@ func familyText(f Family) string {
 		return "IPv6"
 	}
 	return "IPv4"
-}
-
-// emit 推一条。正文**不带地址与端口** —— 推送会被截图、转发,管理入口不该跟着出去。
-func (e *Engine) emit(ctx context.Context, t Target, u TargetUpdate, kind string, r Result) {
-	if e.notifier == nil {
-		return
-	}
-	name := e.nodeName(ctx, t.NodeID)
-	key := fmt.Sprintf("probe:down:%d", t.ID)
-	var b strings.Builder
-	b.WriteString("目标:" + t.Label + "(" + familyText(t.Family) + ",TCP)")
-	b.WriteString("\n来源:" + SourceLabel(t.Source))
-	ev := notify.Event{DedupKey: key}
-	switch kind {
-	case emitDown:
-		ev.Kind, ev.Level = notify.KindProbeDown, notify.LevelWarning
-		ev.Title = fmt.Sprintf("节点「%s」TCP 探测连续失败", name)
-		b.WriteString(fmt.Sprintf("\n连续 %d 次失败", u.ConsecutiveFailures))
-		if r.Status != "" {
-			b.WriteString(",最近一次:" + r.Status.Label())
-		}
-		b.WriteString("\n说明:这只说明从主控连不上这个端口,不等于用户全部断线;面板不会因此自动重启、重新部署或停机。")
-	case emitRecovered:
-		ev.Kind, ev.Level = notify.KindProbeRecovered, notify.LevelInfo
-		ev.Title = fmt.Sprintf("节点「%s」TCP 探测已恢复", name)
-		if r.Status == StatusOK {
-			b.WriteString(fmt.Sprintf("\n最近一次 TCP 建连 %.0f ms", float64(r.RTT.Microseconds())/1000))
-		}
-		// 恢复之后下一次再挂要立刻知道,不被上一次的冷却压掉。
-		e.notifier.ResetDedup(key)
-		ev.DedupKey = ""
-	default:
-		return
-	}
-	if base := strings.TrimRight(e.baseURL(ctx), "/"); base != "" {
-		b.WriteString(fmt.Sprintf("\n详情:%s/nodes/%d/network", base, t.NodeID))
-	}
-	ev.Body = b.String()
-	e.notifier.Notify(ev)
-	e.logger.Info("TCP 探测告警", "node_id", t.NodeID, "target_id", t.ID, "event", kind)
 }

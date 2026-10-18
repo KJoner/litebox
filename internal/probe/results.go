@@ -41,6 +41,40 @@ type TargetUpdate struct {
 	LastSuccessAt       string
 }
 
+// hourCounts 是一条结果在小时汇总里占的份额。
+type hourCounts struct {
+	attempts, ok, lossy, dns, skipped, ssh, tool, blocked int
+	sent, received, rttN                                  int
+	rttSum, rttMin, rttMax                                int64
+}
+
+func countsOf(r Result) hourCounts {
+	var c hourCounts
+	switch {
+	case r.Status == StatusSkipped:
+		c.skipped = 1
+	case r.Status == StatusDNSError:
+		c.dns = 1
+	case r.Status == StatusSSHError:
+		c.ssh = 1
+	case r.Status == StatusToolError:
+		c.tool = 1
+	case r.Status == StatusBlocked:
+		c.blocked = 1
+	case r.Status.Attempted():
+		c.attempts = 1
+		switch r.Status {
+		case StatusOK:
+			c.ok = 1
+		case StatusLoss:
+			c.lossy = 1
+		}
+		c.sent, c.received = r.counts()
+		c.rttN, c.rttSum, c.rttMin, c.rttMax = r.rttStats()
+	}
+	return c
+}
+
 // SaveRound 把一轮的结果、小时汇总与目标状态写进同一个事务。
 //
 // 一轮一个事务:数据库只有一条连接,逐条提交会让每分钟几十次小事务去和部署、
@@ -56,42 +90,46 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 	defer tx.Rollback()
 	for _, sm := range samples {
 		at := sm.At.UTC().Format(time.RFC3339)
+		c := countsOf(sm.Result)
+		var minUS, maxUS int64
+		if c.rttN > 0 {
+			minUS, maxUS = c.rttMin, c.rttMax
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO probe_results (target_id, generation, source, at, status, rtt_us, dns_us, error)
-			VALUES (?,?,?,?,?,?,?,?)`,
+			INSERT INTO probe_results (target_id, generation, source, at, status, rtt_us, dns_us, error,
+			                           sent, received, rtt_min_us, rtt_max_us, peer)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			sm.TargetID, sm.Generation, sm.Source, at, string(sm.Status),
-			sm.RTT.Microseconds(), sm.DNS.Microseconds(), sm.Error); err != nil {
+			sm.RTT.Microseconds(), sm.DNS.Microseconds(), sm.Error,
+			c.sent, c.received, minUS, maxUS, sm.Peer); err != nil {
 			return err
 		}
-		var attempts, ok, dns, skipped int
-		var rtt int64
-		switch {
-		case sm.Status == StatusSkipped:
-			skipped = 1
-		case sm.Status == StatusDNSError:
-			dns = 1
-		case sm.Status.Attempted():
-			attempts = 1
-			if sm.Status == StatusOK {
-				ok, rtt = 1, sm.RTT.Microseconds()
-			}
-		}
 		hour := sm.At.UTC().Truncate(time.Hour).Format(time.RFC3339)
-		// UPSERT 里 SET 右侧引用的是【旧行】的值,所以 rtt_min 要先判断旧行有没有成功样本。
+		// UPSERT 里 SET 右侧引用的是【旧行】的值,所以 rtt_min 要先判断旧行有没有 RTT 样本。
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO probe_hourly (target_id, generation, hour, attempts, ok, dns_errors, skipped, rtt_sum_us, rtt_min_us, rtt_max_us)
-			VALUES (?,?,?,?,?,?,?,?,?,?)
+			INSERT INTO probe_hourly (target_id, generation, hour, attempts, ok, lossy, dns_errors, skipped,
+			                          ssh_errors, tool_errors, blocked, sent, received, rtt_n,
+			                          rtt_sum_us, rtt_min_us, rtt_max_us)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(target_id, generation, hour) DO UPDATE SET
 			  attempts = attempts + excluded.attempts,
 			  ok = ok + excluded.ok,
+			  lossy = lossy + excluded.lossy,
 			  dns_errors = dns_errors + excluded.dns_errors,
 			  skipped = skipped + excluded.skipped,
+			  ssh_errors = ssh_errors + excluded.ssh_errors,
+			  tool_errors = tool_errors + excluded.tool_errors,
+			  blocked = blocked + excluded.blocked,
+			  sent = sent + excluded.sent,
+			  received = received + excluded.received,
+			  rtt_n = rtt_n + excluded.rtt_n,
 			  rtt_sum_us = rtt_sum_us + excluded.rtt_sum_us,
-			  rtt_min_us = CASE WHEN excluded.ok = 0 THEN rtt_min_us
-			                    WHEN ok = 0 THEN excluded.rtt_min_us
+			  rtt_min_us = CASE WHEN excluded.rtt_n = 0 THEN rtt_min_us
+			                    WHEN rtt_n = 0 THEN excluded.rtt_min_us
 			                    ELSE MIN(rtt_min_us, excluded.rtt_min_us) END,
 			  rtt_max_us = MAX(rtt_max_us, excluded.rtt_max_us)`,
-			sm.TargetID, sm.Generation, hour, attempts, ok, dns, skipped, rtt, rtt, rtt); err != nil {
+			sm.TargetID, sm.Generation, hour, c.attempts, c.ok, c.lossy, c.dns, c.skipped,
+			c.ssh, c.tool, c.blocked, c.sent, c.received, c.rttN, c.rttSum, minUS, maxUS); err != nil {
 			return err
 		}
 	}
@@ -141,21 +179,33 @@ func (s *Store) Prune(ctx context.Context, now time.Time) (int64, error) {
 // ---------- 统计 ----------
 
 // Bucket 是一个时间窗口里的计数。点阵的每一个点、曲线的每一个点都是一个 Bucket,
-// 卡片上的失败率由同一批 Bucket 相加得到 —— 分母、样本数与点阵永远对得上。
+// 卡片上的丢包率 / 失败率由同一批 Bucket 相加得到 —— 分母、样本数与点阵永远对得上。
 type Bucket struct {
-	At        string   `json:"at"`
-	Attempts  int      `json:"attempts"`
-	OK        int      `json:"ok"`
-	Failures  int      `json:"failures"`
-	DNSErrors int      `json:"dns_errors"`
-	Skipped   int      `json:"skipped"`
-	RTTAvgMs  *float64 `json:"rtt_avg_ms"`
-	RTTMinMs  *float64 `json:"rtt_min_ms"`
-	RTTMaxMs  *float64 `json:"rtt_max_ms"`
-	// State 是点阵的颜色:OK / PARTIAL / FAIL / DNS / SKIP / NONE。
-	// NONE = 这个窗口一个样本都没有 —— **不按正常画**。
+	At string `json:"at"`
+	// Attempts / OK / Lossy / Failures 按轮计:发起了几轮、几轮全部收到、几轮部分丢包、几轮全失败。
+	Attempts int `json:"attempts"`
+	OK       int `json:"ok"`
+	Lossy    int `json:"lossy"`
+	Failures int `json:"failures"`
+	// 没有发起的几种,各自单列,都不进分母。
+	DNSErrors  int `json:"dns_errors"`
+	Skipped    int `json:"skipped"`
+	SSHErrors  int `json:"ssh_errors"`
+	ToolErrors int `json:"tool_errors"`
+	Blocked    int `json:"blocked"`
+	// Sent / Received 按包计(TCP 按建连计)。LossRate = (Sent − Received) / Sent;一次都没发起时为 nil。
+	Sent     int      `json:"sent"`
+	Received int      `json:"received"`
+	LossRate *float64 `json:"loss_rate"`
+	RTTAvgMs *float64 `json:"rtt_avg_ms"`
+	RTTMinMs *float64 `json:"rtt_min_ms"`
+	RTTMaxMs *float64 `json:"rtt_max_ms"`
+	// State 是点阵的颜色:OK / PARTIAL / FAIL / DNS / SSH / TOOL / BLOCKED / SKIP / NONE。
+	// NONE = 这个窗口一个样本都没有 —— **不按正常画**。SSH(采集失败)与 TOOL(工具不可用)
+	// 也不按失败画:那几轮根本没有发出去,目标那头是什么样子并不知道。
 	State string `json:"state"`
 
+	rttN                   int
 	rttSum, rttMin, rttMax int64
 }
 
@@ -163,43 +213,53 @@ type Bucket struct {
 type Stats struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-	// Attempts 是实际发起的 TCP 连接数,失败率的分母;DNSErrors 与 Skipped 不在分母里。
-	Attempts  int `json:"attempts"`
-	OK        int `json:"ok"`
-	Failures  int `json:"failures"`
-	DNSErrors int `json:"dns_errors"`
-	Skipped   int `json:"skipped"`
-	// FailureRate 是 Failures / Attempts(0~1);一次都没发起过时为 nil,不是 0。
+	// Attempts 是实际发起的轮数(TCP 即建连数),失败率的分母;没有发起的几种都不在分母里。
+	Attempts   int `json:"attempts"`
+	OK         int `json:"ok"`
+	Lossy      int `json:"lossy"`
+	Failures   int `json:"failures"`
+	DNSErrors  int `json:"dns_errors"`
+	Skipped    int `json:"skipped"`
+	SSHErrors  int `json:"ssh_errors"`
+	ToolErrors int `json:"tool_errors"`
+	Blocked    int `json:"blocked"`
+	Sent       int `json:"sent"`
+	Received   int `json:"received"`
+	// FailureRate 是 Failures / Attempts(0~1):TCP 的连接失败率;ICMP 时是「整轮全丢」的比例。
+	// LossRate 是 (Sent − Received) / Sent:ICMP 的丢包率;TCP 时与 FailureRate 相同。
+	// 一次都没发起过时两者都是 nil,不是 0。
 	FailureRate *float64 `json:"failure_rate"`
+	LossRate    *float64 `json:"loss_rate"`
 	RTTAvgMs    *float64 `json:"rtt_avg_ms"`
 	RTTMinMs    *float64 `json:"rtt_min_ms"`
 	RTTMaxMs    *float64 `json:"rtt_max_ms"`
 }
 
-func (b *Bucket) add(status Status, rttUS int64) {
-	switch {
-	case status == StatusSkipped:
-		b.Skipped++
-	case status == StatusDNSError:
-		b.DNSErrors++
-	case status.Attempted():
-		b.Attempts++
-		if status == StatusOK {
-			b.addOK(1, rttUS, rttUS, rttUS)
-		} else {
-			b.Failures++
-		}
+func (b *Bucket) addCounts(c hourCounts) {
+	b.Attempts += c.attempts
+	b.OK += c.ok
+	b.Lossy += c.lossy
+	b.Failures += c.attempts - c.ok - c.lossy
+	b.DNSErrors += c.dns
+	b.Skipped += c.skipped
+	b.SSHErrors += c.ssh
+	b.ToolErrors += c.tool
+	b.Blocked += c.blocked
+	b.Sent += c.sent
+	b.Received += c.received
+	if c.rttN > 0 {
+		b.addRTT(c.rttN, c.rttSum, c.rttMin, c.rttMax)
 	}
 }
 
-func (b *Bucket) addOK(n int, sum, min, max int64) {
-	if b.OK == 0 || min < b.rttMin {
+func (b *Bucket) addRTT(n int, sum, min, max int64) {
+	if b.rttN == 0 || min < b.rttMin {
 		b.rttMin = min
 	}
 	if max > b.rttMax {
 		b.rttMax = max
 	}
-	b.OK += n
+	b.rttN += n
 	b.rttSum += sum
 }
 
@@ -208,21 +268,36 @@ func ms(us int64) *float64 {
 	return &v
 }
 
+func ratio(num, den int) *float64 {
+	if den <= 0 {
+		return nil
+	}
+	v := float64(num) / float64(den)
+	return &v
+}
+
 func (b *Bucket) finish() {
-	if b.OK > 0 {
-		b.RTTAvgMs = ms(b.rttSum / int64(b.OK))
+	if b.rttN > 0 {
+		b.RTTAvgMs = ms(b.rttSum / int64(b.rttN))
 		b.RTTMinMs = ms(b.rttMin)
 		b.RTTMaxMs = ms(b.rttMax)
 	}
+	b.LossRate = ratio(b.Sent-b.Received, b.Sent)
 	switch {
-	case b.Attempts > 0 && b.Failures == 0:
+	case b.Attempts > 0 && b.Failures == 0 && b.Lossy == 0:
 		b.State = "OK"
-	case b.Attempts > 0 && b.OK == 0:
+	case b.Attempts > 0 && b.OK == 0 && b.Lossy == 0:
 		b.State = "FAIL"
 	case b.Attempts > 0:
 		b.State = "PARTIAL"
 	case b.DNSErrors > 0:
 		b.State = "DNS"
+	case b.SSHErrors > 0:
+		b.State = "SSH"
+	case b.ToolErrors > 0:
+		b.State = "TOOL"
+	case b.Blocked > 0:
+		b.State = "BLOCKED"
 	case b.Skipped > 0:
 		b.State = "SKIP"
 	default:
@@ -236,18 +311,22 @@ func Sum(buckets []Bucket, from, to time.Time) Stats {
 	var acc Bucket
 	for _, b := range buckets {
 		st.Attempts += b.Attempts
+		st.OK += b.OK
+		st.Lossy += b.Lossy
 		st.Failures += b.Failures
 		st.DNSErrors += b.DNSErrors
 		st.Skipped += b.Skipped
-		if b.OK > 0 {
-			acc.addOK(b.OK, b.rttSum, b.rttMin, b.rttMax)
+		st.SSHErrors += b.SSHErrors
+		st.ToolErrors += b.ToolErrors
+		st.Blocked += b.Blocked
+		st.Sent += b.Sent
+		st.Received += b.Received
+		if b.rttN > 0 {
+			acc.addRTT(b.rttN, b.rttSum, b.rttMin, b.rttMax)
 		}
 	}
-	st.OK = acc.OK
-	if st.Attempts > 0 {
-		r := float64(st.Failures) / float64(st.Attempts)
-		st.FailureRate = &r
-	}
+	st.FailureRate = ratio(st.Failures, st.Attempts)
+	st.LossRate = ratio(st.Sent-st.Received, st.Sent)
 	acc.finish()
 	st.RTTAvgMs, st.RTTMinMs, st.RTTMaxMs = acc.RTTAvgMs, acc.RTTMinMs, acc.RTTMaxMs
 	return st
@@ -258,10 +337,10 @@ type rawRow struct {
 	targetID int64
 	gen      int
 	at       time.Time
-	status   Status
-	rttUS    int64
-	err      string
+	res      Result
 }
+
+func (r rawRow) status() Status { return r.res.Status }
 
 // rawSince 读一批目标从 since 起的明细,只取各自当前口径(generation)的行。
 func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time) (map[int64][]rawRow, error) {
@@ -278,7 +357,7 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 		args = append(args, t.ID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, generation, at, status, rtt_us, error
+		SELECT target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer
 		  FROM probe_results
 		 WHERE at >= ? AND target_id IN (`+strings.Join(ph, ",")+`)
 		 ORDER BY target_id, at, id`, args...)
@@ -289,7 +368,9 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 	for rows.Next() {
 		var r rawRow
 		var at string
-		if err := rows.Scan(&r.targetID, &r.gen, &at, &r.status, &r.rttUS, &r.err); err != nil {
+		var rtt, minUS, maxUS int64
+		if err := rows.Scan(&r.targetID, &r.gen, &at, &r.res.Status, &rtt, &r.res.Error,
+			&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer); err != nil {
 			return nil, err
 		}
 		if r.gen != gen[r.targetID] {
@@ -300,6 +381,9 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 			continue
 		}
 		r.at = t
+		r.res.RTT = time.Duration(rtt) * time.Microsecond
+		r.res.RTTMin = time.Duration(minUS) * time.Microsecond
+		r.res.RTTMax = time.Duration(maxUS) * time.Microsecond
 		out[r.targetID] = append(out[r.targetID], r)
 	}
 	return out, rows.Err()
@@ -322,7 +406,7 @@ func bucketize(rows []rawRow, from, to time.Time, size time.Duration) []Bucket {
 		if r.at.Before(from) || !r.at.Before(to) {
 			continue
 		}
-		out[int(r.at.Sub(from)/size)].add(r.status, r.rttUS)
+		out[int(r.at.Sub(from)/size)].addCounts(countsOf(r.res))
 	}
 	for i := range out {
 		out[i].finish()
@@ -334,7 +418,8 @@ func bucketize(rows []rawRow, from, to time.Time, size time.Duration) []Bucket {
 func (s *Store) HourlyBuckets(ctx context.Context, t Target, from, to time.Time) ([]Bucket, error) {
 	from = from.UTC().Truncate(time.Hour)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT hour, attempts, ok, dns_errors, skipped, rtt_sum_us, rtt_min_us, rtt_max_us
+		SELECT hour, attempts, ok, lossy, dns_errors, skipped, ssh_errors, tool_errors, blocked,
+		       sent, received, rtt_n, rtt_sum_us, rtt_min_us, rtt_max_us
 		  FROM probe_hourly
 		 WHERE target_id = ? AND generation = ? AND hour >= ? AND hour < ?`,
 		t.ID, t.Generation, from.Format(time.RFC3339), to.UTC().Format(time.RFC3339))
@@ -345,15 +430,12 @@ func (s *Store) HourlyBuckets(ctx context.Context, t Target, from, to time.Time)
 	byHour := map[string]Bucket{}
 	for rows.Next() {
 		var b Bucket
-		var ok int
-		var sum, min, max int64
-		if err := rows.Scan(&b.At, &b.Attempts, &ok, &b.DNSErrors, &b.Skipped, &sum, &min, &max); err != nil {
+		var c hourCounts
+		if err := rows.Scan(&b.At, &c.attempts, &c.ok, &c.lossy, &c.dns, &c.skipped, &c.ssh, &c.tool, &c.blocked,
+			&c.sent, &c.received, &c.rttN, &c.rttSum, &c.rttMin, &c.rttMax); err != nil {
 			return nil, err
 		}
-		b.Failures = b.Attempts - ok
-		if ok > 0 {
-			b.addOK(ok, sum, min, max)
-		}
+		b.addCounts(c)
 		byHour[b.At] = b
 	}
 	if err := rows.Err(); err != nil {
@@ -403,16 +485,20 @@ type History struct {
 	Source  string   `json:"source"`
 	Buckets []Bucket `json:"buckets"`
 	Stats   Stats    `json:"stats"`
-	// Failures 是这段时间里最近的若干次失败(失败点),最新的在前。
+	// Failures 是这段时间里最近的若干次异常(失败、部分丢包、采集失败等),最新的在前。
 	Failures []FailurePoint `json:"failures"`
 }
 
-// FailurePoint 是一次失败的时间与类别。
+// FailurePoint 是一次异常的时间与类别。
 type FailurePoint struct {
 	At     string `json:"at"`
 	Status Status `json:"status"`
 	Label  string `json:"label"`
 	Error  string `json:"error"`
+	// Sent / Received 只对 ICMP 的部分丢包与全丢有意义;Peer 是那一轮实际连的 IP。
+	Sent     int    `json:"sent"`
+	Received int    `json:"received"`
+	Peer     string `json:"peer"`
 }
 
 // History 读一个目标的历史。1h / 24h 从明细按 1 / 10 分钟切窗;7d 读小时汇总。
@@ -446,7 +532,7 @@ func (s *Store) History(ctx context.Context, t Target, r Range, now time.Time) (
 	h.Stats = Sum(h.Buckets, from, to)
 	// 失败点读明细(7 天视图也读 —— 明细正好保留 7 天)。
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT at, status, error FROM probe_results
+		SELECT at, status, error, sent, received, peer FROM probe_results
 		 WHERE target_id = ? AND generation = ? AND at >= ? AND status NOT IN ('OK', 'SKIPPED')
 		 ORDER BY at DESC, id DESC LIMIT 50`, t.ID, t.Generation, from.Format(time.RFC3339))
 	if err != nil {
@@ -455,10 +541,10 @@ func (s *Store) History(ctx context.Context, t Target, r Range, now time.Time) (
 	defer rows.Close()
 	for rows.Next() {
 		var f FailurePoint
-		if err := rows.Scan(&f.At, &f.Status, &f.Error); err != nil {
+		if err := rows.Scan(&f.At, &f.Status, &f.Error, &f.Sent, &f.Received, &f.Peer); err != nil {
 			return nil, err
 		}
-		f.Label = f.Status.Label()
+		f.Label = f.Status.LabelFor(t.Protocol)
 		h.Failures = append(h.Failures, f)
 	}
 	return h, rows.Err()

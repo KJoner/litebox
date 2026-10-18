@@ -59,6 +59,8 @@ type Server struct {
 	labels       *asset.Store
 	probes       *probe.Store
 	prober       *probe.Engine
+	outbound     *probe.OutboundEngine
+	probeHelpers HelperInventory
 	profiles     *subscription.ProfileStore
 	portal       *portal.Service
 	portalAccts  *portal.Store
@@ -108,6 +110,10 @@ type Options struct {
 	Labels *asset.Store
 	Probes *probe.Store
 	Prober *probe.Engine
+	// Outbound 是出站网络探测的引擎;ProbeHelpers 回答主控手上有哪些架构的辅助程序。
+	// 两者为 nil 时公共目标照样能配,只是概况里说「出站探测未接入」。
+	Outbound     *probe.OutboundEngine
+	ProbeHelpers HelperInventory
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
 	// 而不是「页面在、点了报错」。
 	Profiles *subscription.ProfileStore
@@ -139,6 +145,8 @@ func NewServer(opts Options) *Server {
 		labels:       opts.Labels,
 		probes:       opts.Probes,
 		prober:       opts.Prober,
+		outbound:     opts.Outbound,
+		probeHelpers: opts.ProbeHelpers,
 		profiles:     opts.Profiles,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
@@ -436,9 +444,17 @@ func (s *Server) Handler() http.Handler {
 			authed.HandleFunc("PUT /api/asset-labels/{kind}/{id}", s.handleSaveAssetLabels)
 		}
 	}
-	// TCP 探测目标(资产卡片 P0-C)。目标只能从机器已登记的地址 × 端口里选。
+	// 网络探测。入口目标只能从机器已登记的地址 × 端口里选;出站的公共目标只有管理员能建
+	// (authed 就是管理端会话),受限地址与端口默认拒绝。
 	if s.probes != nil && s.nodes != nil {
 		authed.HandleFunc("GET /api/nodes/{id}/probe", s.handleNodeProbe)
+		authed.HandleFunc("PUT /api/nodes/{id}/probe-public/{publicId}", s.handleSetProbeBinding)
+		authed.HandleFunc("GET /api/probe/public-targets", s.handleListPublicTargets)
+		authed.HandleFunc("POST /api/probe/public-targets", s.handleCreatePublicTarget)
+		authed.HandleFunc("PUT /api/probe/public-targets/{id}", s.handleUpdatePublicTarget)
+		authed.HandleFunc("DELETE /api/probe/public-targets/{id}", s.handleDeletePublicTarget)
+		authed.HandleFunc("GET /api/probe/public-targets/{id}/nodes", s.handlePublicTargetNodes)
+		authed.HandleFunc("PUT /api/probe/public-targets/{id}/scope", s.handleSetPublicScope)
 		authed.HandleFunc("POST /api/nodes/{id}/probe-targets", s.handleCreateProbeTarget)
 		authed.HandleFunc("PUT /api/probe-targets/{id}", s.handleUpdateProbeTarget)
 		authed.HandleFunc("DELETE /api/probe-targets/{id}", s.handleDeleteProbeTarget)

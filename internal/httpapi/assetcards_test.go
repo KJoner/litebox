@@ -130,7 +130,8 @@ func TestDashboardCardsAggregates(t *testing.T) {
 	if cards.Expiring7d != 1 {
 		t.Errorf("7 天内到期 = %d", cards.Expiring7d)
 	}
-	if !cards.Probe.Available || cards.Probe.IntervalSec != 60 || len(cards.Probe.Sources) != 1 || cards.Probe.Sources[0].Code != "MASTER" {
+	if !cards.Probe.Available || cards.Probe.IntervalSec != 60 || len(cards.Probe.Sources) != 2 ||
+		cards.Probe.Sources[0].Code != "NODE" || cards.Probe.Sources[1].Code != "MASTER" {
 		t.Errorf("probe 概况 = %+v", cards.Probe)
 	}
 }

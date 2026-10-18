@@ -24,16 +24,26 @@ var ErrNotAllowed = errors.New("目标不在这台机器已登记的地址与端
 // ErrDuplicate 表示同一台机器上已经有这个目标。
 var ErrDuplicate = errors.New("这个目标已经在监测了")
 
-// Target 是一个监测目标。
+// ErrOutboundSeries 表示要直接改 / 删的是一条出站序列。
+//
+// 出站序列由「公共目标 × 节点开关」算出来,启停与删除都要走那两处 ——
+// 允许在这里单独停一条的话,它会在下一次同步时被重新打开,管理员怎么点都关不掉。
+var ErrOutboundSeries = errors.New("出站探测跟随公共目标与节点开关,请在那里启停或删除")
+
+// Target 是一条监测序列:入口目标(主控 → 节点)或出站序列(节点 → 公共目标)。
 type Target struct {
-	ID      int64  `json:"id"`
-	NodeID  int64  `json:"node_id"`
-	Kind    Kind   `json:"kind"`
-	Ref     string `json:"ref"`
-	Family  Family `json:"family"`
-	Label   string `json:"label"`
-	Source  string `json:"source"`
-	Enabled bool   `json:"enabled"`
+	ID        int64     `json:"id"`
+	NodeID    int64     `json:"node_id"`
+	Direction Direction `json:"direction"`
+	Protocol  Protocol  `json:"protocol"`
+	Kind      Kind      `json:"kind"`
+	Ref       string    `json:"ref"`
+	// PublicID 是出站序列指向的公共目标;入口目标为 0。
+	PublicID int64  `json:"public_id"`
+	Family   Family `json:"family"`
+	Label    string `json:"label"`
+	Source   string `json:"source"`
+	Enabled  bool   `json:"enabled"`
 	// ResolvedHost / ResolvedPort 是上一轮解析出来的地址与端口。
 	ResolvedHost    string `json:"resolved_host"`
 	ResolvedPort    int    `json:"resolved_port"`
@@ -54,7 +64,7 @@ type Target struct {
 	UpdatedAt           string `json:"updated_at"`
 }
 
-const targetColumns = `id, node_id, kind, ref, family, label, source, enabled,
+const targetColumns = `id, node_id, direction, protocol, kind, ref, COALESCE(public_id, 0), family, label, source, enabled,
 	resolved_host, resolved_port, generation, generation_since, ref_state, ref_error,
 	consecutive_failures, alert_state, alert_since, alert_notified, recovery_pending,
 	last_status, last_at, last_success_at, created_at, updated_at`
@@ -64,7 +74,8 @@ type scanner interface{ Scan(dest ...any) error }
 func scanTarget(r scanner) (*Target, error) {
 	var t Target
 	var enabled, notified, pending int
-	if err := r.Scan(&t.ID, &t.NodeID, &t.Kind, &t.Ref, &t.Family, &t.Label, &t.Source, &enabled,
+	if err := r.Scan(&t.ID, &t.NodeID, &t.Direction, &t.Protocol, &t.Kind, &t.Ref, &t.PublicID,
+		&t.Family, &t.Label, &t.Source, &enabled,
 		&t.ResolvedHost, &t.ResolvedPort, &t.Generation, &t.GenerationSince, &t.RefState, &t.RefError,
 		&t.ConsecutiveFailures, &t.AlertState, &t.AlertSince, &notified, &pending,
 		&t.LastStatus, &t.LastAt, &t.LastSuccessAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
@@ -102,15 +113,20 @@ func (s *Store) list(ctx context.Context, where string, args ...any) ([]Target, 
 	return out, rows.Err()
 }
 
-// List 列出一台机器的全部目标。
-func (s *Store) List(ctx context.Context, nodeID int64) ([]Target, error) {
-	return s.list(ctx, `WHERE node_id = ? ORDER BY kind, id`, nodeID)
+// List 列出一台机器上某个方向的全部序列。出站序列按公共目标的排序走。
+func (s *Store) List(ctx context.Context, nodeID int64, dir Direction) ([]Target, error) {
+	return s.list(ctx, `WHERE node_id = ? AND direction = ? ORDER BY `+orderBy, nodeID, dir)
 }
 
-// ListAll 列出未删除机器上的全部目标(仪表盘聚合用)。
-func (s *Store) ListAll(ctx context.Context) ([]Target, error) {
-	return s.list(ctx, `WHERE node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL) ORDER BY node_id, kind, id`)
+// ListAll 列出未删除机器上某个方向的全部序列(仪表盘聚合用)。
+func (s *Store) ListAll(ctx context.Context, dir Direction) ([]Target, error) {
+	return s.list(ctx, `WHERE direction = ? AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL)
+		ORDER BY node_id, `+orderBy, dir)
 }
+
+// orderBy 让出站序列跟着公共目标的 sort_order 排,入口目标按种类与 id 排。
+const orderBy = `COALESCE((SELECT sort_order FROM probe_public_targets p WHERE p.id = probe_targets.public_id), 0),
+	public_id, kind, id`
 
 // Get 读一个目标。
 func (s *Store) Get(ctx context.Context, id int64) (*Target, error) {
@@ -147,9 +163,9 @@ func (s *Store) Create(ctx context.Context, nodeID int64, ref string, family Fam
 	now := s.now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO probe_targets
-		  (node_id, kind, ref, family, label, source, enabled, resolved_host, resolved_port,
+		  (node_id, direction, protocol, kind, ref, family, label, source, enabled, resolved_host, resolved_port,
 		   generation, generation_since, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,1,?,?,1,?,?,?)`,
+		VALUES (?,'INGRESS','TCP',?,?,?,?,?,1,?,?,1,?,?,?)`,
 		nodeID, hit.Kind, hit.Ref, hit.Family, label, SourceMaster, hit.Host, hit.Port, now, now, now)
 	if err != nil {
 		return nil, err
@@ -169,6 +185,9 @@ func (s *Store) Update(ctx context.Context, id int64, enabled *bool, label *stri
 	t, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if t.Direction == DirOutbound {
+		return nil, ErrOutboundSeries
 	}
 	if label != nil {
 		l := strings.TrimSpace(*label)
@@ -201,8 +220,15 @@ func (s *Store) Update(ctx context.Context, id int64, enabled *bool, label *stri
 	return s.Get(ctx, id)
 }
 
-// Delete 删掉一个目标,结果与汇总随外键一起删。
+// Delete 删掉一个入口目标,结果与汇总随外键一起删。出站序列不在这里删(ErrOutboundSeries)。
 func (s *Store) Delete(ctx context.Context, id int64) error {
+	t, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if t.Direction == DirOutbound {
+		return ErrOutboundSeries
+	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM probe_targets WHERE id = ?`, id)
 	if err != nil {
 		return err
