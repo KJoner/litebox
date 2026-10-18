@@ -453,6 +453,39 @@ POST /api/nodes/{id}/realm-stop
 * 设置接口 `/api/settings` 多了 `probe_url`(留空 = 默认 gstatic 的 generate_204)
   与只读的 `default_probe_url`:部署拨测的终点从 V15 起是它,不再是节点的 sshd。
 
+## 资产卡片:套餐计费、地区标签与 TCP 探测(V22)
+
+```
+GET    /api/dashboard/cards                     卡片聚合:计费估值、标签、探测汇总、按币种成本、7 天内到期
+PUT    /api/asset-labels/{kind}/{id}            地区(两位字母)与标签(最多 8 个)
+GET    /api/nodes/{id}/probe                    这台机器的探测目标汇总 + 候选(白名单)
+POST   /api/nodes/{id}/probe-targets            {ref, family};不在候选里一律 400,重复 409
+PUT    /api/probe-targets/{id}                  {enabled?, label?} 暂停 / 恢复 / 改名
+DELETE /api/probe-targets/{id}                  删除目标及其历史
+GET    /api/probe-targets/{id}/history?range=   1h / 24h / 7d 的窗口、合计与最近失败点
+```
+
+原有的到期接口扩展了三处:`PUT /api/expiry/{kind}/{id}` 收可选的 `billing`(省略 = 计费字段保持原值,
+金额是十进制字符串);`POST .../renew` 收 `amount` / `currency`、新增 `DAYS` 方式,响应多一个 `period`
+(新的本期起点、本次支付、结转);`GET /api/expiry/{kind}/{id}` 多 `valuation` 与 `labels`。
+
+### 卡片聚合不连节点、不触发探测
+
+`/api/dashboard/cards` 只读库。卡片要的其余数据仍由原来的批量接口给,前端**不按卡片逐个请求**。
+哪一块读失败就在 `errors` 里点名,其余照常返回。
+
+### 探测目标不收自由输入
+
+`ref` 只能是 `MGMT`(管理通道)、`EP:<订阅地址条目 id>` 或 `ENTRY:<SINGBOX|MIERU|NGINX|REALM>:<入口 id>`
+(没有订阅地址条目的入口),而且必须出现在 `GET /api/nodes/{id}/probe` 的 `candidates` 里。
+目标存的是引用,每轮按引用解析出当前的地址与端口。
+
+### 失败率的分母
+
+`failure_rate = failures / attempts`,`attempts` 只含实际发起的 TCP 连接;DNS 失败(`dns_errors`)与
+未执行(`skipped`)单独计数。`attempts` 为 0 时 `failure_rate` 是 `null`,不是 0。
+指标定义的全文见 `docs/asset-probe/01-delivery.md`。
+
 ## 巡检与推送接口
 
 ```text
