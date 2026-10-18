@@ -17,6 +17,7 @@ const VIEWPORTS = [
 
 const ADMIN_PAGES: [string, string][] = [
   ['dashboard', '/dashboard'],
+  ['dashboard-cards', '/dashboard'],
   ['nodes', '/nodes'],
   ['node-overview', '/nodes/1/overview'],
   ['node-entries', '/nodes/1/entries'],
@@ -45,9 +46,16 @@ for (const theme of ['light', 'dark'] as const) {
       for (const [name, path] of ADMIN_PAGES) {
         test(`${name}`, async ({ page, api }) => {
           adminOnly(api)
+          // 「dashboard」沿用原有视图的基线;卡片视图单独一组。
+          const v = name === 'dashboard-cards' ? 'cards' : 'classic'
+          await page.addInitScript((view) => localStorage.setItem('lb.dashboard.view', view), v)
           await page.goto(path)
           await settle(page)
-          await expect(page).toHaveScreenshot(`${name}-${theme}-${vw}.png`, { fullPage: true })
+          // 390 宽下节点详情的六个 Tab 放不下,AntD 有时把选中的那个滚进视野、有时不滚(取决于
+          // 布局完成的先后),同一页每次截到的位置不一样。这一条只遮住 Tab 栏;Tab 栏本身由 768 /
+          // 1440 两组基线与功能用例盯着。
+          const mask = vw === '390' && name.startsWith('node-') ? [page.locator('.ant-tabs-nav')] : []
+          await expect(page).toHaveScreenshot(`${name}-${theme}-${vw}.png`, { fullPage: true, mask })
         })
       }
 
@@ -66,6 +74,7 @@ for (const theme of ['light', 'dark'] as const) {
 test.describe('@visual 状态', () => {
   test('仪表盘部分失败', async ({ page, api }) => {
     adminOnly(api).fail('GET', '/api/deployments').fail('GET', '/api/proxy-sources')
+    await page.addInitScript(() => localStorage.setItem('lb.dashboard.view', 'classic'))
     await page.goto('/dashboard')
     await settle(page)
     await expect(page).toHaveScreenshot('dashboard-partial-failure-light-1440.png')

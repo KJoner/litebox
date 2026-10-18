@@ -27,6 +27,8 @@ test.describe('768 宽', () => {
 
   test('仪表盘的节点健康换成卡片,不再横向滚', async ({ page, api }) => {
     adminOnly(api)
+    // 这一条说的是「原有视图」里的节点健康表;卡片视图本来就是卡片。
+    await page.addInitScript(() => localStorage.setItem('lb.dashboard.view', 'classic'))
     await page.goto('/dashboard')
     await expect(page.locator('.dv__ncard').first()).toBeVisible()
     await expect(page.locator('.dv__nodes')).toHaveCount(0)
@@ -36,7 +38,7 @@ test.describe('768 宽', () => {
 test.describe('390 宽', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 
-  const ADMIN = ['/dashboard', '/users', '/nodes', '/inbounds', '/external-proxies', '/deployments', '/audit-logs', '/settings', '/nodes/1/overview', '/nodes/1/entries', '/nodes/1/traffic', '/nodes/1/metrics', '/nodes/1/deploys']
+  const ADMIN = ['/dashboard', '/users', '/nodes', '/inbounds', '/external-proxies', '/deployments', '/audit-logs', '/settings', '/nodes/1/overview', '/nodes/1/entries', '/nodes/1/traffic', '/nodes/1/metrics', '/nodes/1/network', '/nodes/1/deploys']
   for (const path of ADMIN) {
     test(`${path} 页面不横向溢出`, async ({ page, api }) => {
       adminOnly(api)

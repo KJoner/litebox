@@ -23,6 +23,11 @@ function calm(api: ApiMock) {
   return api
 }
 
+/** 指标卡、趋势图、节点健康表只在「原有视图」里;卡片视图是默认。 */
+async function classicView(page: import('@playwright/test').Page) {
+  await page.addInitScript(() => localStorage.setItem('lb.dashboard.view', 'classic'))
+}
+
 /** 固定数据里节点 1 的巡检结果,改一处状态。 */
 function healthOf(api: ApiMock, patch: Record<string, unknown>) {
   api.patch('GET /api/nodes/health', (d: { items: Record<string, unknown>[] }) => {
@@ -112,6 +117,7 @@ test('刷新时读失败保留上一次读到的严重项', async ({ page, api }
 })
 
 test('概览指标读失败显示「—」与读取失败,不是 0', async ({ page, api }) => {
+  await classicView(page)
   calm(api).fail('GET', '/api/dashboard/summary')
   await page.goto('/dashboard')
   await expect(page.getByTestId('dashboard-partial-failure')).toContainText('概览指标')
