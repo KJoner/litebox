@@ -342,7 +342,7 @@ func TestOutboundFailuresAreNotLoss(t *testing.T) {
 	}
 	sums, err := e.store.Summaries(ctx, mustList(t, e), SummaryContext{Config: e.cfg,
 		NodeStopped: func(id int64) string { return e.skip[id] },
-		Public:      func(id int64) *PublicTarget { pp, _ := e.store.GetPublic(ctx, id); return pp }}, e.clock)
+		Gate:        mustGate(t, e.store)}, e.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,4 +598,13 @@ func TestSSHErrorTextHidesAddress(t *testing.T) {
 			t.Errorf("%v → %q,期望包含 %q 且不带地址", c.err, got, c.want)
 		}
 	}
+}
+
+func mustGate(t *testing.T, s *Store) *OutboundGate {
+	t.Helper()
+	g, err := s.LoadGate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
 }

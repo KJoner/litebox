@@ -10,7 +10,7 @@ import (
 // 「我关掉了」「机器关机了」「主控好几分钟没跑」看起来一模一样,而它们要人做的事完全不同。
 const (
 	StateOK       = "OK"       // 最近一次成功
-	StateLossy    = "LOSSY"    // 最近一次 ICMP 部分丢包(可达)
+	StateLossy    = "LOSSY"    // 最近一次 ICMP 部分丢包 / TCP 握手近似部分无应答(可达)
 	StateFailing  = "FAILING"  // 最近一次失败,还没到告警阈值
 	StateDown     = "DOWN"     // 连续失败达到阈值(告警中)
 	StatePaused   = "PAUSED"   // 目标被停用,或全局关闭了探测
@@ -66,14 +66,15 @@ type SummaryContext struct {
 	// NodeDisabled / NodeStopped 回答一台机器此刻是不是被停用、云实例是不是停着。
 	NodeDisabled func(nodeID int64) bool
 	NodeStopped  func(nodeID int64) string
-	// Public 返回出站序列指向的公共目标(间隔、暂停与否);找不到时返回 nil。
-	Public func(publicID int64) *PublicTarget
+	// Gate 回答出站序列的实际间隔与「为什么不测」(目标 / 来源暂停、未确认授权、本机暂停);
+	// 为 nil 时出站序列按全局间隔算、停用原因写成笼统的一句。
+	Gate *OutboundGate
 }
 
 func (sc SummaryContext) interval(t Target) time.Duration {
-	if t.Direction == DirOutbound && sc.Public != nil {
-		if p := sc.Public(t.PublicID); p != nil && p.IntervalSec > 0 {
-			return time.Duration(p.IntervalSec) * time.Second
+	if t.Direction == DirOutbound && sc.Gate != nil {
+		if _, ok := sc.Gate.Publics[t.PublicID]; ok {
+			return time.Duration(sc.Gate.IntervalSec(t.NodeID, t.PublicID)) * time.Second
 		}
 	}
 	if sc.Config.Interval > 0 {
@@ -118,7 +119,7 @@ func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryConte
 		sm.H24 = sumRows(rows, now.Add(-24*time.Hour), now)
 		if n := len(rows); n > 0 {
 			r := rows[n-1]
-			ls := &LastSample{At: r.at.Format(time.RFC3339), Status: r.status(), Label: r.status().LabelFor(t.Protocol),
+			ls := &LastSample{At: r.at.Format(time.RFC3339), Status: r.status(), Label: r.status().LabelFor(t.Metric),
 				Error: r.res.Error, Peer: r.res.Peer}
 			ls.Sent, ls.Received = r.res.counts()
 			if r.status().Reachable() {
@@ -148,9 +149,9 @@ func targetState(t Target, sm Summary, sc SummaryContext, lastAt, now time.Time)
 	case !sc.Config.Enabled:
 		return StatePaused, "探测已在设置里全局关闭"
 	case !t.Enabled && t.Direction == DirOutbound:
-		if sc.Public != nil {
-			if p := sc.Public(t.PublicID); p != nil && !p.Enabled {
-				return StatePaused, "公共目标已暂停"
+		if sc.Gate != nil {
+			if reason := sc.Gate.PauseReason(t.NodeID, t.PublicID); reason != "" {
+				return StatePaused, reason
 			}
 		}
 		return StatePaused, "这台机器没有启用这个公共目标"
@@ -182,12 +183,16 @@ func targetState(t Target, sm Summary, sc SummaryContext, lastAt, now time.Time)
 	case t.AlertState == "DOWN":
 		return StateDown, fmt.Sprintf("连续 %d 次失败", t.ConsecutiveFailures)
 	case last.Failed():
-		return StateFailing, "最近一次" + last.LabelFor(t.Protocol)
+		return StateFailing, "最近一次" + last.LabelFor(t.Metric)
 	case last == StatusLoss:
-		if sm.Last != nil && sm.Last.Sent > 0 {
-			return StateLossy, fmt.Sprintf("最近一轮丢包 %d/%d", sm.Last.Sent-sm.Last.Received, sm.Last.Sent)
+		what := "丢包"
+		if t.Metric == MetricSyn {
+			what = "握手无应答"
 		}
-		return StateLossy, "最近一轮部分丢包"
+		if sm.Last != nil && sm.Last.Sent > 0 {
+			return StateLossy, fmt.Sprintf("最近一轮%s %d/%d", what, sm.Last.Sent-sm.Last.Received, sm.Last.Sent)
+		}
+		return StateLossy, "最近一轮部分" + what
 	}
 	return StateOK, "正常"
 }

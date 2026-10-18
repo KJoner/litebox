@@ -38,6 +38,8 @@ type testEnv struct {
 	password string
 	client   *http.Client
 	db       *sql.DB
+	// api 是被测的 Server 本身,个别测试要换掉里面的依赖(比如不联网的目标库拉取器)。
+	api *Server
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -87,6 +89,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	portalService := portal.NewService(db, portal.Options{
 		SessionTTL: cfg.Security.SessionTTL, MaxAttempts: 20, LoginWindow: time.Minute,
 	})
+	// 与 main.go 一样:目标库的限额(单台节点几个第三方目标)读系统设置。
+	settingsStore := settings.NewStore(db, cipher)
+	probeStore := probe.NewStore(db)
+	probeStore.SetLimits(settingsStore.OutboundLimits)
 	srv := NewServer(Options{
 		Config: cfg,
 		DB:     db,
@@ -98,8 +104,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		Profiles:    subscription.NewProfileStore(db),
 		Expiry:      expiry.NewStore(db),
 		Labels:      asset.NewStore(db),
-		Probes:      probe.NewStore(db),
-		Settings:    settings.NewStore(db, cipher),
+		Probes:      probeStore,
+		Settings:    settingsStore,
 		Tiers:       access.NewStore(db),
 		Portal:      portalService,
 		PortalAccts: portal.NewStore(db),
@@ -127,6 +133,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		password: password,
 		client:   &http.Client{Jar: jar},
 		db:       db,
+		api:      srv,
 	}
 }
 

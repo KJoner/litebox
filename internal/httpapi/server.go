@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -61,6 +62,7 @@ type Server struct {
 	prober       *probe.Engine
 	outbound     *probe.OutboundEngine
 	probeHelpers HelperInventory
+	probeLibrary *probe.Library
 	profiles     *subscription.ProfileStore
 	portal       *portal.Service
 	portalAccts  *portal.Store
@@ -114,6 +116,8 @@ type Options struct {
 	// 两者为 nil 时公共目标照样能配,只是概况里说「出站探测未接入」。
 	Outbound     *probe.OutboundEngine
 	ProbeHelpers HelperInventory
+	// ProbeLibrary 是公共目标库的导入 / 预置 / 同步 / 验证;nil 时用 Probes 现造一个(不能联网拉取以外都一样)。
+	ProbeLibrary *probe.Library
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
 	// 而不是「页面在、点了报错」。
 	Profiles *subscription.ProfileStore
@@ -133,6 +137,9 @@ type Options struct {
 }
 
 func NewServer(opts Options) *Server {
+	if opts.ProbeLibrary == nil && opts.Probes != nil {
+		opts.ProbeLibrary = probe.NewLibrary(opts.Probes, nil, net.DefaultResolver)
+	}
 	return &Server{
 		cfg:          opts.Config,
 		db:           opts.DB,
@@ -147,6 +154,7 @@ func NewServer(opts Options) *Server {
 		prober:       opts.Prober,
 		outbound:     opts.Outbound,
 		probeHelpers: opts.ProbeHelpers,
+		probeLibrary: opts.ProbeLibrary,
 		profiles:     opts.Profiles,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
@@ -459,6 +467,19 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("PUT /api/probe-targets/{id}", s.handleUpdateProbeTarget)
 		authed.HandleFunc("DELETE /api/probe-targets/{id}", s.handleDeleteProbeTarget)
 		authed.HandleFunc("GET /api/probe-targets/{id}/history", s.handleProbeTargetHistory)
+		// 公共目标库(V22.2):来源、限额、批量、导入、预置与同步、验证、节点覆盖与试测。
+		authed.HandleFunc("PUT /api/probe/sources/{kind}", s.handleUpdateProbeSource)
+		authed.HandleFunc("PUT /api/probe/limits", s.handleUpdateProbeLimits)
+		authed.HandleFunc("POST /api/probe/public-targets/batch", s.handlePublicBatch)
+		authed.HandleFunc("POST /api/probe/public-targets/import", s.handlePublicImport)
+		authed.HandleFunc("POST /api/probe/public-targets/verify", s.handlePublicVerify)
+		authed.HandleFunc("POST /api/probe/sources/zstatic/presets", s.handleZstaticPresets)
+		authed.HandleFunc("POST /api/probe/sources/{kind}/fetch", s.handleSourceFetch)
+		authed.HandleFunc("POST /api/probe/sources/apply", s.handleSourceApply)
+		authed.HandleFunc("POST /api/probe/bindings", s.handleSetProbeBindings)
+		authed.HandleFunc("GET /api/nodes/{id}/probe-settings", s.handleGetNodeProbeSettings)
+		authed.HandleFunc("PUT /api/nodes/{id}/probe-settings", s.handleSetNodeProbeSettings)
+		authed.HandleFunc("POST /api/nodes/{id}/probe-trial", s.handleNodeProbeTrial)
 	}
 	if s.settings != nil {
 		authed.HandleFunc("GET /api/settings", s.handleGetSettings)
