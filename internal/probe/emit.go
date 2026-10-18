@@ -41,7 +41,7 @@ func emitProbe(ctx context.Context, n Notifier, logger *slog.Logger,
 		ev.Title = fmt.Sprintf("节点「%s」%s连续失败", name, what)
 		b.WriteString(fmt.Sprintf("\n连续 %d 次失败", u.ConsecutiveFailures))
 		if r.Status != "" {
-			b.WriteString(",最近一次:" + r.Status.LabelFor(t.Protocol))
+			b.WriteString(",最近一次:" + r.Status.LabelFor(t.Metric))
 		}
 		if t.Direction == DirOutbound {
 			b.WriteString("\n说明:这是这台机器在本机测到的出站结果,说明它到这个公共目标不通(机器出口、线路或目标本身都有可能)," +

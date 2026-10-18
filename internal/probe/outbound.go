@@ -17,18 +17,21 @@ const (
 	// OutboundTick 是出站引擎看一眼「谁到期了」的间隔。各公共目标按自己的间隔到期,
 	// 节拍只决定最多晚多久:目标间隔下限 30 秒,15 秒的节拍让它最多晚半个间隔。
 	OutboundTick = 15 * time.Second
-	// OutboundNodeConcurrency 是同时在跑的机器数上限。每台机器一次 SSH 执行跑完全部到期目标,
-	// 4 台并发让 20 台机器一轮在十几秒内跑完,又不至于同时占满一大片节点锁。
-	OutboundNodeConcurrency = 4
+	// OutboundNodeConcurrency 是同时在跑的机器数的默认值(系统设置里可调)。每台机器一次 SSH 执行
+	// 跑完它这一拍的全部到期目标,4 台并发让 20 台机器一轮在十几秒内跑完,又不至于同时占满一大片节点锁。
+	OutboundNodeConcurrency = DefaultNodeConcurrency
 	// outboundRoundTimeout 是一个节拍的硬上限(含 SSH 建连)。
 	outboundRoundTimeout = 90 * time.Second
+	// MaxTrialTargets 是一次试测最多带几个目标。
+	MaxTrialTargets = 8
 )
 
 // OutboundOptions 构造出站引擎。
 type OutboundOptions struct {
 	Store  *Store
 	Logger *slog.Logger
-	// Config 与入口探测共用:全局开关、告警阈值、免打扰时段。间隔与超时是每个公共目标自己的。
+	// Config 与入口探测共用:全局开关、告警阈值、免打扰时段,外加出站的调度限额。
+	// 间隔与超时是每个公共目标自己的。
 	Config   func(ctx context.Context) Config
 	Skip     func(ctx context.Context, nodeID int64) string
 	Notifier Notifier
@@ -56,6 +59,7 @@ type OutboundEngine struct {
 	// sshDown 记着哪些机器上一轮连不上:只在「连得上 → 连不上」与反过来的时候各写一条日志,
 	// 不然一台关掉的机器每 30 秒刷一行。
 	sshDown map[int64]bool
+	ledger  spendLedger
 }
 
 // OutboundStatus 是最近一个节拍的概况。
@@ -66,11 +70,17 @@ type OutboundStatus struct {
 	Nodes  int `json:"nodes"`
 	Probed int `json:"probed"`
 	// Busy 是因为节点连接正忙而让路的机器数(下一拍再来,不记任何结果)。
-	Busy       int    `json:"busy"`
-	SSHErrors  int    `json:"ssh_errors"`
-	ToolErrors int    `json:"tool_errors"`
-	Skipped    int    `json:"skipped"`
-	LastError  string `json:"last_error"`
+	Busy       int `json:"busy"`
+	SSHErrors  int `json:"ssh_errors"`
+	ToolErrors int `json:"tool_errors"`
+	Skipped    int `json:"skipped"`
+	// Deferred 是到期了但因为限额(第三方预算、单目标限流、单轮上限)延后到下一拍的序列数。
+	// 延后不记任何结果、不算失败,也不推进到期时间。
+	Deferred int `json:"deferred"`
+	// ThirdPartyUsed 是最近一分钟对第三方目标实际做了多少次尝试(全站合计),ThirdPartyBudget 是上限。
+	ThirdPartyUsed   int    `json:"third_party_used"`
+	ThirdPartyBudget int    `json:"third_party_budget"`
+	LastError        string `json:"last_error"`
 }
 
 func NewOutbound(opts OutboundOptions) *OutboundEngine {
@@ -122,21 +132,31 @@ func (e *OutboundEngine) Run(ctx context.Context) {
 type outboundJob struct {
 	nodeID int64
 	series []Target
+	// spends 是这台机器这一拍为第三方目标预占的额度(序列 id → 账本编号)。
+	spends map[int64]int64
 	resp   netprobe.Response
 	err    error
+}
+
+type dueItem struct {
+	t   Target
+	due time.Time
 }
 
 // RunOnce 跑一个节拍。返回值只给测试用。
 func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	start := e.now()
 	st := OutboundStatus{LastRunAt: start.UTC().Format(time.RFC3339)}
+	cfg := e.config(parent)
+	limits := cfg.Outbound.Normalize()
+	st.ThirdPartyBudget = limits.ThirdPartyBudgetPerMin
 	defer func() {
 		st.DurationMs = e.now().Sub(start).Milliseconds()
+		st.ThirdPartyUsed, _ = e.ledger.usage(e.now())
 		e.mu.Lock()
 		e.status = st
 		e.mu.Unlock()
 	}()
-	cfg := e.config(parent)
 	if !cfg.Enabled || e.runner == nil {
 		return st
 	}
@@ -156,13 +176,9 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	if err != nil {
 		return fail("读取出站序列失败", err)
 	}
-	pubList, err := e.store.ListPublic(ctx)
+	g, err := e.store.LoadGate(ctx)
 	if err != nil {
 		return fail("读取公共目标失败", err)
-	}
-	pubs := map[int64]PublicTarget{}
-	for _, p := range pubList {
-		pubs[p.ID] = p
 	}
 	disabled, err := disabledNodeSet(ctx, e.store)
 	if err != nil {
@@ -171,58 +187,86 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 
 	nowTS := start.UTC().Format(time.RFC3339)
 	quiet := cfg.Quiet.Active(start)
-	byNode := map[int64][]Target{}
-	var nodeOrder []int64
+	var due []dueItem
 	e.mu.Lock()
 	for _, t := range series {
-		p, ok := pubs[t.PublicID]
-		if !ok || disabled[t.NodeID] {
+		if !g.On(t.NodeID, t.PublicID) || disabled[t.NodeID] {
 			continue
 		}
-		due, seen := e.nextDue[t.ID]
+		at, seen := e.nextDue[t.ID]
 		if !seen {
-			due = start
+			interval := time.Duration(g.IntervalSec(t.NodeID, t.PublicID)) * time.Second
+			at = start
 			if last, err := time.Parse(time.RFC3339, t.LastAt); err == nil {
 				// 面板重启后接着上一次的节奏,不在启动那一刻把全部目标打一遍。
-				due = last.Add(time.Duration(p.IntervalSec) * time.Second)
+				at = last.Add(interval)
+			} else if g.ThirdParty(t.PublicID) {
+				// 第三方目标第一次测之前先错峰,各机器不在同一拍里一起去打它。
+				at = start.Add(firstPhase(t.NodeID, t.PublicID, interval))
 			}
-			e.nextDue[t.ID] = due
+			e.nextDue[t.ID] = at
 		}
-		if start.Before(due) {
+		if start.Before(at) {
 			continue
 		}
-		if _, ok := byNode[t.NodeID]; !ok {
-			nodeOrder = append(nodeOrder, t.NodeID)
-		}
-		byNode[t.NodeID] = append(byNode[t.NodeID], t)
+		due = append(due, dueItem{t: t, due: at})
 	}
 	e.mu.Unlock()
+	// 到期越早的越先放行:上一拍被限额延后的,这一拍排在最前面,不会被新到期的一直挤掉。
+	sort.SliceStable(due, func(i, j int) bool {
+		if !due[i].due.Equal(due[j].due) {
+			return due[i].due.Before(due[j].due)
+		}
+		return due[i].t.ID < due[j].t.ID
+	})
 
+	total, byPub := e.ledger.usage(start)
+	adm := &admission{budget: limits.ThirdPartyBudgetPerMin, total: total, byPub: byPub, perTick: map[int64]int{}}
+	byNode := map[int64]*outboundJob{}
+	var nodeOrder []int64
 	var samples []Sample
 	updates := map[int64]*TargetUpdate{}
-	var jobs []*outboundJob
-	for _, nodeID := range nodeOrder {
-		due := byNode[nodeID]
-		if reason := e.skipReason(ctx, nodeID); reason != "" {
+	for _, d := range due {
+		t := d.t
+		if reason := e.skipReason(ctx, t.NodeID); reason != "" {
 			// 停着的云实例:记「未执行」,不连 SSH —— 连不上的原因是没开机,不是网络。
-			for _, t := range due {
-				st.Skipped++
-				u := updateOf(t)
-				u.LastStatus, u.LastAt = string(StatusSkipped), nowTS
-				updates[t.ID] = u
-				samples = append(samples, Sample{TargetID: t.ID, Generation: t.Generation, Source: t.Source, At: start,
-					Result: Result{Status: StatusSkipped, Error: SkipCloudStopped}})
-				e.schedule(t, pubs, start)
-			}
+			st.Skipped++
+			u := updateOf(t)
+			u.LastStatus, u.LastAt = string(StatusSkipped), nowTS
+			updates[t.ID] = u
+			samples = append(samples, Sample{TargetID: t.ID, Generation: t.Generation, Source: t.Source, At: start,
+				Result: Result{Status: StatusSkipped, Error: SkipCloudStopped}})
+			e.schedule(t, g, start)
 			continue
 		}
-		if len(due) > netprobe.MaxTargets {
-			due = due[:netprobe.MaxTargets]
+		job := byNode[t.NodeID]
+		if job == nil {
+			job = &outboundJob{nodeID: t.NodeID, spends: map[int64]int64{}}
 		}
-		jobs = append(jobs, &outboundJob{nodeID: nodeID, series: due})
+		if len(job.series) >= limits.RoundMax || len(job.series) >= netprobe.MaxTargets {
+			st.Deferred++
+			continue
+		}
+		if g.ThirdParty(t.PublicID) {
+			cost := attemptsOf(g.Publics[t.PublicID])
+			if !adm.allow(t.PublicID, cost, g.PerTargetPerMin(t.PublicID)) {
+				st.Deferred++
+				continue
+			}
+			job.spends[t.ID] = e.ledger.add(start, t.PublicID, cost)
+		}
+		if byNode[t.NodeID] == nil {
+			byNode[t.NodeID] = job
+			nodeOrder = append(nodeOrder, t.NodeID)
+		}
+		job.series = append(job.series, t)
+	}
+	jobs := make([]*outboundJob, 0, len(nodeOrder))
+	for _, n := range nodeOrder {
+		jobs = append(jobs, byNode[n])
 	}
 
-	sem := make(chan struct{}, OutboundNodeConcurrency)
+	sem := make(chan struct{}, limits.NodeConcurrency)
 	var wg sync.WaitGroup
 	for _, j := range jobs {
 		wg.Add(1)
@@ -232,14 +276,14 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 			defer func() { <-sem }()
 			req := netprobe.Request{Version: netprobe.Version, Targets: make([]netprobe.Target, 0, len(j.series))}
 			for _, t := range j.series {
-				req.Targets = append(req.Targets, helperTarget(t, pubs[t.PublicID]))
+				req.Targets = append(req.Targets, helperTarget(t.ID, g.Publics[t.PublicID]))
 			}
 			j.resp, j.err = e.runner.Run(ctx, j.nodeID, req)
 		}(j)
 	}
 	wg.Wait()
 	if parent.Err() != nil {
-		// 面板正在关机:这一拍的结果多半是「被取消」,不落库、不告警。
+		// 面板正在关机:这一拍的结果多半是「被取消」,不落库、不告警。预占的额度也不必结算了。
 		return st
 	}
 
@@ -252,8 +296,11 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	var toSend []emitted
 	for _, j := range jobs {
 		if errors.Is(j.err, sshx.ErrBusy) {
-			// 让路:不记结果、不推进到期时间,下一拍(15 秒后)再试。
+			// 让路:不记结果、不推进到期时间,下一拍(15 秒后)再试;预占的额度全退回去。
 			st.Busy++
+			for _, id := range j.spends {
+				e.ledger.settle(id, 0)
+			}
 			continue
 		}
 		st.Nodes++
@@ -278,6 +325,14 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 					res = fromHelper(hr)
 				}
 			}
+			if id, ok := j.spends[t.ID]; ok {
+				// 按实际发出的次数结算:没发起的(DNS 失败、目标受限、采集失败、工具不可用)一次都不算。
+				actual := 0
+				if res.Status.Attempted() {
+					actual = res.Sent
+				}
+				e.ledger.settle(id, actual)
+			}
 			switch res.Status {
 			case StatusSSHError:
 				st.SSHErrors++
@@ -298,7 +353,7 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 			}
 			updates[t.ID] = u
 			samples = append(samples, Sample{TargetID: t.ID, Generation: t.Generation, Source: t.Source, At: start, Result: res})
-			e.schedule(t, pubs, start)
+			e.schedule(t, g, start)
 		}
 	}
 	// 这一拍没轮到的序列,免打扰结束后也要补发攒着的推送(与入口探测同一条规矩)。
@@ -356,13 +411,15 @@ func (e *OutboundEngine) noteSSH(nodeID int64, err error) {
 }
 
 // schedule 排下一次到期时间。按「这一拍的开始」而不是「跑完的时刻」算,间隔不会越跑越长。
-func (e *OutboundEngine) schedule(t Target, pubs map[int64]PublicTarget, start time.Time) {
-	interval := time.Duration(pubs[t.PublicID].IntervalSec) * time.Second
-	if interval <= 0 {
-		interval = time.Duration(PublicDefaultIntervalSec) * time.Second
+// 第三方目标加一点抖动,让各机器打同一个目标的时刻慢慢散开。
+func (e *OutboundEngine) schedule(t Target, g *OutboundGate, start time.Time) {
+	interval := time.Duration(g.IntervalSec(t.NodeID, t.PublicID)) * time.Second
+	next := start.Add(interval)
+	if g.ThirdParty(t.PublicID) {
+		next = next.Add(jitter(t.NodeID, t.PublicID, interval, start))
 	}
 	e.mu.Lock()
-	e.nextDue[t.ID] = start.Add(interval)
+	e.nextDue[t.ID] = next
 	e.mu.Unlock()
 }
 
@@ -389,14 +446,17 @@ func (e *OutboundEngine) maybePrune(ctx context.Context, now time.Time) {
 	}
 }
 
-// helperTarget 把一条序列翻成辅助程序的目标。ID 用序列 id,结果按它对回去。
-func helperTarget(t Target, p PublicTarget) netprobe.Target {
+// helperTarget 把一个公共目标翻成辅助程序的目标。id 用序列 id(试测时用公共目标 id),结果按它对回去。
+func helperTarget(id int64, p PublicTarget) netprobe.Target {
 	ht := netprobe.Target{
-		ID: t.ID, Protocol: string(p.Protocol), Host: p.Host, Port: p.Port, Family: string(p.Family),
+		ID: id, Protocol: string(p.Protocol), Host: p.Host, Port: p.Port, Family: string(p.Family),
 		TimeoutMs: p.TimeoutMs, AllowRestricted: p.AllowRestricted,
 	}
-	if p.Protocol == ProtoICMP {
+	switch {
+	case p.Protocol == ProtoICMP:
 		ht.Count, ht.IntervalMs = p.Count, PublicPacketIntervalMs
+	case p.TCPMode == TCPSyn:
+		ht.TCPMode, ht.Count, ht.IntervalMs = netprobe.ModeSyn, p.Count, PublicPacketIntervalMs
 	}
 	return ht
 }
@@ -408,7 +468,7 @@ func fromHelper(r netprobe.Result) Result {
 		Status: Status(r.Status), Error: r.Error, Peer: r.IP,
 		RTT: time.Duration(r.RTTUs) * time.Microsecond, DNS: time.Duration(r.DNSUs) * time.Microsecond,
 		RTTMin: time.Duration(r.MinUs) * time.Microsecond, RTTMax: time.Duration(r.MaxUs) * time.Microsecond,
-		Sent: r.Sent, Received: r.Received,
+		Sent: r.Sent, Received: r.Received, RTTN: r.RTTN,
 	}
 	switch res.Status {
 	case StatusOK, StatusLoss, StatusTimeout, StatusRefused, StatusUnreachable, StatusError,
@@ -416,12 +476,12 @@ func fromHelper(r netprobe.Result) Result {
 	default:
 		return Result{Status: StatusToolError, Error: fmt.Sprintf("辅助程序返回了不认识的状态 %q", r.Status)}
 	}
-	if res.Received > res.Sent || res.Sent < 0 {
-		return Result{Status: StatusToolError, Error: "辅助程序返回的发 / 收包数不合理"}
+	if res.Received > res.Sent || res.Sent < 0 || res.RTTN < 0 || res.RTTN > res.Received {
+		return Result{Status: StatusToolError, Error: "辅助程序返回的发 / 收数不合理"}
 	}
 	if !res.Status.Attempted() {
 		// 没有发起的结果不带发 / 收数,不然会进分母。
-		res.Sent, res.Received = 0, 0
+		res.Sent, res.Received, res.RTTN = 0, 0, 0
 	}
 	return res
 }

@@ -97,11 +97,11 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probe_results (target_id, generation, source, at, status, rtt_us, dns_us, error,
-			                           sent, received, rtt_min_us, rtt_max_us, peer)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			                           sent, received, rtt_min_us, rtt_max_us, peer, rtt_n)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			sm.TargetID, sm.Generation, sm.Source, at, string(sm.Status),
 			sm.RTT.Microseconds(), sm.DNS.Microseconds(), sm.Error,
-			c.sent, c.received, minUS, maxUS, sm.Peer); err != nil {
+			c.sent, c.received, minUS, maxUS, sm.Peer, storedRTTN(c)); err != nil {
 			return err
 		}
 		hour := sm.At.UTC().Truncate(time.Hour).Format(time.RFC3339)
@@ -152,6 +152,14 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 	return tx.Commit()
 }
 
+// storedRTTN 是明细里记的 RTT 样本数:等于收到数时记 0(与升级前的明细同一个约定)。
+func storedRTTN(c hourCounts) int {
+	if c.rttN == c.received {
+		return 0
+	}
+	return c.rttN
+}
+
 func b2i(v bool) int {
 	if v {
 		return 1
@@ -193,7 +201,9 @@ type Bucket struct {
 	SSHErrors  int `json:"ssh_errors"`
 	ToolErrors int `json:"tool_errors"`
 	Blocked    int `json:"blocked"`
-	// Sent / Received 按包计(TCP 按建连计)。LossRate = (Sent − Received) / Sent;一次都没发起时为 nil。
+	// Sent / Received 按包计(TCP 建连按建连计,TCP 握手近似按 SYN 计)。
+	// LossRate = (Sent − Received) / Sent;一次都没发起时为 nil。它在三种口径下分别是
+	// ICMP 丢包率 / TCP 连接失败率 / TCP 握手超时无应答率,名字由序列的 metric 决定。
 	Sent     int      `json:"sent"`
 	Received int      `json:"received"`
 	LossRate *float64 `json:"loss_rate"`
@@ -225,9 +235,9 @@ type Stats struct {
 	Blocked    int `json:"blocked"`
 	Sent       int `json:"sent"`
 	Received   int `json:"received"`
-	// FailureRate 是 Failures / Attempts(0~1):TCP 的连接失败率;ICMP 时是「整轮全丢」的比例。
-	// LossRate 是 (Sent − Received) / Sent:ICMP 的丢包率;TCP 时与 FailureRate 相同。
-	// 一次都没发起过时两者都是 nil,不是 0。
+	// FailureRate 是 Failures / Attempts(0~1):TCP 建连的连接失败率;ICMP 与 TCP 握手近似时
+	// 是「整轮失败」的比例。LossRate 是 (Sent − Received) / Sent:ICMP 的丢包率、TCP 握手近似的
+	// 握手超时无应答率;TCP 建连时与 FailureRate 相同。一次都没发起过时两者都是 nil,不是 0。
 	FailureRate *float64 `json:"failure_rate"`
 	LossRate    *float64 `json:"loss_rate"`
 	RTTAvgMs    *float64 `json:"rtt_avg_ms"`
@@ -357,7 +367,7 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 		args = append(args, t.ID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer
+		SELECT target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer, rtt_n
 		  FROM probe_results
 		 WHERE at >= ? AND target_id IN (`+strings.Join(ph, ",")+`)
 		 ORDER BY target_id, at, id`, args...)
@@ -370,7 +380,7 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 		var at string
 		var rtt, minUS, maxUS int64
 		if err := rows.Scan(&r.targetID, &r.gen, &at, &r.res.Status, &rtt, &r.res.Error,
-			&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer); err != nil {
+			&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer, &r.res.RTTN); err != nil {
 			return nil, err
 		}
 		if r.gen != gen[r.targetID] {
@@ -544,7 +554,7 @@ func (s *Store) History(ctx context.Context, t Target, r Range, now time.Time) (
 		if err := rows.Scan(&f.At, &f.Status, &f.Error, &f.Sent, &f.Received, &f.Peer); err != nil {
 			return nil, err
 		}
-		f.Label = f.Status.LabelFor(t.Protocol)
+		f.Label = f.Status.LabelFor(t.Metric)
 		h.Failures = append(h.Failures, f)
 	}
 	return h, rows.Err()

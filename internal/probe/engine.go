@@ -30,11 +30,14 @@ type Config struct {
 	// AlertAfter 是连续失败多少次推一条告警;0 表示不推。
 	AlertAfter int
 	Quiet      QuietHours
+	// Outbound 是出站探测的调度限额(第三方预算、单台节点上限、并发、单轮上限)。
+	Outbound OutboundLimits
 }
 
 // DefaultConfig 是什么都没设置时的参数。
 func DefaultConfig() Config {
-	return Config{Enabled: true, Interval: DefaultInterval, Timeout: DefaultTimeout, AlertAfter: DefaultAlertAfter}
+	return Config{Enabled: true, Interval: DefaultInterval, Timeout: DefaultTimeout, AlertAfter: DefaultAlertAfter,
+		Outbound: DefaultOutboundLimits()}
 }
 
 // QuietHours 是免打扰时段:只压推送,不停探测、不改统计。

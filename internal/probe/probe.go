@@ -59,6 +59,67 @@ const (
 // KindPublic 是出站序列的种类:指向一个公共目标。
 const KindPublic Kind = "PUBLIC"
 
+// TCPMode 是 TCP 探测的方式。与协议一样是一条测量的身份,创建后不可改 ——
+// 两种方式量的不是同一个东西,混进同一条序列的话,失败率与无应答率会被加在一起。
+type TCPMode string
+
+const (
+	// TCPConnect 一次完整建连,超时内内核会照常重发 SYN。量的是「连不连得上」:连接失败率。
+	TCPConnect TCPMode = "CONNECT"
+	// TCPSyn 短超时握手近似探测:每次只等一个 SYN 的应答(截止时间早于内核首次重发),
+	// 每轮做几次。量的是「单个 SYN 在截止时间内有没有应答」:握手超时无应答率。
+	// **它基于系统的 TCP 建连,不是原始套接字的 SYN 探测**,也不是真实的 TCP 丢包率 ——
+	// 应答(SYN-ACK 或 RST)晚于截止时间、或者被对端限速丢掉,都记成无应答。
+	TCPSyn TCPMode = "SYN"
+)
+
+// Metric 是一条序列看哪个比例。界面与推送一律按它起名,不按协议自己推 ——
+// 推漏一处,握手无应答率就会被写成「丢包率」。
+type Metric string
+
+const (
+	// MetricLoss ICMP:真实丢包率 = Σ(发 − 收) ÷ Σ发。
+	MetricLoss Metric = "LOSS"
+	// MetricConnect TCP 建连:连接失败率 = 失败的建连 ÷ 发起的建连。
+	MetricConnect Metric = "CONNECT"
+	// MetricSyn TCP 握手近似:握手超时无应答率 = Σ(发出的 SYN − 有应答的) ÷ Σ发出的 SYN。
+	// RST 也是应答:端口拒绝说明 SYN 到了、回程也通,只是那个端口没人听(状态单独记 REFUSED)。
+	MetricSyn Metric = "SYN"
+)
+
+// MetricOf 是 协议 + TCP 方式 → 看哪个比例 的唯一判据。
+func MetricOf(p Protocol, m TCPMode) Metric {
+	switch {
+	case p == ProtoICMP:
+		return MetricLoss
+	case m == TCPSyn:
+		return MetricSyn
+	}
+	return MetricConnect
+}
+
+// RateName 是这个比例给人看的名字。
+func (m Metric) RateName() string {
+	switch m {
+	case MetricLoss:
+		return "丢包率"
+	case MetricSyn:
+		return "握手超时无应答率"
+	}
+	return "连接失败率"
+}
+
+// MethodLabel 是协议方式给人看的名字(ICMP / TCP 建连 / TCP 握手近似)。
+func (m Metric) MethodLabel() string {
+	switch m {
+	case MetricLoss:
+		return "ICMP"
+	case MetricSyn:
+		return "TCP 握手(近似 SYN)"
+	}
+	return "TCP 建连"
+}
+
 // 探测来源。
 //
 // 模型里预留了 source 维度,但 P2 的多地区 / 三网测点接入之前不会产生别的值 ——
@@ -86,7 +147,7 @@ type Status string
 
 const (
 	StatusOK Status = "OK"
-	// StatusLoss ICMP 部分丢包:收到了一部分,目标可达,丢包率另算。
+	// StatusLoss 部分收到:ICMP 部分丢包 / TCP 握手近似部分无应答。目标可达,比例另算。
 	StatusLoss        Status = "LOSS"
 	StatusTimeout     Status = "TIMEOUT"
 	StatusRefused     Status = "REFUSED"
@@ -124,9 +185,11 @@ func (s Status) Failed() bool {
 // Reachable 表示目标这一轮可达(全部收到或部分丢包)。
 func (s Status) Reachable() bool { return s == StatusOK || s == StatusLoss }
 
-// LabelFor 是按协议给人看的结果名:ICMP 的 TIMEOUT 是「全部丢包」,不是「连接超时」。
-func (s Status) LabelFor(p Protocol) string {
-	if p == ProtoICMP {
+// LabelFor 是按口径给人看的结果名:ICMP 的 TIMEOUT 是「全部丢包」,TCP 握手近似的 TIMEOUT
+// 是「全部无应答」(绝不叫丢包),TCP 建连的 TIMEOUT 才是「连接超时」。
+func (s Status) LabelFor(m Metric) string {
+	switch m {
+	case MetricLoss:
 		switch s {
 		case StatusOK:
 			return "全部收到"
@@ -134,6 +197,17 @@ func (s Status) LabelFor(p Protocol) string {
 			return "全部丢包"
 		case StatusError:
 			return "发送失败"
+		}
+	case MetricSyn:
+		switch s {
+		case StatusOK:
+			return "全部有应答"
+		case StatusLoss:
+			return "部分握手无应答"
+		case StatusTimeout:
+			return "全部握手无应答"
+		case StatusRefused:
+			return "端口拒绝(RST)"
 		}
 	}
 	return s.Label()
@@ -180,8 +254,13 @@ type Result struct {
 	DNS time.Duration
 	// Error 是失败的简述(不含地址);SKIPPED 时是原因码。
 	Error string
-	// Sent / Received:ICMP 是发出 / 收到的包数;TCP 是 1 / (OK ? 1 : 0)。没发起时都是 0。
+	// Sent / Received:ICMP 是发出 / 收到的包数;TCP 建连是 1 / (OK ? 1 : 0);
+	// TCP 握手近似是发出的 SYN 数(含内核重发的)/ 有应答(SYN-ACK 或 RST)的次数。没发起时都是 0。
 	Sent, Received int
+	// RTTN 是参与 RTT 平均的样本数。0 表示等于 Received(ICMP 与 TCP 建连都是这样);
+	// TCP 握手近似里被内核重发过的那几次不取 RTT(分不清应答对的是哪一个 SYN),所以可能少于 Received;
+	// 一个样本都没有时 RTT 为 0。
+	RTTN int
 	// RTTMin / RTTMax 是这一轮的最小 / 最大往返(TCP 时与 RTT 相同)。
 	RTTMin, RTTMax time.Duration
 	// Peer 是实际连的 IP(域名每轮重新解析,换了指向能在这里看出来)。
@@ -210,7 +289,11 @@ func (r Result) rttStats() (n int, sum, min, max int64) {
 		return 0, 0, 0, 0
 	}
 	_, recv := r.counts()
-	if recv <= 0 {
+	if r.RTTN > 0 && r.RTTN < recv {
+		recv = r.RTTN
+	}
+	// RTT 为 0 表示这一轮没有可用的 RTT 样本(握手近似里收到的应答全都经过了内核重发)。
+	if recv <= 0 || r.RTT <= 0 {
 		return 0, 0, 0, 0
 	}
 	avg := r.RTT.Microseconds()
@@ -269,6 +352,10 @@ func Once(ctx context.Context, d Dialer, r Resolver, host string, port int, fami
 	if err == nil {
 		conn.Close()
 		res.Status = StatusOK
+		// 成功的建连 RTT 至少记 1 微秒:RTT 为 0 的含义是「没有可用的 RTT 样本」。
+		if elapsed < time.Microsecond {
+			elapsed = time.Microsecond
+		}
 		res.RTT = elapsed
 		return res
 	}

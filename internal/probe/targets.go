@@ -36,8 +36,11 @@ type Target struct {
 	NodeID    int64     `json:"node_id"`
 	Direction Direction `json:"direction"`
 	Protocol  Protocol  `json:"protocol"`
-	Kind      Kind      `json:"kind"`
-	Ref       string    `json:"ref"`
+	// TCPMode 跟着公共目标走(入口序列恒为 CONNECT);Metric 由协议与它算出来,不存库。
+	TCPMode TCPMode `json:"tcp_mode"`
+	Metric  Metric  `json:"metric"`
+	Kind    Kind    `json:"kind"`
+	Ref     string  `json:"ref"`
 	// PublicID 是出站序列指向的公共目标;入口目标为 0。
 	PublicID int64  `json:"public_id"`
 	Family   Family `json:"family"`
@@ -64,7 +67,7 @@ type Target struct {
 	UpdatedAt           string `json:"updated_at"`
 }
 
-const targetColumns = `id, node_id, direction, protocol, kind, ref, COALESCE(public_id, 0), family, label, source, enabled,
+const targetColumns = `id, node_id, direction, protocol, tcp_mode, kind, ref, COALESCE(public_id, 0), family, label, source, enabled,
 	resolved_host, resolved_port, generation, generation_since, ref_state, ref_error,
 	consecutive_failures, alert_state, alert_since, alert_notified, recovery_pending,
 	last_status, last_at, last_success_at, created_at, updated_at`
@@ -74,7 +77,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scanTarget(r scanner) (*Target, error) {
 	var t Target
 	var enabled, notified, pending int
-	if err := r.Scan(&t.ID, &t.NodeID, &t.Direction, &t.Protocol, &t.Kind, &t.Ref, &t.PublicID,
+	if err := r.Scan(&t.ID, &t.NodeID, &t.Direction, &t.Protocol, &t.TCPMode, &t.Kind, &t.Ref, &t.PublicID,
 		&t.Family, &t.Label, &t.Source, &enabled,
 		&t.ResolvedHost, &t.ResolvedPort, &t.Generation, &t.GenerationSince, &t.RefState, &t.RefError,
 		&t.ConsecutiveFailures, &t.AlertState, &t.AlertSince, &notified, &pending,
@@ -82,16 +85,19 @@ func scanTarget(r scanner) (*Target, error) {
 		return nil, err
 	}
 	t.Enabled = enabled == 1
+	t.Metric = MetricOf(t.Protocol, t.TCPMode)
 	t.AlertNotified = notified == 1
 	t.RecoveryPending = pending == 1
 	return &t, nil
 }
 
-// Store 读写三张 probe 表。
+// Store 读写探测的几张表。
 type Store struct {
 	db *sql.DB
 	// now 是时钟,测试里拨。
 	now func() time.Time
+	// limits 读出站探测的调度限额(系统设置);nil 时用默认值。
+	limits func(ctx context.Context) OutboundLimits
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db, now: time.Now} }

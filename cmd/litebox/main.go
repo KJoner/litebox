@@ -640,6 +640,8 @@ func cmdServe(args []string) error {
 	// 迁移不替任何机器建目标。停着的云实例记「未执行」,与巡检、采集同一个判据。
 	// 探测失败只推送,不重启、不部署、不停机 —— 那几件事要另立需求、另行授权。
 	probeStore := probe.NewStore(db)
+	// 公共目标库的限额(单台节点最多几个第三方目标)在写入时就要查,与引擎读同一份设置。
+	probeStore.SetLimits(settingsStore.OutboundLimits)
 	prober := probe.New(probe.Options{
 		Store:    probeStore,
 		Logger:   logger,

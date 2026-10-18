@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,8 @@ type SSHRunner struct {
 	// installed 记着「这台机器上的辅助程序已确认是这个哈希」,省掉每轮一次 sha256sum。
 	// 只在内存里:面板重启后每台机器重新核对一次。
 	installed map[int64]string
+	// versions 记着每个哈希的辅助程序报出来的协议版本(同一个哈希就是同一个文件,问一次就够)。
+	versions map[string]int
 }
 
 // DefaultHelperPath 是节点上辅助程序的默认位置。
@@ -102,6 +105,22 @@ func (r *SSHRunner) remember(nodeID int64, sha string) {
 
 // Forget 丢掉一台机器的安装记录(换了管理地址、重装了系统时由调用方触发;不调也只是多核对一次)。
 func (r *SSHRunner) Forget(nodeID int64) { r.remember(nodeID, "") }
+
+func (r *SSHRunner) versionOf(sha string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.versions[sha]
+	return v, ok
+}
+
+func (r *SSHRunner) rememberVersion(sha string, v int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.versions == nil {
+		r.versions = map[string]int{}
+	}
+	r.versions[sha] = v
+}
 
 // Run 实现 NodeRunner。
 func (r *SSHRunner) Run(ctx context.Context, nodeID int64, req netprobe.Request) (netprobe.Response, error) {
@@ -160,8 +179,46 @@ func (r *SSHRunner) Run(ctx context.Context, nodeID int64, req netprobe.Request)
 
 const helperMissing = "辅助程序不在节点上"
 
-// ensure 确认节点上的辅助程序就是主控现在分发的那一份,不是就重传。
+// ensure 确认节点上的辅助程序就是主控现在分发的那一份,不是就重传;然后确认它的协议版本。
+//
+// 版本要在节点上问:主控与节点的架构常常不同,主控自己跑不了那个文件。而 sha256 对上只说明
+// 「节点上的就是主控手上的那一份」,不说明那一份是新的 —— 面板升级了而 assets/probe 里还是
+// 上一次构建的旧文件时,每一轮都会报「版本不符」,这里提前给出能照着做的那一句话。
 func (r *SSHRunner) ensure(ctx context.Context, client *sshx.Client, nodeID int64, arch, sha string) error {
+	if err := r.ensureFile(ctx, client, nodeID, arch, sha); err != nil {
+		return err
+	}
+	if v, ok := r.versionOf(sha); ok {
+		return versionMismatch(arch, v)
+	}
+	res, err := client.Run(ctx, sshx.NewCommand(r.path(), "-version"))
+	if err != nil {
+		return err
+	}
+	if res.ExitCode == 126 || res.ExitCode == 127 {
+		return toolError(helperMissing, nil)
+	}
+	v := 0
+	if f := strings.Fields(res.Stdout); len(f) == 2 && f[0] == "litebox-probe" {
+		v, _ = strconv.Atoi(f[1])
+	}
+	if v <= 0 {
+		return toolError("辅助程序没有报出协议版本:"+firstLine(res.Stdout+res.Stderr), nil)
+	}
+	r.rememberVersion(sha, v)
+	return versionMismatch(arch, v)
+}
+
+func versionMismatch(arch string, v int) error {
+	if v == netprobe.Version {
+		return nil
+	}
+	return toolError(fmt.Sprintf("主控分发的 %s 辅助程序是 v%d,面板需要 v%d:请在主控上重新执行 scripts/build-probe.sh",
+		arch, v, netprobe.Version), nil)
+}
+
+// ensureFile 确认节点上的文件就是主控现在分发的那一份,不是就重传(先传 .new 再改名)。
+func (r *SSHRunner) ensureFile(ctx context.Context, client *sshx.Client, nodeID int64, arch, sha string) error {
 	if r.known(nodeID, sha) {
 		return nil
 	}
@@ -215,6 +272,8 @@ func (r *SSHRunner) exec(ctx context.Context, client *sshx.Client, payload []byt
 	case 0:
 	case 126, 127:
 		return resp, toolError(helperMissing, nil)
+	case 3:
+		return resp, toolError("辅助程序与面板的协议版本不符(节点上的文件还没换成新版本):"+firstLine(res.Stderr), nil)
 	default:
 		msg := firstLine(res.Stderr)
 		if msg == "" {

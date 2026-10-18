@@ -37,6 +37,8 @@ type nodeProbeResponse struct {
 	// Outbound 是出站网络质量(这台机器 → 公共目标);Public 是全部公共目标在这台机器上的开关。
 	Outbound []probe.Summary    `json:"outbound"`
 	Public   []probe.NodePublic `json:"public"`
+	// NodeSettings 是这台机器的出站探测覆盖(暂停本机、覆盖间隔)。
+	NodeSettings probe.NodeSettings `json:"node_settings"`
 	// Targets / Candidates 是入口连通性(主控 → 这台机器)。
 	Targets    []probe.Summary   `json:"targets"`
 	Candidates []probe.Candidate `json:"candidates"`
@@ -82,6 +84,11 @@ func (s *Server) handleNodeProbe(w http.ResponseWriter, r *http.Request) {
 	resp.Public, err = s.probes.NodePublics(ctx, id)
 	if err != nil {
 		s.logger.Error("读取公共目标失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if resp.NodeSettings, err = s.probes.GetNodeSettings(ctx, id); err != nil {
+		s.logger.Error("读取节点出站探测设置失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
@@ -228,7 +235,7 @@ func (s *Server) auditPublic(r *http.Request, action string, id int64, detail st
 }
 
 func publicDesc(p *probe.PublicTarget) string {
-	d := fmt.Sprintf("「%s」(%s %s", p.Name, p.Protocol, p.Host)
+	d := fmt.Sprintf("「%s」(%s %s", p.Name, p.Metric.MethodLabel(), p.Host)
 	if p.Protocol == probe.ProtoTCP {
 		d += ":" + strconv.Itoa(p.Port)
 	}
@@ -252,14 +259,22 @@ func (s *Server) writePublicError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, probe.ErrNotFound):
 		writeError(w, http.StatusNotFound, "节点不存在")
+	case errors.Is(err, probe.ErrSourceNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.As(err, new(*probe.CapError)):
+		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}
 }
 
+// publicTargetsResponse 是目标库页一次要的全部东西:整个目标库(筛选在页面上做)、来源、限额、省份表。
 type publicTargetsResponse struct {
-	Targets []probe.PublicTarget `json:"targets"`
-	Probe   probeOverview        `json:"probe"`
+	Targets   []probe.PublicTarget `json:"targets"`
+	Probe     probeOverview        `json:"probe"`
+	Sources   []probe.TargetSource `json:"sources"`
+	Limits    limitsResponse       `json:"limits"`
+	Provinces []probe.Province     `json:"provinces"`
 }
 
 func (s *Server) handleListPublicTargets(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +284,14 @@ func (s *Server) handleListPublicTargets(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	writeJSON(w, http.StatusOK, publicTargetsResponse{Targets: list, Probe: s.probeOverview(r.Context())})
+	sources, err := s.probes.ListSources(r.Context())
+	if err != nil {
+		s.logger.Error("读取探测目标来源失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	writeJSON(w, http.StatusOK, publicTargetsResponse{Targets: list, Probe: s.probeOverview(r.Context()),
+		Sources: sources, Limits: s.limitsView(r), Provinces: probe.Provinces})
 }
 
 func (s *Server) handleCreatePublicTarget(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +306,9 @@ func (s *Server) handleCreatePublicTarget(w http.ResponseWriter, r *http.Request
 		return
 	}
 	detail := "新增公共探测目标" + publicDesc(p) + ",尚未对任何节点启用"
+	if p.Source != probe.OriginManual {
+		detail += ";主机属于第三方来源,归到该来源(受它的授权确认与限额约束)"
+	}
 	if p.AllowRestricted {
 		detail += ";允许受限地址与端口"
 	}

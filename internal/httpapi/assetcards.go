@@ -305,8 +305,8 @@ func (s *Server) probeOverview(ctx context.Context) probeOverview {
 		ov.Helpers = s.probeHelpers.Available()
 	}
 	if s.probes != nil {
-		if pubs, err := s.probes.ListPublic(ctx); err == nil {
-			ov.PublicTargets = len(pubs)
+		if n, err := s.probes.CountPublic(ctx); err == nil {
+			ov.PublicTargets = n
 		}
 	}
 	return ov
@@ -339,15 +339,11 @@ func (s *Server) summaryContext(ctx context.Context) probe.SummaryContext {
 		}
 	}
 	sc.NodeStopped = func(id int64) string { return stopped[id] }
-	pubs := map[int64]*probe.PublicTarget{}
 	if s.probes != nil {
-		if list, err := s.probes.ListPublic(ctx); err == nil {
-			for i := range list {
-				pubs[list[i].ID] = &list[i]
-			}
+		if g, err := s.probes.LoadGate(ctx); err == nil {
+			sc.Gate = g
 		}
 	}
-	sc.Public = func(id int64) *probe.PublicTarget { return pubs[id] }
 	return sc
 }
 
