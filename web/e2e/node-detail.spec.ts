@@ -1,7 +1,7 @@
 import { test, expect, adminOnly, CAPTURED_AT } from './support/mock'
 
 /**
- * 节点详情:五个 Tab、入口与服务卡片的操作菜单、需要确认的操作(取消什么都不发,
+ * 节点详情:六个 Tab、入口与服务卡片的操作菜单、需要确认的操作(取消什么都不发,
  * 确认只打到模拟层)、长操作的进度与失败结果。
  */
 
@@ -11,6 +11,7 @@ const TABS: [string, string][] = [
   ['入口与转发', 'entries'],
   ['流量', 'traffic'],
   ['资源', 'metrics'],
+  ['网络监测', 'network'],
   ['部署与记录', 'deploys'],
 ]
 
@@ -41,7 +42,7 @@ async function openEntries(page: import('@playwright/test').Page) {
   await expect(page.locator('[data-service="singbox"]')).toBeVisible()
 }
 
-test('五个 Tab 逐个可达,地址栏跟着变', async ({ page }) => {
+test('六个 Tab 逐个可达,地址栏跟着变', async ({ page }) => {
   await page.goto(`/nodes/${NODE}`)
   await expect(page.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true')
   // 从第二个起点,最后回到概览 —— 点已经选中的那个不会改地址。
