@@ -1040,6 +1040,15 @@ export interface PanelSettings {
   expiry_timezone: string
   /** 实际生效的时区(留空时跟随云实例时区) */
   effective_expiry_timezone: string
+  /** TCP 探测(资产卡片):全局开关、间隔、超时、告警阈值、免打扰。数值 0 / 空串表示用默认 */
+  probe_enabled: boolean
+  probe_interval_sec: number
+  default_probe_interval_sec: number
+  probe_timeout_ms: number
+  default_probe_timeout_ms: number
+  probe_alert_after: string
+  default_probe_alert_after: number
+  probe_quiet_hours: string
 }
 
 // ---------- 供应商到期与续费(V20) ----------
@@ -1079,6 +1088,293 @@ export interface ExpiryView {
   /** 距到期还有几天(向上取整,已到期为负);未设置为 null */
   days_left: number | null
   last_notice: ExpiryNoticeSummary | null
+  /** 套餐计费字段(资产卡片 P0-B),一律有值;没填过时 has_billing 为 false */
+  billing?: BillingView
+}
+
+// ---------- 套餐计费与资产(资产卡片) ----------
+
+/** 计费周期。空串 = 未设置 / 未知 */
+export type BillingCycle =
+  | ''
+  | 'MONTHLY'
+  | 'QUARTERLY'
+  | 'SEMIANNUAL'
+  | 'YEARLY'
+  | 'CUSTOM'
+  | 'ONE_TIME'
+  | 'TRAFFIC_PACK'
+  | 'PERMANENT'
+
+/** 档案里的计费字段。金额是最小货币单位(-1 = 未填),十进制字符串另给 */
+export interface BillingView {
+  plan_name: string
+  billing_cycle: BillingCycle
+  cycle_count: number
+  cycle_unit: '' | 'MONTH' | 'DAY'
+  currency: string
+  price_minor: number
+  purchased_at: string
+  period_start: string
+  period_paid_minor: number
+  period_carry_minor: number
+  traffic_unlimited: boolean
+  cycle_label: string
+  price: string
+  period_paid: string
+  period_carry: string
+  has_billing: boolean
+}
+
+/** 保存档案时的计费表单。金额用十进制字符串,空串 = 未填;整个对象省略表示保持原值 */
+export interface BillingPayload {
+  plan_name: string
+  billing_cycle: BillingCycle
+  cycle_count: number
+  cycle_unit: '' | 'MONTH' | 'DAY'
+  currency: string
+  price: string
+  purchased_at: string
+  period_start: string
+  period_paid: string
+  traffic_unlimited: boolean
+}
+
+/** 一种口径的估算。不可用时 reason 说原因;可用时 basis 是可复核的算式 */
+export interface ValueEstimate {
+  available: boolean
+  value_minor: number
+  value: string
+  reason: string
+  basis: string
+}
+
+/**
+ * 此刻的计费视图:剩余未摊销价值(估算)分「按时间」「按流量」两种口径,**不相加**;
+ * 它不是余额、不是可退款金额。全部由后端现算,不入库。
+ */
+export interface Valuation {
+  currency: string
+  billing_cycle: BillingCycle
+  cycle_label: string
+  amount_minor: number
+  amount: string
+  paid_from_price: boolean
+  carry_minor: number
+  carry: string
+  period_start: string
+  period_start_derived: boolean
+  period_end: string
+  next_renewal_at: string
+  time: ValueEstimate
+  traffic: ValueEstimate
+  monthly_cost_minor: number | null
+  monthly_cost: string
+  daily_cost_minor: number | null
+  daily_cost: string
+}
+
+export interface AssetLabels {
+  kind: ExpiryKind
+  object_id: number
+  /** ISO 3166-1 alpha-2 大写,空串 = 未设置。面板不按名字猜地区 */
+  region: string
+  tags: string[]
+}
+
+export interface BillingCard {
+  kind: ExpiryKind
+  object_id: number
+  name: string
+  plan_name: string
+  auto_renew: boolean
+  state: ExpiryState
+  days_left: number | null
+  valuation: Valuation
+  has_billing: boolean
+}
+
+/** 一个币种的成本汇总。**不同币种不相加** */
+export interface CostRow {
+  currency: string
+  monthly_cost_minor: number
+  monthly_cost: string
+  recurring_count: number
+  unamortized_minor: number
+  unamortized: string
+  unamortized_count: number
+  other_count: number
+}
+
+// ---------- TCP 探测(资产卡片 P0-C) ----------
+
+export type ProbeKind = 'MGMT' | 'SERVICE'
+export type ProbeFamily = 'V4' | 'V6'
+export type ProbeStatus = 'OK' | 'TIMEOUT' | 'REFUSED' | 'UNREACHABLE' | 'ERROR' | 'DNS_ERROR' | 'SKIPPED'
+/** 卡片上一行的状态。几种「没有新数据」分开说:暂停 / 停用 / 关机 / 失效 / 过期 / 等待首次 */
+export type ProbeState = 'OK' | 'FAILING' | 'DOWN' | 'PAUSED' | 'DISABLED' | 'STOPPED' | 'INVALID' | 'STALE' | 'PENDING'
+/** 点阵颜色。NONE = 这个窗口没有样本,**不按正常画** */
+export type ProbeBucketState = 'OK' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SKIP' | 'NONE'
+
+export interface ProbeTarget {
+  id: number
+  node_id: number
+  kind: ProbeKind
+  ref: string
+  family: ProbeFamily
+  label: string
+  source: string
+  enabled: boolean
+  resolved_host: string
+  resolved_port: number
+  generation: number
+  generation_since: string
+  ref_state: 'OK' | 'INVALID'
+  ref_error: string
+  consecutive_failures: number
+  alert_state: 'OK' | 'DOWN'
+  alert_since: string
+  alert_notified: boolean
+  last_status: ProbeStatus | ''
+  last_at: string
+  last_success_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProbeBucket {
+  at: string
+  /** 实际发起的 TCP 连接数 —— 失败率的分母 */
+  attempts: number
+  ok: number
+  failures: number
+  /** DNS 没解析出来、没有发起连接的次数,不在分母里 */
+  dns_errors: number
+  skipped: number
+  rtt_avg_ms: number | null
+  rtt_min_ms: number | null
+  rtt_max_ms: number | null
+  state: ProbeBucketState
+}
+
+export interface ProbeStats {
+  from: string
+  to: string
+  attempts: number
+  ok: number
+  failures: number
+  dns_errors: number
+  skipped: number
+  /** 0~1;一次都没发起过时为 null,不是 0 */
+  failure_rate: number | null
+  rtt_avg_ms: number | null
+  rtt_min_ms: number | null
+  rtt_max_ms: number | null
+}
+
+export interface ProbeLastSample {
+  at: string
+  status: ProbeStatus
+  label: string
+  rtt_ms: number | null
+  error: string
+}
+
+export interface ProbeSummary extends ProbeTarget {
+  source_label: string
+  /** 探测协议,P0 恒为 TCP —— 写出来是为了不让人把这一行读成 ICMP */
+  protocol: string
+  state: ProbeState
+  state_text: string
+  last: ProbeLastSample | null
+  stale: boolean
+  h1: ProbeStats
+  h24: ProbeStats
+  dots: ProbeBucket[]
+  dot_seconds: number
+  note: string
+}
+
+export interface ProbeCandidate {
+  ref: string
+  kind: ProbeKind
+  family: ProbeFamily
+  label: string
+  host: string
+  port: number
+  note: string
+}
+
+export interface ProbeRoundStatus {
+  last_run_at: string
+  duration_ms: number
+  probed: number
+  skipped: number
+  invalid: number
+  last_error: string
+  interval_sec: number
+}
+
+export interface ProbeOverview {
+  enabled: boolean
+  interval_sec: number
+  timeout_ms: number
+  alert_after: number
+  quiet_hours: string
+  sources: { code: string; label: string }[]
+  last_run: ProbeRoundStatus
+  /** 面板没接入探测引擎时为 false */
+  available: boolean
+}
+
+export interface NodeProbe {
+  probe: ProbeOverview
+  targets: ProbeSummary[]
+  candidates: ProbeCandidate[]
+}
+
+export interface ProbeFailurePoint {
+  at: string
+  status: ProbeStatus
+  label: string
+  error: string
+}
+
+export interface ProbeHistory {
+  target: ProbeTarget
+  range: '1h' | '24h' | '7d'
+  bucket_seconds: number
+  source: string
+  buckets: ProbeBucket[]
+  stats: ProbeStats
+  failures: ProbeFailurePoint[]
+}
+
+/** 外部代理卡片的「网络」一格:只有上次【手动】检查的结果,不做定时探测 */
+export interface ExternalCheckStatus {
+  proxy_id: number
+  last_check_at: string | null
+  last_check_ok: boolean | null
+  latency_ms: number | null
+  message: string
+}
+
+/**
+ * 仪表盘卡片视图的聚合接口:一次返回全部卡片要的「新」数据。
+ * 节点列表、资源采样、周期流量、巡检、到期仍由原有的批量接口给 —— 卡片不按卡片逐个请求。
+ */
+export interface DashboardCards {
+  generated_at: string
+  probe: ProbeOverview
+  labels: AssetLabels[]
+  billing: BillingCard[]
+  targets: ProbeSummary[]
+  cost_summary: CostRow[]
+  expiring_7d: number
+  overdue: number
+  /** 读失败的块,点名;其余照常给 */
+  errors: string[]
+  external: ExternalCheckStatus[]
 }
 
 export interface ExpiryRenewal {
@@ -1095,11 +1391,21 @@ export interface ExpiryRenewal {
   admin_name: string
   note: string
   created_at: string
+  /** 这一笔的实际支付(最小单位,-1 = 没记)与十进制字符串 */
+  amount_minor?: number
+  amount?: string
+  currency?: string
+  /** 这一笔建立的已付费周期从哪天起 */
+  period_start?: string
 }
 
 export interface ExpiryDetail {
   view: ExpiryView
   renewals: ExpiryRenewal[]
+  /** 此刻的计费估值(现算) */
+  valuation?: Valuation
+  /** 地区与标签(资产卡片);没接入时为 null */
+  labels?: AssetLabels | null
   /** 全局规则,表单上显示「继承:7,3,1」用 */
   lead_days: number[]
   send_time: string
@@ -1114,9 +1420,11 @@ export interface ExpiryProfilePayload {
   vendor_url: string
   note: string
   lead_days: number[]
+  /** 省略 = 计费字段保持原值(节点 / 外部代理 / 代理源的编辑表单只带到期那几栏) */
+  billing?: BillingPayload
 }
 
-export type ExpiryRenewMethod = 'MONTHS' | 'YEARS' | 'ABSOLUTE' | 'CLEAR'
+export type ExpiryRenewMethod = 'MONTHS' | 'YEARS' | 'DAYS' | 'ABSOLUTE' | 'CLEAR'
 export type ExpiryRenewBase = 'CURRENT' | 'NOW' | ''
 
 export interface ExpiryRenewPayload {
@@ -1129,6 +1437,9 @@ export interface ExpiryRenewPayload {
   note?: string
   /** 只算不写 */
   preview?: boolean
+  /** 这一笔的实际支付(十进制字符串,空串 = 没记);币种留空取套餐币种 */
+  amount?: string
+  currency?: string
 }
 
 export interface ExpiryRenewPlan {
@@ -1139,8 +1450,20 @@ export interface ExpiryRenewPlan {
   method: string
 }
 
+/** 续费之后的本期:起点、本次支付(-1 = 按标价)、上期结转 */
+export interface ExpiryRenewPeriod {
+  start: string
+  paid_minor: number
+  /** 十进制字符串,按币种小数位格式化;paid_minor 为 -1 时是空串 */
+  paid: string
+  carry_minor: number
+  carry: string
+  currency: string
+}
+
 export interface ExpiryRenewResult {
   plan: ExpiryRenewPlan
+  period: ExpiryRenewPeriod | null
   /** 这个 request_id 已经提交过,这次没有再延长 */
   duplicate: boolean
   renewal: ExpiryRenewal | null
@@ -2052,6 +2375,8 @@ export type NotifyKind =
   | 'EXPIRY_SOON'
   | 'EXPIRY_AUTO_RENEW'
   | 'EXPIRY_OVERDUE'
+  | 'PROBE_DOWN'
+  | 'PROBE_RECOVERED'
 
 /**
  * 推送设置。
@@ -2916,6 +3241,21 @@ export const api = {
     request<ExpiryRenewResult>(`/api/expiry/${kind}/${id}/renew`, { method: 'POST', body }),
   expiryRenewals: (kind: ExpiryKind, id: number) =>
     request<{ items: ExpiryRenewal[] }>(`/api/expiry/${kind}/${id}/renewals`),
+
+  // 资产卡片:一次返回全部卡片的计费估值、标签、探测汇总与成本汇总。只读库,不连节点。
+  dashboardCards: () => request<DashboardCards>('/api/dashboard/cards'),
+  saveAssetLabels: (kind: ExpiryKind, id: number, body: { region: string; tags: string[] }) =>
+    request<AssetLabels>(`/api/asset-labels/${kind}/${id}`, { method: 'PUT', body }),
+  // TCP 探测目标:只能从机器已登记的地址 × 端口里选(candidates)。
+  nodeProbe: (nodeID: number) => request<NodeProbe>(`/api/nodes/${nodeID}/probe`),
+  createProbeTarget: (nodeID: number, body: { ref: string; family: ProbeFamily; label?: string }) =>
+    request<ProbeTarget>(`/api/nodes/${nodeID}/probe-targets`, { method: 'POST', body }),
+  updateProbeTarget: (id: number, body: { enabled?: boolean; label?: string }) =>
+    request<ProbeTarget>(`/api/probe-targets/${id}`, { method: 'PUT', body }),
+  deleteProbeTarget: (id: number) =>
+    request<{ message: string }>(`/api/probe-targets/${id}`, { method: 'DELETE' }),
+  probeHistory: (id: number, range: '1h' | '24h' | '7d') =>
+    request<ProbeHistory>(`/api/probe-targets/${id}/history`, { query: { range } }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),
