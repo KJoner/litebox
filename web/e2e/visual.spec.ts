@@ -22,6 +22,7 @@ const ADMIN_PAGES: [string, string][] = [
   ['node-overview', '/nodes/1/overview'],
   ['node-entries', '/nodes/1/entries'],
   ['node-network', '/nodes/1/network'],
+  ['probe-library', '/probe-library'],
 ]
 
 const PORTAL_PAGES: [string, string][] = [

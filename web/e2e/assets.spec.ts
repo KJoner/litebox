@@ -283,7 +283,7 @@ test('网络监测 Tab · 出站:每个公共目标一行,本机开关三态,历
   await expect(page.getByTestId('probe-public-2').getByRole('radio', { name: '启用' })).toHaveAttribute('aria-checked', 'true')
 
   // 默认选中第一条出站序列:ICMP 的历史按包算丢包,采集失败另列、不计入。
-  await expect(page.locator('.nn__stats')).toContainText('丢包率(按包)')
+  await expect(page.locator('.nn__stats')).toContainText('ICMP 丢包率(按包)')
   await expect(page.locator('.nn__stats')).toContainText('采集失败 / 工具不可用(不计入)')
   await expect(page.locator('.nn__fails')).toContainText('采集失败')
   await expect(page.locator('.nn__fails')).toContainText('3/4 收到')
@@ -295,48 +295,11 @@ test('网络监测 Tab · 出站:每个公共目标一行,本机开关三态,历
   expect(api.requests('PUT', /^\/api\/probe\/public-targets/)).toHaveLength(0)
 })
 
-test('系统设置 · 公共探测目标:登记之后不自动启用,接着选范围;受限地址的拒绝原样显示', async ({ page, api }) => {
-  let created = false
-  api
-    .on('POST', '/api/probe/public-targets', (req) => {
-      const b = req.body as { host: string }
-      if (b.host === '10.0.0.1') {
-        return { status: 400, json: { error: '10.0.0.1 是私网地址;确实要测请勾选「允许受限地址与端口」' } }
-      }
-      created = true
-      return {
-        json: {
-          ...api.fixture('GET /api/probe/public-targets').targets[0], id: 3, name: '新目标', host: b.host,
-          apply_all: false, node_count: 0,
-        },
-      }
-    })
-    .on('GET', '/api/probe/public-targets/3/nodes', {
-      json: { nodes: api.fixture('GET /api/probe/public-targets/2/nodes').nodes.map((n: object) => ({ ...n, mode: 'INHERIT', effective: false })) },
-    })
-    .on('PUT', '/api/probe/public-targets/3/scope', { json: {} })
+test('系统设置 · 公共探测目标搬到了独立的目标库页,旧锚点落在一句指路的话上', async ({ page }) => {
   await page.goto('/settings#probe-public')
-  const panel = page.getByTestId('public-probe-panel')
-  await expect(panel.getByTestId('public-target-1')).toContainText('公共 DNS(演示)')
-  await expect(panel.getByTestId('public-target-1')).toContainText('全部节点(2 台)')
-  await expect(panel.getByTestId('public-target-2')).toContainText('部分节点:1 台')
-  await expect(panel).toContainText('amd64 · arm64 已就绪')
-
-  await panel.getByTestId('public-target-add').click()
-  const dlg = page.getByRole('dialog', { name: '新增公共探测目标' })
-  await dlg.getByPlaceholder('例如 Cloudflare DNS').fill('内网网关')
-  await dlg.getByPlaceholder('1.1.1.1 或 one.one.one.one').fill('10.0.0.1')
-  await dlg.getByRole('button', { name: '登记' }).click()
-  await expect(dlg).toContainText('确实要测请勾选「允许受限地址与端口」')
-  expect(created).toBe(false)
-
-  await dlg.getByPlaceholder('1.1.1.1 或 one.one.one.one').fill('dns2.example.net')
-  await dlg.getByRole('button', { name: '登记' }).click()
-  // 登记成功之后直接打开「启用节点」,默认「都不启用」—— 存下去那一刻不会有任何机器开始测。
-  const scope = page.getByRole('dialog', { name: /启用节点/ })
-  await expect(scope.getByRole('radio', { name: '都不启用' })).toBeChecked()
-  await scope.getByRole('radio', { name: /全部自建节点/ }).check()
-  await scope.getByRole('button', { name: '保存' }).click()
-  await expect.poll(() => api.requests('PUT', '/api/probe/public-targets/3/scope').length).toBe(1)
-  expect(api.requests('PUT', '/api/probe/public-targets/3/scope')[0]!.body).toEqual({ scope: 'ALL', node_ids: [] })
+  const moved = page.getByTestId('public-probe-moved')
+  await expect(moved).toContainText('探测目标库')
+  await moved.getByRole('link', { name: '打开探测目标库' }).click()
+  await expect(page).toHaveURL(/\/probe-library$/)
+  await expect(page.getByRole('heading', { name: '探测目标库' })).toBeVisible()
 })
