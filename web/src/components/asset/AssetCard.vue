@@ -151,14 +151,14 @@ const nextLabel = computed(() => {
         <span v-if="c.monitor === 'ON' && c.outbound.length" class="ac__muted">节点本机 · 出站</span>
         <LbInfoTip
           :width="320"
-          text="出站:这台机器在本机测公共目标 —— ICMP 看丢包与往返时间,TCP 看建连时间与失败率,都不含 SSH 的耗时。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入丢包率。入口连通性:主控对这台机器的端口做 TCP 建连,端口能连上不等于代理协议可用。"
+          text="出站:这台机器在本机测公共目标 —— ICMP 看真实丢包率与往返时间,TCP 建连看建连时间与连接失败率,TCP 握手近似看握手超时无应答率(不是丢包率),都不含 SSH 的耗时。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入任何比例。入口连通性:主控对这台机器的端口做 TCP 建连,端口能连上不等于代理协议可用。"
         />
       </div>
       <template v-if="c.monitor === 'ON'">
         <ProbeRow v-for="p in shownOutbound" :key="p.id" :p="p" />
         <div v-if="!c.outbound.length" class="ac__na">
           <span>没有启用出站探测。</span>
-          <RouterLink to="/settings#probe-public">去配置公共目标</RouterLink>
+          <RouterLink to="/probe-library">去配置公共目标</RouterLink>
         </div>
         <template v-if="shownProbes.length">
           <div class="ac__subhead">
@@ -173,7 +173,7 @@ const nextLabel = computed(() => {
       </template>
       <div v-else-if="c.monitor === 'NONE'" class="ac__na">
         <span>还没有监测目标。</span>
-        <RouterLink to="/settings#probe-public">配置公共目标</RouterLink>
+        <RouterLink to="/probe-library">配置公共目标</RouterLink>
       </div>
       <div v-else-if="c.monitor === 'PAUSED'" class="ac__na">监测已暂停,点阵与延迟不再更新</div>
       <div v-else-if="c.monitor === 'GLOBAL_OFF'" class="ac__na">网络探测已在系统设置里关闭</div>

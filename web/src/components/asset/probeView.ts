@@ -1,11 +1,15 @@
-import type { ProbeProtocol, ProbeState, ProbeStats, ProbeSummary } from '@/api/client'
+import type { ProbeISP, ProbeMetric, ProbeOrigin, ProbeState, ProbeStats, ProbeSummary, ProbeTCPMode } from '@/api/client'
 
 /**
- * 探测一行的显示规则,卡片与节点详情共用 —— 两处各写一份的话,同一个目标在卡片上叫「丢包」、
+ * 探测一行的显示规则,卡片、节点详情与目标库共用 —— 几处各写一份的话,同一个目标在卡片上叫「丢包」、
  * 在详情里叫「失败率」,而管理员会以为是两个数。
  *
- * ICMP 看丢包率(按包:Σ(发 − 收) ÷ Σ发),TCP 看连接失败率(按建连)。采集失败、工具不可用、
- * DNS 失败、目标受限都没有发起,不进分母 —— 分母为 0 时显示「—」,不是 0%。
+ * 一律按后端给的 metric 起名,不按协议自己推:
+ *   - LOSS(ICMP):真实丢包率 = Σ(发 − 收) ÷ Σ发;
+ *   - CONNECT(TCP 建连):连接失败率 = 失败的建连 ÷ 发起的建连;
+ *   - SYN(TCP 握手近似):握手超时无应答率 = Σ(发出的 SYN − 有应答的) ÷ Σ发出的 SYN。
+ *     它基于系统的 TCP 建连,不是原始套接字的 SYN 探测,**不能叫丢包率**;RST 也是应答。
+ * 采集失败、工具不可用、DNS 失败、目标受限都没有发起,不进分母 —— 分母为 0 时显示「—」,不是 0%。
  */
 
 /** 状态的色调。采集失败不按坏画:那是面板连不上机器,目标那头怎样并不知道。 */
@@ -39,19 +43,45 @@ export function probeValue(p: ProbeSummary): string {
 }
 
 /** 这一行看哪个比例。 */
-export function rateOf(s: ProbeStats, protocol: ProbeProtocol): number | null {
-  return protocol === 'ICMP' ? s.loss_rate : s.failure_rate
+export function rateOf(s: ProbeStats, metric: ProbeMetric): number | null {
+  return metric === 'CONNECT' ? s.failure_rate : s.loss_rate
 }
 
-export function rateName(protocol: ProbeProtocol): string {
-  return protocol === 'ICMP' ? '丢包' : '失败率'
+/** 比例的短名(行内用)。 */
+export function rateName(metric: ProbeMetric): string {
+  switch (metric) {
+    case 'LOSS':
+      return '丢包'
+    case 'SYN':
+      return '无应答'
+  }
+  return '失败率'
 }
 
-export function rateTitle(s: ProbeStats, protocol: ProbeProtocol, span: string): string {
-  const parts =
-    protocol === 'ICMP'
-      ? [`${span}:ICMP 发 ${s.sent} 个包,收到 ${s.received} 个`]
-      : [`${span}:TCP 连接 ${s.attempts} 次,失败 ${s.failures} 次`]
+/** 比例的全名。 */
+export function rateFullName(metric: ProbeMetric): string {
+  switch (metric) {
+    case 'LOSS':
+      return 'ICMP 丢包率'
+    case 'SYN':
+      return '握手超时无应答率'
+  }
+  return 'TCP 连接失败率'
+}
+
+export function rateTitle(s: ProbeStats, metric: ProbeMetric, span: string): string {
+  let head: string
+  switch (metric) {
+    case 'LOSS':
+      head = `${span}:ICMP 发 ${s.sent} 个包,收到 ${s.received} 个`
+      break
+    case 'SYN':
+      head = `${span}:发出 ${s.sent} 个 SYN,有应答(SYN-ACK 或 RST)${s.received} 个 —— 这是握手超时无应答率,不是丢包率`
+      break
+    default:
+      head = `${span}:TCP 连接 ${s.attempts} 次,失败 ${s.failures} 次`
+  }
+  const parts = [head]
   const notSent: string[] = []
   if (s.dns_errors) notSent.push(`DNS 失败 ${s.dns_errors}`)
   if (s.ssh_errors) notSent.push(`采集失败 ${s.ssh_errors}`)
@@ -61,10 +91,23 @@ export function rateTitle(s: ProbeStats, protocol: ProbeProtocol, span: string):
   return parts.join(';')
 }
 
-/** 协议标签:ICMP / TCP 443。 */
-export function protoChip(p: Pick<ProbeSummary, 'protocol' | 'resolved_port' | 'direction'>): string {
-  if (p.protocol === 'ICMP') return 'ICMP'
-  return p.direction === 'OUTBOUND' && p.resolved_port ? `TCP ${p.resolved_port}` : 'TCP'
+/** 方式的名字(表格、表单用)。 */
+export function metricLabel(metric: ProbeMetric): string {
+  switch (metric) {
+    case 'LOSS':
+      return 'ICMP'
+    case 'SYN':
+      return 'TCP 握手(近似 SYN)'
+  }
+  return 'TCP 建连'
+}
+
+/** 协议标签:ICMP / TCP 443 / SYN 443。 */
+export function protoChip(p: { metric: ProbeMetric; resolved_port?: number; port?: number; direction?: string }): string {
+  if (p.metric === 'LOSS') return 'ICMP'
+  const port = p.port ?? (p.direction === 'OUTBOUND' ? p.resolved_port : 0)
+  const head = p.metric === 'SYN' ? 'SYN' : 'TCP'
+  return port ? `${head} ${port}` : head
 }
 
 export function targetTitle(p: ProbeSummary): string {
@@ -88,4 +131,17 @@ export function rttText(ms: number | null | undefined): string {
 
 export function familyText(f: string): string {
   return f === 'V6' ? 'IPv6' : 'IPv4'
+}
+
+export function ispText(isp: ProbeISP | string): string {
+  return ({ CT: '电信', CU: '联通', CM: '移动', CERNET: '教育网', OTHER: '其他' } as Record<string, string>)[isp] ?? ''
+}
+
+export function originText(o: ProbeOrigin | string): string {
+  return ({ MANUAL: '自定义', ZSTATIC: 'Zstatic', TCPQUALITY: 'TcpQuality' } as Record<string, string>)[o] ?? o
+}
+
+export function tcpModeOf(protocol: string, mode: ProbeTCPMode | undefined): ProbeMetric {
+  if (protocol === 'ICMP') return 'LOSS'
+  return mode === 'SYN' ? 'SYN' : 'CONNECT'
 }

@@ -15,6 +15,7 @@ import {
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
+import NodesProbeBatchModal from '@/components/probe/NodesProbeBatchModal.vue'
 import { useNodeRecheck } from '@/components/node/useNodeRecheck'
 import { summarizeHealth, type HealthSummary } from '@/components/node/healthSummary'
 import { confirmDeployNode } from '@/components/node/nodeOps'
@@ -142,6 +143,9 @@ const selected = ref<number[]>([])
 watch(visible, () => {
   selected.value = selected.value.filter((id) => visible.value.some((n) => n.id === id))
 })
+// 批量应用探测目标(只改勾选的这几台机器上的开关)。
+const probeBatchOpen = ref(false)
+
 const rowSelection = computed(() => ({
   selectedRowKeys: selected.value,
   onChange: (keys: (string | number)[]) => (selected.value = keys.map(Number)),
@@ -680,7 +684,14 @@ const keyOpen = ref(false)
           <a-button size="small" @click="runBatch('批量同步流量', (n) => api.syncNodeTraffic(n.id))">
             同步流量
           </a-button>
+          <a-button size="small" data-testid="nodes-probe-batch-open" @click="probeBatchOpen = true">应用探测目标</a-button>
         </LbBatchBar>
+        <NodesProbeBatchModal
+          :open="probeBatchOpen"
+          :node-ids="selected"
+          @close="probeBatchOpen = false"
+          @saved="probeBatchOpen = false"
+        />
 
         <LbEmptyState
           v-if="loadError"
