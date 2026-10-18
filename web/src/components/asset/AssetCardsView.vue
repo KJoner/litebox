@@ -94,7 +94,7 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
     <div v-if="dashError" class="lb-notice acv__notice" role="alert">
       <span class="lb-notice__icon lb-notice__icon--warn"><LbIcon name="circle-alert" :size="18" /></span>
       <div class="lb-notice__body">
-        <div class="lb-notice__title">套餐估值、地区标签与 TCP 探测没有读到</div>
+        <div class="lb-notice__title">套餐估值、地区标签与网络探测没有读到</div>
         <div class="lb-notice__text">卡片上这几块显示为不可用,不是零;资源、流量、状态照常来自原有数据。</div>
       </div>
       <div class="lb-notice__actions">
@@ -156,12 +156,17 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
         <div class="acv__h">{{ ov.costs.length ? '悬停查看剩余未摊销价值' : dash ? '还没有填写任何套餐价格' : '读取失败' }}</div>
       </div>
       <div class="acv__tile">
-        <div class="acv__k">TCP 探测</div>
+        <div class="acv__k">网络探测</div>
         <template v-if="dash?.probe.available && dash.probe.enabled">
-          <div class="acv__v lb-tabular" :class="{ 'acv__v--bad': ov.probeFailing }">
-            {{ ov.probeFailing }} <span class="acv__unit">/ {{ ov.probeTargets }} 失败</span>
+          <div
+            class="acv__v lb-tabular"
+            :class="{ 'acv__v--bad': ov.outboundFailing + ov.probeFailing }"
+            :title="`出站 ${ov.outboundTargets} 条序列失败 ${ov.outboundFailing};入口 ${ov.probeTargets} 个目标失败 ${ov.probeFailing}`"
+          >
+            {{ ov.outboundFailing + ov.probeFailing }}
+            <span class="acv__unit">/ {{ ov.outboundTargets + ov.probeTargets }} 失败</span>
           </div>
-          <div class="acv__h">{{ dash.probe.sources.map((s) => s.label).join('、') }} · 每 {{ dash.probe.interval_sec }} 秒</div>
+          <div class="acv__h">出站 {{ ov.outboundTargets }} · 入口 {{ ov.probeTargets }}</div>
         </template>
         <template v-else>
           <div class="acv__v acv__v--muted">未开启</div>

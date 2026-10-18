@@ -292,7 +292,7 @@ const failedSources = computed<FailedSource[]>(() => {
   if (sourceExpiryError.value) out.push({ label: '代理源到期', attention: true, retry: loadVendorExpiry })
   if (proxyExpiryError.value) out.push({ label: '外部代理到期', attention: true, retry: loadVendorExpiry })
   // 探测告警进「需要处理」,所以它读失败时清单同样可能不完整。
-  if (cardsError.value) out.push({ label: 'TCP 探测与套餐估值', attention: true, retry: loadCards })
+  if (cardsError.value) out.push({ label: '网络探测与套餐估值', attention: true, retry: loadCards })
   if (summaryError.value) out.push({ label: '概览指标', attention: false, retry: loadSummary })
   if (dailyError.value) out.push({ label: '流量趋势', attention: false, retry: loadDaily })
   for (const c of columnErrors.value) out.push({ label: c, attention: false, retry: loadNodes })
@@ -468,7 +468,25 @@ const attention = computed<AttentionItem[]>(() => {
       })
     }
   }
-  // TCP 探测连续失败(达到告警阈值)。预警级:它只说明从主控连不上那个端口 ——
+  // 出站探测连续失败(达到告警阈值)。预警级:这台机器在本机连不上某个公共目标 ——
+  // 可能是机器出口、线路或目标本身的问题,不代表用户连不上这台机器。
+  // 采集失败(面板连不上机器)不进这里:那不是网络结果,目标那头怎样并不知道。
+  for (const t of dashCards.value?.outbound ?? []) {
+    if (t.state !== 'DOWN') continue
+    out.push({
+      key: `o${t.id}`,
+      level: 'warn',
+      icon: 'activity',
+      title: nodeName(t.node_id),
+      cat: '节点 · 出站探测',
+      text: `到「${t.label}」(${t.protocol},${familyText(t.family)})连续 ${t.consecutive_failures} 次${
+        t.protocol === 'ICMP' ? '全部丢包' : 'TCP 连接失败'
+      } —— 在这台机器本机测的,不代表用户连不上它`,
+      to: `/nodes/${t.node_id}/network`,
+      action: '查看探测',
+    })
+  }
+  // 入口连通性连续失败(达到告警阈值)。预警级:它只说明从主控连不上那个端口 ——
   // 不等于用户全部断线,也可能只是主控这一侧的网络问题。
   for (const t of dashCards.value?.targets ?? []) {
     if (t.state !== 'DOWN') continue
@@ -477,7 +495,7 @@ const attention = computed<AttentionItem[]>(() => {
       level: 'warn',
       icon: 'activity',
       title: nodeName(t.node_id),
-      cat: '节点 · TCP 探测',
+      cat: '节点 · 入口连通性',
       text: `${t.label}(${familyText(t.family)})连续 ${t.consecutive_failures} 次 TCP 连接失败 —— 从主控连不上这个端口,不等于代理不可用`,
       to: `/nodes/${t.node_id}/network`,
       action: '查看探测',

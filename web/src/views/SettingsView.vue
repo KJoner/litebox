@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   api,
@@ -16,6 +16,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { LbCopyField, LbEmptyState, LbInfoTip, LbSectionTitle, lbDangerConfirm } from '@/components/lb'
 import CloudAccountsPanel from '@/components/cloud/CloudAccountsPanel.vue'
+import PublicProbePanel from '@/components/probe/PublicProbePanel.vue'
 import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
 
 /**
@@ -34,6 +35,7 @@ import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
  */
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
 const settings = ref<PanelSettings | null>(null)
 const tiers = ref<AccessTier[]>([])
@@ -46,7 +48,8 @@ const sections = [
   { id: 'probe', label: '拨测目标' },
   { id: 'notify', label: '监控与推送' },
   { id: 'expiry', label: '到期与续费提醒' },
-  { id: 'tcpprobe', label: 'TCP 探测' },
+  { id: 'probe-public', label: '公共探测目标' },
+  { id: 'tcpprobe', label: '网络探测' },
   { id: 'cloud', label: '云账号' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
@@ -407,7 +410,15 @@ async function loadAll() {
   void loadNotify()
 }
 
-onMounted(loadAll)
+onMounted(async () => {
+  await loadAll()
+  // 卡片、节点详情里的「去配置」带着 #probe-public 这类锚点进来:直接跳到那一节。
+  const id = route.hash.replace(/^#/, '')
+  if (id && sections.some((x) => x.id === id)) {
+    await nextTick()
+    jump(id)
+  }
+})
 
 // ---------- 订阅排序方案(V20) ----------
 
@@ -798,9 +809,15 @@ const probeTip = computed(
         </div>
       </section>
 
-      <!-- TCP 探测(资产卡片) -->
+      <!-- 公共探测目标(出站网络质量) -->
+      <section id="set-probe-public">
+        <LbSectionTitle title="公共探测目标(出站)" effect="now" />
+        <PublicProbePanel />
+      </section>
+
+      <!-- 网络探测:全局开关、告警,以及入口连通性的间隔与超时 -->
       <section id="set-tcpprobe">
-        <LbSectionTitle title="TCP 探测">
+        <LbSectionTitle title="网络探测">
           <template #badge>
             <span class="lb-effect lb-effect--now">下一轮探测起生效</span>
           </template>
@@ -811,16 +828,16 @@ const probeTip = computed(
               <span class="lb-group__label">
                 启用
                 <LbInfoTip
-                  :width="340"
-                  text="主控按间隔对节点详情「网络监测」里登记的目标端口做 TCP 三次握手,记延迟与成败。它不是代理协议检查,也不是 ICMP;不走 SSH、不占节点连接锁,打开仪表盘不会触发探测。关掉之后目标与历史保留,只是不再探测、不再告警。"
+                  :width="360"
+                  text="两类探测一起开关:出站网络质量(每台机器在本机测上面的公共目标)与入口连通性(主控对节点详情里登记的端口做 TCP 建连)。打开仪表盘不会触发探测。关掉之后目标、开关与历史都保留,只是不再探测、不再告警。"
                 />
               </span>
               <a-switch v-model:checked="tcpForm.enabled" />
             </div>
             <div class="lb-group__row st__row">
               <span class="lb-group__label">
-                探测间隔(秒)
-                <LbInfoTip :width="280" text="15~3600 秒。卡片上的点阵每个点至少 2 分钟,再勤只是在目标机器的连接日志里多几行。" />
+                入口探测间隔(秒)
+                <LbInfoTip :width="300" text="只管入口连通性(主控 → 节点),15~3600 秒;出站探测的间隔在每个公共目标上单独设。卡片上的点阵每个点至少 2 分钟,再勤只是在目标机器的连接日志里多几行。" />
               </span>
               <a-input
                 v-model:value="tcpForm.interval"
@@ -830,7 +847,7 @@ const probeTip = computed(
               />
             </div>
             <div class="lb-group__row st__row">
-              <span class="lb-group__label">单次超时(毫秒)</span>
+              <span class="lb-group__label">入口单次超时(毫秒)</span>
               <a-input
                 v-model:value="tcpForm.timeout"
                 inputmode="numeric"
@@ -843,7 +860,7 @@ const probeTip = computed(
                 连续失败几次推送
                 <LbInfoTip
                   :width="320"
-                  text="0~60,0 表示不推送。DNS 解析失败也算一次失败(从主控看都是连不上),但不进失败率的分母。进入失败只推一条、恢复推一条,面板重启不会重推。探测失败不会自动重启、重新部署或停机。"
+                  text="0~60,0 表示不推送,两类探测共用。连接失败、ICMP 整轮全丢与 DNS 解析失败算一次失败;部分丢包算可达,采集失败(面板连不上这台机器)、工具不可用、目标受限都不改变计数。进入失败只推一条、恢复推一条,面板重启不会重推。探测失败不会自动重启、重新部署或停机。"
                 />
               </span>
               <a-input
@@ -868,7 +885,7 @@ const probeTip = computed(
             <span v-if="tcpDirty" class="st__dirty">已改动</span>
             <a-button v-if="tcpDirty" size="small" class="lb-btn-ghost lb-btn-ghost--text" @click="restoreTcp">还原</a-button>
             <a-button type="primary" size="small" :disabled="!tcpDirty" :loading="savingTcp" @click="saveTcp">
-              保存 TCP 探测
+              保存网络探测
             </a-button>
           </div>
         </div>

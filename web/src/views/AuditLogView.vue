@@ -140,6 +140,15 @@ const actionNames: Record<string, string> = {
   'cloud_account.create': '新增云账号',
   'cloud_account.update': '编辑云账号',
   'cloud_account.delete': '删除云账号',
+  'asset.labels': '修改地区与标签',
+  'probe.target_create': '新增入口监测目标',
+  'probe.target_update': '修改入口监测目标',
+  'probe.target_delete': '删除入口监测目标',
+  'probe.node_binding': '出站探测本机开关',
+  'probe.public_create': '新增公共探测目标',
+  'probe.public_update': '编辑公共探测目标',
+  'probe.public_delete': '删除公共探测目标',
+  'probe.public_scope': '公共探测目标启用范围',
 }
 
 type Category =
@@ -183,7 +192,9 @@ function categoryOf(action: string): Category {
     action.startsWith('node.') ||
     action.startsWith('inbound.') ||
     action.startsWith('mieru_inbound.') ||
-    action.startsWith('relay.')
+    action.startsWith('relay.') ||
+    action.startsWith('probe.target_') ||
+    action === 'probe.node_binding'
   ) {
     return 'node'
   }
@@ -196,7 +207,8 @@ function categoryOf(action: string): Category {
     action.startsWith('settings.') ||
     action.startsWith('tier.') ||
     action.startsWith('cloud_account.') ||
-    action.startsWith('notify.')
+    action.startsWith('notify.') ||
+    action.startsWith('probe.public_')
   ) {
     return 'settings'
   }
