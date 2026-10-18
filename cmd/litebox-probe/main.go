@@ -37,8 +37,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "输入不是合法的 JSON:", err)
 		os.Exit(2)
 	}
-	if req.Version != netprobe.Version {
-		fmt.Fprintf(os.Stderr, "协议版本不符:主控 %d,辅助程序 %d\n", req.Version, netprobe.Version)
+	// 认得的版本区间里都能跑,并按请求的版本回话:面板回滚到旧版本时,节点上这一份新的照样能用。
+	// 比它新的请求说明主控升级了而这里还是旧文件 —— 主控会按 sha256 重传,这一轮如实报「版本不符」。
+	if req.Version < netprobe.MinVersion || req.Version > netprobe.Version {
+		fmt.Fprintf(os.Stderr, "协议版本不符:主控 %d,辅助程序支持 %d~%d\n", req.Version, netprobe.MinVersion, netprobe.Version)
 		os.Exit(3)
 	}
 	if len(req.Targets) > netprobe.MaxTargets {
