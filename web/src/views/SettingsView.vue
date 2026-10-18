@@ -16,7 +16,6 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { LbCopyField, LbEmptyState, LbInfoTip, LbSectionTitle, lbDangerConfirm } from '@/components/lb'
 import CloudAccountsPanel from '@/components/cloud/CloudAccountsPanel.vue'
-import PublicProbePanel from '@/components/probe/PublicProbePanel.vue'
 import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
 
 /**
@@ -809,10 +808,17 @@ const probeTip = computed(
         </div>
       </section>
 
-      <!-- 公共探测目标(出站网络质量) -->
+      <!-- 公共探测目标(出站网络质量):已经搬到独立的「探测目标库」页,这里只留一个入口。
+           锚点保留:旧的「去配置」链接与书签带着 #probe-public 进来时,至少能落在一句指路的话上。 -->
       <section id="set-probe-public">
-        <LbSectionTitle title="公共探测目标(出站)" effect="now" />
-        <PublicProbePanel />
+        <LbSectionTitle title="公共探测目标(出站)" />
+        <div class="lb-card set__pp" data-testid="public-probe-moved">
+          <div>
+            公共探测目标搬到了单独的「探测目标库」:自定义目标、Zstatic 预置、TcpQuality 同步、按地区 / 运营商 / 来源筛选、
+            批量应用到节点,以及第三方来源的授权确认与限额都在那里。下面的「网络探测」仍是全局开关与告警设置。
+          </div>
+          <RouterLink to="/probe-library" class="set__pp-link">打开探测目标库</RouterLink>
+        </div>
       </section>
 
       <!-- 网络探测:全局开关、告警,以及入口连通性的间隔与超时 -->
@@ -1087,6 +1093,20 @@ const probeTip = computed(
 </template>
 
 <style scoped>
+.set__pp {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text2);
+  line-height: 1.6;
+}
+.set__pp-link {
+  flex: none;
+  font-weight: 600;
+}
 .st {
   flex-direction: row;
   align-items: flex-start;

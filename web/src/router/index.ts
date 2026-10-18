@@ -68,6 +68,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '订阅配置' },
       },
       {
+        // 公共探测目标库(出站网络质量的目标:自定义、Zstatic 预置、TcpQuality 同步)。
+        // 原来在系统设置里的一小节,目标多起来之后要筛选、批量与来源管理,单独成页。
+        path: '/probe-library',
+        name: 'probe-library',
+        component: () => import('@/views/ProbeLibraryView.vue'),
+        meta: { title: '探测目标库' },
+      },
+      {
         path: '/deployments',
         name: 'deployments',
         component: () => import('@/views/DeploymentsView.vue'),

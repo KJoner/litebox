@@ -91,6 +91,7 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
   {
     title: '运维',
     items: [
+      { key: 'probe-library', label: '探测目标库', icon: 'activity' },
       { key: 'deployments', label: '部署记录', icon: 'clock', badge: counts.value.failedDeploys, danger: true },
       { key: 'audit-logs', label: '审计日志', icon: 'list' },
       { key: 'settings', label: '系统设置', icon: 'settings' },

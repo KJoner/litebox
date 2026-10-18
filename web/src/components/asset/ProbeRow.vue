@@ -15,8 +15,8 @@ import {
 } from './probeView'
 
 /**
- * 探测的一行:名称 · 协议 · 地址族 · 最近一次的延迟,下面是点阵与 1h / 24h 的丢包率(ICMP)
- * 或失败率(TCP)。出站与入口共用 —— 规则都在 probeView.ts。
+ * 探测的一行:名称 · 协议 · 地址族 · 最近一次的延迟,下面是点阵与 1h / 24h 的丢包率(ICMP)、
+ * 连接失败率(TCP 建连)或握手无应答率(TCP 握手近似)。出站与入口共用 —— 规则都在 probeView.ts。
  */
 defineProps<{ p: ProbeSummary }>()
 </script>
@@ -31,10 +31,10 @@ defineProps<{ p: ProbeSummary }>()
         {{ probeValue(p) }}
       </span>
     </div>
-    <ProbeDots :dots="p.dots" :seconds="p.dot_seconds" :protocol="p.protocol" :muted="probeMuted(p.state)" />
+    <ProbeDots :dots="p.dots" :seconds="p.dot_seconds" :metric="p.metric" :muted="probeMuted(p.state)" />
     <div class="pr__meta lb-tabular">
-      <span :title="rateTitle(p.h1, p.protocol, '近 1 小时')">1h {{ rateName(p.protocol) }} {{ rateText(rateOf(p.h1, p.protocol)) }}</span>
-      <span :title="rateTitle(p.h24, p.protocol, '近 24 小时')">24h {{ rateText(rateOf(p.h24, p.protocol)) }}</span>
+      <span :title="rateTitle(p.h1, p.metric, '近 1 小时')">1h {{ rateName(p.metric) }} {{ rateText(rateOf(p.h1, p.metric)) }}</span>
+      <span :title="rateTitle(p.h24, p.metric, '近 24 小时')">24h {{ rateText(rateOf(p.h24, p.metric)) }}</span>
       <span v-if="p.state !== 'OK'" class="pr__state" :class="`pr__tone--${probeTone(p.state)}`">{{ p.state_text }}</span>
     </div>
   </div>

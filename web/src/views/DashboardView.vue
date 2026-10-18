@@ -39,6 +39,7 @@ import { expiryStatusMeta } from '@/components/expiry/expiryMeta'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import AssetCardsView from '@/components/asset/AssetCardsView.vue'
 import { buildAssetCards, familyText, type AssetCard } from '@/components/asset/assetModel'
+import { metricLabel } from '@/components/asset/probeView'
 import { useNarrow } from '@/composables/useNarrow'
 
 /**
@@ -479,8 +480,8 @@ const attention = computed<AttentionItem[]>(() => {
       icon: 'activity',
       title: nodeName(t.node_id),
       cat: '节点 · 出站探测',
-      text: `到「${t.label}」(${t.protocol},${familyText(t.family)})连续 ${t.consecutive_failures} 次${
-        t.protocol === 'ICMP' ? '全部丢包' : 'TCP 连接失败'
+      text: `到「${t.label}」(${metricLabel(t.metric)},${familyText(t.family)})连续 ${t.consecutive_failures} 次${
+        t.metric === 'LOSS' ? '全部丢包' : t.metric === 'SYN' ? '握手全部无应答或被拒' : 'TCP 连接失败'
       } —— 在这台机器本机测的,不代表用户连不上它`,
       to: `/nodes/${t.node_id}/network`,
       action: '查看探测',

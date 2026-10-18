@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { ProbeBucket, ProbeProtocol } from '@/api/client'
+import type { ProbeBucket, ProbeMetric } from '@/api/client'
 import { formatTime } from '@/utils/format'
 import { rateText, rttText } from './probeView'
 
 /**
  * 延迟曲线。横轴按时间等距(每个窗口一格),纵轴是窗口内的平均 RTT
- * (TCP 是成功建连的耗时,ICMP 是收到的包的往返时间,按包加权)。
+ * (TCP 建连是成功建连的耗时,TCP 握手近似是收到应答的握手耗时,ICMP 是收到的包的往返时间,按包加权)。
  *
  *   - 窗口里一次可达都没有:曲线断开,不补 0、不插值;
  *   - 失败 / 部分丢包 / DNS 失败 / 采集失败或工具不可用 / 未执行各画一枚底部记号
  *     (红 / 琥珀 / 橙 / 灰斜纹 / 灰),失败点在曲线断开的地方也看得见;
  *   - 宽度由 ResizeObserver 量容器像素,不靠 viewBox 拉伸 —— 拉伸会让鼠标位置与读数对不上。
  */
-const props = defineProps<{ buckets: ProbeBucket[]; height?: number; protocol?: ProbeProtocol }>()
+const props = defineProps<{ buckets: ProbeBucket[]; height?: number; metric?: ProbeMetric }>()
 
 const box = ref<HTMLElement | null>(null)
 const width = ref(600)
@@ -120,7 +120,9 @@ const hoverText = computed(() => {
   if (!b) return ''
   const parts = [formatTime(b.at)]
   if (b.attempts) {
-    if (props.protocol === 'ICMP') parts.push(`发 ${b.sent} 个包 · 收到 ${b.received} · 丢包 ${rateText(b.loss_rate)}`)
+    if (props.metric === 'LOSS') parts.push(`发 ${b.sent} 个包 · 收到 ${b.received} · 丢包 ${rateText(b.loss_rate)}`)
+    else if (props.metric === 'SYN')
+      parts.push(`发出 ${b.sent} 个 SYN · 有应答 ${b.received} · 无应答 ${rateText(b.loss_rate)}`)
     else parts.push(`连接 ${b.attempts} 次 · 失败 ${b.failures}`)
   }
   if (b.rtt_avg_ms != null) parts.push(`平均 ${rttText(b.rtt_avg_ms)}(${rttText(b.rtt_min_ms)} ~ ${rttText(b.rtt_max_ms)})`)
@@ -142,7 +144,7 @@ const hoverText = computed(() => {
       :width="width"
       :height="H"
       role="img"
-      :aria-label="protocol === 'ICMP' ? 'ICMP 往返时间曲线' : 'TCP 建连时间曲线'"
+      :aria-label="metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : 'TCP 建连时间曲线'"
       @mousemove="onMove"
       @mouseleave="hover = null"
     >

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ProbeBucket, ProbeProtocol } from '@/api/client'
+import type { ProbeBucket, ProbeMetric } from '@/api/client'
 import { formatTime } from '@/utils/format'
 
 /**
@@ -16,17 +16,16 @@ const props = defineProps<{
   dots: ProbeBucket[]
   /** 每个点的宽度(秒),写进悬停说明。 */
   seconds: number
-  /** ICMP 的悬停说明按包写(丢包),TCP 按建连写(失败)。 */
-  protocol?: ProbeProtocol
+  /** 悬停说明按口径写:ICMP 按包(丢包)、TCP 建连按建连(失败)、握手近似按 SYN(无应答)。 */
+  metric?: ProbeMetric
   /** 整行暂停 / 失效时降成灰色(历史仍然画,但不再暗示「此刻」)。 */
   muted?: boolean
 }>()
 
-const isICMP = computed(() => props.protocol === 'ICMP')
 
 const STATE_TEXT: Record<ProbeBucket['state'], string> = {
   OK: '全部成功',
-  PARTIAL: '部分失败 / 部分丢包',
+  PARTIAL: '部分失败 / 部分丢包 / 部分无应答',
   FAIL: '全部失败',
   DNS: 'DNS 解析失败(未发起)',
   SSH: '采集失败(面板连不上这台机器,不是丢包)',
@@ -39,7 +38,8 @@ const STATE_TEXT: Record<ProbeBucket['state'], string> = {
 function title(d: ProbeBucket): string {
   const parts = [`${formatTime(d.at)} 起 ${Math.round(props.seconds / 60)} 分钟:${STATE_TEXT[d.state]}`]
   if (d.attempts) {
-    if (isICMP.value) parts.push(`ICMP ${d.attempts} 轮,发 ${d.sent} 个包、收到 ${d.received} 个`)
+    if (props.metric === 'LOSS') parts.push(`ICMP ${d.attempts} 轮,发 ${d.sent} 个包、收到 ${d.received} 个`)
+    else if (props.metric === 'SYN') parts.push(`握手 ${d.attempts} 轮,发出 ${d.sent} 个 SYN、有应答 ${d.received} 个`)
     else parts.push(`TCP 连接 ${d.attempts} 次,失败 ${d.failures} 次`)
   }
   if (d.rtt_avg_ms != null) parts.push(`平均 ${d.rtt_avg_ms.toFixed(1)} ms`)

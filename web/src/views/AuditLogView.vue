@@ -149,6 +149,14 @@ const actionNames: Record<string, string> = {
   'probe.public_update': '编辑公共探测目标',
   'probe.public_delete': '删除公共探测目标',
   'probe.public_scope': '公共探测目标启用范围',
+  'probe.public_batch': '批量操作公共探测目标',
+  'probe.public_import': '批量导入公共探测目标',
+  'probe.source_update': '探测目标来源(授权 / 暂停 / 限额)',
+  'probe.source_apply': '从第三方来源导入探测目标',
+  'probe.limits_update': '出站探测限额',
+  'probe.bindings_batch': '批量设置节点出站探测开关',
+  'probe.node_settings': '节点出站探测覆盖(暂停 / 间隔)',
+  'probe.trial': '节点试测公共探测目标',
 }
 
 type Category =
@@ -194,7 +202,10 @@ function categoryOf(action: string): Category {
     action.startsWith('mieru_inbound.') ||
     action.startsWith('relay.') ||
     action.startsWith('probe.target_') ||
-    action === 'probe.node_binding'
+    action === 'probe.node_binding' ||
+    action === 'probe.bindings_batch' ||
+    action === 'probe.node_settings' ||
+    action === 'probe.trial'
   ) {
     return 'node'
   }
@@ -208,7 +219,9 @@ function categoryOf(action: string): Category {
     action.startsWith('tier.') ||
     action.startsWith('cloud_account.') ||
     action.startsWith('notify.') ||
-    action.startsWith('probe.public_')
+    action.startsWith('probe.public_') ||
+    action.startsWith('probe.source_') ||
+    action === 'probe.limits_update'
   ) {
     return 'settings'
   }

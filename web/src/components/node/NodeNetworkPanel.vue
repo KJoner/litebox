@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import {
   api,
@@ -15,11 +15,14 @@ import { LbEmptyState, LbIcon, LbInfoTip, LbStatusTag, metaOf, type LbStatusMeta
 import { formatRelative, formatTime } from '@/utils/format'
 import ProbeDots from '@/components/asset/ProbeDots.vue'
 import ProbeChart from '@/components/asset/ProbeChart.vue'
+import NodeTargetPicker from '@/components/probe/NodeTargetPicker.vue'
 import {
   familyText,
+  originText,
   probeMuted,
   probeValue,
   protoChip,
+  rateFullName,
   rateName,
   rateOf,
   rateText,
@@ -30,8 +33,10 @@ import {
 /**
  * 节点详情「网络监测」Tab,两块,数据分开存、分开算、分开显示:
  *
- *   - 出站网络质量:这台机器在本机测系统设置里的公共目标(ICMP / TCP)。这里只有本机的开关
- *     (跟随全局 / 启用 / 停用),目标本身在系统设置里建;
+ *   - 出站网络质量:这台机器在本机测目标库里的公共目标(ICMP / TCP 建连 / TCP 握手近似)。
+ *     这里有本机的开关(跟随全局 / 启用 / 停用)、从目标库里挑目标、试测,以及本机的覆盖
+ *     (暂停本机、改间隔 —— 只能往「少测」那边改:全局关闭与来源暂停对每一台都生效);
+ *     目标本身在「探测目标库」里建;
  *   - 入口连通性:主控对这台机器的管理通道与订阅地址做 TCP 建连。目标只能从下拉里选 ——
  *     候选是这台机器已登记的地址与端口,不收自由输入(那会让面板变成一个扫描器)。
  *
@@ -50,6 +55,8 @@ async function load() {
   loadError.value = ''
   try {
     data.value = await api.nodeProbe(props.nodeId)
+    nodeForm.paused = data.value.node_settings.paused
+    nodeForm.interval = data.value.node_settings.interval_sec || null
     if (selected.value == null || !allSeries.value.some((t) => t.id === selected.value)) {
       // 默认看第一条生效的出站序列;没有就看入口的第一个对外服务。
       const out = data.value.outbound.find((t) => t.enabled)
@@ -75,8 +82,52 @@ const seriesByPublic = computed(() => {
 const modeText: Record<ProbeBindingMode, string> = { INHERIT: '跟随全局', ON: '启用', OFF: '停用' }
 
 function inheritText(p: NodePublicProbe): string {
-  if (!p.enabled) return '公共目标已全局暂停'
+  if (p.pause_reason) return p.pause_reason
   return p.apply_all ? '全局:对全部节点启用' : '全局:没有对全部节点启用'
+}
+
+/**
+ * 这一块列哪些目标:在测的、本机显式开 / 关过的、有过历史的,以及「全部节点」但被暂停了的。
+ * 目标库可以有几百项,全列出来就找不到这台机器真正在测的那几个了;其余的在「选择公共目标」里挑。
+ */
+const shownPublics = computed(() =>
+  (data.value?.public ?? []).filter(
+    (p) => p.effective || p.mode !== 'INHERIT' || seriesByPublic.value.has(p.id) || (p.apply_all && !!p.node_pause_reason),
+  ),
+)
+
+function rowNote(p: NodePublicProbe): string {
+  if (p.effective) return '已启用,等待第一次探测'
+  if (p.node_pause_reason) return p.node_pause_reason + ',这台机器不测'
+  if (p.mode === 'OFF') return '这台机器上已停用'
+  return inheritText(p) + ',这台机器不测'
+}
+
+// ---------- 出站:本机覆盖 ----------
+
+const nodeForm = reactive({ paused: false, interval: null as number | null })
+const savingNode = ref(false)
+async function saveNodeSettings() {
+  savingNode.value = true
+  try {
+    await api.setNodeProbeSettings(props.nodeId, { paused: nodeForm.paused, interval_sec: nodeForm.interval ?? 0 })
+    message.success(nodeForm.paused ? '已暂停这台机器的出站探测(历史保留)' : '已保存')
+    await load()
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '保存失败')
+    if (data.value) {
+      nodeForm.paused = data.value.node_settings.paused
+      nodeForm.interval = data.value.node_settings.interval_sec || null
+    }
+  } finally {
+    savingNode.value = false
+  }
+}
+
+const pickerOpen = ref(false)
+async function onPicked() {
+  pickerOpen.value = false
+  await load()
 }
 
 const savingBinding = ref<number | null>(null)
@@ -188,14 +239,14 @@ watch(() => props.nodeId, () => {
 watch([selected, range], () => void loadHistory())
 
 const selectedTarget = computed(() => allSeries.value.find((t) => t.id === selected.value) ?? null)
-const isICMP = computed(() => selectedTarget.value?.protocol === 'ICMP')
+const selMetric = computed(() => selectedTarget.value?.metric ?? 'CONNECT')
 
 function stateMeta(t: ProbeSummary): LbStatusMeta {
   switch (t.state) {
     case 'OK':
       return metaOf.ok('正常')
     case 'LOSSY':
-      return metaOf.warn('部分丢包')
+      return metaOf.warn(t.metric === 'SYN' ? '部分无应答' : '部分丢包')
     case 'FAILING':
       return metaOf.warn('最近一次失败')
     case 'DOWN':
@@ -265,11 +316,37 @@ const missingHelpers = computed(() => {
           <h3 class="nn__sec-title">
             出站网络质量
             <LbInfoTip
-              :width="360"
-              text="这台机器在本机测公共目标:ICMP 看往返时间与丢包率(按包),TCP 看建连时间与失败率。延迟在 VPS 上量,不含 SSH 的耗时。面板经已有的 SSH 连接临时启动一个辅助程序(/opt/litebox/litebox-probe,跑完就退出、不常驻、不监听端口);节点正在部署或同步时那一轮让路。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入丢包率。"
+              :width="380"
+              text="这台机器在本机测公共目标:ICMP 看往返时间与真实丢包率(按包);TCP 建连看建连时间与连接失败率;TCP 握手近似看握手超时无应答率(基于系统 TCP 建连,不是原始套接字的 SYN 探测,不是丢包率)。延迟在 VPS 上量,不含 SSH 的耗时。面板经已有的 SSH 连接临时启动一个辅助程序(/opt/litebox/litebox-probe,跑完就退出、不常驻、不监听端口);节点正在部署或同步时那一轮让路。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入任何比例。"
             />
           </h3>
-          <span class="nn__muted">节点本机 · 公共目标在<RouterLink to="/settings#probe-public">系统设置</RouterLink>里配置</span>
+          <span class="nn__muted">节点本机 · 目标在<RouterLink to="/probe-library">探测目标库</RouterLink>里配置</span>
+          <a-button size="small" class="nn__pick-btn" data-testid="probe-pick-open" :disabled="!data.public.length" @click="pickerOpen = true">
+            <template #icon><LbIcon name="plus" :size="14" /></template>
+            选择公共目标
+          </a-button>
+        </div>
+        <div class="nn__node" data-testid="probe-node-settings">
+          <label class="nn__node-item">
+            <a-switch v-model:checked="nodeForm.paused" size="small" :loading="savingNode" @change="saveNodeSettings" />
+            <span>暂停本机出站探测</span>
+            <LbInfoTip :width="300" text="只停这一台,目标与历史都保留。单台节点只能暂停、不能强开:全局关闭与来源暂停对每一台都生效。" />
+          </label>
+          <label class="nn__node-item">
+            <span>本机探测间隔</span>
+            <a-input-number
+              v-model:value="nodeForm.interval"
+              size="small"
+              :min="30"
+              :max="3600"
+              :precision="0"
+              placeholder="跟随各目标"
+              addon-after="秒"
+              class="nn__node-num"
+            />
+            <a-button size="small" :loading="savingNode" @click="saveNodeSettings">保存</a-button>
+            <LbInfoTip :width="300" text="留空 = 跟随各目标自己的间隔。设了之后这台机器上全部出站目标都按它,但不能低于各自来源的下限(第三方来源默认 300 秒)。" />
+          </label>
         </div>
         <div v-if="data.probe.outbound_available && missingHelpers.length" class="nn__note">
           <LbIcon name="info" :size="13" />主控缺少 {{ missingHelpers.join('、') }} 架构的辅助程序,那种架构的机器上会显示「工具不可用」(执行
@@ -278,12 +355,15 @@ const missingHelpers = computed(() => {
         <LbEmptyState
           v-if="!data.public.length"
           variant="empty"
-          title="还没有公共探测目标"
-          description="在系统设置里登记公共目标(比如公共 DNS 的 ICMP、某个网站的 TCP 443),再选择对哪些节点启用。升级不会替任何机器自动开启探测。"
+          title="目标库还是空的"
+          description="在「探测目标库」里登记目标(自己的机器、或者从 Zstatic / TcpQuality 挑几个),再选择对哪些节点启用。升级不会替任何机器自动开启探测。"
         />
+        <div v-else-if="!shownPublics.length" class="nn__muted nn__empty">
+          这台机器还没有启用任何公共目标。点「选择公共目标」从目标库里挑;第三方目标要先在目标库里确认授权。
+        </div>
         <ul v-else class="nn__list">
           <li
-            v-for="p in data.public"
+            v-for="p in shownPublics"
             :key="p.id"
             class="nn__row"
             :class="{ 'nn__row--on': seriesByPublic.get(p.id)?.id === selected && selected != null }"
@@ -298,9 +378,11 @@ const missingHelpers = computed(() => {
                 @click="selected = seriesByPublic.get(p.id)?.id ?? selected"
               >
                 <span class="nn__label lb-ellipsis">{{ p.name }}</span>
-                <span class="lb-chip">{{ p.protocol === 'ICMP' ? 'ICMP' : `TCP ${p.port}` }}</span>
+                <span class="lb-chip">{{ protoChip(p) }}</span>
                 <span class="lb-chip">{{ familyText(p.family) }}</span>
+                <span v-if="p.third_party" class="lb-chip">{{ originText(p.source) }}</span>
                 <span class="nn__addr lb-mono">{{ p.host }}</span>
+                <span class="nn__muted lb-tabular">每 {{ p.node_interval_sec }} 秒</span>
               </button>
               <div class="lb-seg lb-seg--sm nn__mode" role="radiogroup" :aria-label="`${p.name} 在这台机器上`">
                 <button
@@ -325,9 +407,9 @@ const missingHelpers = computed(() => {
                 <span class="nn__rtt lb-tabular" :title="seriesByPublic.get(p.id)!.state_text">
                   {{ probeValue(seriesByPublic.get(p.id)!) }}
                 </span>
-                <span class="nn__muted lb-tabular" :title="rateTitle(seriesByPublic.get(p.id)!.h1, p.protocol, '近 1 小时')">
-                  1h {{ rateName(p.protocol) }} {{ rateText(rateOf(seriesByPublic.get(p.id)!.h1, p.protocol)) }}
-                  · 24h {{ rateText(rateOf(seriesByPublic.get(p.id)!.h24, p.protocol)) }}
+                <span class="nn__muted lb-tabular" :title="rateTitle(seriesByPublic.get(p.id)!.h1, p.metric, '近 1 小时')">
+                  1h {{ rateName(p.metric) }} {{ rateText(rateOf(seriesByPublic.get(p.id)!.h1, p.metric)) }}
+                  · 24h {{ rateText(rateOf(seriesByPublic.get(p.id)!.h24, p.metric)) }}
                 </span>
                 <span v-if="seriesByPublic.get(p.id)!.state !== 'OK'" class="nn__muted">
                   {{ seriesByPublic.get(p.id)!.state_text }}
@@ -336,12 +418,12 @@ const missingHelpers = computed(() => {
               <ProbeDots
                 :dots="seriesByPublic.get(p.id)!.dots"
                 :seconds="seriesByPublic.get(p.id)!.dot_seconds"
-                :protocol="p.protocol"
+                :metric="p.metric"
                 :muted="probeMuted(seriesByPublic.get(p.id)!.state)"
               />
             </template>
             <div v-else class="nn__muted">
-              {{ p.effective ? '已启用,等待第一次探测' : p.mode === 'OFF' ? '这台机器上已停用' : inheritText(p) + ',这台机器不测' }}
+              {{ rowNote(p) }}
               <template v-if="seriesByPublic.get(p.id) && !p.effective">· 历史保留,可点名称查看</template>
             </div>
           </li>
@@ -407,7 +489,7 @@ const missingHelpers = computed(() => {
               <span class="nn__rtt lb-tabular" :title="t.state_text">{{ probeValue(t) }}</span>
               <span class="nn__muted lb-tabular">1h {{ rateText(t.h1.failure_rate) }} · 24h {{ rateText(t.h24.failure_rate) }}</span>
             </div>
-            <ProbeDots :dots="t.dots" :seconds="t.dot_seconds" protocol="TCP" :muted="probeMuted(t.state)" />
+            <ProbeDots :dots="t.dots" :seconds="t.dot_seconds" metric="CONNECT" :muted="probeMuted(t.state)" />
             <div v-if="t.state === 'INVALID' || t.state === 'STALE' || t.state === 'STOPPED'" class="nn__muted">{{ t.state_text }}</div>
             <div class="nn__ops">
               <button type="button" class="lb-linkbtn" @click="toggle(t)">{{ t.enabled ? '暂停' : '恢复' }}</button>
@@ -445,15 +527,20 @@ const missingHelpers = computed(() => {
         <div v-if="historyError" class="lb-error-strip">{{ historyError }}</div>
         <a-skeleton v-else-if="historyLoading && !history" active :paragraph="{ rows: 4 }" />
         <template v-else-if="history">
-          <ProbeChart :buckets="history.buckets" :protocol="selectedTarget.protocol" />
+          <ProbeChart :buckets="history.buckets" :metric="selMetric" />
           <div class="nn__stats lb-tabular">
-            <template v-if="isICMP">
-              <div><span>丢包率(按包)</span><b>{{ rateText(history.stats.loss_rate) }}</b></div>
+            <template v-if="selMetric === 'LOSS'">
+              <div><span>{{ rateFullName('LOSS') }}(按包)</span><b>{{ rateText(history.stats.loss_rate) }}</b></div>
               <div><span>发 / 收</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
               <div><span>整轮全丢</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
             </template>
+            <template v-else-if="selMetric === 'SYN'">
+              <div><span>{{ rateFullName('SYN') }}</span><b>{{ rateText(history.stats.loss_rate) }}</b></div>
+              <div><span>发出 SYN / 有应答</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
+              <div><span>整轮失败(含 RST)</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
+            </template>
             <template v-else>
-              <div><span>失败率</span><b>{{ rateText(history.stats.failure_rate) }}</b></div>
+              <div><span>{{ rateFullName('CONNECT') }}</span><b>{{ rateText(history.stats.failure_rate) }}</b></div>
               <div><span>TCP 连接次数</span><b>{{ history.stats.attempts }}</b></div>
               <div><span>失败</span><b>{{ history.stats.failures }}</b></div>
             </template>
@@ -490,7 +577,9 @@ const missingHelpers = computed(() => {
                 {{ f.label }}
               </span>
               <span class="nn__muted">
-                <template v-if="f.status === 'LOSS' || (isICMP && f.sent)">{{ f.received }}/{{ f.sent }} 收到 · </template>{{ f.error }}
+                <template v-if="f.status === 'LOSS' || (selMetric !== 'CONNECT' && f.sent)">
+                  {{ f.received }}/{{ f.sent }} {{ selMetric === 'SYN' ? '有应答' : '收到' }} ·
+                </template>{{ f.error }}
               </span>
             </div>
           </div>
@@ -498,6 +587,14 @@ const missingHelpers = computed(() => {
       </div>
     </template>
     <div v-else class="nn__pad"><a-skeleton active :paragraph="{ rows: 3 }" /></div>
+    <NodeTargetPicker
+      v-if="data"
+      :open="pickerOpen"
+      :node-id="nodeId"
+      :publics="data.public"
+      @close="pickerOpen = false"
+      @saved="onPicked"
+    />
   </section>
 </template>
 
@@ -526,6 +623,28 @@ const missingHelpers = computed(() => {
   font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
+}
+.nn__pick-btn {
+  margin-left: auto;
+}
+.nn__node {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-5);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface2);
+  font-size: var(--fs-xs);
+  color: var(--text2);
+}
+.nn__node-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.nn__node-num {
+  width: 150px;
 }
 .nn__add {
   display: flex;

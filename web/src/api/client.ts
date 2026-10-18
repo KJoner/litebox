@@ -1213,6 +1213,13 @@ export type ProbeFamily = 'V4' | 'V6'
 /** INGRESS = 入口连通性(主控 → 这台机器);OUTBOUND = 出站网络质量(这台机器 → 公共目标) */
 export type ProbeDirection = 'INGRESS' | 'OUTBOUND'
 export type ProbeProtocol = 'TCP' | 'ICMP'
+/** TCP 的两种方式:CONNECT = 一次完整建连;SYN = 短超时握手近似(基于系统 TCP 建连,不是原始套接字 SYN 探测) */
+export type ProbeTCPMode = 'CONNECT' | 'SYN'
+/**
+ * 一条序列看哪个比例,界面一律按它起名,不按协议自己推:
+ * LOSS = ICMP 真实丢包率;CONNECT = TCP 连接失败率;SYN = TCP 握手超时无应答率(不是丢包率)。
+ */
+export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN'
 /**
  * 一次结果。LOSS = ICMP 部分丢包(可达);SSH_ERROR = 采集失败(面板连不上这台机器,不是丢包);
  * TOOL_ERROR = 辅助程序不可用;BLOCKED = 目标受限;这三种与 DNS_ERROR、SKIPPED 都没有发起,不进分母。
@@ -1232,6 +1239,8 @@ export interface ProbeTarget {
   node_id: number
   direction: ProbeDirection
   protocol: ProbeProtocol
+  tcp_mode: ProbeTCPMode
+  metric: ProbeMetric
   kind: ProbeKind
   ref: string
   /** 出站序列指向的公共目标;入口目标为 0 */
@@ -1271,7 +1280,7 @@ export interface ProbeBucket {
   ssh_errors: number
   tool_errors: number
   blocked: number
-  /** 按包计(TCP 按建连计);loss_rate = (sent − received) / sent,一次都没发起时为 null */
+  /** 按包计(TCP 建连按建连计,握手近似按 SYN 计);loss_rate = (sent − received) / sent,一次都没发起时为 null */
   sent: number
   received: number
   loss_rate: number | null
@@ -1295,9 +1304,9 @@ export interface ProbeStats {
   blocked: number
   sent: number
   received: number
-  /** 0~1。TCP 的连接失败率;ICMP 时是「整轮全丢」的比例。一次都没发起过时为 null,不是 0 */
+  /** 0~1。TCP 建连的连接失败率;ICMP 与握手近似时是「整轮失败」的比例。一次都没发起过时为 null,不是 0 */
   failure_rate: number | null
-  /** 0~1。ICMP 的丢包率(按包);TCP 时与 failure_rate 相同 */
+  /** 0~1。(发 − 收) ÷ 发:ICMP 丢包率 / TCP 握手超时无应答率;TCP 建连时与 failure_rate 相同 */
   loss_rate: number | null
   rtt_avg_ms: number | null
   rtt_min_ms: number | null
@@ -1361,6 +1370,11 @@ export interface OutboundRoundStatus {
   ssh_errors: number
   tool_errors: number
   skipped: number
+  /** 到期了但因为限额延后到下一拍的序列数(不记结果、不算失败) */
+  deferred: number
+  /** 最近一分钟对第三方目标的实际探测尝试 / 上限 */
+  third_party_used: number
+  third_party_budget: number
   last_error: string
 }
 
@@ -1382,11 +1396,17 @@ export interface ProbeOverview {
   helpers: Record<string, number>
 }
 
+export type ProbeOrigin = 'MANUAL' | 'ZSTATIC' | 'TCPQUALITY'
+export type ProbeISP = '' | 'CT' | 'CU' | 'CM' | 'CERNET' | 'OTHER'
+export type ProbeVerifyState = 'UNVERIFIED' | 'OK' | 'WARN' | 'FAILED'
+
 export interface PublicProbeTarget {
   id: number
   name: string
   host: string
   protocol: ProbeProtocol
+  tcp_mode: ProbeTCPMode
+  metric: ProbeMetric
   port: number
   family: ProbeFamily
   interval_sec: number
@@ -1399,16 +1419,36 @@ export interface PublicProbeTarget {
   note: string
   created_at: string
   updated_at: string
+  source: ProbeOrigin
+  source_key: string
+  region: string
+  province: string
+  city: string
+  isp: ProbeISP
+  /** BACKUP = 上游列表里的备用节点 */
+  role: 'PRIMARY' | 'BACKUP'
+  verify_state: ProbeVerifyState
+  verified_at: string
+  verify_detail: string
+  /** 导入之后管理员手工改过的字段,同步不覆盖 */
+  manual_fields: string[]
+  upstream_missing_since: string
+  third_party: boolean
+  /** 套上来源下限之后的间隔 */
+  effective_interval_sec: number
   /** 此刻对它生效的机器数;on / off 是显式的节点覆盖数 */
   node_count: number
   on_count: number
   off_count: number
+  /** 目标暂停 / 来源暂停 / 来源未确认授权;空串 = 没有被暂停 */
+  pause_reason: string
 }
 
 export interface PublicProbeInput {
   name: string
   host: string
   protocol: ProbeProtocol
+  tcp_mode?: ProbeTCPMode
   port: number
   family: ProbeFamily
   interval_sec: number
@@ -1418,6 +1458,180 @@ export interface PublicProbeInput {
   allow_restricted: boolean
   sort_order: number
   note: string
+  region?: string
+  province?: string
+  city?: string
+  isp?: ProbeISP
+}
+
+export interface ProbeSource {
+  kind: ProbeOrigin
+  name: string
+  third_party: boolean
+  paused: boolean
+  authorized: boolean
+  /** 管理员确认「已阅读说明并具备使用授权」的时间与人 —— 只是声明,不代表来源方授权 */
+  authorized_at: string
+  authorized_by: string
+  authorized_note: string
+  high_freq_allowed: boolean
+  min_interval_sec: number
+  per_target_per_min: number
+  sync_state: 'NEVER' | 'OK' | 'ERROR'
+  last_sync_at: string
+  last_success_at: string
+  last_error: string
+  item_count: number
+  homepage: string
+  notice: string[]
+  syncable: boolean
+  presets: boolean
+  target_count: number
+  active_count: number
+}
+
+export interface ProbeSourceInput {
+  paused?: boolean
+  min_interval_sec?: number
+  per_target_per_min?: number
+  high_freq_allowed?: boolean
+  authorize?: boolean
+  authorized_note?: string
+}
+
+export interface ProbeLimits {
+  third_party_budget_per_min: number
+  third_party_per_node: number
+  node_concurrency: number
+  round_max: number
+}
+
+export interface ProbeLimitRange {
+  key: string
+  label: string
+  min: number
+  max: number
+  default: number
+  set: boolean
+}
+
+export interface ProbeProvince {
+  code: string
+  name: string
+  region: string
+  common: boolean
+}
+
+export interface PublicProbeLibrary {
+  targets: PublicProbeTarget[]
+  probe: ProbeOverview
+  sources: ProbeSource[]
+  limits: { limits: ProbeLimits; ranges: ProbeLimitRange[] }
+  provinces: ProbeProvince[]
+}
+
+export type ProbePreviewStatus = 'NEW' | 'SAME' | 'CHANGED' | 'EXISTS' | 'MISSING'
+
+export interface ProbePreviewItem {
+  key: string
+  name: string
+  host: string
+  port: number
+  family: ProbeFamily
+  region: string
+  province: string
+  city: string
+  isp: ProbeISP
+  role: 'PRIMARY' | 'BACKUP'
+  /** PROVINCE / CITY(Zstatic)或 CDN(TcpQuality) */
+  level: string
+  /** 上游给的固定 IP(只有 TcpQuality 有) */
+  ip: string
+  status: ProbePreviewStatus
+  local_ids: number[]
+  changes: string[]
+  suspicious: string[]
+  manual_kept: string[]
+  exists_as: string
+  missing_since: string
+}
+
+export interface ProbePreview {
+  source: ProbeOrigin
+  snapshot_id: string
+  fetched_at: string
+  tcp_mode: ProbeTCPMode
+  host_mode: 'DOMAIN' | 'IP'
+  items: ProbePreviewItem[]
+  missing: ProbePreviewItem[]
+  rejected: { line: number; text: string; reason: string }[]
+  /** 按类型统计的、首版不提供批量导入的条目数 */
+  unsupported: Record<string, number>
+  counts: Record<string, number>
+  bulk_warning: string
+}
+
+export interface ProbeApplyRequest {
+  source: ProbeOrigin
+  snapshot_id?: string
+  import?: string[]
+  update?: string[]
+  mark_missing?: boolean
+  tcp_mode?: ProbeTCPMode
+  host_mode?: 'DOMAIN' | 'IP'
+  interval_sec?: number
+}
+
+export interface ProbeApplyResult {
+  created: number
+  updated: number
+  missing: number
+  restored: number
+  skipped: string[]
+}
+
+export interface ProbeImportRow {
+  line: number
+  input: PublicProbeInput
+  source: ProbeOrigin
+  status: 'OK' | 'DUPLICATE' | 'ERROR'
+  reason: string
+}
+
+export interface ProbeImportResult {
+  rows: ProbeImportRow[]
+  ok: number
+  errors: number
+  duplicates: number
+  created: number
+}
+
+export interface ProbeVerifyResult {
+  public_id: number
+  state: ProbeVerifyState
+  detail: string
+}
+
+export interface ProbeTrialResult {
+  public_id: number
+  name: string
+  metric: ProbeMetric
+  status: ProbeStatus
+  label: string
+  error: string
+  peer: string
+  rtt_ms: number | null
+  sent: number
+  received: number
+  verify_state: ProbeVerifyState | ''
+}
+
+export interface NodeProbeSettings {
+  node_id: number
+  paused: boolean
+  /** 0 = 跟随各目标自己的间隔;否则这台机器上全部出站目标按它(仍受来源下限约束) */
+  interval_sec: number
+  updated_at: string
 }
 
 /** 节点覆盖:ON / OFF / INHERIT(跟随公共目标的「全部节点」开关) */
@@ -1427,6 +1641,10 @@ export type PublicProbeScope = 'ALL' | 'SELECTED' | 'NONE'
 export interface NodePublicProbe extends PublicProbeTarget {
   mode: ProbeBindingMode
   effective: boolean
+  /** 这台机器测它的实际间隔(本机覆盖与来源下限都算上) */
+  node_interval_sec: number
+  /** 这台机器上不测它的原因里与选择无关的那几种(含「本机已暂停出站探测」) */
+  node_pause_reason: string
 }
 
 export interface PublicProbeNode {
@@ -1435,13 +1653,16 @@ export interface PublicProbeNode {
   display_name: string
   mode: ProbeBindingMode
   effective: boolean
+  /** 这台机器暂停了出站探测 */
+  paused: boolean
 }
 
 export interface NodeProbe {
   probe: ProbeOverview
-  /** 出站网络质量;public 是全部公共目标在这台机器上的开关 */
+  /** 出站网络质量;public 是整个目标库在这台机器上的开关 */
   outbound: ProbeSummary[]
   public: NodePublicProbe[]
+  node_settings: NodeProbeSettings
   /** 入口连通性 */
   targets: ProbeSummary[]
   candidates: ProbeCandidate[]
@@ -3376,8 +3597,7 @@ export const api = {
     request<{ message: string }>(`/api/probe-targets/${id}`, { method: 'DELETE' }),
   probeHistory: (id: number, range: '1h' | '24h' | '7d') =>
     request<ProbeHistory>(`/api/probe-targets/${id}/history`, { query: { range } }),
-  publicProbeTargets: () =>
-    request<{ targets: PublicProbeTarget[]; probe: ProbeOverview }>('/api/probe/public-targets'),
+  publicProbeTargets: () => request<PublicProbeLibrary>('/api/probe/public-targets'),
   createPublicProbeTarget: (body: PublicProbeInput) =>
     request<PublicProbeTarget>('/api/probe/public-targets', { method: 'POST', body }),
   updatePublicProbeTarget: (id: number, body: PublicProbeInput) =>
@@ -3390,6 +3610,29 @@ export const api = {
     request<PublicProbeTarget>(`/api/probe/public-targets/${id}/scope`, { method: 'PUT', body }),
   setProbeBinding: (nodeID: number, publicID: number, mode: ProbeBindingMode) =>
     request<{ message: string }>(`/api/nodes/${nodeID}/probe-public/${publicID}`, { method: 'PUT', body: { mode } }),
+  setProbeBindings: (body: { node_ids: number[]; public_ids: number[]; mode: ProbeBindingMode }) =>
+    request<{ message: string }>('/api/probe/bindings', { method: 'POST', body }),
+  updateProbeSource: (kind: ProbeOrigin, body: ProbeSourceInput) =>
+    request<ProbeSource>(`/api/probe/sources/${kind}`, { method: 'PUT', body }),
+  updateProbeLimits: (values: Record<string, number>) =>
+    request<{ limits: ProbeLimits; ranges: ProbeLimitRange[] }>('/api/probe/limits', { method: 'PUT', body: { values } }),
+  publicProbeBatch: (body: { ids: number[]; action: 'pause' | 'resume' | 'delete' | 'scope'; scope?: PublicProbeScope; node_ids?: number[] }) =>
+    request<{ affected: number; series: number }>('/api/probe/public-targets/batch', { method: 'POST', body }),
+  importPublicProbes: (text: string, commit: boolean) =>
+    request<ProbeImportResult>('/api/probe/public-targets/import', { method: 'POST', body: { text, commit } }),
+  verifyPublicProbes: (ids: number[]) =>
+    request<{ results: ProbeVerifyResult[] }>('/api/probe/public-targets/verify', { method: 'POST', body: { ids } }),
+  zstaticPresets: (body: { provinces: string[]; isps: string[]; families: ProbeFamily[]; tcp_mode: ProbeTCPMode }) =>
+    request<ProbePreview>('/api/probe/sources/zstatic/presets', { method: 'POST', body }),
+  fetchProbeSource: (kind: 'zstatic' | 'tcpquality', body: { tcp_mode: ProbeTCPMode; host_mode?: 'DOMAIN' | 'IP' }) =>
+    request<ProbePreview>(`/api/probe/sources/${kind}/fetch`, { method: 'POST', body }),
+  applyProbeSource: (body: ProbeApplyRequest) =>
+    request<ProbeApplyResult>('/api/probe/sources/apply', { method: 'POST', body }),
+  nodeProbeSettings: (nodeID: number) => request<NodeProbeSettings>(`/api/nodes/${nodeID}/probe-settings`),
+  setNodeProbeSettings: (nodeID: number, body: { paused: boolean; interval_sec: number }) =>
+    request<NodeProbeSettings>(`/api/nodes/${nodeID}/probe-settings`, { method: 'PUT', body }),
+  probeTrial: (nodeID: number, publicIDs: number[]) =>
+    request<{ results: ProbeTrialResult[] }>(`/api/nodes/${nodeID}/probe-trial`, { method: 'POST', body: { public_ids: publicIDs } }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),
