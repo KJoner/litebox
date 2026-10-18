@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/expiry"
+	"github.com/litebox/litebox/internal/probe"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/subscription"
 )
@@ -45,6 +47,17 @@ type settingsResponse struct {
 	// 订阅排序(V20):方案 LEGACY / GLOBAL,以及旧方案下外部代理整块排在哪一侧。
 	SubscriptionOrderScheme      string `json:"subscription_order_scheme"`
 	SubscriptionExternalPosition string `json:"subscription_external_position"`
+
+	// TCP 探测(资产卡片):全局开关、间隔、超时、告警阈值、免打扰。
+	// 数值字段 0 / 空串表示用默认,默认值一并下发。
+	ProbeEnabled           bool   `json:"probe_enabled"`
+	ProbeIntervalSec       int    `json:"probe_interval_sec"`
+	DefaultProbeInterval   int    `json:"default_probe_interval_sec"`
+	ProbeTimeoutMs         int    `json:"probe_timeout_ms"`
+	DefaultProbeTimeoutMs  int    `json:"default_probe_timeout_ms"`
+	ProbeAlertAfter        string `json:"probe_alert_after"`
+	DefaultProbeAlertAfter int    `json:"default_probe_alert_after"`
+	ProbeQuietHours        string `json:"probe_quiet_hours"`
 }
 
 // currentSettings 组装设置响应。读写两条路径共用它,
@@ -58,7 +71,11 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 		DefaultCloudPollIntervalSec: int(settings.DefaultCloudPollInterval.Seconds()),
 		DefaultExpiryLeadDays:       expiry.JoinLeadDays(expiry.DefaultLeadDays),
 		DefaultExpirySendTime:       expiry.DefaultSendTime,
+		DefaultProbeInterval:        int(probe.DefaultInterval.Seconds()),
+		DefaultProbeTimeoutMs:       int(probe.DefaultTimeout.Milliseconds()),
+		DefaultProbeAlertAfter:      probe.DefaultAlertAfter,
 	}
+	s.fillProbeSettings(ctx, &resp)
 	for key, dst := range map[string]*string{
 		settings.KeyExpiryLeadDays: &resp.ExpiryLeadDays,
 		settings.KeyExpirySendTime: &resp.ExpirySendTime,
@@ -107,6 +124,22 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 	return resp
 }
 
+// fillProbeSettings 读 TCP 探测的几项。数值只在设过且合法时回显,否则留 0 表示「用默认」。
+func (s *Server) fillProbeSettings(ctx context.Context, resp *settingsResponse) {
+	cfg := s.settings.ProbeConfig(ctx)
+	resp.ProbeEnabled = cfg.Enabled
+	if v, _ := s.settings.Get(ctx, settings.KeyProbeIntervalSec); strings.TrimSpace(v) != "" {
+		resp.ProbeIntervalSec = int(cfg.Interval.Seconds())
+	}
+	if v, _ := s.settings.Get(ctx, settings.KeyProbeTimeoutMs); strings.TrimSpace(v) != "" {
+		resp.ProbeTimeoutMs = int(cfg.Timeout.Milliseconds())
+	}
+	if v, _ := s.settings.Get(ctx, settings.KeyProbeAlertAfter); strings.TrimSpace(v) != "" {
+		resp.ProbeAlertAfter = strconv.Itoa(cfg.AlertAfter)
+	}
+	resp.ProbeQuietHours = cfg.Quiet.String()
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.currentSettings(r.Context()))
 }
@@ -126,6 +159,12 @@ type updateSettingsRequest struct {
 	// 订阅排序方案(V20)。切到 GLOBAL 走迁移接口,这里只允许切回 LEGACY ——
 	// 直接写 GLOBAL 会让存量的 0 号节点与外部代理挤在同一段上。
 	SubscriptionOrderScheme *string `json:"subscription_order_scheme"`
+	// TCP 探测:数值 0 / 空串 = 改回默认。
+	ProbeEnabled     *bool   `json:"probe_enabled"`
+	ProbeIntervalSec *int    `json:"probe_interval_sec"`
+	ProbeTimeoutMs   *int    `json:"probe_timeout_ms"`
+	ProbeAlertAfter  *string `json:"probe_alert_after"`
+	ProbeQuietHours  *string `json:"probe_quiet_hours"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -137,13 +176,20 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.SubscriptionBaseURL == nil && req.ProbeURL == nil &&
 		req.CloudTimezone == nil && req.CloudPollIntervalSec == nil &&
 		req.ExpiryLeadDays == nil && req.ExpirySendTime == nil && req.ExpiryTimezone == nil &&
-		req.SubscriptionOrderScheme == nil {
+		req.SubscriptionOrderScheme == nil &&
+		req.ProbeEnabled == nil && req.ProbeIntervalSec == nil && req.ProbeTimeoutMs == nil &&
+		req.ProbeAlertAfter == nil && req.ProbeQuietHours == nil {
 		writeError(w, http.StatusBadRequest, "没有要改的设置项")
 		return
 	}
 	admin := adminFromContext(r.Context())
 
-	var details []string
+	// TCP 探测的几项先校验先写:它们彼此独立于下面的各项,一项不合法就整组拒绝。
+	details, err := s.saveProbeSettings(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if req.SubscriptionOrderScheme != nil {
 		scheme := subscription.ParseOrderScheme(*req.SubscriptionOrderScheme)
 		if scheme != subscription.SchemeLegacy {
@@ -287,4 +333,74 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// 改域名不影响已下发的订阅 Token,用户不必重新导入,
 	// 但客户端下次拉订阅前用的仍是旧地址,这一点由前端提示。
 	writeJSON(w, http.StatusOK, s.currentSettings(r.Context()))
+}
+
+// saveProbeSettings 保存 TCP 探测的几项;先全部校验再写,一项不合法就一项都不写。
+func (s *Server) saveProbeSettings(ctx context.Context, req updateSettingsRequest) ([]string, error) {
+	type kv struct{ key, value, detail string }
+	var writes []kv
+	if req.ProbeEnabled != nil {
+		v, d := "1", "TCP 探测改为开启"
+		if !*req.ProbeEnabled {
+			v, d = "0", "TCP 探测改为全局关闭"
+		}
+		writes = append(writes, kv{settings.KeyProbeEnabled, v, d})
+	}
+	if req.ProbeIntervalSec != nil {
+		raw, d := "", "TCP 探测间隔改回默认"
+		if *req.ProbeIntervalSec != 0 {
+			raw = strconv.Itoa(*req.ProbeIntervalSec)
+			if _, err := settings.ParseProbeInterval(raw); err != nil {
+				return nil, err
+			}
+			d = "TCP 探测间隔改为 " + raw + " 秒"
+		}
+		writes = append(writes, kv{settings.KeyProbeIntervalSec, raw, d})
+	}
+	if req.ProbeTimeoutMs != nil {
+		raw, d := "", "TCP 探测超时改回默认"
+		if *req.ProbeTimeoutMs != 0 {
+			raw = strconv.Itoa(*req.ProbeTimeoutMs)
+			if _, err := settings.ParseProbeTimeout(raw); err != nil {
+				return nil, err
+			}
+			d = "TCP 探测超时改为 " + raw + " 毫秒"
+		}
+		writes = append(writes, kv{settings.KeyProbeTimeoutMs, raw, d})
+	}
+	if req.ProbeAlertAfter != nil {
+		raw := strings.TrimSpace(*req.ProbeAlertAfter)
+		n, err := settings.ParseProbeAlertAfter(raw)
+		if err != nil {
+			return nil, err
+		}
+		d := "TCP 探测告警阈值改回默认"
+		if raw != "" {
+			d = "TCP 探测连续失败 " + strconv.Itoa(n) + " 次推送"
+			if n == 0 {
+				d = "TCP 探测不推送"
+			}
+		}
+		writes = append(writes, kv{settings.KeyProbeAlertAfter, raw, d})
+	}
+	if req.ProbeQuietHours != nil {
+		q, err := probe.ParseQuietHours(*req.ProbeQuietHours)
+		if err != nil {
+			return nil, err
+		}
+		d := "TCP 探测免打扰时段取消"
+		if q.String() != "" {
+			d = "TCP 探测免打扰时段改为 " + q.String()
+		}
+		writes = append(writes, kv{settings.KeyProbeQuietHours, q.String(), d})
+	}
+	var details []string
+	for _, w := range writes {
+		if err := s.settings.Set(ctx, w.key, w.value); err != nil {
+			s.logger.Error("保存 TCP 探测设置失败", "key", w.key, "error", err)
+			return details, errors.New("保存 TCP 探测设置失败")
+		}
+		details = append(details, w.detail)
+	}
+	return details, nil
 }

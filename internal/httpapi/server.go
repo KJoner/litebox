@@ -13,6 +13,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/adjustment"
+	"github.com/litebox/litebox/internal/asset"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/cloud"
@@ -23,6 +24,7 @@ import (
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/notify"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/probe"
 	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
@@ -54,6 +56,9 @@ type Server struct {
 	cloudStore   *cloud.Store
 	external     *externalproxy.Service
 	expiry       *expiry.Store
+	labels       *asset.Store
+	probes       *probe.Store
+	prober       *probe.Engine
 	profiles     *subscription.ProfileStore
 	portal       *portal.Service
 	portalAccts  *portal.Store
@@ -98,6 +103,11 @@ type Options struct {
 	External *externalproxy.Service
 	// Expiry 是供应商到期档案(V20);nil 时到期相关路由不注册,各视图里的 expiry 为 null。
 	Expiry *expiry.Store
+	// Labels 是资产卡片的地区与标签;Probes / Prober 是 TCP 探测的存储与引擎。
+	// 任何一个为 nil,对应那一块在卡片接口里显示「未接入」,相关路由不注册。
+	Labels *asset.Store
+	Probes *probe.Store
+	Prober *probe.Engine
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
 	// 而不是「页面在、点了报错」。
 	Profiles *subscription.ProfileStore
@@ -126,6 +136,9 @@ func NewServer(opts Options) *Server {
 		users:        opts.Users,
 		external:     opts.External,
 		expiry:       opts.Expiry,
+		labels:       opts.Labels,
+		probes:       opts.Probes,
+		prober:       opts.Prober,
 		profiles:     opts.Profiles,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
@@ -416,6 +429,20 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("DELETE /api/expiry/{kind}/{id}", s.handleDeleteExpiry)
 		authed.HandleFunc("POST /api/expiry/{kind}/{id}/renew", s.handleRenewExpiry)
 		authed.HandleFunc("GET /api/expiry/{kind}/{id}/renewals", s.handleListExpiryRenewals)
+		// 资产卡片:一次返回全部卡片要的计费估值、标签、探测汇总与成本汇总。
+		// 只读库,不连节点、不触发探测。
+		authed.HandleFunc("GET /api/dashboard/cards", s.handleDashboardCards)
+		if s.labels != nil {
+			authed.HandleFunc("PUT /api/asset-labels/{kind}/{id}", s.handleSaveAssetLabels)
+		}
+	}
+	// TCP 探测目标(资产卡片 P0-C)。目标只能从机器已登记的地址 × 端口里选。
+	if s.probes != nil && s.nodes != nil {
+		authed.HandleFunc("GET /api/nodes/{id}/probe", s.handleNodeProbe)
+		authed.HandleFunc("POST /api/nodes/{id}/probe-targets", s.handleCreateProbeTarget)
+		authed.HandleFunc("PUT /api/probe-targets/{id}", s.handleUpdateProbeTarget)
+		authed.HandleFunc("DELETE /api/probe-targets/{id}", s.handleDeleteProbeTarget)
+		authed.HandleFunc("GET /api/probe-targets/{id}/history", s.handleProbeTargetHistory)
 	}
 	if s.settings != nil {
 		authed.HandleFunc("GET /api/settings", s.handleGetSettings)

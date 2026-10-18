@@ -29,6 +29,7 @@ import (
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/adjustment"
 	"github.com/litebox/litebox/internal/aliyun"
+	"github.com/litebox/litebox/internal/asset"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/cloud"
@@ -43,6 +44,7 @@ import (
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/notify"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/probe"
 	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
@@ -633,6 +635,32 @@ func cmdServe(args []string) error {
 	})
 	go expiryEngine.Run(ctx)
 
+	// 主控主动 TCP 探测(资产卡片 P0-C)。不走 SSH、不占节点锁;目标由管理员逐台登记,
+	// 迁移不替任何机器建目标。停着的云实例记「未执行」,与巡检、采集同一个判据。
+	// 探测失败只推送,不重启、不部署、不停机 —— 那几件事要另立需求、另行授权。
+	probeStore := probe.NewStore(db)
+	prober := probe.New(probe.Options{
+		Store:    probeStore,
+		Logger:   logger,
+		Config:   settingsStore.ProbeConfig,
+		Skip:     cloudSkip,
+		Notifier: notifier,
+		NodeName: func(ctx context.Context, id int64) string {
+			n, err := nodeStore.Get(ctx, id)
+			if err != nil {
+				return fmt.Sprintf("节点 #%d", id)
+			}
+			if n.DisplayName != "" {
+				return n.DisplayName
+			}
+			return n.Name
+		},
+		BaseURL: func(ctx context.Context) string {
+			return settingsStore.BaseURL(ctx, cfg.HTTP.BaseURL)
+		},
+	})
+	go prober.Run(ctx)
+
 	// 外部代理源的自动同步。每个源自己的间隔决定何时拉,
 	// 这里的巡检只是「多久看一眼有没有到点的」。
 	// 默认所有源都关着自动同步 —— 打开之前管理员应该先手工同步一次看结果。
@@ -656,6 +684,9 @@ func cmdServe(args []string) error {
 		Users:    userService,
 		External: externalService,
 		Expiry:   expiryStore,
+		Labels:   asset.NewStore(db),
+		Probes:   probeStore,
+		Prober:   prober,
 		Profiles: profileStore,
 		Subs: subscription.NewService(
 			db, userStore, cipher, cfg.Subscription.ClientMixedPort,

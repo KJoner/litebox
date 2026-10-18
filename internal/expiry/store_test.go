@@ -543,22 +543,30 @@ func TestEventBodyHasNoCredentialsAndHasLink(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	id := e.addNode(t, "n1")
+	bl := EmptyBilling()
+	bl.Cycle, bl.Currency, bl.PriceMinor, bl.PlanName = CycleMonthly, "USD", 500, "1C1G"
 	_, _ = e.store.Save(ctx, Key{KindNode, id}, Params{
 		ExpiresAt: "2026-10-15T15:00:00Z", ReminderEnabled: true,
-		VendorName: "某商家", VendorURL: "https://vendor.example.com/renew",
+		VendorName: "某商家", VendorURL: "https://vendor.example.com/renew", Billing: &bl,
 	})
 	sender := &fakeSender{channels: []string{"Bark"}}
 	eng := newEngine(e, sender, time.UTC)
 	now := utc("2026-10-12T09:00:00Z")
 	targets, _ := e.store.Targets(ctx)
 	ev := eng.buildEvent(ctx, targets[0], "D3", eng.schedule(ctx), now)
-	for _, want := range []string{"https://panel.example.com/nodes/", "某商家", "https://vendor.example.com/renew", "请及时续费", "剩余:4 天"} {
+	for _, want := range []string{"https://panel.example.com/nodes/", "某商家", "https://vendor.example.com/renew", "请及时续费", "剩余:4 天", "套餐:1C1G · 月付 · 5.00 USD"} {
 		if !contains(ev.Body, want) {
 			t.Errorf("正文缺少 %q:\n%s", want, ev.Body)
 		}
 	}
-	if ev.Kind != notify.KindExpirySoon {
-		t.Errorf("事件类型: %s", ev.Kind)
+	if ev.Kind != notify.KindExpirySoon || !contains(ev.Title, "待续费") {
+		t.Errorf("事件类型 / 标题: %s %q", ev.Kind, ev.Title)
+	}
+	// 登记了自动续费:标题写「即将自动续费(请核实)」,而不是「待续费」。
+	targets[0].Profile.AutoRenew = true
+	ev = eng.buildEvent(ctx, targets[0], "D3", eng.schedule(ctx), now)
+	if ev.Kind != notify.KindExpiryAutoRenew || !contains(ev.Title, "即将自动续费(请核实)") || contains(ev.Title, "待续费") {
+		t.Errorf("自动续费: %s %q", ev.Kind, ev.Title)
 	}
 }
 

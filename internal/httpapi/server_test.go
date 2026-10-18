@@ -15,6 +15,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/adjustment"
+	"github.com/litebox/litebox/internal/asset"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
@@ -23,6 +24,8 @@ import (
 	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
+	"github.com/litebox/litebox/internal/probe"
+	"github.com/litebox/litebox/internal/relay"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
@@ -94,6 +97,8 @@ func newTestEnv(t *testing.T) *testEnv {
 			settings.NewStore(db, cipher), subscription.NewProfileStore(db), nil),
 		Profiles:    subscription.NewProfileStore(db),
 		Expiry:      expiry.NewStore(db),
+		Labels:      asset.NewStore(db),
+		Probes:      probe.NewStore(db),
 		Settings:    settings.NewStore(db, cipher),
 		Tiers:       access.NewStore(db),
 		Portal:      portalService,
@@ -101,6 +106,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		PortalData:  portal.NewQuerier(db, userStore),
 		Adjustments: adjustment.NewStore(db),
 		Nodes:       nodeService,
+		Relays:      relay.NewStore(db),
 		Pool:        pool,
 		// Scheduler 留 nil:同步要连真节点,由 traffic 包自己测。
 		// Querier 只读数据库,可以直接给上。
