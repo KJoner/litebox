@@ -1,7 +1,7 @@
 // Package netprobe 是一次网络探测的测量部分:TCP 建连计时、ICMP 往返与丢包、DNS 解析、受限地址检查。
 //
 // 它被两个地方用:主控自己做「入口连通性」时直接调用;节点上的非驻留辅助程序 litebox-probe
-// 做「出站网络质量」时也编译进去。所以这个包**只依赖标准库与 x/net**,不碰数据库、推送或 SSH ——
+// 做「出站网络质量」时也编译进去。所以这个包**只依赖标准库与 x/net、x/sys**,不碰数据库、推送或 SSH ——
 // 编进辅助程序的每一个依赖都会变成每台 VPS 上多出来的字节。
 //
 // 测量全部在调用方所在的机器上完成:辅助程序在 VPS 上跑,延迟就是 VPS 到目标的延迟,
@@ -22,14 +22,26 @@ import (
 )
 
 // Version 是辅助程序的协议版本。主控与辅助程序的 JSON 形状变了就加一。
-const Version = 1
+//
+// v2 加了 TCP 握手近似(tcp_mode = SYN)、rtt_n / refused / retrans 三个结果字段。
+// 辅助程序同时认 MinVersion..Version 的请求,并按请求的版本号回话:面板回滚到旧版本、
+// 而节点上已经是新辅助程序时,旧面板发来的 v1 请求照样能跑(没有 SYN,全部按建连测)。
+const Version = 2
 
-// 协议与地址族。
+// MinVersion 是辅助程序还认的最老的请求版本。
+const MinVersion = 1
+
+// 协议、TCP 方式与地址族。
 const (
 	ProtoICMP = "ICMP"
 	ProtoTCP  = "TCP"
 	FamilyV4  = "V4"
 	FamilyV6  = "V6"
+	// ModeConnect 一次完整建连(内核在超时内照常重发 SYN)。
+	ModeConnect = "CONNECT"
+	// ModeSyn 短超时握手近似:每次只等一个 SYN 的应答。基于系统的 TCP 建连,不用原始套接字,
+	// 也就不需要 root 或 CAP_NET_RAW。
+	ModeSyn = "SYN"
 )
 
 // 一次尝试的结果。与 internal/probe 的 Status 取值一字不差 —— 辅助程序的输出原样落库。
@@ -54,6 +66,10 @@ const (
 	MaxTimeoutMs  = 3000
 	// MaxTargets 是一次执行最多带几个目标;超出的由调用方分轮。
 	MaxTargets = 32
+	// SynCutoffMs 是 TCP 握手近似每次最多等多久。它比 Linux 内核首次重发 SYN 的 1 秒
+	// (TCP_TIMEOUT_INIT)早,所以正常情况下每次尝试只发出一个 SYN;万一某台机器上真的
+	// 重发了(初始 RTO 被 BPF 改小之类),从 TCP_INFO 里读出来照实计数,不靠这个假设。
+	SynCutoffMs = 900
 	// parallel 是一次执行里同时在跑的目标数。
 	parallel = 16
 )
@@ -65,10 +81,13 @@ type Target struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	Family   string `json:"family"`
-	// Count / IntervalMs 只对 ICMP:每轮发几个包、包间隔。
+	// TCPMode 只对 TCP:CONNECT(默认)或 SYN(v2 起)。
+	TCPMode string `json:"tcp_mode,omitempty"`
+	// Count / IntervalMs 对 ICMP 是每轮发几个包、包间隔;对 TCP 握手近似是每轮握手几次、间隔。
 	Count      int `json:"count"`
 	IntervalMs int `json:"interval_ms"`
-	// TimeoutMs:TCP 是建连超时;ICMP 是最后一个包发出后等回包的时间。DNS 解析同样用它。
+	// TimeoutMs:TCP 建连是建连超时;TCP 握手近似是每次的等待(不超过 SynCutoffMs);
+	// ICMP 是最后一个包发出后等回包的时间。DNS 解析同样用它。
 	TimeoutMs int `json:"timeout_ms"`
 	// AllowRestricted 为真时不拦内网 / 保留地址与受限端口(管理员显式勾选)。
 	AllowRestricted bool `json:"allow_restricted"`
@@ -89,13 +108,21 @@ type Result struct {
 	// IP 是实际连接的地址(域名解析的结果),给「域名指向变了」留痕。
 	IP    string `json:"ip,omitempty"`
 	DNSUs int64  `json:"dns_us"`
-	// Sent / Received 只对 ICMP。TCP 恒为 0。
+	// Sent / Received:ICMP 是发 / 收的包数;TCP 建连是 1 / (成功 ? 1 : 0);
+	// TCP 握手近似是发出的 SYN 数(含内核重发的)/ 有应答(SYN-ACK 或 RST)的次数。
 	Sent     int `json:"sent"`
 	Received int `json:"received"`
-	// RTTUs 是平均往返(ICMP 按收到的包平均;TCP 是这一次建连),MinUs / MaxUs 同口径。
+	// RTTUs 是平均往返(ICMP 按收到的包平均;TCP 建连是这一次建连;TCP 握手近似按没有经过重发的
+	// 应答平均),MinUs / MaxUs 同口径。0 表示一个可用的 RTT 样本都没有。
 	RTTUs int64 `json:"rtt_us"`
 	MinUs int64 `json:"min_us"`
 	MaxUs int64 `json:"max_us"`
+	// RTTN 是参与 RTT 平均的样本数(v2;0 表示等于 Received)。
+	RTTN int `json:"rtt_n,omitempty"`
+	// Refused 是 TCP 握手近似里收到 RST 的次数(端口没人听,但 SYN 到了、回程也通)。
+	Refused int `json:"refused,omitempty"`
+	// Retrans 是 TCP 握手近似里观察到的内核 SYN 重发次数(从 TCP_INFO 读)。正常应为 0。
+	Retrans int `json:"retrans,omitempty"`
 }
 
 // Response 是辅助程序的输出。
@@ -103,8 +130,10 @@ type Response struct {
 	Version int    `json:"v"`
 	Helper  string `json:"helper"`
 	// ICMPMode 是这台机器上 ICMP 用的方式:raw(root)/ unprivileged / 空(没测 ICMP)。
-	ICMPMode string   `json:"icmp_mode,omitempty"`
-	Results  []Result `json:"results"`
+	ICMPMode string `json:"icmp_mode,omitempty"`
+	// SynImpl 是 TCP 握手近似的实现:tcpinfo(Linux,能读到内核重发)/ dial(其他系统,读不到)。
+	SynImpl string   `json:"syn_impl,omitempty"`
+	Results []Result `json:"results"`
 }
 
 // Resolver 解析域名。
@@ -133,16 +162,17 @@ type PingStats struct {
 // ErrNoPermission 表示这台机器上开不了 ICMP 套接字(不是 root,ping_group_range 也不放行)。
 var ErrNoPermission = errors.New("没有发 ICMP 的权限")
 
-// Runner 把三样依赖组合起来跑一批目标。
+// Runner 把几样依赖组合起来跑一批目标。
 type Runner struct {
 	Resolver Resolver
 	Dialer   Dialer
 	Pinger   Pinger
+	Syn      SynProber
 }
 
 // Default 返回生产用的 Runner。
 func Default() *Runner {
-	return &Runner{Resolver: net.DefaultResolver, Dialer: &net.Dialer{}, Pinger: &icmpPinger{}}
+	return &Runner{Resolver: net.DefaultResolver, Dialer: &net.Dialer{}, Pinger: &icmpPinger{}, Syn: defaultSyn()}
 }
 
 // Normalize 把一个目标的参数夹进上限,并校验协议、地址族、端口。返回错误时这个目标不执行。
@@ -161,7 +191,21 @@ func Normalize(t *Target) error {
 		if t.Port < 1 || t.Port > 65535 {
 			return errors.New("TCP 端口必须是 1~65535")
 		}
-		t.Count, t.IntervalMs = 0, 0
+		switch t.TCPMode {
+		case "", ModeConnect:
+			t.TCPMode = ModeConnect
+			t.Count, t.IntervalMs = 0, 0
+		case ModeSyn:
+			if t.Count < 1 {
+				t.Count = 4
+			}
+			if t.Count > MaxCount {
+				t.Count = MaxCount
+			}
+			t.IntervalMs = clamp(t.IntervalMs, MinIntervalMs, MaxIntervalMs, 500)
+		default:
+			return fmt.Errorf("不认识的 TCP 方式 %q", t.TCPMode)
+		}
 	default:
 		return fmt.Errorf("不认识的协议 %q", t.Protocol)
 	}
@@ -169,6 +213,9 @@ func Normalize(t *Target) error {
 		return fmt.Errorf("不认识的地址族 %q", t.Family)
 	}
 	t.TimeoutMs = clamp(t.TimeoutMs, MinTimeoutMs, MaxTimeoutMs, 1000)
+	if t.Protocol == ProtoTCP && t.TCPMode == ModeSyn && t.TimeoutMs > SynCutoffMs {
+		t.TimeoutMs = SynCutoffMs
+	}
 	return ValidateHost(t.Host)
 }
 
@@ -190,10 +237,18 @@ func Budget(ts []Target) time.Duration {
 	var worst time.Duration
 	for _, t := range ts {
 		d := time.Duration(t.TimeoutMs) * time.Millisecond // DNS
-		if t.Protocol == ProtoICMP {
+		switch {
+		case t.Protocol == ProtoICMP:
 			d += time.Duration(t.Count-1)*time.Duration(t.IntervalMs)*time.Millisecond +
 				time.Duration(t.TimeoutMs)*time.Millisecond
-		} else {
+		case t.TCPMode == ModeSyn:
+			// 一次一次地做:每次最多等 TimeoutMs,两次之间至少隔 IntervalMs。
+			slot := t.TimeoutMs
+			if t.IntervalMs > slot {
+				slot = t.IntervalMs
+			}
+			d += time.Duration(t.Count*slot) * time.Millisecond
+		default:
 			d += time.Duration(t.TimeoutMs) * time.Millisecond
 		}
 		if d > worst {
@@ -208,9 +263,19 @@ func Budget(ts []Target) time.Duration {
 	return worst * time.Duration(waves)
 }
 
-// RunBatch 并发跑完一批目标,结果按输入顺序返回。
+// RunBatch 并发跑完一批目标,结果按输入顺序返回。回话的版本号跟着请求走(见 Version)。
+// v1 请求里没有 TCP 方式这一说:一律按建连测,不让新字段从旧面板那里「漏」进来。
 func (r *Runner) RunBatch(ctx context.Context, req Request) Response {
-	resp := Response{Version: Version, Helper: "litebox-probe/" + strconv.Itoa(Version), Results: make([]Result, len(req.Targets))}
+	ver := req.Version
+	if ver < MinVersion || ver > Version {
+		ver = Version
+	}
+	if ver < 2 {
+		for i := range req.Targets {
+			req.Targets[i].TCPMode = ""
+		}
+	}
+	resp := Response{Version: ver, Helper: "litebox-probe/" + strconv.Itoa(Version), Results: make([]Result, len(req.Targets))}
 	var mu sync.Mutex
 	sem := make(chan struct{}, parallel)
 	var wg sync.WaitGroup
@@ -223,7 +288,10 @@ func (r *Runner) RunBatch(ctx context.Context, req Request) Response {
 			res, mode := r.one(ctx, req.Targets[i])
 			mu.Lock()
 			resp.Results[i] = res
-			if mode != "" {
+			switch {
+			case strings.HasPrefix(mode, "syn:"):
+				resp.SynImpl = strings.TrimPrefix(mode, "syn:")
+			case mode != "":
 				resp.ICMPMode = mode
 			}
 			mu.Unlock()
@@ -259,6 +327,9 @@ func (r *Runner) one(ctx context.Context, t Target) (Result, string) {
 			res.Status, res.Error = StatusBlocked, "解析到"+reason+",已拒绝探测"
 			return res, ""
 		}
+	}
+	if t.Protocol == ProtoTCP && t.TCPMode == ModeSyn {
+		return r.synRound(ctx, t, ip, res)
 	}
 	if t.Protocol == ProtoTCP {
 		network := "tcp4"
