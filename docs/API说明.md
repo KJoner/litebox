@@ -486,6 +486,27 @@ GET    /api/probe-targets/{id}/history?range=   1h / 24h / 7d 的窗口、合计
 未执行(`skipped`)单独计数。`attempts` 为 0 时 `failure_rate` 是 `null`,不是 0。
 指标定义的全文见 `docs/asset-probe/01-delivery.md`。
 
+## 出站网络质量探测(V22.1)
+
+每台自建 VPS 在本机测管理员配置的公共目标(ICMP / TCP)。上面那组接口现在专指「入口连通性」(主控 → 节点)。
+
+```
+GET    /api/probe/public-targets               公共目标列表 + 概况(出站引擎最近一拍、主控有哪些架构的辅助程序)
+POST   /api/probe/public-targets               新建;默认不对任何节点生效;受限地址 / 端口与非法主机名 400,重复 409
+PUT    /api/probe/public-targets/{id}          编辑;协议与地址族不可改(400)
+DELETE /api/probe/public-targets/{id}          删除,连同各节点上的序列、历史与覆盖
+GET    /api/probe/public-targets/{id}/nodes    每台机器上的开关(ON / OFF / INHERIT)与是否生效
+PUT    /api/probe/public-targets/{id}/scope    {scope: ALL|SELECTED|NONE, node_ids}:换成这个集合,原有覆盖清掉
+PUT    /api/nodes/{id}/probe-public/{publicId} {mode: ON|OFF|INHERIT} 单节点开关
+```
+
+`GET /api/nodes/{id}/probe` 多了 `outbound`(出站序列汇总)与 `public`(全部公共目标在这台机器上的开关);
+`GET /api/dashboard/cards` 多了 `outbound`。两类数据分字段返回,前端不按 `direction` 自己拆。
+每条序列带 `direction`(INGRESS / OUTBOUND)、`protocol`(TCP / ICMP)、`public_id`、`interval_sec`;
+统计多了 `loss_rate`(按包)、`sent` / `received`、`lossy`、`ssh_errors` / `tool_errors` / `blocked`。
+出站序列不能用 `PUT / DELETE /api/probe-targets/{id}` 单独停或删(400),历史接口两类都能用。
+定义与安全规则见 `docs/asset-probe/03-outbound-delivery.md`。
+
 ## 巡检与推送接口
 
 ```text
