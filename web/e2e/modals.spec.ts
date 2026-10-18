@@ -116,7 +116,7 @@ function mockTuning(api: ApiMock) {
 
 async function openOverview(page: Page) {
   await page.goto(`/nodes/${NODE}/overview`)
-  await expect(page.getByRole('button', { name: '探测' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '探测', exact: true })).toBeVisible()
 }
 
 /** 弹窗没有超出视口、关闭按钮在视口里、正文在弹窗里面滚。 */
@@ -149,7 +149,7 @@ for (const [label, w, h] of WIDTHS) {
       mockProbe(api)
       // 探测完会重读一次节点档案,那是 GET,走固定数据。
       await openOverview(page)
-      await page.getByRole('button', { name: '探测' }).click()
+      await page.getByRole('button', { name: '探测', exact: true }).click()
       const dialog = page.getByRole('dialog').filter({ hasText: '探测完成' })
       await expect(dialog).toBeVisible()
       await expectContained(page, dialog, w, h)

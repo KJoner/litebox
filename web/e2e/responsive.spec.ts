@@ -8,7 +8,7 @@ import { test, expect, adminOnly, portalOnly } from './support/mock'
 test.describe('768 宽', () => {
   test.use({ viewport: { width: 768, height: 1024 } })
 
-  for (const path of ['/nodes', '/users', '/inbounds', '/external-proxies']) {
+  for (const path of ['/nodes', '/users', '/inbounds', '/external-proxies', '/probe-library']) {
     test(`${path}:每一行的操作都在可视范围里,不用横向滚`, async ({ page, api }) => {
       adminOnly(api)
       await page.goto(path)
@@ -38,7 +38,7 @@ test.describe('768 宽', () => {
 test.describe('390 宽', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 
-  const ADMIN = ['/dashboard', '/users', '/nodes', '/inbounds', '/external-proxies', '/deployments', '/audit-logs', '/settings', '/nodes/1/overview', '/nodes/1/entries', '/nodes/1/traffic', '/nodes/1/metrics', '/nodes/1/network', '/nodes/1/deploys']
+  const ADMIN = ['/dashboard', '/users', '/nodes', '/inbounds', '/external-proxies', '/deployments', '/audit-logs', '/settings', '/probe-library', '/nodes/1/overview', '/nodes/1/entries', '/nodes/1/traffic', '/nodes/1/metrics', '/nodes/1/network', '/nodes/1/deploys']
   for (const path of ADMIN) {
     test(`${path} 页面不横向溢出`, async ({ page, api }) => {
       adminOnly(api)
