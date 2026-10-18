@@ -38,6 +38,8 @@ node:
   mieru_binary_dir: "/opt/litebox/assets/mieru"
   # realm(V15,第二种转发引擎)的官方 musl 静态二进制,由 scripts/fetch-realm.sh 拉取。
   realm_binary_dir: "/opt/litebox/assets/realm"
+  # 出站网络探测的非驻留辅助程序 litebox-probe,由 scripts/build-probe.sh 从本仓库构建。
+  probe_binary_dir: "/opt/litebox/assets/probe"
   ssh_dial_timeout: 20s
   deploy_timeout: 5m
   # 用户变更后的合并窗口:连续编辑多个用户时,同一节点只在最后一次变更

@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS = -s -w -X 'main.Version=$(VERSION)'
 GOFLAGS = -trimpath
 
-.PHONY: realm all build build-linux web test lint clean run dev tidy singbox mieru
+.PHONY: realm probe all build build-linux web test lint clean run dev tidy singbox mieru
 
 all: web build
 
@@ -47,6 +47,10 @@ mieru:
 # realm(V15 的第二种转发引擎)的官方二进制
 realm:
 	bash scripts/fetch-realm.sh
+
+## probe: 构建出站网络探测的非驻留辅助程序到 assets/probe(从本仓库源码构建)
+probe:
+	bash scripts/build-probe.sh
 
 ## run: 本地启动后端(前端用 make dev 另开)
 run:

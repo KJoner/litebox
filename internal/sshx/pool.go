@@ -45,13 +45,32 @@ func NewPool(resolve TargetResolver, logger *slog.Logger) *Pool {
 	}
 }
 
+// ErrBusy 表示这台机器的连接此刻正被别的操作占着(TryDo 不等)。
+var ErrBusy = errors.New("节点连接正忙")
+
 // Do 取得节点的连接并在其上执行 fn。同一节点的 Do 调用互斥。
 // 连接不可用时自动重连一次再执行。
 func (p *Pool) Do(ctx context.Context, nodeID int64, fn func(*Client) error) error {
 	entry := p.entry(nodeID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
+	return p.doLocked(ctx, nodeID, entry, fn)
+}
 
+// TryDo 与 Do 相同,但节点锁被占着时立刻返回 ErrBusy,不排队。
+//
+// 给周期性的、可以晚一轮的活(出站网络探测)用:部署、流量同步、巡检正在这台机器上跑时,
+// 探测让路、下一轮再来,而不是排在它们后面、再让后来的部署排在探测后面。
+func (p *Pool) TryDo(ctx context.Context, nodeID int64, fn func(*Client) error) error {
+	entry := p.entry(nodeID)
+	if !entry.mu.TryLock() {
+		return ErrBusy
+	}
+	defer entry.mu.Unlock()
+	return p.doLocked(ctx, nodeID, entry, fn)
+}
+
+func (p *Pool) doLocked(ctx context.Context, nodeID int64, entry *pooledConn, fn func(*Client) error) error {
 	p.dropIfDomainMoved(ctx, nodeID, entry)
 
 	client, err := p.ensure(ctx, nodeID, entry)
