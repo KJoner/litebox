@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -661,6 +662,45 @@ func cmdServe(args []string) error {
 	})
 	go prober.Run(ctx)
 
+	// 出站网络质量:每台自建 VPS 在本机测管理员配置的公共目标。经已有的 SSH 长连接临时启动
+	// 非驻留辅助程序(跑完就退出,不常驻、不监听端口),用非阻塞取锁 —— 节点正在部署、
+	// 同步或巡检时本拍让路,不排在它们前面。迁移不创建任何公共目标,升级后不会自动开始测。
+	probeHelpers := node.NewNamedBinaryProvider(cfg.Node.ProbeBinaryDir, "litebox-probe",
+		"请先执行 scripts/build-probe.sh 构建")
+	outbound := probe.NewOutbound(probe.OutboundOptions{
+		Store:    probeStore,
+		Logger:   logger,
+		Config:   settingsStore.ProbeConfig,
+		Skip:     cloudSkip,
+		Notifier: notifier,
+		NodeName: func(ctx context.Context, id int64) string {
+			n, err := nodeStore.Get(ctx, id)
+			if err != nil {
+				return fmt.Sprintf("节点 #%d", id)
+			}
+			if n.DisplayName != "" {
+				return n.DisplayName
+			}
+			return n.Name
+		},
+		BaseURL: func(ctx context.Context) string {
+			return settingsStore.BaseURL(ctx, cfg.HTTP.BaseURL)
+		},
+		Runner: &probe.SSHRunner{
+			Pool:     pool,
+			Binaries: probeHelpers,
+			Path:     path.Join(layout.BaseDir, "litebox-probe"),
+			Arch: func(ctx context.Context, id int64) (string, error) {
+				n, err := nodeStore.Get(ctx, id)
+				if err != nil {
+					return "", err
+				}
+				return n.Arch, nil
+			},
+		},
+	})
+	go outbound.Run(ctx)
+
 	// 外部代理源的自动同步。每个源自己的间隔决定何时拉,
 	// 这里的巡检只是「多久看一眼有没有到点的」。
 	// 默认所有源都关着自动同步 —— 打开之前管理员应该先手工同步一次看结果。
@@ -676,18 +716,20 @@ func cmdServe(args []string) error {
 	profileStore := subscription.NewProfileStore(db)
 
 	server := httpapi.NewServer(httpapi.Options{
-		Config:   cfg,
-		DB:       db,
-		Auth:     authService,
-		Audit:    audit.NewRecorder(db, logger),
-		Nodes:    nodeService,
-		Users:    userService,
-		External: externalService,
-		Expiry:   expiryStore,
-		Labels:   asset.NewStore(db),
-		Probes:   probeStore,
-		Prober:   prober,
-		Profiles: profileStore,
+		Config:       cfg,
+		DB:           db,
+		Auth:         authService,
+		Audit:        audit.NewRecorder(db, logger),
+		Nodes:        nodeService,
+		Users:        userService,
+		External:     externalService,
+		Expiry:       expiryStore,
+		Labels:       asset.NewStore(db),
+		Probes:       probeStore,
+		Prober:       prober,
+		Outbound:     outbound,
+		ProbeHelpers: probeHelpers,
+		Profiles:     profileStore,
 		Subs: subscription.NewService(
 			db, userStore, cipher, cfg.Subscription.ClientMixedPort,
 			settingsStore, profileStore, logger),

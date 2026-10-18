@@ -1,11 +1,14 @@
-// Package probe 是主控主动发起的轻量 TCP 连接探测。
+// Package probe 是两类网络探测:
 //
-// 它回答的问题很窄:**从主控这台机器,此刻能不能和目标的那个端口完成 TCP 三次握手、要多久。**
+//   - 出站网络质量(OUTBOUND,主力):每台自建 VPS 在**本机**测管理员配置的公共目标
+//     (ICMP 丢包与 RTT、TCP 建连与失败率)。经已有的 SSH 长连接临时启动非驻留辅助程序
+//     litebox-probe,跑完就退出;延迟在 VPS 上量,不含 SSH 的耗时。见 outbound.go;
+//   - 入口连通性(INGRESS):主控主动对节点的管理通道 / 订阅地址做 TCP 建连。
+//     不走 SSH、不占节点连接锁、不在节点上跑任何东西。见 engine.go。
 //
-//   - 不是代理协议的健康检查。端口能连上不等于代理能用 —— 那是部署里真实拨测的事,两者独立;
-//   - 不是 ICMP。界面上一律叫「TCP 延迟 / TCP 连接失败率」,不叫丢包;
-//   - 不走 SSH、不占节点连接锁、不在节点上跑任何东西。打开仪表盘不会触发任何一次探测,
-//     探测只由后台按固定间隔跑。
+// 两类数据用 direction 分开存、分开算、分开显示,绝不合进同一个数字。
+// 两者都不是代理协议的健康检查 —— 那是部署里真实拨测的事。打开仪表盘不会触发任何一次探测,
+// 探测只由后台按间隔跑。
 package probe
 
 import (
@@ -35,16 +38,45 @@ const (
 	FamilyV6 Family = "V6"
 )
 
-// SourceMaster 是唯一的探测来源:主控本机。
+// Direction 是探测方向。
+type Direction string
+
+const (
+	// DirIngress 入口连通性:主控 → 这台机器。
+	DirIngress Direction = "INGRESS"
+	// DirOutbound 出站网络质量:这台机器 → 公共目标。
+	DirOutbound Direction = "OUTBOUND"
+)
+
+// Protocol 是探测协议。入口只有 TCP;出站有 ICMP 与 TCP。
+type Protocol string
+
+const (
+	ProtoTCP  Protocol = "TCP"
+	ProtoICMP Protocol = "ICMP"
+)
+
+// KindPublic 是出站序列的种类:指向一个公共目标。
+const KindPublic Kind = "PUBLIC"
+
+// 探测来源。
 //
 // 模型里预留了 source 维度,但 P2 的多地区 / 三网测点接入之前不会产生别的值 ——
-// 不能把同一个主控测量值复制三份冒充「电信 / 联通 / 移动」。
-const SourceMaster = "MASTER"
+// 不能把同一个测量值复制三份冒充「电信 / 联通 / 移动」。
+const (
+	// SourceMaster 主控本机(入口连通性)。
+	SourceMaster = "MASTER"
+	// SourceNode 被测的这台 VPS 本机(出站网络质量)。
+	SourceNode = "NODE"
+)
 
 // SourceLabel 是来源给人看的名字。
 func SourceLabel(source string) string {
-	if source == SourceMaster {
+	switch source {
+	case SourceMaster:
 		return "主控探测"
+	case SourceNode:
+		return "节点本机"
 	}
 	return source
 }
@@ -53,30 +85,58 @@ func SourceLabel(source string) string {
 type Status string
 
 const (
-	StatusOK          Status = "OK"
+	StatusOK Status = "OK"
+	// StatusLoss ICMP 部分丢包:收到了一部分,目标可达,丢包率另算。
+	StatusLoss        Status = "LOSS"
 	StatusTimeout     Status = "TIMEOUT"
 	StatusRefused     Status = "REFUSED"
 	StatusUnreachable Status = "UNREACHABLE"
 	StatusError       Status = "ERROR"
 	// StatusDNSError 域名没解析出来,**没有发起连接** —— 不进失败率的分母。
 	StatusDNSError Status = "DNS_ERROR"
+	// StatusBlocked 解析到受限地址,或端口受限:没有发起。
+	StatusBlocked Status = "BLOCKED"
+	// StatusSSHError 采集失败:面板连不上这台机器。**不是丢包** —— 目标那头什么都不知道,
+	// 记成 100% 丢包会让管理员去查一条完全正常的线路。
+	StatusSSHError Status = "SSH_ERROR"
+	// StatusToolError 工具不可用:辅助程序缺失、跑不起来,或者没有 ICMP 权限。
+	StatusToolError Status = "TOOL_ERROR"
 	// StatusSkipped 没有执行,Error 里是原因码。
 	StatusSkipped Status = "SKIPPED"
 )
 
-// Attempted 表示这次真的发起了 TCP 连接(进失败率分母)。
+// Attempted 表示这次真的发起了探测(进丢包率 / 失败率的分母)。
 func (s Status) Attempted() bool {
 	switch s {
-	case StatusOK, StatusTimeout, StatusRefused, StatusUnreachable, StatusError:
+	case StatusOK, StatusLoss, StatusTimeout, StatusRefused, StatusUnreachable, StatusError:
 		return true
 	}
 	return false
 }
 
-// Failed 表示这次算一次失败(用于连续失败告警):建连失败与 DNS 失败都算 ——
-// 从主控看两者都是「连不上」,但只有前者进失败率。
+// Failed 表示这次算一次失败(用于连续失败告警):建连失败、全部丢包与 DNS 失败都算 ——
+// 从发起方看都是「连不上」,但只有前者进失败率。部分丢包说明目标可达,不算失败;
+// 采集失败、工具不可用、目标受限、未执行都不是网络结果,不改变计数。
 func (s Status) Failed() bool {
-	return s == StatusDNSError || (s.Attempted() && s != StatusOK)
+	return s == StatusDNSError || (s.Attempted() && s != StatusOK && s != StatusLoss)
+}
+
+// Reachable 表示目标这一轮可达(全部收到或部分丢包)。
+func (s Status) Reachable() bool { return s == StatusOK || s == StatusLoss }
+
+// LabelFor 是按协议给人看的结果名:ICMP 的 TIMEOUT 是「全部丢包」,不是「连接超时」。
+func (s Status) LabelFor(p Protocol) string {
+	if p == ProtoICMP {
+		switch s {
+		case StatusOK:
+			return "全部收到"
+		case StatusTimeout:
+			return "全部丢包"
+		case StatusError:
+			return "发送失败"
+		}
+	}
+	return s.Label()
 }
 
 // Label 是给人看的结果名。
@@ -94,6 +154,14 @@ func (s Status) Label() string {
 		return "连接失败"
 	case StatusDNSError:
 		return "DNS 解析失败"
+	case StatusLoss:
+		return "部分丢包"
+	case StatusBlocked:
+		return "目标受限"
+	case StatusSSHError:
+		return "采集失败"
+	case StatusToolError:
+		return "工具不可用"
 	case StatusSkipped:
 		return "未执行"
 	}
@@ -103,14 +171,57 @@ func (s Status) Label() string {
 // SkipCloudStopped 是 SKIPPED 的原因码:云实例停着(面板停的或别人停的都算)。
 const SkipCloudStopped = "CLOUD_STOPPED"
 
-// Result 是一次尝试。
+// Result 是一次尝试(出站 ICMP 是一轮:同一个目标连发几个包)。
 type Result struct {
 	Status Status
-	// RTT 是 TCP 建连耗时,只对 OK 有意义。DNS 解析的时间单独记在 DNS 里,不算进 RTT。
+	// RTT 是 TCP 建连耗时 / ICMP 收到的包的平均往返,只对可达的结果有意义。
+	// DNS 解析的时间单独记在 DNS 里,不算进 RTT。
 	RTT time.Duration
 	DNS time.Duration
 	// Error 是失败的简述(不含地址);SKIPPED 时是原因码。
 	Error string
+	// Sent / Received:ICMP 是发出 / 收到的包数;TCP 是 1 / (OK ? 1 : 0)。没发起时都是 0。
+	Sent, Received int
+	// RTTMin / RTTMax 是这一轮的最小 / 最大往返(TCP 时与 RTT 相同)。
+	RTTMin, RTTMax time.Duration
+	// Peer 是实际连的 IP(域名每轮重新解析,换了指向能在这里看出来)。
+	Peer string
+}
+
+// counts 把一次结果折算成发 / 收数。入口探测没有显式填 Sent / Received,
+// 按「一次建连 = 发一个、成功 = 收一个」补齐 —— 迁移 0041 换算旧明细用的是同一条规则。
+func (r Result) counts() (sent, received int) {
+	if r.Sent > 0 || r.Received > 0 {
+		return r.Sent, r.Received
+	}
+	if r.Status.Attempted() {
+		sent = 1
+		if r.Status == StatusOK {
+			received = 1
+		}
+	}
+	return sent, received
+}
+
+// rttStats 是参与 RTT 平均的样本数与总和、最小、最大(微秒)。
+// ICMP 按收到的包加权:一轮收到 3 个包、平均 10ms,算 3 个 10ms,而不是 1 个。
+func (r Result) rttStats() (n int, sum, min, max int64) {
+	if !r.Status.Reachable() {
+		return 0, 0, 0, 0
+	}
+	_, recv := r.counts()
+	if recv <= 0 {
+		return 0, 0, 0, 0
+	}
+	avg := r.RTT.Microseconds()
+	min, max = r.RTTMin.Microseconds(), r.RTTMax.Microseconds()
+	if min <= 0 {
+		min = avg
+	}
+	if max <= 0 {
+		max = avg
+	}
+	return recv, avg * int64(recv), min, max
 }
 
 // Dialer 拨 TCP。生产上是 net.Dialer;测试里换成假的,好造出拒绝 / 超时 / 不可达。

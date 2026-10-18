@@ -480,7 +480,7 @@ func TestEngineRoundWritesResultsAndStats(t *testing.T) {
 	if got := e.count(t, `SELECT SUM(attempts) FROM probe_hourly WHERE target_id = ?`, sv.ID); got != 5 {
 		t.Errorf("小时汇总 attempts = %d", got)
 	}
-	targets, _ := e.store.List(ctx, n)
+	targets, _ := e.store.List(ctx, n, DirIngress)
 	sums, err := e.store.Summaries(ctx, targets, SummaryContext{Config: e.cfg}, e.clock)
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +592,7 @@ func TestInvalidPausedStoppedDisabled(t *testing.T) {
 	if got := e.count(t, `SELECT COUNT(*) FROM probe_results WHERE target_id IN (?,?,?)`, inv.ID, paused.ID, disabled.ID); got != 0 {
 		t.Errorf("失效 / 暂停 / 停用不应有样本: %d", got)
 	}
-	all, _ := e.store.ListAll(ctx)
+	all, _ := e.store.ListAll(ctx, DirIngress)
 	sums, _ := e.store.Summaries(ctx, all, SummaryContext{
 		Config:       e.cfg,
 		NodeDisabled: func(id int64) bool { return id == d },

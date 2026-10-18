@@ -61,7 +61,8 @@ type probeSourceDTO struct {
 }
 
 type probeOverview struct {
-	Enabled     bool              `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// IntervalSec / TimeoutMs 是入口连通性的参数;出站的间隔与超时是每个公共目标自己的。
 	IntervalSec int               `json:"interval_sec"`
 	TimeoutMs   int               `json:"timeout_ms"`
 	AlertAfter  int               `json:"alert_after"`
@@ -70,14 +71,22 @@ type probeOverview struct {
 	LastRun     probe.RoundStatus `json:"last_run"`
 	// Available 为假表示这个面板没有启用探测(没接入引擎),卡片据此整块说「未接入」。
 	Available bool `json:"available"`
+	// Outbound* 是出站网络质量:引擎接没接入、最近一拍的概况、公共目标数,
+	// 以及主控手上有哪些架构的辅助程序(没有的架构上出站探测会报「工具不可用」)。
+	OutboundAvailable bool                 `json:"outbound_available"`
+	OutboundLastRun   probe.OutboundStatus `json:"outbound_last_run"`
+	PublicTargets     int                  `json:"public_targets"`
+	Helpers           map[string]int64     `json:"helpers"`
 }
 
 type dashboardCards struct {
-	GeneratedAt string           `json:"generated_at"`
-	Probe       probeOverview    `json:"probe"`
-	Labels      []asset.Labels   `json:"labels"`
-	Billing     []billingCard    `json:"billing"`
+	GeneratedAt string         `json:"generated_at"`
+	Probe       probeOverview  `json:"probe"`
+	Labels      []asset.Labels `json:"labels"`
+	Billing     []billingCard  `json:"billing"`
+	// Targets 是入口连通性(主控 → 节点),Outbound 是出站网络质量(节点 → 公共目标),分开给。
 	Targets     []probe.Summary  `json:"targets"`
+	Outbound    []probe.Summary  `json:"outbound"`
 	CostSummary []costRow        `json:"cost_summary"`
 	Expiring7d  int              `json:"expiring_7d"`
 	Overdue     int              `json:"overdue"`
@@ -100,7 +109,7 @@ func (s *Server) handleDashboardCards(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	out := dashboardCards{
 		GeneratedAt: now.Format(time.RFC3339),
-		Labels:      []asset.Labels{}, Billing: []billingCard{}, Targets: []probe.Summary{},
+		Labels:      []asset.Labels{}, Billing: []billingCard{}, Targets: []probe.Summary{}, Outbound: []probe.Summary{},
 		CostSummary: []costRow{}, Errors: []string{}, External: []externalStatus{},
 	}
 	// 各块独立降级:哪一块读失败就在 errors 里点名,其余照常给 —— 与仪表盘的 failedSources 同一条规矩。
@@ -125,8 +134,8 @@ func (s *Server) handleDashboardCards(w http.ResponseWriter, r *http.Request) {
 		out.Errors = append(out.Errors, "套餐与到期")
 	}
 	if err := s.fillProbeCards(ctx, now, &out); err != nil {
-		s.logger.Error("读取 TCP 探测汇总失败", "error", err)
-		out.Errors = append(out.Errors, "TCP 探测")
+		s.logger.Error("读取网络探测汇总失败", "error", err)
+		out.Errors = append(out.Errors, "网络探测")
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -278,11 +287,27 @@ func (s *Server) probeOverview(ctx context.Context) probeOverview {
 	ov := probeOverview{
 		Enabled: cfg.Enabled, IntervalSec: int(cfg.Interval.Seconds()), TimeoutMs: int(cfg.Timeout.Milliseconds()),
 		AlertAfter: cfg.AlertAfter, QuietHours: cfg.Quiet.String(),
-		Sources:   []probeSourceDTO{{Code: probe.SourceMaster, Label: probe.SourceLabel(probe.SourceMaster)}},
-		Available: s.probes != nil,
+		Sources: []probeSourceDTO{
+			{Code: probe.SourceNode, Label: probe.SourceLabel(probe.SourceNode)},
+			{Code: probe.SourceMaster, Label: probe.SourceLabel(probe.SourceMaster)},
+		},
+		Available:         s.probes != nil,
+		OutboundAvailable: s.outbound != nil,
+		Helpers:           map[string]int64{},
 	}
 	if s.prober != nil {
 		ov.LastRun = s.prober.Status()
+	}
+	if s.outbound != nil {
+		ov.OutboundLastRun = s.outbound.Status()
+	}
+	if s.probeHelpers != nil {
+		ov.Helpers = s.probeHelpers.Available()
+	}
+	if s.probes != nil {
+		if pubs, err := s.probes.ListPublic(ctx); err == nil {
+			ov.PublicTargets = len(pubs)
+		}
 	}
 	return ov
 }
@@ -314,6 +339,15 @@ func (s *Server) summaryContext(ctx context.Context) probe.SummaryContext {
 		}
 	}
 	sc.NodeStopped = func(id int64) string { return stopped[id] }
+	pubs := map[int64]*probe.PublicTarget{}
+	if s.probes != nil {
+		if list, err := s.probes.ListPublic(ctx); err == nil {
+			for i := range list {
+				pubs[list[i].ID] = &list[i]
+			}
+		}
+	}
+	sc.Public = func(id int64) *probe.PublicTarget { return pubs[id] }
 	return sc
 }
 
@@ -322,15 +356,21 @@ func (s *Server) fillProbeCards(ctx context.Context, now time.Time, out *dashboa
 	if s.probes == nil {
 		return nil
 	}
-	targets, err := s.probes.ListAll(ctx)
-	if err != nil {
-		return err
+	sc := s.summaryContext(ctx)
+	for _, part := range []struct {
+		dir probe.Direction
+		dst *[]probe.Summary
+	}{{probe.DirIngress, &out.Targets}, {probe.DirOutbound, &out.Outbound}} {
+		targets, err := s.probes.ListAll(ctx, part.dir)
+		if err != nil {
+			return err
+		}
+		sums, err := s.probes.Summaries(ctx, targets, sc, now)
+		if err != nil {
+			return err
+		}
+		*part.dst = sums
 	}
-	sums, err := s.probes.Summaries(ctx, targets, s.summaryContext(ctx), now)
-	if err != nil {
-		return err
-	}
-	out.Targets = sums
 	return nil
 }
 
