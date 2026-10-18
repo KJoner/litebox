@@ -507,6 +507,41 @@ PUT    /api/nodes/{id}/probe-public/{publicId} {mode: ON|OFF|INHERIT} 单节点�
 出站序列不能用 `PUT / DELETE /api/probe-targets/{id}` 单独停或删(400),历史接口两类都能用。
 定义与安全规则见 `docs/asset-probe/03-outbound-delivery.md`。
 
+### 公共探测目标库(V22.2)
+
+目标库从系统设置里的一小节变成独立页面(`/probe-library`):目标有来源(自定义 / Zstatic / TcpQuality)、
+地区 / 省 / 市 / 运营商,TCP 多了「握手近似」方式;第三方来源带授权确认、暂停与限额。
+
+```
+GET    /api/probe/public-targets                 整个目标库(筛选在页面上做)+ 概况 + 来源 + 限额 + 省份表
+POST   /api/probe/public-targets/batch           {ids, action: pause|resume|delete|scope, scope?, node_ids?}
+POST   /api/probe/public-targets/import          {text, commit}:CSV / TSV 批量登记自定义目标,commit=false 只预览
+POST   /api/probe/public-targets/verify          {ids}:主控做 DNS 检查(不连目标),结论写回 verify_state
+PUT    /api/probe/sources/{kind}                 {paused?, authorize?, authorized_note?, high_freq_allowed?,
+                                                  min_interval_sec?, per_target_per_min?}
+POST   /api/probe/sources/zstatic/presets        {provinces, isps, families, tcp_mode}:本地生成省级候选并比对(不联网)
+POST   /api/probe/sources/{zstatic|tcpquality}/fetch {tcp_mode, host_mode}:手动拉一次上游列表并比对;
+                                                  上游不可用 502,目标库不动,只标记来源状态
+POST   /api/probe/sources/apply                  {source, snapshot_id, import, update, mark_missing, tcp_mode,
+                                                  host_mode, interval_sec}:按勾选写入;只认 key,地址取服务端快照
+PUT    /api/probe/limits                         {values: {settings 键: 值, 0 = 改回默认}}
+POST   /api/probe/bindings                       {node_ids, public_ids, mode: ON|OFF|INHERIT}:批量节点覆盖
+GET    /api/nodes/{id}/probe-settings            本机覆盖:{paused, interval_sec}
+PUT    /api/nodes/{id}/probe-settings            同上;interval_sec 为 0 = 跟随各目标
+POST   /api/nodes/{id}/probe-trial               {public_ids ≤ 8}:试测一轮,不进历史;节点正忙 409,预算满 429
+```
+
+* 公共目标多了 `tcp_mode`(CONNECT / SYN)、`metric`(LOSS / CONNECT / SYN,界面按它起名)、`source` /
+  `source_key` / `region` / `province` / `city` / `isp` / `role` / `verify_state` / `verified_at` /
+  `verify_detail` / `manual_fields` / `upstream_missing_since`,以及派生的 `third_party`、
+  `effective_interval_sec`、`pause_reason`;
+* 序列与统计多了 `tcp_mode` / `metric`;握手近似的 `loss_rate` 是「握手超时无应答率」,不是丢包率;
+* `GET /api/nodes/{id}/probe` 多了 `node_settings`,`public` 每项多 `node_interval_sec` / `node_pause_reason`;
+* 对节点启用一个**未确认授权**的第三方来源的目标:400;会让某台机器超过第三方目标数上限:409(列出是哪几台);
+* 出站引擎的概况多了 `deferred`(限额延后、不记结果)与 `third_party_used` / `third_party_budget`。
+
+定义与安全规则见 `docs/asset-probe/05-target-library-delivery.md`。
+
 ## 巡检与推送接口
 
 ```text
