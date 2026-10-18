@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { ProbeBucket } from '@/api/client'
+import type { ProbeBucket, ProbeProtocol } from '@/api/client'
 import { formatTime } from '@/utils/format'
-import { rttText } from './assetModel'
+import { rateText, rttText } from './probeView'
 
 /**
- * TCP 延迟曲线。横轴按时间等距(每个窗口一格),纵轴是窗口内成功建连的平均 RTT。
+ * 延迟曲线。横轴按时间等距(每个窗口一格),纵轴是窗口内的平均 RTT
+ * (TCP 是成功建连的耗时,ICMP 是收到的包的往返时间,按包加权)。
  *
- *   - 窗口里一次成功都没有:曲线断开,不补 0、不插值;
- *   - 失败、DNS 失败、未执行各画一枚底部记号(红 / 橙 / 灰),失败点在曲线断开的地方也看得见;
+ *   - 窗口里一次可达都没有:曲线断开,不补 0、不插值;
+ *   - 失败 / 部分丢包 / DNS 失败 / 采集失败或工具不可用 / 未执行各画一枚底部记号
+ *     (红 / 琥珀 / 橙 / 灰斜纹 / 灰),失败点在曲线断开的地方也看得见;
  *   - 宽度由 ResizeObserver 量容器像素,不靠 viewBox 拉伸 —— 拉伸会让鼠标位置与读数对不上。
  */
-const props = defineProps<{ buckets: ProbeBucket[]; height?: number }>()
+const props = defineProps<{ buckets: ProbeBucket[]; height?: number; protocol?: ProbeProtocol }>()
 
 const box = ref<HTMLElement | null>(null)
 const width = ref(600)
@@ -79,12 +81,20 @@ const lonely = computed(() =>
 const marks = computed(() =>
   props.buckets
     .map((b, i) => ({ b, i }))
-    .filter(({ b }) => b.failures > 0 || b.dns_errors > 0 || (b.skipped > 0 && b.attempts === 0)),
+    .filter(
+      ({ b }) =>
+        b.failures > 0 ||
+        b.lossy > 0 ||
+        b.dns_errors > 0 ||
+        (b.attempts === 0 && (b.ssh_errors > 0 || b.tool_errors > 0 || b.blocked > 0 || b.skipped > 0)),
+    ),
 )
 
 function markClass(b: ProbeBucket) {
   if (b.failures > 0) return 'pc__mark--fail'
+  if (b.lossy > 0) return 'pc__mark--loss'
   if (b.dns_errors > 0) return 'pc__mark--dns'
+  if (b.ssh_errors > 0 || b.tool_errors > 0 || b.blocked > 0) return 'pc__mark--nosend'
   return 'pc__mark--skip'
 }
 
@@ -109,11 +119,19 @@ const hoverText = computed(() => {
   const b = props.buckets[hover.value]
   if (!b) return ''
   const parts = [formatTime(b.at)]
-  if (b.attempts) parts.push(`连接 ${b.attempts} 次 · 失败 ${b.failures}`)
+  if (b.attempts) {
+    if (props.protocol === 'ICMP') parts.push(`发 ${b.sent} 个包 · 收到 ${b.received} · 丢包 ${rateText(b.loss_rate)}`)
+    else parts.push(`连接 ${b.attempts} 次 · 失败 ${b.failures}`)
+  }
   if (b.rtt_avg_ms != null) parts.push(`平均 ${rttText(b.rtt_avg_ms)}(${rttText(b.rtt_min_ms)} ~ ${rttText(b.rtt_max_ms)})`)
   if (b.dns_errors) parts.push(`DNS 失败 ${b.dns_errors}`)
+  if (b.ssh_errors) parts.push(`采集失败 ${b.ssh_errors}(不是丢包)`)
+  if (b.tool_errors) parts.push(`工具不可用 ${b.tool_errors}`)
+  if (b.blocked) parts.push(`目标受限 ${b.blocked}`)
   if (b.skipped) parts.push(`未执行 ${b.skipped}`)
-  if (!b.attempts && !b.dns_errors && !b.skipped) parts.push('这一段没有样本')
+  if (!b.attempts && !b.dns_errors && !b.skipped && !b.ssh_errors && !b.tool_errors && !b.blocked) {
+    parts.push('这一段没有样本')
+  }
   return parts.join(' · ')
 })
 </script>
@@ -124,7 +142,7 @@ const hoverText = computed(() => {
       :width="width"
       :height="H"
       role="img"
-      aria-label="TCP 延迟曲线"
+      :aria-label="protocol === 'ICMP' ? 'ICMP 往返时间曲线' : 'TCP 建连时间曲线'"
       @mousemove="onMove"
       @mouseleave="hover = null"
     >
@@ -157,7 +175,7 @@ const hoverText = computed(() => {
       />
       <line v-if="hover != null" class="pc__cursor" :x1="x(hover)" :x2="x(hover)" :y1="PAD.t" :y2="PAD.t + plotH" />
     </svg>
-    <div class="pc__tip lb-tabular" aria-live="polite">{{ hoverText || '悬停查看每个时间窗口的连接次数与延迟;曲线断开处没有成功样本' }}</div>
+    <div class="pc__tip lb-tabular" aria-live="polite">{{ hoverText || '悬停查看每个时间窗口的计数与延迟;曲线断开处没有可达的样本' }}</div>
   </div>
 </template>
 
@@ -190,8 +208,16 @@ const hoverText = computed(() => {
 .pc__mark--fail {
   fill: var(--bad);
 }
+.pc__mark--loss {
+  fill: var(--warn);
+  opacity: 0.6;
+}
 .pc__mark--dns {
   fill: var(--warn);
+}
+.pc__mark--nosend {
+  fill: var(--text3);
+  opacity: 0.5;
 }
 .pc__mark--skip {
   fill: var(--fill2);

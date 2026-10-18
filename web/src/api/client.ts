@@ -1206,21 +1206,36 @@ export interface CostRow {
   other_count: number
 }
 
-// ---------- TCP 探测(资产卡片 P0-C) ----------
+// ---------- 网络探测:出站网络质量(节点 → 公共目标)与入口连通性(主控 → 节点) ----------
 
-export type ProbeKind = 'MGMT' | 'SERVICE'
+export type ProbeKind = 'MGMT' | 'SERVICE' | 'PUBLIC'
 export type ProbeFamily = 'V4' | 'V6'
-export type ProbeStatus = 'OK' | 'TIMEOUT' | 'REFUSED' | 'UNREACHABLE' | 'ERROR' | 'DNS_ERROR' | 'SKIPPED'
-/** 卡片上一行的状态。几种「没有新数据」分开说:暂停 / 停用 / 关机 / 失效 / 过期 / 等待首次 */
-export type ProbeState = 'OK' | 'FAILING' | 'DOWN' | 'PAUSED' | 'DISABLED' | 'STOPPED' | 'INVALID' | 'STALE' | 'PENDING'
-/** 点阵颜色。NONE = 这个窗口没有样本,**不按正常画** */
-export type ProbeBucketState = 'OK' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SKIP' | 'NONE'
+/** INGRESS = 入口连通性(主控 → 这台机器);OUTBOUND = 出站网络质量(这台机器 → 公共目标) */
+export type ProbeDirection = 'INGRESS' | 'OUTBOUND'
+export type ProbeProtocol = 'TCP' | 'ICMP'
+/**
+ * 一次结果。LOSS = ICMP 部分丢包(可达);SSH_ERROR = 采集失败(面板连不上这台机器,不是丢包);
+ * TOOL_ERROR = 辅助程序不可用;BLOCKED = 目标受限;这三种与 DNS_ERROR、SKIPPED 都没有发起,不进分母。
+ */
+export type ProbeStatus =
+  | 'OK' | 'LOSS' | 'TIMEOUT' | 'REFUSED' | 'UNREACHABLE' | 'ERROR'
+  | 'DNS_ERROR' | 'BLOCKED' | 'SSH_ERROR' | 'TOOL_ERROR' | 'SKIPPED'
+/** 卡片上一行的状态。几种「没有新数据」分开说:暂停 / 停用 / 关机 / 失效 / 过期 / 等待首次 / 采集失败 / 工具不可用 */
+export type ProbeState =
+  | 'OK' | 'LOSSY' | 'FAILING' | 'DOWN' | 'PAUSED' | 'DISABLED' | 'STOPPED' | 'INVALID' | 'STALE' | 'PENDING'
+  | 'COLLECT_FAILED' | 'TOOL_ERROR' | 'BLOCKED'
+/** 点阵颜色。NONE = 这个窗口没有样本,**不按正常画**;SSH / TOOL 也不按失败画 —— 那几轮根本没有发出去 */
+export type ProbeBucketState = 'OK' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SSH' | 'TOOL' | 'BLOCKED' | 'SKIP' | 'NONE'
 
 export interface ProbeTarget {
   id: number
   node_id: number
+  direction: ProbeDirection
+  protocol: ProbeProtocol
   kind: ProbeKind
   ref: string
+  /** 出站序列指向的公共目标;入口目标为 0 */
+  public_id: number
   family: ProbeFamily
   label: string
   source: string
@@ -1244,13 +1259,22 @@ export interface ProbeTarget {
 
 export interface ProbeBucket {
   at: string
-  /** 实际发起的 TCP 连接数 —— 失败率的分母 */
+  /** 实际发起的轮数(TCP 即建连数)—— 失败率的分母 */
   attempts: number
   ok: number
+  /** ICMP 部分丢包的轮数 */
+  lossy: number
   failures: number
-  /** DNS 没解析出来、没有发起连接的次数,不在分母里 */
+  /** 没有发起的几种,各自单列,都不在分母里 */
   dns_errors: number
   skipped: number
+  ssh_errors: number
+  tool_errors: number
+  blocked: number
+  /** 按包计(TCP 按建连计);loss_rate = (sent − received) / sent,一次都没发起时为 null */
+  sent: number
+  received: number
+  loss_rate: number | null
   rtt_avg_ms: number | null
   rtt_min_ms: number | null
   rtt_max_ms: number | null
@@ -1262,11 +1286,19 @@ export interface ProbeStats {
   to: string
   attempts: number
   ok: number
+  lossy: number
   failures: number
   dns_errors: number
   skipped: number
-  /** 0~1;一次都没发起过时为 null,不是 0 */
+  ssh_errors: number
+  tool_errors: number
+  blocked: number
+  sent: number
+  received: number
+  /** 0~1。TCP 的连接失败率;ICMP 时是「整轮全丢」的比例。一次都没发起过时为 null,不是 0 */
   failure_rate: number | null
+  /** 0~1。ICMP 的丢包率(按包);TCP 时与 failure_rate 相同 */
+  loss_rate: number | null
   rtt_avg_ms: number | null
   rtt_min_ms: number | null
   rtt_max_ms: number | null
@@ -1278,12 +1310,14 @@ export interface ProbeLastSample {
   label: string
   rtt_ms: number | null
   error: string
+  sent: number
+  received: number
+  /** 实际连的 IP(域名每轮重新解析) */
+  peer: string
 }
 
 export interface ProbeSummary extends ProbeTarget {
   source_label: string
-  /** 探测协议,P0 恒为 TCP —— 写出来是为了不让人把这一行读成 ICMP */
-  protocol: string
   state: ProbeState
   state_text: string
   last: ProbeLastSample | null
@@ -1292,6 +1326,8 @@ export interface ProbeSummary extends ProbeTarget {
   h24: ProbeStats
   dots: ProbeBucket[]
   dot_seconds: number
+  /** 入口用全局间隔,出站用公共目标自己的 */
+  interval_sec: number
   note: string
 }
 
@@ -1315,8 +1351,22 @@ export interface ProbeRoundStatus {
   interval_sec: number
 }
 
+export interface OutboundRoundStatus {
+  last_run_at: string
+  duration_ms: number
+  nodes: number
+  probed: number
+  /** 节点连接正忙而让路的机器数(下一拍再来,不记结果) */
+  busy: number
+  ssh_errors: number
+  tool_errors: number
+  skipped: number
+  last_error: string
+}
+
 export interface ProbeOverview {
   enabled: boolean
+  /** 入口连通性的间隔与超时;出站的是每个公共目标自己的 */
   interval_sec: number
   timeout_ms: number
   alert_after: number
@@ -1325,10 +1375,74 @@ export interface ProbeOverview {
   last_run: ProbeRoundStatus
   /** 面板没接入探测引擎时为 false */
   available: boolean
+  outbound_available: boolean
+  outbound_last_run: OutboundRoundStatus
+  public_targets: number
+  /** 主控手上有的辅助程序:架构 → 字节数。缺的架构上出站探测会报「工具不可用」 */
+  helpers: Record<string, number>
+}
+
+export interface PublicProbeTarget {
+  id: number
+  name: string
+  host: string
+  protocol: ProbeProtocol
+  port: number
+  family: ProbeFamily
+  interval_sec: number
+  count: number
+  timeout_ms: number
+  apply_all: boolean
+  enabled: boolean
+  allow_restricted: boolean
+  sort_order: number
+  note: string
+  created_at: string
+  updated_at: string
+  /** 此刻对它生效的机器数;on / off 是显式的节点覆盖数 */
+  node_count: number
+  on_count: number
+  off_count: number
+}
+
+export interface PublicProbeInput {
+  name: string
+  host: string
+  protocol: ProbeProtocol
+  port: number
+  family: ProbeFamily
+  interval_sec: number
+  count: number
+  timeout_ms: number
+  enabled?: boolean
+  allow_restricted: boolean
+  sort_order: number
+  note: string
+}
+
+/** 节点覆盖:ON / OFF / INHERIT(跟随公共目标的「全部节点」开关) */
+export type ProbeBindingMode = 'ON' | 'OFF' | 'INHERIT'
+export type PublicProbeScope = 'ALL' | 'SELECTED' | 'NONE'
+
+export interface NodePublicProbe extends PublicProbeTarget {
+  mode: ProbeBindingMode
+  effective: boolean
+}
+
+export interface PublicProbeNode {
+  node_id: number
+  name: string
+  display_name: string
+  mode: ProbeBindingMode
+  effective: boolean
 }
 
 export interface NodeProbe {
   probe: ProbeOverview
+  /** 出站网络质量;public 是全部公共目标在这台机器上的开关 */
+  outbound: ProbeSummary[]
+  public: NodePublicProbe[]
+  /** 入口连通性 */
   targets: ProbeSummary[]
   candidates: ProbeCandidate[]
 }
@@ -1338,6 +1452,9 @@ export interface ProbeFailurePoint {
   status: ProbeStatus
   label: string
   error: string
+  sent: number
+  received: number
+  peer: string
 }
 
 export interface ProbeHistory {
@@ -1368,7 +1485,10 @@ export interface DashboardCards {
   probe: ProbeOverview
   labels: AssetLabels[]
   billing: BillingCard[]
+  /** 入口连通性(主控 → 节点) */
   targets: ProbeSummary[]
+  /** 出站网络质量(节点 → 公共目标) */
+  outbound: ProbeSummary[]
   cost_summary: CostRow[]
   expiring_7d: number
   overdue: number
@@ -3256,6 +3376,20 @@ export const api = {
     request<{ message: string }>(`/api/probe-targets/${id}`, { method: 'DELETE' }),
   probeHistory: (id: number, range: '1h' | '24h' | '7d') =>
     request<ProbeHistory>(`/api/probe-targets/${id}/history`, { query: { range } }),
+  publicProbeTargets: () =>
+    request<{ targets: PublicProbeTarget[]; probe: ProbeOverview }>('/api/probe/public-targets'),
+  createPublicProbeTarget: (body: PublicProbeInput) =>
+    request<PublicProbeTarget>('/api/probe/public-targets', { method: 'POST', body }),
+  updatePublicProbeTarget: (id: number, body: PublicProbeInput) =>
+    request<PublicProbeTarget>(`/api/probe/public-targets/${id}`, { method: 'PUT', body }),
+  deletePublicProbeTarget: (id: number) =>
+    request<{ message: string }>(`/api/probe/public-targets/${id}`, { method: 'DELETE' }),
+  publicProbeTargetNodes: (id: number) =>
+    request<{ nodes: PublicProbeNode[] }>(`/api/probe/public-targets/${id}/nodes`),
+  setPublicProbeScope: (id: number, body: { scope: PublicProbeScope; node_ids?: number[] }) =>
+    request<PublicProbeTarget>(`/api/probe/public-targets/${id}/scope`, { method: 'PUT', body }),
+  setProbeBinding: (nodeID: number, publicID: number, mode: ProbeBindingMode) =>
+    request<{ message: string }>(`/api/nodes/${nodeID}/probe-public/${publicID}`, { method: 'PUT', body: { mode } }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),

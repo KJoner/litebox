@@ -23,9 +23,11 @@ import { formatBytes } from '@/utils/format'
  * 几条载重的规矩:
  *
  *   - **没有的数据显示「不可用」,不显示 0。** 外部代理没有 CPU / 内存,画一条 0% 的条是在伪造监控;
- *   - **在线 / 离线、资源数据过期、TCP 检测失败、已关机、监测关闭是五种不同的状态**,各给各的标记,
+ *   - **在线 / 离线、资源数据过期、网络检测失败、已关机、监测关闭是五种不同的状态**,各给各的标记,
  *     一张卡上可以同时有几种,但绝不合成一个;
- *   - **只显示真实存在的探测来源**。P0 只有「主控探测」,不出现电信 / 联通 / 移动三行;
+ *   - **出站网络质量与入口连通性分开放**:前者是这台机器在本机测公共目标(节点本机),后者是主控连这台
+ *     机器(主控探测)。两组数字回答的是不同的问题,合进一个失败率会让人去修错方向;
+ *   - **只显示真实存在的探测来源**,不出现电信 / 联通 / 移动三行;
  *   - **多币种不相加**。按价格排序时先按币种分组,再在组内比金额。
  */
 
@@ -38,7 +40,7 @@ export const assetTypeLabel: Record<AssetType, string> = {
   SOURCE: '代理源',
 }
 
-/** 状态筛选的取值。一张卡可以同时属于几种(在线 + 资源数据过期 + TCP 检测失败)。 */
+/** 状态筛选的取值。一张卡可以同时属于几种(在线 + 资源数据过期 + 网络检测失败)。 */
 export type StatusKey =
   | 'ONLINE'
   | 'OFFLINE'
@@ -54,7 +56,7 @@ export const statusKeyLabel: Record<StatusKey, string> = {
   ONLINE: '在线',
   OFFLINE: '离线 / 部署失败',
   STOPPED: '已关机',
-  PROBE_FAIL: 'TCP 检测失败',
+  PROBE_FAIL: '网络检测失败',
   STALE: '数据过期',
   MONITOR_OFF: '监测关闭 / 未配置',
   DISABLED: '已停用',
@@ -111,6 +113,9 @@ export interface AssetCard {
   resourcesNote: string
   traffic: CardTraffic | null
   trafficNote: string
+  /** 出站网络质量(这台机器 → 公共目标),只含此刻生效的序列,按公共目标的排序。 */
+  outbound: ProbeSummary[]
+  /** 入口连通性(主控 → 这台机器),含暂停的(降灰显示)。 */
   probes: ProbeSummary[]
   monitor: MonitorState
   external: ExternalCheckStatus | null
@@ -157,24 +162,33 @@ function sortProbes(list: ProbeSummary[]): ProbeSummary[] {
   return [...list].sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === 'SERVICE' ? -1 : 1))
 }
 
-function monitorOf(probes: ProbeSummary[], cards: DashboardCards | null): MonitorState {
+function monitorOf(outbound: ProbeSummary[], probes: ProbeSummary[], cards: DashboardCards | null): MonitorState {
   if (!cards) return 'UNKNOWN'
   if (!cards.probe.available) return 'NA'
   if (!cards.probe.enabled) return 'GLOBAL_OFF'
-  if (!probes.length) return 'NONE'
-  if (probes.every((p) => !p.enabled)) return 'PAUSED'
+  if (!outbound.length && !probes.length) return 'NONE'
+  if (!outbound.length && probes.every((p) => !p.enabled)) return 'PAUSED'
   return 'ON'
 }
 
-/** 最近一次成功且没过期的 RTT 里最小的那个;没有就是 null(排序时排最后)。 */
-function latencyOf(probes: ProbeSummary[]): number | null {
+/** 最近一次可达且没过期的 RTT 里最小的那个;没有就是 null(排序时排最后)。 */
+function minLatency(list: ProbeSummary[]): number | null {
   let best: number | null = null
-  for (const p of probes) {
-    if (!p.enabled || p.stale || p.last?.status !== 'OK' || p.last.rtt_ms == null) continue
-    if (best === null || p.last.rtt_ms < best) best = p.last.rtt_ms
+  for (const p of list) {
+    const l = p.last
+    if (!p.enabled || p.stale || !l || (l.status !== 'OK' && l.status !== 'LOSS') || l.rtt_ms == null) continue
+    if (best === null || l.rtt_ms < best) best = l.rtt_ms
   }
   return best
 }
+
+/** 排序用的延迟:出站优先(机器本身的网络),没有出站数据时才看入口。 */
+function latencyOf(outbound: ProbeSummary[], probes: ProbeSummary[]): number | null {
+  return minLatency(outbound) ?? minLatency(probes)
+}
+
+const failing = (p: ProbeSummary) => p.state === 'DOWN' || p.state === 'FAILING'
+
 
 export function buildAssetCards(inp: AssetInputs): AssetCard[] {
   const labels = labelsMap(inp.cards)
@@ -185,6 +199,13 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     list.push(t)
     probesBy.set(t.node_id, list)
   }
+  const outboundBy = new Map<number, ProbeSummary[]>()
+  for (const t of inp.cards?.outbound ?? []) {
+    if (!t.enabled) continue
+    const list = outboundBy.get(t.node_id) ?? []
+    list.push(t)
+    outboundBy.set(t.node_id, list)
+  }
   const externalBy = new Map<number, ExternalCheckStatus>()
   for (const e of inp.cards?.external ?? []) externalBy.set(e.proxy_id, e)
 
@@ -193,6 +214,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     const key = `NODE-${n.id}`
     const m = inp.metrics[n.id]
     const probes = sortProbes(probesBy.get(n.id) ?? [])
+    const outbound = outboundBy.get(n.id) ?? []
     const l = labels.get(key)
     const statuses = new Set<StatusKey>()
     const cloudStopped = !!n.cloud && n.cloud.instance_status !== '' && n.cloud.instance_status !== 'Running'
@@ -201,9 +223,9 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     if (n.status === 'DISABLED') statuses.add('DISABLED')
     if (cloudStopped) statuses.add('STOPPED')
     const stale = !!m && (isMetricsStale(m.collected_at) || isPreChange(n, m.collected_at))
-    if (stale || probes.some((p) => p.enabled && p.state === 'STALE')) statuses.add('STALE')
-    if (probes.some((p) => p.state === 'DOWN' || p.state === 'FAILING')) statuses.add('PROBE_FAIL')
-    const monitor = monitorOf(probes, inp.cards)
+    if (stale || [...outbound, ...probes].some((p) => p.enabled && p.state === 'STALE')) statuses.add('STALE')
+    if (outbound.some(failing) || probes.some(failing)) statuses.add('PROBE_FAIL')
+    const monitor = monitorOf(outbound, probes, inp.cards)
     if (monitor === 'NONE' || monitor === 'PAUSED' || monitor === 'GLOBAL_OFF') statuses.add('MONITOR_OFF')
     if (expiringState(n.expiry)) statuses.add('EXPIRING')
     const cyc = inp.cycles[n.id]
@@ -245,6 +267,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
               source: '本流量周期 · 计费口径',
             },
       trafficNote: n.role === 'RELAY' ? '中转主机,面板不计流量' : '',
+      outbound,
       probes,
       monitor,
       external: null,
@@ -252,7 +275,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       cardsLoaded: !!inp.cards,
       statuses,
       cloudStopped,
-      latency: latencyOf(probes),
+      latency: latencyOf(outbound, probes),
     })
   }
 
@@ -283,6 +306,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       resourcesNote: '购买的外部订阅,没有资源数据',
       traffic: seen ? { used: s.upstream_used_bytes, quota: s.upstream_total_bytes, source: '上游订阅报告的用量' } : null,
       trafficNote: seen ? '' : '上游没有报告用量',
+      outbound: [],
       probes: [],
       monitor: 'MANUAL',
       external: null,
@@ -324,6 +348,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       resourcesNote: '外部线路,没有资源数据',
       traffic: null,
       trafficNote: '外部线路,没有流量数据',
+      outbound: [],
       probes: [],
       monitor: 'MANUAL',
       external: ext,
@@ -343,7 +368,7 @@ export type SortKey = 'DEFAULT' | 'LATENCY' | 'EXPIRY' | 'TRAFFIC' | 'PRICE'
 
 export const sortOptions: { value: SortKey; label: string }[] = [
   { value: 'DEFAULT', label: '默认顺序' },
-  { value: 'LATENCY', label: '按 TCP 延迟' },
+  { value: 'LATENCY', label: '按延迟(出站优先)' },
   { value: 'EXPIRY', label: '按到期时间' },
   { value: 'TRAFFIC', label: '按流量使用率' },
   { value: 'PRICE', label: '按价格(同币种内)' },
@@ -453,6 +478,9 @@ export interface AssetOverview {
   expiring7d: number | null
   overdue: number | null
   costs: CostRow[]
+  /** 生效的探测序列数与其中失败的(出站 + 入口,分开计) */
+  outboundTargets: number
+  outboundFailing: number
   probeTargets: number
   probeFailing: number
 }
@@ -472,6 +500,8 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
     expiring7d: dash ? dash.expiring_7d : null,
     overdue: dash ? dash.overdue : null,
     costs: dash?.cost_summary ?? [],
+    outboundTargets: 0,
+    outboundFailing: 0,
     probeTargets: 0,
     probeFailing: 0,
   }
@@ -489,10 +519,14 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
       ov.cycleUsed += c.traffic.used
       ov.cycleNodes++
     }
+    for (const p of c.outbound) {
+      ov.outboundTargets++
+      if (failing(p)) ov.outboundFailing++
+    }
     for (const p of c.probes) {
       if (!p.enabled) continue
       ov.probeTargets++
-      if (p.state === 'DOWN' || p.state === 'FAILING') ov.probeFailing++
+      if (failing(p)) ov.probeFailing++
     }
   }
   return ov
@@ -505,19 +539,5 @@ export function money(amount: string, currency: string): string {
   return currency ? `${amount} ${currency}` : amount
 }
 
-/** 失败率的文字:分母为 0 时是「—」,不是 0%。 */
-export function rateText(rate: number | null | undefined): string {
-  if (rate == null) return '—'
-  const v = rate * 100
-  if (v === 0) return '0%'
-  return v < 1 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`
-}
-
-export function rttText(ms: number | null | undefined): string {
-  if (ms == null) return '—'
-  return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`
-}
-
-export function familyText(f: string): string {
-  return f === 'V6' ? 'IPv6' : 'IPv4'
-}
+// 比例、延迟、地址族的文字在 probeView.ts,这里转出去给原来的调用方。
+export { familyText, rateText, rttText } from './probeView'

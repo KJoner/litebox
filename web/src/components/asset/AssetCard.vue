@@ -2,21 +2,15 @@
 import { computed } from 'vue'
 import { LbIcon, LbInfoTip, LbQuotaBar, LbStatusTag, LbUsageBar, metaOf, type LbStatusMeta } from '@/components/lb'
 import { formatDate, formatRate, formatRelative } from '@/utils/format'
-import ProbeDots from './ProbeDots.vue'
-import {
-  assetTypeLabel,
-  familyText,
-  money,
-  rateText,
-  rttText,
-  type AssetCard,
-} from './assetModel'
+import ProbeRow from './ProbeRow.vue'
+import { assetTypeLabel, money, rttText, type AssetCard } from './assetModel'
 
 /**
  * 一张资产卡片。五块,顺序固定:身份 → 资源与流量 → 网络质量 → 套餐资产 → 操作。
  *
- * 没有的数据写明「不可用」,不画 0%;几种状态各给各的标记;网络一格只列真实存在的
- * 探测来源(P0 只有「主控探测」)—— 规则都在 assetModel.ts,这里只负责画。
+ * 没有的数据写明「不可用」,不画 0%;几种状态各给各的标记;网络一格先列出站网络质量
+ * (这台机器在本机测公共目标),再单列入口连通性(主控连这台机器),两组不混 ——
+ * 规则都在 assetModel.ts / probeView.ts,这里只负责画。
  */
 const props = defineProps<{ card: AssetCard }>()
 const emit = defineEmits<{
@@ -27,15 +21,20 @@ const emit = defineEmits<{
 const c = computed(() => props.card)
 const titleId = computed(() => `asset-card-${c.value.key}`)
 
-/** 头部的状态标记:运行状态之外,关机 / 资源过期 / TCP 失败 / 监测关闭各一枚,互不覆盖。 */
+/** 头部的状态标记:运行状态之外,关机 / 资源过期 / 出站失败 / 入口失败 / 监测关闭各一枚,互不覆盖。 */
 const badges = computed<LbStatusMeta[]>(() => {
   const out: LbStatusMeta[] = []
   const card = c.value
   if (card.kind === 'NODE') {
     if (card.cloudStopped) out.push(metaOf.mute('已关机', 'square'))
     if (card.resources?.stale) out.push({ text: '资源数据过期', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' })
-    if (card.probes.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('TCP 检测失败'))
-    else if (card.probes.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('TCP 最近一次失败'))
+    if (card.outbound.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('出站探测失败'))
+    else if (card.outbound.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('出站最近一次失败'))
+    if (card.outbound.some((p) => p.state === 'COLLECT_FAILED')) {
+      out.push({ text: '出站采集失败', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' })
+    } else if (card.outbound.some((p) => p.state === 'TOOL_ERROR')) out.push(metaOf.warn('探测工具不可用'))
+    if (card.probes.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('入口检测失败'))
+    else if (card.probes.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('入口最近一次失败'))
     if (card.monitor === 'NONE' || card.monitor === 'PAUSED' || card.monitor === 'GLOBAL_OFF') {
       out.push(metaOf.paused(card.monitor === 'NONE' ? '未配置监测' : '监测关闭'))
     }
@@ -59,8 +58,12 @@ const days = computed(() => {
 
 const regionTitle = computed(() => (c.value.region ? `地区:${c.value.region}` : '地区未设置(在「编辑套餐」里设置)'))
 
-const shownProbes = computed(() => c.value.probes.slice(0, 3))
-const moreProbes = computed(() => Math.max(c.value.probes.length - 3, 0))
+// 出站最多 3 行、入口最多 2 行,其余进节点详情 —— 卡片网格里一张卡不能比别的高出一截。
+const shownOutbound = computed(() => c.value.outbound.slice(0, 3))
+const shownProbes = computed(() => c.value.probes.slice(0, 2))
+const moreProbes = computed(
+  () => Math.max(c.value.outbound.length - 3, 0) + Math.max(c.value.probes.length - 2, 0),
+)
 
 const billing = computed(() => c.value.billing)
 const val = computed(() => billing.value?.valuation ?? null)
@@ -70,22 +73,6 @@ const nextLabel = computed(() => {
   return cy === 'ONE_TIME' || cy === 'TRAFFIC_PACK' ? '到期' : '下次续费'
 })
 
-function probeMuted(state: string) {
-  return state === 'PAUSED' || state === 'INVALID' || state === 'DISABLED' || state === 'STALE'
-}
-
-function probeTone(state: string) {
-  switch (state) {
-    case 'DOWN':
-      return 'bad'
-    case 'FAILING':
-      return 'warn'
-    case 'OK':
-      return ''
-    default:
-      return 'muted'
-  }
-}
 </script>
 
 <template>
@@ -161,46 +148,37 @@ function probeTone(state: string) {
     <section class="ac__sec" aria-label="网络质量">
       <div class="ac__sec-head">
         <span class="ac__sec-title">网络</span>
-        <span v-if="c.monitor === 'ON'" class="ac__muted">{{ c.probes[0]?.source_label ?? '主控探测' }} · TCP</span>
+        <span v-if="c.monitor === 'ON' && c.outbound.length" class="ac__muted">节点本机 · 出站</span>
         <LbInfoTip
-          :width="300"
-          text="TCP 延迟 = 从主控完成三次握手的时间;失败率的分母是实际发起的 TCP 连接,DNS 没解析出来的不算在内。端口能连上不等于代理协议可用,也不是 ICMP 丢包。"
+          :width="320"
+          text="出站:这台机器在本机测公共目标 —— ICMP 看丢包与往返时间,TCP 看建连时间与失败率,都不含 SSH 的耗时。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入丢包率。入口连通性:主控对这台机器的端口做 TCP 建连,端口能连上不等于代理协议可用。"
         />
       </div>
       <template v-if="c.monitor === 'ON'">
-        <div v-for="p in shownProbes" :key="p.id" class="ac__probe" :data-testid="`probe-row-${p.id}`">
-          <div class="ac__probe-line">
-            <span class="ac__probe-label lb-ellipsis" :title="`${p.label}(${p.resolved_host}:${p.resolved_port})`">
-              {{ p.label }}
-            </span>
-            <span class="lb-chip ac__fam">{{ familyText(p.family) }}</span>
-            <span class="ac__probe-rtt lb-tabular" :class="`ac__tone--${probeTone(p.state)}`" :title="p.state_text">
-              {{ p.last?.status === 'OK' ? rttText(p.last.rtt_ms) : p.last ? p.last.label : '—' }}
-            </span>
-          </div>
-          <ProbeDots :dots="p.dots" :seconds="p.dot_seconds" :muted="probeMuted(p.state)" />
-          <div class="ac__probe-meta lb-tabular">
-            <span :title="`近 1 小时:TCP 连接 ${p.h1.attempts} 次,失败 ${p.h1.failures} 次`">
-              1h 失败率 {{ rateText(p.h1.failure_rate) }}
-            </span>
-            <span :title="`近 24 小时:TCP 连接 ${p.h24.attempts} 次,失败 ${p.h24.failures} 次`">
-              24h {{ rateText(p.h24.failure_rate) }}
-            </span>
-            <span v-if="p.state !== 'OK'" class="ac__tone" :class="`ac__tone--${probeTone(p.state)}`">{{ p.state_text }}</span>
-          </div>
+        <ProbeRow v-for="p in shownOutbound" :key="p.id" :p="p" />
+        <div v-if="!c.outbound.length" class="ac__na">
+          <span>没有启用出站探测。</span>
+          <RouterLink to="/settings#probe-public">去配置公共目标</RouterLink>
         </div>
+        <template v-if="shownProbes.length">
+          <div class="ac__subhead">
+            <span>入口连通性</span>
+            <span class="ac__muted">{{ c.probes[0]?.source_label ?? '主控探测' }} · TCP</span>
+          </div>
+          <ProbeRow v-for="p in shownProbes" :key="p.id" :p="p" />
+        </template>
         <RouterLink v-if="moreProbes" class="ac__more" :to="`/nodes/${c.id}/network`">
           还有 {{ moreProbes }} 个目标 <LbIcon name="chevron-right" :size="12" />
         </RouterLink>
       </template>
       <div v-else-if="c.monitor === 'NONE'" class="ac__na">
         <span>还没有监测目标。</span>
-        <RouterLink :to="`/nodes/${c.id}/network`">去添加</RouterLink>
+        <RouterLink to="/settings#probe-public">配置公共目标</RouterLink>
       </div>
       <div v-else-if="c.monitor === 'PAUSED'" class="ac__na">监测已暂停,点阵与延迟不再更新</div>
-      <div v-else-if="c.monitor === 'GLOBAL_OFF'" class="ac__na">TCP 探测已在系统设置里关闭</div>
-      <div v-else-if="c.monitor === 'NA'" class="ac__na">这个面板没有接入 TCP 探测</div>
-      <div v-else-if="c.monitor === 'UNKNOWN'" class="ac__na">TCP 探测数据没有读到(不是没有配置)</div>
+      <div v-else-if="c.monitor === 'GLOBAL_OFF'" class="ac__na">网络探测已在系统设置里关闭</div>
+      <div v-else-if="c.monitor === 'NA'" class="ac__na">这个面板没有接入网络探测</div>
+      <div v-else-if="c.monitor === 'UNKNOWN'" class="ac__na">网络探测数据没有读到(不是没有配置)</div>
       <div v-else class="ac__na ac__na--col">
         <span>外部线路不做定时探测,只看手动检查的结果。</span>
         <span v-if="c.external?.last_check_at" class="lb-tabular">
@@ -417,39 +395,16 @@ function probeTone(state: string) {
   flex-direction: column;
   align-items: flex-start;
 }
-.ac__probe {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.ac__probe-line {
+.ac__subhead {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  min-width: 0;
-}
-.ac__probe-label {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-xs);
-  color: var(--text2);
-}
-.ac__fam {
-  flex: none;
-}
-.ac__probe-rtt {
-  flex: none;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text);
-}
-.ac__probe-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  padding-top: var(--sp-1);
+  border-top: 1px dashed var(--sep);
   font-size: var(--fs-2xs);
-  color: var(--text3);
+  font-weight: 600;
+  color: var(--text2);
 }
 .ac__tone--bad {
   color: var(--bad);
