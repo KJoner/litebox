@@ -31,6 +31,8 @@ type View struct {
 	// LastNotice 是最近一条提醒的发送状态,没发过为 nil。推送失败不影响面板里的提示,
 	// 但要让人看得到"提醒其实没发出去"。
 	LastNotice *NoticeSummary `json:"last_notice"`
+	// Billing 是套餐计费字段(P0-B),一律有值;没填过时 has_billing 为假。
+	Billing BillingView `json:"billing"`
 }
 
 // Resolver 把一次性读出来的全部档案按对象解析成 View。列表接口用它,免得逐行查库。
@@ -54,13 +56,21 @@ func (s *Store) NewResolver(ctx context.Context, now time.Time, leadDays []int) 
 	return &Resolver{profiles: profiles, notices: notices, now: now, leadDays: leadDays}, nil
 }
 
+// Profile 返回一个对象【生效】的档案(外部代理可能继承自来源),没有返回 nil。
+// 资产卡片按它估值,与 View 用的是同一次读取。
+func (r *Resolver) Profile(kind Kind, id int64, sourceID *int64) (*Profile, int64) {
+	return Resolve(r.profiles, kind, id, sourceID)
+}
+
 // View 解析一个对象。sourceID 只对外部代理有意义(继承用),其他种类传 nil。
 func (r *Resolver) View(kind Kind, id int64, sourceID *int64) View {
-	v := View{Kind: kind, ObjectID: id, State: StateUnset, ReminderEnabled: true, LeadDays: []int{}}
+	v := View{Kind: kind, ObjectID: id, State: StateUnset, ReminderEnabled: true, LeadDays: []int{},
+		Billing: EmptyBilling().View()}
 	p, inheritedFrom := Resolve(r.profiles, kind, id, sourceID)
 	if p == nil {
 		return v
 	}
+	v.Billing = p.Billing.View()
 	v.HasProfile = inheritedFrom == 0
 	v.Inherited = inheritedFrom != 0
 	v.InheritedFrom = inheritedFrom

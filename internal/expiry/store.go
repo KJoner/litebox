@@ -33,8 +33,7 @@ type Key struct {
 // Get 读一个对象自己的档案;没有返回 ErrNotFound(调用方据此判断「继承」)。
 func (s *Store) Get(ctx context.Context, key Key) (*Profile, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT kind, object_id, expires_at, reminder_enabled, auto_renew,
-		       vendor_name, vendor_url, note, lead_days, updated_at
+		SELECT `+profileColumns+`
 		  FROM expiry_profiles WHERE kind = ? AND object_id = ?`, key.Kind, key.ObjectID)
 	p, err := scanProfile(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -46,8 +45,7 @@ func (s *Store) Get(ctx context.Context, key Key) (*Profile, error) {
 // All 一次读出全部档案,给列表接口批量用。
 func (s *Store) All(ctx context.Context) (map[Key]*Profile, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT kind, object_id, expires_at, reminder_enabled, auto_renew,
-		       vendor_name, vendor_url, note, lead_days, updated_at
+		SELECT `+profileColumns+`
 		  FROM expiry_profiles`)
 	if err != nil {
 		return nil, err
@@ -66,16 +64,25 @@ func (s *Store) All(ctx context.Context) (map[Key]*Profile, error) {
 
 type scanner interface{ Scan(dest ...any) error }
 
+const profileColumns = `kind, object_id, expires_at, reminder_enabled, auto_renew,
+		       vendor_name, vendor_url, note, lead_days, updated_at,
+		       plan_name, billing_cycle, cycle_count, cycle_unit, currency, price_minor,
+		       purchased_at, period_start, period_paid_minor, period_carry_minor, traffic_unlimited`
+
 func scanProfile(r scanner) (*Profile, error) {
 	var p Profile
-	var reminder, auto int
+	var reminder, auto, unlimited int
 	var lead string
+	b := &p.Billing
 	if err := r.Scan(&p.Kind, &p.ObjectID, &p.ExpiresAt, &reminder, &auto,
-		&p.VendorName, &p.VendorURL, &p.Note, &lead, &p.UpdatedAt); err != nil {
+		&p.VendorName, &p.VendorURL, &p.Note, &lead, &p.UpdatedAt,
+		&b.PlanName, &b.Cycle, &b.CycleCount, &b.CycleUnit, &b.Currency, &b.PriceMinor,
+		&b.PurchasedAt, &b.PeriodStart, &b.PeriodPaidMinor, &b.PeriodCarryMinor, &unlimited); err != nil {
 		return nil, err
 	}
 	p.ReminderEnabled = reminder == 1
 	p.AutoRenew = auto == 1
+	b.TrafficUnlimited = unlimited == 1
 	p.LeadDays, _ = ParseLeadDays(lead)
 	return &p, nil
 }
@@ -90,6 +97,10 @@ type Params struct {
 	VendorURL       string
 	Note            string
 	LeadDays        []int
+	// Billing 为 nil 表示计费字段保持原值。节点 / 外部代理 / 代理源三个编辑表单里只有
+	// 到期那几栏,它们提交时不带计费字段 —— 当成「清空」的话,改一下商家名就会把
+	// 套餐价格、周期一起抹掉,而表单上根本看不到那几项。
+	Billing *Billing
 }
 
 func (p *Params) normalize() error {
@@ -113,6 +124,11 @@ func (p *Params) normalize() error {
 	if len([]rune(p.Note)) > 512 {
 		return errors.New("内部备注最长 512 个字符")
 	}
+	if p.Billing != nil {
+		if err := p.Billing.normalize(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -133,6 +149,27 @@ func (s *Store) Save(ctx context.Context, key Key, p Params) (*Profile, error) {
 	if p.AutoRenew {
 		auto = 1
 	}
+	b := EmptyBilling()
+	if old != nil {
+		b = old.Billing
+	}
+	if p.Billing != nil {
+		nb := *p.Billing
+		// 结转只由续费写入。本期的任何一个定义(起点、到期、本次支付、币种)被直接改掉,
+		// 原来那笔结转对应的就不再是这一期了,归零 —— 留着会让估值凭空多出一截。
+		nb.PeriodCarryMinor = b.PeriodCarryMinor
+		if old == nil || old.ExpiresAt != p.ExpiresAt || b.PeriodStart != nb.PeriodStart ||
+			b.PeriodPaidMinor != nb.PeriodPaidMinor || b.Currency != nb.Currency {
+			nb.PeriodCarryMinor = 0
+		}
+		b = nb
+	} else if old != nil && old.ExpiresAt != p.ExpiresAt {
+		b.PeriodCarryMinor = 0
+	}
+	unlimited := 0
+	if b.TrafficUnlimited {
+		unlimited = 1
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -140,15 +177,25 @@ func (s *Store) Save(ctx context.Context, key Key, p Params) (*Profile, error) {
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO expiry_profiles
-		  (kind, object_id, expires_at, reminder_enabled, auto_renew, vendor_name, vendor_url, note, lead_days, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
+		  (kind, object_id, expires_at, reminder_enabled, auto_renew, vendor_name, vendor_url, note, lead_days, updated_at,
+		   plan_name, billing_cycle, cycle_count, cycle_unit, currency, price_minor,
+		   purchased_at, period_start, period_paid_minor, period_carry_minor, traffic_unlimited)
+		VALUES (?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?)
 		ON CONFLICT(kind, object_id) DO UPDATE SET
 		  expires_at = excluded.expires_at, reminder_enabled = excluded.reminder_enabled,
 		  auto_renew = excluded.auto_renew, vendor_name = excluded.vendor_name,
 		  vendor_url = excluded.vendor_url, note = excluded.note,
-		  lead_days = excluded.lead_days, updated_at = excluded.updated_at`,
+		  lead_days = excluded.lead_days, updated_at = excluded.updated_at,
+		  plan_name = excluded.plan_name, billing_cycle = excluded.billing_cycle,
+		  cycle_count = excluded.cycle_count, cycle_unit = excluded.cycle_unit,
+		  currency = excluded.currency, price_minor = excluded.price_minor,
+		  purchased_at = excluded.purchased_at, period_start = excluded.period_start,
+		  period_paid_minor = excluded.period_paid_minor, period_carry_minor = excluded.period_carry_minor,
+		  traffic_unlimited = excluded.traffic_unlimited`,
 		key.Kind, key.ObjectID, p.ExpiresAt, reminder, auto,
-		p.VendorName, p.VendorURL, p.Note, JoinLeadDays(p.LeadDays), now); err != nil {
+		p.VendorName, p.VendorURL, p.Note, JoinLeadDays(p.LeadDays), now,
+		b.PlanName, string(b.Cycle), b.CycleCount, b.CycleUnit, b.Currency, b.PriceMinor,
+		b.PurchasedAt, b.PeriodStart, b.PeriodPaidMinor, b.PeriodCarryMinor, unlimited); err != nil {
 		return nil, err
 	}
 	if old != nil && old.ExpiresAt != p.ExpiresAt {
@@ -207,6 +254,12 @@ type Renewal struct {
 	AdminName    string `json:"admin_name"`
 	Note         string `json:"note"`
 	CreatedAt    string `json:"created_at"`
+	// AmountMinor 是这一笔的实际支付(最小单位),-1 = 没记;Amount 是格式化后的十进制。
+	AmountMinor int64  `json:"amount_minor"`
+	Amount      string `json:"amount"`
+	Currency    string `json:"currency"`
+	// PeriodStart 是这一笔建立的已付费周期的起点(提前续费时是续费那一刻)。
+	PeriodStart string `json:"period_start"`
 }
 
 // RenewParams 是一次续费的入库参数。
@@ -216,6 +269,11 @@ type RenewParams struct {
 	Plan        Plan
 	AdminUserID *int64
 	Note        string
+	// Amount 是实际支付(最小单位),nil = 没记;Currency 是它的币种。
+	Amount   *int64
+	Currency string
+	// Period 非 nil 时一并改写档案的本期字段(起点、本次支付、结转)。
+	Period *PeriodUpdate
 }
 
 // Renew 把档案的到期时间改成 Plan 里的新值,并记一条历史。
@@ -239,12 +297,22 @@ func (s *Store) Renew(ctx context.Context, p RenewParams) (*Renewal, error) {
 	defer tx.Rollback()
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	periodStart := ""
+	if p.Period != nil {
+		periodStart = p.Period.Start
+	}
+	amount := int64(-1)
+	if p.Amount != nil && *p.Amount >= 0 {
+		amount = *p.Amount
+	}
 	res, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO expiry_renewals
-		  (kind, object_id, request_id, old_expires_at, new_expires_at, method, base, admin_user_id, note, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		  (kind, object_id, request_id, old_expires_at, new_expires_at, method, base, admin_user_id, note, created_at,
+		   amount_minor, currency, period_start)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.Key.Kind, p.Key.ObjectID, p.RequestID, p.Plan.OldExpiresAt, p.Plan.NewExpiresAt,
-		p.Plan.Method, string(p.Plan.Base), p.AdminUserID, p.Note, now)
+		p.Plan.Method, string(p.Plan.Base), p.AdminUserID, p.Note, now,
+		amount, p.Currency, periodStart)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +338,26 @@ func (s *Store) Renew(ctx context.Context, p RenewParams) (*Renewal, error) {
 		p.Key.Kind, p.Key.ObjectID, p.Plan.NewExpiresAt, now); err != nil {
 		return nil, err
 	}
+	if p.Period != nil {
+		// 币种:档案还没填币种时取这一笔的币种;已填的由调用方保证一致。
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE expiry_profiles
+			   SET period_start = ?, period_paid_minor = ?, period_carry_minor = ?,
+			       currency = CASE WHEN currency = '' THEN ? ELSE currency END
+			 WHERE kind = ? AND object_id = ?`,
+			p.Period.Start, p.Period.PaidMinor, p.Period.CarryMinor, p.Currency,
+			p.Key.Kind, p.Key.ObjectID); err != nil {
+			return nil, err
+		}
+	} else if p.Plan.OldExpiresAt != p.Plan.NewExpiresAt {
+		// 到期时间换了而没给新的本期(取消到期时间、表单上直接改日期):
+		// 原来那笔结转对应的已经不是这一期,清掉。
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE expiry_profiles SET period_carry_minor = 0 WHERE kind = ? AND object_id = ?`,
+			p.Key.Kind, p.Key.ObjectID); err != nil {
+			return nil, err
+		}
+	}
 	if p.Plan.OldExpiresAt != p.Plan.NewExpiresAt {
 		if err := cancelPending(ctx, tx, p.Key, p.Plan.OldExpiresAt); err != nil {
 			return nil, err
@@ -292,7 +380,8 @@ func (s *Store) renewalByRequest(ctx context.Context, requestID string) (*Renewa
 
 const renewalColumns = `
 	r.id, r.kind, r.object_id, r.request_id, r.old_expires_at, r.new_expires_at,
-	r.method, r.base, r.admin_user_id, COALESCE(a.username, ''), r.note, r.created_at`
+	r.method, r.base, r.admin_user_id, COALESCE(a.username, ''), r.note, r.created_at,
+	r.amount_minor, r.currency, r.period_start`
 
 func (s *Store) renewal(ctx context.Context, id int64) (*Renewal, error) {
 	row := s.db.QueryRowContext(ctx, `
@@ -331,10 +420,11 @@ func scanRenewal(r scanner) (*Renewal, error) {
 	var out Renewal
 	if err := r.Scan(&out.ID, &out.Kind, &out.ObjectID, &out.RequestID, &out.OldExpiresAt,
 		&out.NewExpiresAt, &out.Method, &out.Base, &out.AdminUserID, &out.AdminName,
-		&out.Note, &out.CreatedAt); err != nil {
+		&out.Note, &out.CreatedAt, &out.AmountMinor, &out.Currency, &out.PeriodStart); err != nil {
 		return nil, err
 	}
 	out.MethodText = methodText(out.Method, Base(out.Base))
+	out.Amount = FormatAmount(out.AmountMinor, out.Currency)
 	return &out, nil
 }
 
@@ -351,8 +441,11 @@ func methodText(method string, base Base) string {
 		return method
 	}
 	unit := "个月"
-	if kind == string(MethodYears) {
+	switch kind {
+	case string(MethodYears):
 		unit = "年"
+	case string(MethodDays):
+		unit = "天"
 	}
 	baseText := "从原到期时间起"
 	if base == BaseNow {

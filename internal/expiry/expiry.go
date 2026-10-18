@@ -69,6 +69,8 @@ type Profile struct {
 	// LeadDays 覆盖全局的提前天数;nil / 空表示继承系统规则。
 	LeadDays  []int  `json:"lead_days"`
 	UpdatedAt string `json:"updated_at,omitempty"`
+	// Billing 是套餐计费字段(资产卡片 P0-B)。存量行全是「未设置」。
+	Billing Billing `json:"billing"`
 }
 
 // State 是面板上显示的到期状态。
@@ -179,6 +181,8 @@ const (
 	MethodMonths Method = "MONTHS"
 	// MethodYears 延长 N 个自然年。「包年」与「延长一年」是同一个选项。
 	MethodYears Method = "YEARS"
+	// MethodDays 延长 N 天 —— 自定义周期按天计费的套餐用它续一期。
+	MethodDays Method = "DAYS"
 	// MethodAbsolute 直接指定新的到期时间 —— 最终以商家实际给出的日期为准。
 	MethodAbsolute Method = "ABSOLUTE"
 	// MethodClear 取消到期时间(改回「未设置」)。
@@ -216,6 +220,9 @@ type Plan struct {
 	MethodText string `json:"method_text"`
 	// Method 是入库用的规范形式,如 "MONTHS:3"。
 	Method string `json:"method"`
+	// BaseAt 是这次延长实际从哪个时刻起算(原到期时间或现在),RFC3339;
+	// 指定 / 取消到期时间时为空。续费后的本期起点由它决定(RolloverPeriod)。
+	BaseAt string `json:"base_at"`
 }
 
 // ComputeRenewal 按自然月 / 自然年算新的到期时间。loc 决定「月末」按哪个时区判断。
@@ -246,6 +253,10 @@ func ComputeRenewal(oldExpiresAt string, now time.Time, req RenewRequest, loc *t
 		if req.Count <= 0 || req.Count > 120 {
 			return plan, errors.New("延长的数量必须是 1~120 的整数")
 		}
+	case MethodDays:
+		if req.Count <= 0 || req.Count > 3650 {
+			return plan, errors.New("延长的天数必须是 1~3650 的整数")
+		}
 	default:
 		return plan, fmt.Errorf("不认识的续费方式 %q", req.Method)
 	}
@@ -269,14 +280,21 @@ func ComputeRenewal(oldExpiresAt string, now time.Time, req RenewRequest, loc *t
 	default:
 		return plan, fmt.Errorf("不认识的基准 %q", base)
 	}
-	months := req.Count
+	var next time.Time
 	unit := "个月"
-	if req.Method == MethodYears {
-		months = req.Count * 12
+	switch req.Method {
+	case MethodDays:
+		// 按天就是按天:时分秒照搬,不做月末对齐。
+		next = from.Add(time.Duration(req.Count) * 24 * time.Hour)
+		unit = "天"
+	case MethodYears:
+		next = AddMonthsClamped(from, req.Count*12, loc)
 		unit = "年"
+	default:
+		next = AddMonthsClamped(from, req.Count, loc)
 	}
-	next := AddMonthsClamped(from, months, loc)
 	plan.NewExpiresAt = next.UTC().Format(time.RFC3339)
+	plan.BaseAt = from.UTC().Format(time.RFC3339)
 	plan.Base = base
 	plan.Method = fmt.Sprintf("%s:%d", req.Method, req.Count)
 	baseText := "从原到期时间起"

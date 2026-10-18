@@ -62,6 +62,11 @@ const (
 	KindExpiryAutoRenew Kind = "EXPIRY_AUTO_RENEW"
 	// KindExpiryOverdue 已到期而且还没登记新的到期时间。
 	KindExpiryOverdue Kind = "EXPIRY_OVERDUE"
+	// KindProbeDown 主控对某个目标的 TCP 探测连续失败达到阈值。
+	// 它只说明「从主控连不上那个端口」,面板不会因此做任何自动处置。
+	KindProbeDown Kind = "PROBE_DOWN"
+	// KindProbeRecovered 上面那条之后恢复了。与巡检同理:只报警不报恢复的人,下次就不会再看了。
+	KindProbeRecovered Kind = "PROBE_RECOVERED"
 	// KindTest 设置页上的「发送测试」。它永远不受事件开关与冷却影响 ——
 	// 测试的意义就是"现在立刻发一条",被冷却拦下会让人以为配置错了。
 	KindTest Kind = "TEST"
@@ -74,6 +79,7 @@ func AllKinds() []Kind {
 		KindDeployFailed, KindNodeQuota,
 		KindCloudThreshold, KindCloudPower, KindCloudQueryFailed,
 		KindExpirySoon, KindExpiryAutoRenew, KindExpiryOverdue,
+		KindProbeDown, KindProbeRecovered,
 	}
 }
 
@@ -102,6 +108,10 @@ func (k Kind) Label() string {
 		return "商家到期提醒(已登记自动续费)"
 	case KindExpiryOverdue:
 		return "商家到期提醒(已到期未确认)"
+	case KindProbeDown:
+		return "TCP 探测连续失败"
+	case KindProbeRecovered:
+		return "TCP 探测恢复"
 	case KindTest:
 		return "测试推送"
 	}

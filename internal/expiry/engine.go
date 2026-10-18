@@ -228,11 +228,12 @@ func (e *Engine) buildEvent(ctx context.Context, t Target, stage string, sched S
 		lead = "已到期,面板没有拿到新的到期时间。续费之后请在面板上登记新的到期时间。"
 		level = notify.LevelCritical
 	case t.Profile.AutoRenew:
-		title = fmt.Sprintf("%s「%s」将在 %s后到期", label, t.Name, daysText(status.DaysLeft))
-		lead = fmt.Sprintf("将在 %s后到期,已登记商家自动续费,请确认余额及扣费结果。", daysText(status.DaysLeft))
+		// 「请核实」是这句话的重点:面板只知道管理员登记过自动续费,不知道商家那边扣没扣成。
+		title = fmt.Sprintf("%s「%s」即将自动续费(请核实)· %s后到期", label, t.Name, daysText(status.DaysLeft))
+		lead = fmt.Sprintf("将在 %s后到期,已登记商家自动续费 —— 即将自动续费,请确认余额及扣费结果。", daysText(status.DaysLeft))
 	default:
-		title = fmt.Sprintf("%s「%s」将在 %s后到期", label, t.Name, daysText(status.DaysLeft))
-		lead = fmt.Sprintf("将在 %s后到期,请及时续费。", daysText(status.DaysLeft))
+		title = fmt.Sprintf("%s「%s」待续费 · %s后到期", label, t.Name, daysText(status.DaysLeft))
+		lead = fmt.Sprintf("将在 %s后到期,待续费,请及时续费。", daysText(status.DaysLeft))
 	}
 
 	var b strings.Builder
@@ -242,6 +243,16 @@ func (e *Engine) buildEvent(ctx context.Context, t Target, stage string, sched S
 	b.WriteString("\n剩余:" + remainingText(status.DaysLeft))
 	if t.Profile.VendorName != "" {
 		b.WriteString("\n商家:" + t.Profile.VendorName)
+	}
+	if bl := t.Profile.Billing; bl.HasAny() {
+		plan := bl.CycleText()
+		if bl.PlanName != "" {
+			plan = bl.PlanName + " · " + plan
+		}
+		if price := FormatAmount(bl.PriceMinor, bl.Currency); price != "" {
+			plan += " · " + price + " " + bl.Currency
+		}
+		b.WriteString("\n套餐:" + plan)
 	}
 	if t.Profile.AutoRenew {
 		b.WriteString("\n自动续费:已在商家开启(面板不代为扣款)")
