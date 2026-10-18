@@ -231,6 +231,16 @@ else
     fi
 fi
 
+# 出站网络探测的辅助程序从本仓库源码构建(几秒钟)。每次都重建:它与面板之间有协议版本号,
+# 面板升级之后还分发旧的那一份,节点会一直报「版本不符」。构建失败不中止安装 ——
+# 没有它只是出站探测报「工具不可用」,其余功能不受影响。
+log "构建出站网络探测辅助程序"
+if bash scripts/build-probe.sh; then
+    ok "litebox-probe 已就绪"
+else
+    warn "litebox-probe 构建失败,已跳过。要用出站探测时重跑 bash scripts/build-probe.sh"
+fi
+
 # ---------------------------------------------------------------- 安装主控
 
 FIRST_INSTALL=0
@@ -267,6 +277,11 @@ if ls assets/realm/realm-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/realm"
     cp -f assets/realm/realm-linux-* "$INSTALL_DIR/assets/realm/"
     ok "realm 已就位"
+fi
+if ls assets/probe/litebox-probe-linux-* >/dev/null 2>&1; then
+    install -d -m 0755 "$INSTALL_DIR/assets/probe"
+    cp -f assets/probe/litebox-probe-linux-* "$INSTALL_DIR/assets/probe/"
+    ok "出站探测辅助程序已就位"
 fi
 chown -R litebox:litebox "$INSTALL_DIR/assets" 2>/dev/null || true
 

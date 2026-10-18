@@ -323,6 +323,14 @@ func hostKeyCallback(target Target) ssh.HostKeyCallback {
 
 // Run 执行一条远程命令并返回结果。命令必须通过 NewCommand 构造。
 func (c *Client) Run(ctx context.Context, cmd Command) (Result, error) {
+	return c.RunInput(ctx, cmd, nil)
+}
+
+// RunInput 与 Run 相同,另把 stdin 交给远端进程。
+//
+// 要交给远端程序的【数据】(比如出站探测的目标列表)走 stdin 而不是命令行参数:
+// 命令行只剩固定的程序路径,数据里有什么字符都不经过远端 shell。
+func (c *Client) RunInput(ctx context.Context, cmd Command, stdin []byte) (Result, error) {
 	if c == nil || c.ssh == nil {
 		return Result{}, ErrNotConnected
 	}
@@ -335,6 +343,9 @@ func (c *Client) Run(ctx context.Context, cmd Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
+	if stdin != nil {
+		session.Stdin = bytes.NewReader(stdin)
+	}
 
 	line := cmd.String()
 	done := make(chan error, 1)

@@ -51,3 +51,5 @@ litebox.local.yaml
 
 # realm 的官方 musl 静态二进制(各约 5-7MB,由 scripts/fetch-realm.sh 拉取)
 assets/realm/realm-linux-*
+# 出站网络探测的辅助程序(各约 3MB,由 scripts/build-probe.sh 从本仓库构建)
+assets/probe/litebox-probe-linux-*
