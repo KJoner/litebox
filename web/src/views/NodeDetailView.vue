@@ -27,6 +27,7 @@ import NodeTuningPanel from '@/components/node/NodeTuningPanel.vue'
 import NodeEntriesPanel from '@/components/node/NodeEntriesPanel.vue'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
+import NodeNetworkPanel from '@/components/node/NodeNetworkPanel.vue'
 import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
 import { useNodeRecheck } from '@/components/node/useNodeRecheck'
 import CloudInstanceCard from '@/components/cloud/CloudInstanceCard.vue'
@@ -96,7 +97,7 @@ const loadError = ref<{ message: string; status?: number; at: string } | null>(n
  * 一件事 —— 只记住 /nodes/3 的话,对方点开落在概览上,还得再找一次。
  * 非法的 tab 名回落到概览,不显示一个空白页。
  */
-const TABS = ['overview', 'metrics', 'deploys', 'traffic', 'entries'] as const
+const TABS = ['overview', 'metrics', 'network', 'deploys', 'traffic', 'entries'] as const
 const tab = ref<string>(
   TABS.includes(String(route.params.tab) as (typeof TABS)[number])
     ? String(route.params.tab)
@@ -2158,6 +2159,12 @@ const needsPortForward = computed(() =>
               <MetricsChart :labels="metricLabels" :series="netSeries" :format="formatRate" />
             </div>
           </template>
+        </a-tab-pane>
+
+        <!-- 网络监测(资产卡片 P0-C / P1):主控对这台机器的 TCP 探测目标与 1h / 24h / 7d 历史。
+             只读库,打开这个 Tab 不触发任何探测;中转机同样可以监测(它的转发端口也是对外服务)。 -->
+        <a-tab-pane key="network" tab="网络监测">
+          <NodeNetworkPanel v-if="tab === 'network' && nodeId !== null" :node-id="nodeId" />
         </a-tab-pane>
 
         <a-tab-pane key="deploys" tab="部署与记录">

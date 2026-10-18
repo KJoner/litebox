@@ -46,6 +46,7 @@ const sections = [
   { id: 'probe', label: '拨测目标' },
   { id: 'notify', label: '监控与推送' },
   { id: 'expiry', label: '到期与续费提醒' },
+  { id: 'tcpprobe', label: 'TCP 探测' },
   { id: 'cloud', label: '云账号' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
@@ -141,6 +142,47 @@ async function saveExpiry() {
 
 function restoreExpiry() {
   Object.assign(expiryForm, { ...savedExpiry })
+}
+
+// ---------- TCP 探测(资产卡片) ----------
+
+/** 数值留空 = 用默认;后端收 0 / 空串表示改回默认。 */
+const tcpForm = reactive({ enabled: true, interval: '', timeout: '', alert_after: '', quiet: '' })
+const savedTcp = reactive({ enabled: true, interval: '', timeout: '', alert_after: '', quiet: '' })
+const savingTcp = ref(false)
+const tcpDirty = computed(() => JSON.stringify(tcpForm) !== JSON.stringify(savedTcp))
+
+function fillTcp(s: PanelSettings) {
+  tcpForm.enabled = s.probe_enabled ?? true
+  tcpForm.interval = s.probe_interval_sec ? String(s.probe_interval_sec) : ''
+  tcpForm.timeout = s.probe_timeout_ms ? String(s.probe_timeout_ms) : ''
+  tcpForm.alert_after = s.probe_alert_after ?? ''
+  tcpForm.quiet = s.probe_quiet_hours ?? ''
+  Object.assign(savedTcp, { ...tcpForm })
+}
+
+async function saveTcp() {
+  savingTcp.value = true
+  try {
+    const s = await api.updateSettings({
+      probe_enabled: tcpForm.enabled,
+      probe_interval_sec: tcpForm.interval.trim() ? Number(tcpForm.interval) : 0,
+      probe_timeout_ms: tcpForm.timeout.trim() ? Number(tcpForm.timeout) : 0,
+      probe_alert_after: tcpForm.alert_after.trim(),
+      probe_quiet_hours: tcpForm.quiet.trim(),
+    })
+    settings.value = { ...(settings.value as PanelSettings), ...s }
+    fillTcp(s)
+    message.success('已保存,下一轮探测起生效')
+  } catch (err) {
+    message.error(err instanceof ApiError ? err.message : '保存失败')
+  } finally {
+    savingTcp.value = false
+  }
+}
+
+function restoreTcp() {
+  Object.assign(tcpForm, { ...savedTcp })
 }
 
 // ---------- 访问等级 ----------
@@ -353,6 +395,7 @@ async function loadAll() {
     probeURL.value = s.probe_url ?? ''
     savedProbeURL.value = s.probe_url ?? ''
     fillExpiry(s)
+    fillTcp(s)
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '加载设置失败'
   }
@@ -750,6 +793,82 @@ const probeTip = computed(
             </a-button>
             <a-button type="primary" size="small" :disabled="!expiryDirty" :loading="savingExpiry" @click="saveExpiry">
               保存到期提醒
+            </a-button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TCP 探测(资产卡片) -->
+      <section id="set-tcpprobe">
+        <LbSectionTitle title="TCP 探测">
+          <template #badge>
+            <span class="lb-effect lb-effect--now">下一轮探测起生效</span>
+          </template>
+        </LbSectionTitle>
+        <div class="lb-card st__card">
+          <div class="lb-group">
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                启用
+                <LbInfoTip
+                  :width="340"
+                  text="主控按间隔对节点详情「网络监测」里登记的目标端口做 TCP 三次握手,记延迟与成败。它不是代理协议检查,也不是 ICMP;不走 SSH、不占节点连接锁,打开仪表盘不会触发探测。关掉之后目标与历史保留,只是不再探测、不再告警。"
+                />
+              </span>
+              <a-switch v-model:checked="tcpForm.enabled" />
+            </div>
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                探测间隔(秒)
+                <LbInfoTip :width="280" text="15~3600 秒。卡片上的点阵每个点至少 2 分钟,再勤只是在目标机器的连接日志里多几行。" />
+              </span>
+              <a-input
+                v-model:value="tcpForm.interval"
+                inputmode="numeric"
+                :placeholder="`留空用默认:${settings?.default_probe_interval_sec ?? 60}`"
+                style="max-width: 200px"
+              />
+            </div>
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">单次超时(毫秒)</span>
+              <a-input
+                v-model:value="tcpForm.timeout"
+                inputmode="numeric"
+                :placeholder="`留空用默认:${settings?.default_probe_timeout_ms ?? 2000}`"
+                style="max-width: 200px"
+              />
+            </div>
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                连续失败几次推送
+                <LbInfoTip
+                  :width="320"
+                  text="0~60,0 表示不推送。DNS 解析失败也算一次失败(从主控看都是连不上),但不进失败率的分母。进入失败只推一条、恢复推一条,面板重启不会重推。探测失败不会自动重启、重新部署或停机。"
+                />
+              </span>
+              <a-input
+                v-model:value="tcpForm.alert_after"
+                inputmode="numeric"
+                :placeholder="`留空用默认:${settings?.default_probe_alert_after ?? 3}`"
+                style="max-width: 200px"
+              />
+            </div>
+            <div class="lb-group__row st__row">
+              <span class="lb-group__label">
+                免打扰时段
+                <LbInfoTip
+                  :width="320"
+                  text="HH:MM-HH:MM(可以跨午夜),按到期提醒的时区解释。时段里只记状态不推送;结束后还在失败的补推一条,已推过失败、在时段里恢复的补推一条恢复。"
+                />
+              </span>
+              <a-input v-model:value="tcpForm.quiet" placeholder="例如 23:00-07:00,留空不设" style="max-width: 240px" />
+            </div>
+          </div>
+          <div class="st__actions">
+            <span v-if="tcpDirty" class="st__dirty">已改动</span>
+            <a-button v-if="tcpDirty" size="small" class="lb-btn-ghost lb-btn-ghost--text" @click="restoreTcp">还原</a-button>
+            <a-button type="primary" size="small" :disabled="!tcpDirty" :loading="savingTcp" @click="saveTcp">
+              保存 TCP 探测
             </a-button>
           </div>
         </div>

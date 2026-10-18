@@ -5,13 +5,17 @@ import {
   api,
   type DailyPoint,
   type DashboardAlert,
+  type DashboardCards,
   type DashboardSummary,
   type DeploymentRecord,
+  type ExpiryKind,
   type ExpiryView,
+  type ExternalProxy,
   type Node,
   type NodeCycleUsage,
   type NodeHealth,
   type NodeMetrics,
+  type ProxySource,
 } from '@/api/client'
 import { formatBytes, formatRate, formatUTCDay } from '@/utils/format'
 import {
@@ -32,6 +36,9 @@ import {
 import { configState, isMetricsStale, isPreChange, nodeBadges } from '@/components/lb/derive'
 import { summarizeHealth } from '@/components/node/healthSummary'
 import { expiryStatusMeta } from '@/components/expiry/expiryMeta'
+import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
+import AssetCardsView from '@/components/asset/AssetCardsView.vue'
+import { buildAssetCards, familyText, type AssetCard } from '@/components/asset/assetModel'
 import { useNarrow } from '@/composables/useNarrow'
 
 /**
@@ -55,9 +62,32 @@ import { useNarrow } from '@/composables/useNarrow'
  * 从清单里消失。
  *
  * **只读库里已有的采样与巡检结果,不触发任何 SSH**(CLAUDE.md「仪表盘节点卡片只读数据库」)。
+ *
+ * 资产卡片(UI 2.0 之后):页面有两种视图,「卡片」与「原有视图」,偏好存在本机。卡片视图把
+ * 节点、外部代理、代理源各画成一张卡(资源、流量、TCP 探测、套餐资产),要的数据与原有视图
+ * 是同一批批量接口,外加一次 /api/dashboard/cards —— 不按卡片逐个请求,也不触发探测。
  */
 const router = useRouter()
 const narrow = useNarrow()
+
+/** 视图偏好:卡片 / 原有视图。与主题、侧栏折叠一样存在本机;读写失败(隐私模式)就用默认。 */
+type DashView = 'cards' | 'classic'
+const VIEW_KEY = 'lb.dashboard.view'
+function readView(): DashView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'classic' ? 'classic' : 'cards'
+  } catch {
+    return 'cards'
+  }
+}
+const view = ref<DashView>(readView())
+watch(view, (v) => {
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    // 存不下就只在这一次会话里生效。
+  }
+})
 /** 节点健康那张栅格最小 980px:平板宽度下与其横向滚,不如直接用手机那套卡片。 */
 const compactNodes = useNarrow(1023)
 
@@ -81,6 +111,13 @@ const deployError = ref(false)
 
 /** 外部代理与代理源的商家到期。它们不在 dashboardAlerts 里(那边只管可用截止时间)。 */
 const vendorExpiry = ref<{ key: string; name: string; cat: string; to: string; v: ExpiryView }[]>([])
+/** 原始列表,卡片视图要用(外部代理、代理源各一张卡)。读失败时保留上一次的。 */
+const proxyList = ref<ExternalProxy[]>([])
+const sourceList = ref<ProxySource[]>([])
+
+/** 资产卡片聚合接口:计费估值、地区标签、TCP 探测汇总、成本汇总。 */
+const dashCards = ref<DashboardCards | null>(null)
+const cardsError = ref(false)
 const sourceExpiryError = ref(false)
 const proxyExpiryError = ref(false)
 
@@ -167,6 +204,7 @@ async function loadVendorExpiry() {
   const keep = (prefix: string) => vendorExpiry.value.filter((x) => x.key.startsWith(prefix))
   const out: typeof vendorExpiry.value = []
   if (s.status === 'fulfilled') {
+    sourceList.value = s.value.items
     for (const src of s.value.items) {
       if (src.expiry) out.push({ key: `src-${src.id}`, name: src.name, cat: '代理源', to: '/external-proxies', v: src.expiry })
     }
@@ -175,6 +213,7 @@ async function loadVendorExpiry() {
     out.push(...keep('src-'))
   }
   if (p.status === 'fulfilled') {
+    proxyList.value = p.value.items
     // 跟随来源的条目不单独列:来源那一条已经代表了它们(与提醒的去重规则一致)。
     for (const x of p.value.items) {
       if (x.expiry && x.expiry.has_profile && !x.expiry.inherited) {
@@ -207,9 +246,27 @@ async function loadDaily() {
   }
 }
 
+async function loadCards() {
+  cardsError.value = false
+  try {
+    dashCards.value = await api.dashboardCards()
+  } catch {
+    // 保留上一次读到的;卡片上估值、标签、探测几块据此显示「不可用」。
+    cardsError.value = true
+  }
+}
+
 async function load() {
   loading.value = true
-  await Promise.all([loadSummary(), loadAlerts(), loadNodes(), loadDeploys(), loadDaily(), loadVendorExpiry()])
+  await Promise.all([
+    loadSummary(),
+    loadAlerts(),
+    loadNodes(),
+    loadDeploys(),
+    loadDaily(),
+    loadVendorExpiry(),
+    loadCards(),
+  ])
   loading.value = false
   loadedAt.value = new Date().toISOString()
 }
@@ -234,6 +291,8 @@ const failedSources = computed<FailedSource[]>(() => {
   if (deployError.value) out.push({ label: '部署记录', attention: true, retry: loadDeploys })
   if (sourceExpiryError.value) out.push({ label: '代理源到期', attention: true, retry: loadVendorExpiry })
   if (proxyExpiryError.value) out.push({ label: '外部代理到期', attention: true, retry: loadVendorExpiry })
+  // 探测告警进「需要处理」,所以它读失败时清单同样可能不完整。
+  if (cardsError.value) out.push({ label: 'TCP 探测与套餐估值', attention: true, retry: loadCards })
   if (summaryError.value) out.push({ label: '概览指标', attention: false, retry: loadSummary })
   if (dailyError.value) out.push({ label: '流量趋势', attention: false, retry: loadDaily })
   for (const c of columnErrors.value) out.push({ label: c, attention: false, retry: loadNodes })
@@ -409,6 +468,21 @@ const attention = computed<AttentionItem[]>(() => {
       })
     }
   }
+  // TCP 探测连续失败(达到告警阈值)。预警级:它只说明从主控连不上那个端口 ——
+  // 不等于用户全部断线,也可能只是主控这一侧的网络问题。
+  for (const t of dashCards.value?.targets ?? []) {
+    if (t.state !== 'DOWN') continue
+    out.push({
+      key: `p${t.id}`,
+      level: 'warn',
+      icon: 'activity',
+      title: nodeName(t.node_id),
+      cat: '节点 · TCP 探测',
+      text: `${t.label}(${familyText(t.family)})连续 ${t.consecutive_failures} 次 TCP 连接失败 —— 从主控连不上这个端口,不等于代理不可用`,
+      to: `/nodes/${t.node_id}/network`,
+      action: '查看探测',
+    })
+  }
   if (failedDeploys.value.length) {
     const names = [...new Set(failedDeploys.value.map((d) => nodeName(d.node_id)))]
     out.push({
@@ -536,6 +610,44 @@ const nodeRows = computed<NodeRow[]>(() =>
   }),
 )
 
+// ---------- 资产卡片 ----------
+
+const assetCards = computed<AssetCard[]>(() =>
+  buildAssetCards({
+    nodes: nodes.value,
+    metrics: metrics.value,
+    cycles: cycles.value,
+    sources: sourceList.value,
+    proxies: proxyList.value,
+    cards: dashCards.value,
+  }),
+)
+
+/** 「套餐与续费」弹窗。卡片上的编辑套餐、续费、续费历史都开它。 */
+const assetModal = ref<{
+  kind: ExpiryKind
+  id: number
+  name: string
+  sourceName?: string
+  focus: 'billing' | 'renew' | 'history'
+} | null>(null)
+
+function openAsset(c: AssetCard, focus: 'billing' | 'renew' | 'history') {
+  assetModal.value = {
+    kind: c.kind,
+    id: c.id,
+    name: c.name,
+    sourceName: c.proxy?.source_name || undefined,
+    focus,
+  }
+}
+
+/** 改了套餐 / 续了费 / 改了标签:重读卡片要的那几份。不刷整页。 */
+async function onAssetChanged() {
+  const kind = assetModal.value?.kind
+  await Promise.all([loadCards(), kind === 'NODE' ? loadNodes() : loadVendorExpiry()])
+}
+
 /** 运行状态的小圆点颜色。只是扫读用的记号,文字标签仍在旁边。 */
 function dotColor(n: Node): string {
   switch (n.status) {
@@ -579,6 +691,28 @@ function conclusion(d: DeploymentRecord): string {
         </div>
       </div>
       <div class="lb-page__actions">
+        <div class="lb-seg lb-seg--sm" role="tablist" aria-label="仪表盘视图" data-testid="dashboard-view-toggle">
+          <button
+            type="button"
+            role="tab"
+            class="lb-seg__item"
+            :class="{ 'lb-seg__item--on': view === 'cards' }"
+            :aria-selected="view === 'cards'"
+            @click="view = 'cards'"
+          >
+            卡片视图
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="lb-seg__item"
+            :class="{ 'lb-seg__item--on': view === 'classic' }"
+            :aria-selected="view === 'classic'"
+            @click="view = 'classic'"
+          >
+            原有视图
+          </button>
+        </div>
         <span v-if="loadedAt && !narrow" class="dv__updated">更新于 <LbTimeText :value="loadedAt" /></span>
         <a-button :loading="loading" @click="load">
           <template #icon><LbIcon name="refresh" :size="15" /></template>
@@ -611,8 +745,19 @@ function conclusion(d: DeploymentRecord): string {
       </div>
     </div>
 
+    <!-- 卡片视图:筛选 → 概览 → 卡片网格。数据与原有视图是同一批,另加一次卡片聚合接口。 -->
+    <AssetCardsView
+      v-if="view === 'cards'"
+      :cards="assetCards"
+      :dash="dashCards"
+      :loading="loading"
+      :dash-error="cardsError && !dashCards"
+      @asset="openAsset"
+      @retry="loadCards"
+    />
+
     <!-- 指标卡 -->
-    <section class="lb-metrics">
+    <section v-if="view === 'classic'" class="lb-metrics">
       <LbMetricCard
         label="在线节点"
         icon="server"
@@ -675,9 +820,9 @@ function conclusion(d: DeploymentRecord): string {
       </LbMetricCard>
     </section>
 
-    <!-- 趋势 + 需要处理 -->
-    <div class="dv__main">
-      <section class="lb-card dv__trend">
+    <!-- 趋势 + 需要处理(卡片视图里只留「需要处理」,放在卡片下面) -->
+    <div class="dv__main" :class="{ 'dv__main--solo': view === 'cards' }">
+      <section v-if="view === 'classic'" class="lb-card dv__trend">
         <div class="lb-card__head">
           <div>
             <h2 class="lb-card__title">
@@ -779,7 +924,7 @@ function conclusion(d: DeploymentRecord): string {
     </div>
 
     <!-- 节点健康 -->
-    <section class="lb-card lb-card--flush">
+    <section v-if="view === 'classic'" class="lb-card lb-card--flush">
       <div class="lb-card__head">
         <div>
           <h2 class="lb-card__title">
@@ -905,7 +1050,7 @@ function conclusion(d: DeploymentRecord): string {
     </section>
 
     <!-- 最近部署 -->
-    <section class="lb-card lb-card--flush">
+    <section v-if="view === 'classic'" class="lb-card lb-card--flush">
       <div class="lb-card__head">
         <h2 class="lb-card__title">最近部署</h2>
         <RouterLink class="dv__link" to="/deployments">全部记录 <LbIcon name="chevron-right" :size="14" /></RouterLink>
@@ -936,6 +1081,18 @@ function conclusion(d: DeploymentRecord): string {
         </div>
       </div>
     </section>
+
+    <ExpiryModal
+      v-if="assetModal"
+      :open="true"
+      :kind="assetModal.kind"
+      :object-id="assetModal.id"
+      :name="assetModal.name"
+      :source-name="assetModal.sourceName"
+      :focus="assetModal.focus"
+      @update:open="(v: boolean) => !v && (assetModal = null)"
+      @changed="onAssetChanged"
+    />
   </div>
 </template>
 
@@ -1012,6 +1169,10 @@ function conclusion(d: DeploymentRecord): string {
   grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr);
   gap: var(--sp-4);
   align-items: stretch;
+}
+/* 卡片视图里没有趋势图,「需要处理」独占一行。 */
+.dv__main--solo {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .dv__axis {
