@@ -49,6 +49,7 @@ type Server struct {
 	metrics      *node.MetricsStore
 	hostTraffic  *hosttraffic.Syncer
 	monitor      *node.Monitor
+	netRates     *node.NetRateSampler
 	watchdog     *node.Watchdog
 	notifier     *notify.Notifier
 	settings     *settings.Store
@@ -97,10 +98,12 @@ type Options struct {
 	// HostTraffic 是主机流量(vnStat)那一路(V15),nil 表示没启用。
 	HostTraffic *hosttraffic.Syncer
 	Monitor     *node.Monitor
-	Watchdog    *node.Watchdog
-	Notifier    *notify.Notifier
-	Settings    *settings.Store
-	Tiers       *access.Store
+	// NetRates 是资产卡片的实时网速(只在有页面在看时读),nil 表示关闭。
+	NetRates *node.NetRateSampler
+	Watchdog *node.Watchdog
+	Notifier *notify.Notifier
+	Settings *settings.Store
+	Tiers    *access.Store
 	// Cloud 与 CloudStore 一起提供或一起省略(V17)。省略时云账号与云实例的路由整体不注册。
 	Cloud      *cloud.Engine
 	CloudStore *cloud.Store
@@ -168,6 +171,7 @@ func NewServer(opts Options) *Server {
 		metrics:      opts.Metrics,
 		hostTraffic:  opts.HostTraffic,
 		monitor:      opts.Monitor,
+		netRates:     opts.NetRates,
 		watchdog:     opts.Watchdog,
 		notifier:     opts.Notifier,
 		settings:     opts.Settings,
@@ -439,6 +443,8 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/metrics/nodes-latest", s.handleNodeMetricsLatest)
 		authed.HandleFunc("GET /api/nodes/{id}/metrics", s.handleNodeMetricsHistory)
 	}
+	// 卡片实时网速不依赖资源采样库:采样关掉时它照样回答(interval_seconds 为 0)。
+	authed.HandleFunc("GET /api/metrics/net-rates", s.handleNodeNetRates)
 	if s.monitor != nil {
 		authed.HandleFunc("POST /api/nodes/{id}/collect-metrics", longOperation(s.handleCollectNodeMetrics))
 		authed.HandleFunc("GET /api/metrics/status", s.handleMonitorStatus)

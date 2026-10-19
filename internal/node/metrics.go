@@ -40,6 +40,11 @@ func (m Metrics) MemPercent() float64 {
 // 开机以来的累计值。窗口再短会被调度抖动放大成假尖峰,再长则白白占着节点连接锁。
 const metricsSampleWindow = time.Second
 
+// netDevAwk 把 /proc/net/dev 里除 lo 以外全部网卡的收发字节加起来,输出「net_<tag> 收 发」。
+// 资源采集与卡片网速采样(netrate.go)共用这一份 —— 各写一份的话,两处网速的口径
+// (算不算 lo、某块网卡算不算)迟早分叉,而两个数字会出现在同一张卡片上。
+const netDevAwk = `NR>2 {gsub(/:/,"",$1); if ($1 != "lo") {rx+=$2; tx+=$10}} END {printf "net_%s %.0f %.0f\n", tag, rx+0, tx+0}`
+
 // metricsScript 在节点上一次性采完全部指标。
 //
 // 刻意只用 /proc 与 df,不依赖 top/vmstat/ifstat:
@@ -59,7 +64,7 @@ const metricsSampleWindow = time.Second
 //     整次采集失败。把算术挪回 Go 既没了这个雷,也让解析逻辑能被测试覆盖。
 const metricsScript = `
 cpu_snapshot() { awk -v tag="$1" '/^cpu /{idle=$5+$6; total=0; for(i=2;i<=NF;i++) total+=$i; printf "cpu_%s %.0f %.0f\n", tag, total, idle}' /proc/stat; }
-net_snapshot() { awk -v tag="$1" 'NR>2 {gsub(/:/,"",$1); if ($1 != "lo") {rx+=$2; tx+=$10}} END {printf "net_%s %.0f %.0f\n", tag, rx+0, tx+0}' /proc/net/dev; }
+net_snapshot() { awk -v tag="$1" '` + netDevAwk + `' /proc/net/dev; }
 
 cpu_snapshot a
 net_snapshot a
