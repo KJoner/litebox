@@ -542,6 +542,56 @@ POST   /api/nodes/{id}/probe-trial               {public_ids ≤ 8}:试测一轮
 
 定义与安全规则见 `docs/asset-probe/05-target-library-delivery.md`。
 
+### Boce 外部入站拨测与卡片展示设置(V22.3)
+
+Boce 是付费的第三方拨测服务:它在各省各运营商(以及海外)的拨测点对节点的订阅入口做 TCPing。
+请求全部由主控发起;**默认关、没有预算时不创建任何付费检测**。会调 Boce 的只有校验 / 余额 / 同步三个
+免费接口与「手动检测」;其余接口只读写本地库。
+
+```
+GET    /api/boce                         概览:设置(Key 只有 key_configured 与末 4 位 key_hint)、运行状态、
+                                         面板估算消耗(usage)与 Boce 账户余额(state.balance_*)分开给、
+                                         blocked(非空 = 此刻不会建付费任务)、全部自动任务的估算(plan)
+PUT    /api/boce/settings                {enabled, api_key?(不传 = 保持,"" = 清空), daily_points, monthly_points,
+                                         run_points, points_per_check, point_price, alert_percent, low_balance_points,
+                                         timezone, default_schedule};审计写开关、Key 更换 / 清空(不写值)与每项上限的前后值
+POST   /api/boce/verify                  用余额接口(免费)校验 Key;不通过 502
+POST   /api/boce/balance                 刷新余额
+POST   /api/boce/vantages/sync           拉大陆 + 海外两个拨测点列表;上游失败保留原有缓存(502 + 逐区结果)
+GET    /api/boce/vantages                缓存的拨测点(消失的带 missing_since)
+POST   /api/boce/resume                  解除自动暂停(鉴权失败 / 波点不足 / 连续接口异常)
+POST   /api/boce/estimate                {时间表字段, vantages, targets?, exclude_task_id?}:按真实日历月估算
+GET    /api/boce/tasks                   全部任务(带节点名、本月用量、按时间表的预计消耗、为什么不自动执行)
+POST   /api/boce/tasks/batch             {template, nodes: [{node_id, ref}]}:每台各建一个独立任务,ref 留空取第一个可用入口
+GET    /api/nodes/{id}/boce              这台节点的任务、可选入口(只有订阅入口;IPv6 的带 note 说明为什么选不了)、
+                                         本机暂停、blocked、默认计划
+POST   /api/nodes/{id}/boce/tasks        新建任务;enabled 默认 false;被测入口只能是候选里的,IPv6 / 管理通道 400
+PUT    /api/nodes/{id}/boce/paused       {paused}:暂停这台节点的自动检测(手动检测不受影响)
+PUT    /api/boce/tasks/{id}              编辑(被测入口不能换:400);去掉的拨测点序列停用、历史保留
+PUT    /api/boce/tasks/{id}/enabled      {enabled}:自动检测开关;打开时清掉「自动停下」的原因
+POST   /api/boce/tasks/{id}/archive      {archived}:归档 / 恢复(归档 = 停止执行、序列停用、历史保留)
+DELETE /api/boce/tasks/{id}              删除;序列与历史一起删,执行记录与估算消耗保留
+POST   /api/boce/tasks/{id}/run          {request_id}:手动检测一次(付费,经预算;同一个 request_id 只建一次);
+                                         不能执行 409(原因在 error),被测入口失效 400
+GET    /api/boce/tasks/{id}/runs?limit=  执行记录(每一轮 = 一次 Boce 任务,含每个拨测点的原始结果)
+PUT    /api/nodes/{id}/probe-card        {ingress_mode, ingress_ids, outbound_mode, outbound_ids}:卡片展示偏好,
+                                         每个方向 AUTO / MANUAL、0~3 项、不重复、只能是这台节点那个方向的序列
+```
+
+* `GET /api/nodes/{id}/probe` 多了 `boce`(Boce 序列汇总,每个「任务 × 拨测点」一条)与 `card`(`prefs` 偏好、
+  `pick` 此刻实际展示哪几项与自动推荐会选哪几项);`targets` 仍然只有主控的入口目标;
+* `GET /api/dashboard/cards` 多了 `boce` 与 `card_picks`(每台节点卡片入站 / 出站各展示哪几项,
+  手动选了但已删除的单列在 `invalid_*`,不自动顶上别的);
+* Boce 序列:`source = BOCE`、`metric = BOCE`(TCPing 丢包率,按 Boce 报告的包数),带 `boce_task_id` /
+  `vantage_id` 与 `boce`(任务名、拨测点名、运营商、大区、是否已从列表消失、时间表、下次执行);
+* 结果状态多三种,都**不进分母、不改连续失败计数**:`VANTAGE_ERROR`(拨测点异常)、`API_ERROR`(接口异常)、
+  `EXPIRED`(任务没取得结果);统计与点阵多 `vantage_errors` / `api_errors` / `expired`;
+  卡片状态多 `VANTAGE_ERROR` / `API_ERROR` / `EXPIRED` / `SKIPPED`(预算保护等未执行);
+* Boce 序列不能用 `PUT / DELETE /api/probe-targets/{id}` 单独改或删(400),历史接口照常能用;
+* 推送多两种事件:`BOCE_ALERT`(接口异常、自动暂停与恢复)、`BOCE_BUDGET`(预算到提醒线 / 用完、余额低)。
+
+定义与安全规则见 `docs/asset-probe/07-boce-delivery.md`。
+
 ## 巡检与推送接口
 
 ```text
