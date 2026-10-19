@@ -558,7 +558,7 @@ PUT    /api/boce/settings                {enabled, api_key?(不传 = 保持,"" =
 POST   /api/boce/verify                  用余额接口(免费)校验 Key;不通过 502
 POST   /api/boce/balance                 刷新余额
 POST   /api/boce/vantages/sync           拉大陆 + 海外两个拨测点列表;上游失败保留原有缓存(502 + 逐区结果)
-GET    /api/boce/vantages                缓存的拨测点(消失的带 missing_since)
+GET    /api/boce/vantages                缓存的拨测点(消失的带 missing_since;海外拨测点的 ID 是负数,运营商一律「海外」)
 POST   /api/boce/resume                  解除自动暂停(鉴权失败 / 波点不足 / 连续接口异常)
 POST   /api/boce/estimate                {时间表字段, vantages, targets?, exclude_task_id?}:按真实日历月估算
 GET    /api/boce/tasks                   全部任务(带节点名、本月用量、按时间表的预计消耗、为什么不自动执行)
