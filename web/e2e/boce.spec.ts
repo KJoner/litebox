@@ -146,11 +146,43 @@ test('新建任务:IPv6 入口选不了并写明原因;默认不开自动检测;
   await expect.poll(() => api.requests('POST', '/api/nodes/1/boce/tasks').length).toBe(1)
   const body = api.requests('POST', '/api/nodes/1/boce/tasks')[0]!.body as Record<string, unknown>
   expect(body.ref).toBe('EP:1')
+  expect(body.test_type).toBe('TCPING')
   expect(body.vantage_ids).toEqual([31, 32])
   expect(body.enabled).toBe(false)
   expect(body.window_start).toBe('08:00')
   expect(body.window_end).toBe('24:00')
   expect(api.requests('POST', /\/run$/)).toHaveLength(0)
+})
+
+test('新建 Ping 任务:入口只显示地址、请求带测法;编辑已有任务时测法锁定', async ({ page, api }) => {
+  api
+    .on('POST', '/api/boce/estimate', { json: ESTIMATE })
+    .on('POST', '/api/nodes/1/boce/tasks', (req) => ({ json: { id: 3, ...(req.body as object) } }))
+  await page.goto('/nodes/1/network')
+  await page.getByTestId('boce-task-new').click()
+  const form = page.getByTestId('boce-task-form')
+  const type = form.getByTestId('boce-test-type')
+  await type.getByText('Ping', { exact: true }).click()
+  await expect(form).toContainText('ping 不通不等于入口不可用')
+  // Ping 只测地址:候选里不再带端口。
+  await form.getByLabel('被测入口').click()
+  const opt = page.locator('.ant-select-item-option', { hasText: '203.0.113.11' }).first()
+  await expect(opt).not.toContainText('203.0.113.11:')
+  await page.keyboard.press('Escape')
+  await form.getByTestId('boce-vantage-picker').locator('label', { hasText: '上海' }).getByRole('checkbox').check()
+  await page.getByRole('dialog', { name: '新建 Boce 拨测任务' }).getByRole('button', { name: '保存' }).click()
+  await expect.poll(() => api.requests('POST', '/api/nodes/1/boce/tasks').length).toBe(1)
+  const body = api.requests('POST', '/api/nodes/1/boce/tasks')[0]!.body as Record<string, unknown>
+  expect(body.test_type).toBe('PING')
+  expect(api.requests('POST', /\/run$/)).toHaveLength(0)
+
+  // 编辑已有任务:测法那一栏是锁着的(换测法要复制任务)。
+  await expect(page.getByTestId('boce-task-form')).toBeHidden()
+  const task = page.getByTestId('probe-boce').locator('.nbp__task').first()
+  await expect(task.getByTestId('boce-task-type')).toHaveText('TCPing')
+  await task.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('boce-task-form').getByTestId('boce-test-type').getByRole('radio').first()).toBeDisabled()
+  await expect(page.getByTestId('boce-task-form')).toContainText('创建后不能更换检测方式')
 })
 
 test('执行记录:未执行的一轮写明是预算拦下的,不当成失败', async ({ page }) => {
@@ -171,7 +203,7 @@ test('卡片展示设置:入站 / 出站各最多 3 项,只写偏好,不碰 Boce
   const dlg = page.getByTestId('card-display')
   const ingress = dlg.getByTestId('card-display-ingress')
   await expect(ingress).toContainText('(3/3)')
-  await expect(ingress).toContainText('Boce · 上海 电信')
+  await expect(ingress).toContainText('Boce TCPing · 上海 电信')
   await expect(ingress.getByLabel('添加入站(主控 / Boce)展示项')).toHaveClass(/ant-select-disabled/)
   await ingress.getByRole('button', { name: '不显示第 3 项' }).click()
   await ingress.getByRole('button', { name: '上移第 2 项' }).click()
