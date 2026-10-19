@@ -115,4 +115,52 @@ test.describe('@visual 状态', () => {
     await page.waitForTimeout(400)
     await expect(page).toHaveScreenshot('deploy-failed-modal-light-1440.png')
   })
+
+  // Boce 外部拨测:设置页那一节(浅 / 深)、新建任务弹窗(含费用估算)、卡片展示设置弹窗。
+  for (const theme of ['light', 'dark'] as const) {
+    test(`Boce 设置 ${theme}`, async ({ page, api }) => {
+      await page.emulateMedia({ colorScheme: theme })
+      adminOnly(api)
+      await page.goto('/settings#set-boce')
+      await settle(page)
+      // 这一节比视口高:吸顶的顶栏与侧栏会盖进元素截图里。截图前把它们放回文档流。
+      await page.addStyleTag({ content: '.ml__header, .ml__sider, .st__anchors { position: static !important; }' })
+      await page.waitForTimeout(200)
+      await expect(page.locator('#set-boce')).toHaveScreenshot(`boce-settings-${theme}-1440.png`)
+    })
+  }
+
+  test('Boce 新建任务弹窗', async ({ page, api }) => {
+    adminOnly(api).on('POST', '/api/boce/estimate', {
+      json: {
+        points_per_round: 2, rounds_today: 16, points_today: 32, month: '2026-10', days_in_month: 31, rounds_month: 496,
+        points_month: 992, peak_day_points: 32, daily_avg_points: 32, points_30d: 960, yuan_today: 0.064,
+        yuan_month: 1.984, others_month_points: 1488, others_daily_avg: 48, total_month_points: 2480,
+        total_daily_avg: 80, total_yuan_month: 4.96, balance_points: 9200, days_runnable: 115, point_price: 0.002,
+        daily_limit: 200, monthly_limit: 4000, run_limit: 10, over_run_limit: false, over_daily: false,
+        over_monthly: false,
+      },
+    })
+    // 弹窗比 900 高:把视口拉高,整个表单(名称、入口、拨测点、时间表、估算)一屏截下来。
+    await page.setViewportSize({ width: 1440, height: 1500 })
+    await page.goto('/nodes/1/network')
+    await settle(page)
+    await page.getByTestId('boce-task-new').click()
+    const picker = page.getByTestId('boce-vantage-picker')
+    await picker.locator('label', { hasText: '上海' }).getByRole('checkbox').check()
+    await picker.locator('label', { hasText: '广东' }).getByRole('checkbox').check()
+    await expect(page.getByTestId('boce-estimate')).toContainText('992 波点')
+    await page.waitForTimeout(400)
+    await expect(page.getByRole('dialog').filter({ hasText: '新建 Boce 拨测任务' })).toHaveScreenshot('boce-task-form-light-1440.png')
+  })
+
+  test('卡片展示设置弹窗', async ({ page, api }) => {
+    adminOnly(api)
+    await page.goto('/nodes/1/network')
+    await settle(page)
+    await page.getByTestId('card-display-open').click()
+    await expect(page.getByTestId('card-display')).toBeVisible()
+    await page.waitForTimeout(400)
+    await expect(page.getByRole('dialog').filter({ hasText: '探针卡片展示设置' })).toHaveScreenshot('card-display-light-1440.png')
+  })
 })
