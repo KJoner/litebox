@@ -10,6 +10,7 @@ package netprobe
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -23,10 +24,12 @@ import (
 
 // Version 是辅助程序的协议版本。主控与辅助程序的 JSON 形状变了就加一。
 //
-// v2 加了 TCP 握手近似(tcp_mode = SYN)、rtt_n / refused / retrans 三个结果字段。
+// v2 加了 TCP 握手近似(tcp_mode = SYN)、rtt_n / refused / retrans 三个结果字段;
+// v3 加了 HTTP(S) 请求响应检测(proto = HTTP、url、http_status)。
 // 辅助程序同时认 MinVersion..Version 的请求,并按请求的版本号回话:面板回滚到旧版本、
-// 而节点上已经是新辅助程序时,旧面板发来的 v1 请求照样能跑(没有 SYN,全部按建连测)。
-const Version = 2
+// 而节点上已经是新辅助程序时,旧面板发来的 v1 / v2 请求照样能跑(v1 没有 SYN,全部按建连测;
+// v1 / v2 没有 HTTP)。
+const Version = 3
 
 // MinVersion 是辅助程序还认的最老的请求版本。
 const MinVersion = 1
@@ -35,6 +38,8 @@ const MinVersion = 1
 const (
 	ProtoICMP = "ICMP"
 	ProtoTCP  = "TCP"
+	// ProtoHTTP 一次 HTTP(S) GET,计时到收到完整响应头(v3)。
+	ProtoHTTP = "HTTP"
 	FamilyV4  = "V4"
 	FamilyV6  = "V6"
 	// ModeConnect 一次完整建连(内核在超时内照常重发 SYN)。
@@ -83,11 +88,14 @@ type Target struct {
 	Family   string `json:"family"`
 	// TCPMode 只对 TCP:CONNECT(默认)或 SYN(v2 起)。
 	TCPMode string `json:"tcp_mode,omitempty"`
+	// URL 只对 HTTP(v3):完整的 http:// / https:// 地址。Host / Port 由它推出来,不另外信。
+	URL string `json:"url,omitempty"`
 	// Count / IntervalMs 对 ICMP 是每轮发几个包、包间隔;对 TCP 握手近似是每轮握手几次、间隔。
 	Count      int `json:"count"`
 	IntervalMs int `json:"interval_ms"`
 	// TimeoutMs:TCP 建连是建连超时;TCP 握手近似是每次的等待(不超过 SynCutoffMs);
-	// ICMP 是最后一个包发出后等回包的时间。DNS 解析同样用它。
+	// ICMP 是最后一个包发出后等回包的时间;HTTP 是整个请求(DNS + 建连 + TLS + 等响应头)的总时长。
+	// DNS 解析同样用它。
 	TimeoutMs int `json:"timeout_ms"`
 	// AllowRestricted 为真时不拦内网 / 保留地址与受限端口(管理员显式勾选)。
 	AllowRestricted bool `json:"allow_restricted"`
@@ -123,6 +131,9 @@ type Result struct {
 	Refused int `json:"refused,omitempty"`
 	// Retrans 是 TCP 握手近似里观察到的内核 SYN 重发次数(从 TCP_INFO 读)。正常应为 0。
 	Retrans int `json:"retrans,omitempty"`
+	// HTTPStatus 是 HTTP 取得响应时的状态码(v3);没取得响应时为 0。取得了响应就是 OK,
+	// 不论状态码是多少 —— 5xx 由面板另外标出来。
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 // Response 是辅助程序的输出。
@@ -168,6 +179,8 @@ type Runner struct {
 	Dialer   Dialer
 	Pinger   Pinger
 	Syn      SynProber
+	// TLS 是 HTTPS 用的配置模板(测试里塞自签根证书);nil 表示系统根证书,校验证书与主机名。
+	TLS *tls.Config
 }
 
 // Default 返回生产用的 Runner。
@@ -187,6 +200,13 @@ func Normalize(t *Target) error {
 			t.Count = MaxCount
 		}
 		t.IntervalMs = clamp(t.IntervalMs, MinIntervalMs, MaxIntervalMs, 200)
+	case ProtoHTTP:
+		pu, err := ParseHTTPURL(t.URL)
+		if err != nil {
+			return err
+		}
+		t.URL, t.Host, t.Port = pu.URL, pu.Host, pu.Port
+		t.TCPMode, t.Count, t.IntervalMs = "", 0, 0
 	case ProtoTCP:
 		if t.Port < 1 || t.Port > 65535 {
 			return errors.New("TCP 端口必须是 1~65535")
@@ -212,7 +232,11 @@ func Normalize(t *Target) error {
 	if t.Family != FamilyV4 && t.Family != FamilyV6 {
 		return fmt.Errorf("不认识的地址族 %q", t.Family)
 	}
-	t.TimeoutMs = clamp(t.TimeoutMs, MinTimeoutMs, MaxTimeoutMs, 1000)
+	if t.Protocol == ProtoHTTP {
+		t.TimeoutMs = clamp(t.TimeoutMs, MinTimeoutMs, MaxHTTPTimeoutMs, DefaultHTTPTimeoutMs)
+	} else {
+		t.TimeoutMs = clamp(t.TimeoutMs, MinTimeoutMs, MaxTimeoutMs, 1000)
+	}
 	if t.Protocol == ProtoTCP && t.TCPMode == ModeSyn && t.TimeoutMs > SynCutoffMs {
 		t.TimeoutMs = SynCutoffMs
 	}
@@ -270,9 +294,13 @@ func (r *Runner) RunBatch(ctx context.Context, req Request) Response {
 	if ver < MinVersion || ver > Version {
 		ver = Version
 	}
-	if ver < 2 {
-		for i := range req.Targets {
+	for i := range req.Targets {
+		if ver < 2 {
 			req.Targets[i].TCPMode = ""
+		}
+		if ver < 3 && req.Targets[i].Protocol == ProtoHTTP {
+			// 旧面板发不出 HTTP;真收到了就当成不认识的协议,不按新语义去跑。
+			req.Targets[i].Protocol = "HTTP(v" + strconv.Itoa(ver) + ")"
 		}
 	}
 	resp := Response{Version: ver, Helper: "litebox-probe/" + strconv.Itoa(Version), Results: make([]Result, len(req.Targets))}
@@ -307,13 +335,14 @@ func (r *Runner) one(ctx context.Context, t Target) (Result, string) {
 		res.Status, res.Error = StatusError, err.Error()
 		return res, ""
 	}
-	if !t.AllowRestricted && t.Protocol == ProtoTCP {
+	if !t.AllowRestricted && t.Protocol != ProtoICMP {
 		if reason := RestrictedPort(t.Port); reason != "" {
 			res.Status, res.Error = StatusBlocked, reason
 			return res, ""
 		}
 	}
 	timeout := time.Duration(t.TimeoutMs) * time.Millisecond
+	start := time.Now()
 	ip, dns, err := r.resolve(ctx, t.Host, t.Family, timeout)
 	res.DNSUs = dns.Microseconds()
 	if err != nil {
@@ -331,6 +360,13 @@ func (r *Runner) one(ctx context.Context, t Target) (Result, string) {
 	if t.Protocol == ProtoTCP && t.TCPMode == ModeSyn {
 		return r.synRound(ctx, t, ip, res)
 	}
+	if t.Protocol == ProtoHTTP {
+		pu := ParsedURL{URL: t.URL, Scheme: "http", Host: t.Host, Port: t.Port}
+		if strings.HasPrefix(t.URL, "https://") {
+			pu.Scheme = "https"
+		}
+		return r.httpRound(ctx, t, pu, ip, res, start), ""
+	}
 	if t.Protocol == ProtoTCP {
 		network := "tcp4"
 		if t.Family == FamilyV6 {
@@ -338,7 +374,7 @@ func (r *Runner) one(ctx context.Context, t Target) (Result, string) {
 		}
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		start := time.Now()
+		start = time.Now()
 		conn, err := r.Dialer.DialContext(cctx, network, net.JoinHostPort(ip.String(), strconv.Itoa(t.Port)))
 		elapsed := time.Since(start)
 		// TCP 一轮建连一次:发 1,成功收 1。
