@@ -47,6 +47,8 @@ type hourCounts struct {
 	vantage, api, expired                                 int
 	sent, received, rttN                                  int
 	rttSum, rttMin, rttMax                                int64
+	// h2xx..h5xx 是 HTTP 序列取得的响应按状态码分类的个数(1xx 计入 2xx);其余序列恒为 0。
+	h2xx, h3xx, h4xx, h5xx int
 }
 
 func countsOf(r Result) hourCounts {
@@ -78,6 +80,18 @@ func countsOf(r Result) hourCounts {
 		}
 		c.sent, c.received = r.counts()
 		c.rttN, c.rttSum, c.rttMin, c.rttMax = r.rttStats()
+		if r.Status == StatusOK {
+			switch {
+			case r.HTTPStatus >= 500:
+				c.h5xx = 1
+			case r.HTTPStatus >= 400:
+				c.h4xx = 1
+			case r.HTTPStatus >= 300:
+				c.h3xx = 1
+			case r.HTTPStatus >= 100:
+				c.h2xx = 1
+			}
+		}
 	}
 	return c
 }
@@ -112,11 +126,11 @@ func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, u
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probe_results (target_id, generation, source, at, status, rtt_us, dns_us, error,
-			                           sent, received, rtt_min_us, rtt_max_us, peer, rtt_n)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			                           sent, received, rtt_min_us, rtt_max_us, peer, rtt_n, http_status)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			sm.TargetID, sm.Generation, sm.Source, at, string(sm.Status),
 			sm.RTT.Microseconds(), sm.DNS.Microseconds(), sm.Error,
-			c.sent, c.received, minUS, maxUS, sm.Peer, storedRTTN(c)); err != nil {
+			c.sent, c.received, minUS, maxUS, sm.Peer, storedRTTN(c), storedHTTPStatus(sm.Result)); err != nil {
 			return err
 		}
 		hour := sm.At.UTC().Truncate(time.Hour).Format(time.RFC3339)
@@ -124,8 +138,9 @@ func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, u
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probe_hourly (target_id, generation, hour, attempts, ok, lossy, dns_errors, skipped,
 			                          ssh_errors, tool_errors, blocked, sent, received, rtt_n,
-			                          rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			                          rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired,
+			                          http_2xx, http_3xx, http_4xx, http_5xx)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(target_id, generation, hour) DO UPDATE SET
 			  attempts = attempts + excluded.attempts,
 			  ok = ok + excluded.ok,
@@ -138,6 +153,10 @@ func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, u
 			  vantage_errors = vantage_errors + excluded.vantage_errors,
 			  api_errors = api_errors + excluded.api_errors,
 			  expired = expired + excluded.expired,
+			  http_2xx = http_2xx + excluded.http_2xx,
+			  http_3xx = http_3xx + excluded.http_3xx,
+			  http_4xx = http_4xx + excluded.http_4xx,
+			  http_5xx = http_5xx + excluded.http_5xx,
 			  sent = sent + excluded.sent,
 			  received = received + excluded.received,
 			  rtt_n = rtt_n + excluded.rtt_n,
@@ -148,7 +167,7 @@ func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, u
 			  rtt_max_us = MAX(rtt_max_us, excluded.rtt_max_us)`,
 			sm.TargetID, sm.Generation, hour, c.attempts, c.ok, c.lossy, c.dns, c.skipped,
 			c.ssh, c.tool, c.blocked, c.sent, c.received, c.rttN, c.rttSum, minUS, maxUS,
-			c.vantage, c.api, c.expired); err != nil {
+			c.vantage, c.api, c.expired, c.h2xx, c.h3xx, c.h4xx, c.h5xx); err != nil {
 			return err
 		}
 	}
@@ -169,6 +188,14 @@ func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, u
 		}
 	}
 	return nil
+}
+
+// storedHTTPStatus 是明细里记的状态码:只有取得了响应的那一轮才有(迁移里的 CHECK 只收 0 与 100~599)。
+func storedHTTPStatus(r Result) int {
+	if r.Status != StatusOK || r.HTTPStatus < 100 || r.HTTPStatus > 599 {
+		return 0
+	}
+	return r.HTTPStatus
 }
 
 // storedRTTN 是明细里记的 RTT 样本数:等于收到数时记 0(与升级前的明细同一个约定)。
@@ -224,7 +251,13 @@ type Bucket struct {
 	VantageErrors int `json:"vantage_errors"`
 	APIErrors     int `json:"api_errors"`
 	Expired       int `json:"expired"`
-	// Sent / Received 按包计(TCP 建连按建连计,TCP 握手近似按 SYN 计)。
+	// HTTP 序列取得的响应按状态码分类(1xx 计入 2xx)。都算「取得了响应」,在 OK 里;
+	// 5xx 另外标出来(State = HTTP5XX),不冒充正常。其余序列恒为 0。
+	HTTP2xx int `json:"http_2xx"`
+	HTTP3xx int `json:"http_3xx"`
+	HTTP4xx int `json:"http_4xx"`
+	HTTP5xx int `json:"http_5xx"`
+	// Sent / Received 按包计(TCP 建连按建连计,TCP 握手近似按 SYN 计,HTTP 按请求计)。
 	// LossRate = (Sent − Received) / Sent;一次都没发起时为 nil。它在三种口径下分别是
 	// ICMP 丢包率 / TCP 连接失败率 / TCP 握手超时无应答率,名字由序列的 metric 决定。
 	Sent     int      `json:"sent"`
@@ -233,7 +266,8 @@ type Bucket struct {
 	RTTAvgMs *float64 `json:"rtt_avg_ms"`
 	RTTMinMs *float64 `json:"rtt_min_ms"`
 	RTTMaxMs *float64 `json:"rtt_max_ms"`
-	// State 是点阵的颜色:OK / PARTIAL / FAIL / DNS / SSH / TOOL / BLOCKED / VANTAGE / API / EXPIRED / SKIP / NONE。
+	// State 是点阵的颜色:OK / HTTP5XX / PARTIAL / FAIL / DNS / SSH / TOOL / BLOCKED / VANTAGE / API / EXPIRED / SKIP / NONE。
+	// HTTP5XX = 这个窗口每一次都取得了 HTTP 响应,但其中有 5xx(服务返回异常状态)。
 	// NONE = 这个窗口一个样本都没有 —— **不按正常画**。SSH(采集失败)与 TOOL(工具不可用)
 	// 也不按失败画:那几轮根本没有发出去,目标那头是什么样子并不知道。
 	State string `json:"state"`
@@ -260,8 +294,13 @@ type Stats struct {
 	VantageErrors int `json:"vantage_errors"`
 	APIErrors     int `json:"api_errors"`
 	Expired       int `json:"expired"`
-	Sent          int `json:"sent"`
-	Received      int `json:"received"`
+	// HTTP 序列取得的响应按状态码分类,见 Bucket。
+	HTTP2xx  int `json:"http_2xx"`
+	HTTP3xx  int `json:"http_3xx"`
+	HTTP4xx  int `json:"http_4xx"`
+	HTTP5xx  int `json:"http_5xx"`
+	Sent     int `json:"sent"`
+	Received int `json:"received"`
 	// FailureRate 是 Failures / Attempts(0~1):TCP 建连的连接失败率;ICMP 与 TCP 握手近似时
 	// 是「整轮失败」的比例。LossRate 是 (Sent − Received) / Sent:ICMP 的丢包率、TCP 握手近似的
 	// 握手超时无应答率;TCP 建连时与 FailureRate 相同。一次都没发起过时两者都是 nil,不是 0。
@@ -285,6 +324,10 @@ func (b *Bucket) addCounts(c hourCounts) {
 	b.VantageErrors += c.vantage
 	b.APIErrors += c.api
 	b.Expired += c.expired
+	b.HTTP2xx += c.h2xx
+	b.HTTP3xx += c.h3xx
+	b.HTTP4xx += c.h4xx
+	b.HTTP5xx += c.h5xx
 	b.Sent += c.sent
 	b.Received += c.received
 	if c.rttN > 0 {
@@ -324,6 +367,8 @@ func (b *Bucket) finish() {
 	}
 	b.LossRate = ratio(b.Sent-b.Received, b.Sent)
 	switch {
+	case b.Attempts > 0 && b.Failures == 0 && b.Lossy == 0 && b.HTTP5xx > 0:
+		b.State = "HTTP5XX"
 	case b.Attempts > 0 && b.Failures == 0 && b.Lossy == 0:
 		b.State = "OK"
 	case b.Attempts > 0 && b.OK == 0 && b.Lossy == 0:
@@ -368,6 +413,10 @@ func Sum(buckets []Bucket, from, to time.Time) Stats {
 		st.VantageErrors += b.VantageErrors
 		st.APIErrors += b.APIErrors
 		st.Expired += b.Expired
+		st.HTTP2xx += b.HTTP2xx
+		st.HTTP3xx += b.HTTP3xx
+		st.HTTP4xx += b.HTTP4xx
+		st.HTTP5xx += b.HTTP5xx
 		st.Sent += b.Sent
 		st.Received += b.Received
 		if b.rttN > 0 {
@@ -406,7 +455,8 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 		args = append(args, t.ID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer, rtt_n
+		SELECT target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer, rtt_n,
+		       http_status
 		  FROM probe_results
 		 WHERE at >= ? AND target_id IN (`+strings.Join(ph, ",")+`)
 		 ORDER BY target_id, at, id`, args...)
@@ -419,7 +469,7 @@ func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time)
 		var at string
 		var rtt, minUS, maxUS int64
 		if err := rows.Scan(&r.targetID, &r.gen, &at, &r.res.Status, &rtt, &r.res.Error,
-			&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer, &r.res.RTTN); err != nil {
+			&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer, &r.res.RTTN, &r.res.HTTPStatus); err != nil {
 			return nil, err
 		}
 		if r.gen != gen[r.targetID] {
@@ -468,7 +518,8 @@ func (s *Store) HourlyBuckets(ctx context.Context, t Target, from, to time.Time)
 	from = from.UTC().Truncate(time.Hour)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT hour, attempts, ok, lossy, dns_errors, skipped, ssh_errors, tool_errors, blocked,
-		       sent, received, rtt_n, rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired
+		       sent, received, rtt_n, rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired,
+		       http_2xx, http_3xx, http_4xx, http_5xx
 		  FROM probe_hourly
 		 WHERE target_id = ? AND generation = ? AND hour >= ? AND hour < ?`,
 		t.ID, t.Generation, from.Format(time.RFC3339), to.UTC().Format(time.RFC3339))
@@ -481,7 +532,8 @@ func (s *Store) HourlyBuckets(ctx context.Context, t Target, from, to time.Time)
 		var b Bucket
 		var c hourCounts
 		if err := rows.Scan(&b.At, &c.attempts, &c.ok, &c.lossy, &c.dns, &c.skipped, &c.ssh, &c.tool, &c.blocked,
-			&c.sent, &c.received, &c.rttN, &c.rttSum, &c.rttMin, &c.rttMax, &c.vantage, &c.api, &c.expired); err != nil {
+			&c.sent, &c.received, &c.rttN, &c.rttSum, &c.rttMin, &c.rttMax, &c.vantage, &c.api, &c.expired,
+			&c.h2xx, &c.h3xx, &c.h4xx, &c.h5xx); err != nil {
 			return nil, err
 		}
 		b.addCounts(c)
@@ -534,7 +586,7 @@ type History struct {
 	Source  string   `json:"source"`
 	Buckets []Bucket `json:"buckets"`
 	Stats   Stats    `json:"stats"`
-	// Failures 是这段时间里最近的若干次异常(失败、部分丢包、采集失败等),最新的在前。
+	// Failures 是这段时间里最近的若干次异常(失败、部分丢包、采集失败、HTTP 5xx 等),最新的在前。
 	Failures []FailurePoint `json:"failures"`
 }
 
@@ -548,6 +600,8 @@ type FailurePoint struct {
 	Sent     int    `json:"sent"`
 	Received int    `json:"received"`
 	Peer     string `json:"peer"`
+	// HTTPStatus 只对 HTTP 序列:取得了 5xx 响应的那几轮(Status 是 OK)。
+	HTTPStatus int `json:"http_status"`
 }
 
 // History 读一个目标的历史。1h / 24h 从明细按 1 / 10 分钟切窗;7d 读小时汇总。
@@ -581,8 +635,9 @@ func (s *Store) History(ctx context.Context, t Target, r Range, now time.Time) (
 	h.Stats = Sum(h.Buckets, from, to)
 	// 失败点读明细(7 天视图也读 —— 明细正好保留 7 天)。
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT at, status, error, sent, received, peer FROM probe_results
-		 WHERE target_id = ? AND generation = ? AND at >= ? AND status NOT IN ('OK', 'SKIPPED')
+		SELECT at, status, error, sent, received, peer, http_status FROM probe_results
+		 WHERE target_id = ? AND generation = ? AND at >= ?
+		   AND (status NOT IN ('OK', 'SKIPPED') OR http_status >= 500)
 		 ORDER BY at DESC, id DESC LIMIT 50`, t.ID, t.Generation, from.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
@@ -590,10 +645,14 @@ func (s *Store) History(ctx context.Context, t Target, r Range, now time.Time) (
 	defer rows.Close()
 	for rows.Next() {
 		var f FailurePoint
-		if err := rows.Scan(&f.At, &f.Status, &f.Error, &f.Sent, &f.Received, &f.Peer); err != nil {
+		if err := rows.Scan(&f.At, &f.Status, &f.Error, &f.Sent, &f.Received, &f.Peer, &f.HTTPStatus); err != nil {
 			return nil, err
 		}
 		f.Label = f.Status.LabelFor(t.Metric)
+		if f.Status == StatusOK && f.HTTPStatus >= 500 {
+			// 取得了响应,只是服务说自己出错了:网络是通的,不写成「失败」。
+			f.Label = fmt.Sprintf("HTTP %d(服务返回异常状态)", f.HTTPStatus)
+		}
 		h.Failures = append(h.Failures, f)
 	}
 	return h, rows.Err()

@@ -87,9 +87,11 @@ type dashboardCards struct {
 	// Targets 是入口连通性(主控 → 节点),Outbound 是出站网络质量(节点 → 公共目标),分开给。
 	Targets  []probe.Summary `json:"targets"`
 	Outbound []probe.Summary `json:"outbound"`
-	// Boce 是 Boce 外部入站拨测的序列;CardPicks 是每台节点卡片上入站 / 出站各展示哪几项(最多 3 项,
-	// 手动选的或自动推荐的)。展示数量不是检测数量:没展示的序列照样在测、照样进节点详情。
+	// Boce 是 Boce 外部入站拨测的序列,Peer 是自建节点互测入站的序列;CardPicks 是每台节点卡片上
+	// 入站 / 出站各展示哪几项(最多 3 项,手动选的或自动推荐的,带着别名)。
+	// 展示数量不是检测数量:没展示的序列照样在测、照样进节点详情。
 	Boce        []probe.Summary  `json:"boce"`
+	Peer        []probe.Summary  `json:"peer"`
 	CardPicks   []probe.CardPick `json:"card_picks"`
 	CostSummary []costRow        `json:"cost_summary"`
 	Expiring7d  int              `json:"expiring_7d"`
@@ -114,7 +116,7 @@ func (s *Server) handleDashboardCards(w http.ResponseWriter, r *http.Request) {
 	out := dashboardCards{
 		GeneratedAt: now.Format(time.RFC3339),
 		Labels:      []asset.Labels{}, Billing: []billingCard{}, Targets: []probe.Summary{}, Outbound: []probe.Summary{},
-		Boce: []probe.Summary{}, CardPicks: []probe.CardPick{},
+		Boce: []probe.Summary{}, Peer: []probe.Summary{}, CardPicks: []probe.CardPick{},
 		CostSummary: []costRow{}, Errors: []string{}, External: []externalStatus{},
 	}
 	// 各块独立降级:哪一块读失败就在 errors 里点名,其余照常给 —— 与仪表盘的 failedSources 同一条规矩。
@@ -295,6 +297,7 @@ func (s *Server) probeOverview(ctx context.Context) probeOverview {
 		Sources: []probeSourceDTO{
 			{Code: probe.SourceNode, Label: probe.SourceLabel(probe.SourceNode)},
 			{Code: probe.SourceMaster, Label: probe.SourceLabel(probe.SourceMaster)},
+			{Code: probe.SourcePeer, Label: probe.SourceLabel(probe.SourcePeer)},
 		},
 		Available:         s.probes != nil,
 		OutboundAvailable: s.outbound != nil,
@@ -396,6 +399,13 @@ func (s *Server) fillProbeCards(ctx context.Context, now time.Time, out *dashboa
 	if out.Boce, err = s.probes.Summaries(ctx, boceSeries, sc, now); err != nil {
 		return err
 	}
+	peerSeries, err := s.probes.ListAllPeer(ctx)
+	if err != nil {
+		return err
+	}
+	if out.Peer, err = s.probes.Summaries(ctx, peerSeries, sc, now); err != nil {
+		return err
+	}
 	prefs, err := s.probes.CardPrefsMap(ctx)
 	if err != nil {
 		return err
@@ -408,7 +418,7 @@ func (s *Server) fillProbeCards(ctx context.Context, now time.Time, out *dashboa
 			}
 		}
 	}
-	ingress := append(append([]probe.Summary{}, out.Targets...), out.Boce...)
+	ingress := append(append(append([]probe.Summary{}, out.Targets...), out.Boce...), out.Peer...)
 	picks := probe.PickCards(prefs, nodeIDs, ingress, out.Outbound, s.outboundCoverage(sc))
 	for _, id := range nodeIDs {
 		out.CardPicks = append(out.CardPicks, picks[id])

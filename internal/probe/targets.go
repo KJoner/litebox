@@ -48,12 +48,16 @@ type Target struct {
 	// PublicID 是出站序列指向的公共目标;入口目标为 0。
 	PublicID int64 `json:"public_id"`
 	// BoceTaskID / VantageID 是 Boce 序列所属的任务与拨测点;其余序列为 0。
-	BoceTaskID int64  `json:"boce_task_id"`
-	VantageID  int    `json:"vantage_id"`
-	Family     Family `json:"family"`
-	Label      string `json:"label"`
-	Source     string `json:"source"`
-	Enabled    bool   `json:"enabled"`
+	BoceTaskID int64 `json:"boce_task_id"`
+	VantageID  int   `json:"vantage_id"`
+	// PeerNodeID 是 PEER 序列的拨测来源机器(在它上面跑辅助程序);其余序列为 0。
+	PeerNodeID int64 `json:"peer_node_id"`
+	// ResolvedURL 是 HTTP 出站序列上一次同步时的 URL(换了就换代);不下发,查询串可能是凭据。
+	ResolvedURL string `json:"-"`
+	Family      Family `json:"family"`
+	Label       string `json:"label"`
+	Source      string `json:"source"`
+	Enabled     bool   `json:"enabled"`
 	// ResolvedHost / ResolvedPort 是上一轮解析出来的地址与端口。
 	ResolvedHost    string `json:"resolved_host"`
 	ResolvedPort    int    `json:"resolved_port"`
@@ -77,7 +81,8 @@ type Target struct {
 const targetColumns = `id, node_id, direction, protocol, tcp_mode, kind, ref, COALESCE(public_id, 0), family, label, source, enabled,
 	resolved_host, resolved_port, generation, generation_since, ref_state, ref_error,
 	consecutive_failures, alert_state, alert_since, alert_notified, recovery_pending,
-	last_status, last_at, last_success_at, created_at, updated_at, COALESCE(boce_task_id, 0), vantage_id`
+	last_status, last_at, last_success_at, created_at, updated_at, COALESCE(boce_task_id, 0), vantage_id,
+	COALESCE(peer_node_id, 0), resolved_url`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -88,7 +93,8 @@ func scanTarget(r scanner) (*Target, error) {
 		&t.Family, &t.Label, &t.Source, &enabled,
 		&t.ResolvedHost, &t.ResolvedPort, &t.Generation, &t.GenerationSince, &t.RefState, &t.RefError,
 		&t.ConsecutiveFailures, &t.AlertState, &t.AlertSince, &notified, &pending,
-		&t.LastStatus, &t.LastAt, &t.LastSuccessAt, &t.CreatedAt, &t.UpdatedAt, &t.BoceTaskID, &t.VantageID); err != nil {
+		&t.LastStatus, &t.LastAt, &t.LastSuccessAt, &t.CreatedAt, &t.UpdatedAt, &t.BoceTaskID, &t.VantageID,
+		&t.PeerNodeID, &t.ResolvedURL); err != nil {
 		return nil, err
 	}
 	t.Enabled = enabled == 1
@@ -146,16 +152,16 @@ func listQ(ctx context.Context, q querier, where string, args ...any) ([]Target,
 
 // List 列出一台机器上某个方向的全部序列。出站序列按公共目标的排序走。
 //
-// 入站只给主控那一类:Boce 序列另由 ListBoce 给,接口分字段返回 —— 前端按字段分区渲染,
+// 入站只给主控那一类:Boce 与 PEER 序列另由 ListBoce / ListPeer 给,接口分字段返回 —— 前端按字段分区渲染,
 // 不自己按 source 去拆(拆漏一处,Boce 的丢包率就会出现在主控那一栏里)。
 func (s *Store) List(ctx context.Context, nodeID int64, dir Direction) ([]Target, error) {
-	return s.list(ctx, `WHERE node_id = ? AND direction = ? AND source != 'BOCE' ORDER BY `+orderBy, nodeID, dir)
+	return s.list(ctx, `WHERE node_id = ? AND direction = ? AND source NOT IN ('BOCE', 'PEER') ORDER BY `+orderBy, nodeID, dir)
 }
 
-// ListAll 列出未删除机器上某个方向的全部序列(仪表盘聚合用),同样不含 Boce 序列。
+// ListAll 列出未删除机器上某个方向的全部序列(仪表盘聚合用),同样不含 Boce 与 PEER 序列。
 func (s *Store) ListAll(ctx context.Context, dir Direction) ([]Target, error) {
-	return s.list(ctx, `WHERE direction = ? AND source != 'BOCE' AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL)
-		ORDER BY node_id, `+orderBy, dir)
+	return s.list(ctx, `WHERE direction = ? AND source NOT IN ('BOCE', 'PEER')
+		AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL) ORDER BY node_id, `+orderBy, dir)
 }
 
 // ListBoce 列出一台机器上的全部 Boce 序列(含已停用的 —— 历史要能看)。按任务、再按任务里拨测点的先后。
@@ -290,9 +296,10 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// DeleteByNode 删掉一台机器的全部目标。节点是软删除,外键的 CASCADE 兜不住,删节点时显式调它。
+// DeleteByNode 删掉一台机器的全部目标,以及它替别的机器测的 PEER 序列(来源没了,那些序列再也测不了)。
+// 节点是软删除,外键的 CASCADE 兜不住,删节点时显式调它。
 func (s *Store) DeleteByNode(ctx context.Context, nodeID int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM probe_targets WHERE node_id = ?`, nodeID)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM probe_targets WHERE node_id = ? OR peer_node_id = ?`, nodeID, nodeID)
 	return err
 }
 

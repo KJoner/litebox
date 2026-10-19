@@ -619,6 +619,7 @@ var importColumns = map[string]string{
 	"count": "count", "次数": "count", "包数": "count",
 	"region": "region", "地区": "region", "province": "province", "省份": "province",
 	"city": "city", "城市": "city", "isp": "isp", "运营商": "isp", "note": "note", "备注": "note",
+	"url": "url", "网址": "url",
 }
 
 func parseInt(raw string) (int, error) {
@@ -664,13 +665,13 @@ func parseImport(text string) ([]ImportRow, error) {
 	for i, h := range records[0] {
 		key := importColumns[strings.ToLower(strings.TrimSpace(h))]
 		if key == "" {
-			return nil, fmt.Errorf("表头第 %d 列 %q 认不出(可用:name, host, protocol, tcp_mode, port, family, interval_sec, timeout_ms, count, region, province, city, isp, note)", i+1, cleanName(h, 24))
+			return nil, fmt.Errorf("表头第 %d 列 %q 认不出(可用:name, host, url, protocol, tcp_mode, port, family, interval_sec, timeout_ms, count, region, province, city, isp, note)", i+1, cleanName(h, 24))
 		}
 		cols[i] = key
-		hasHost = hasHost || key == "host"
+		hasHost = hasHost || key == "host" || key == "url"
 	}
 	if !hasHost {
-		return nil, errors.New("表头里必须有 host(主机)这一列")
+		return nil, errors.New("表头里必须有 host(主机)或 url(HTTP 目标)这一列")
 	}
 	var rows []ImportRow
 	for n, rec := range records[1:] {
@@ -691,6 +692,8 @@ func parseImport(text string) ([]ImportRow, error) {
 				row.Input.Name = v
 			case "host":
 				row.Input.Host = v
+			case "url":
+				row.Input.URL = v
 			case "protocol":
 				row.Input.Protocol = Protocol(strings.ToUpper(v))
 			case "tcp_mode":
@@ -732,10 +735,22 @@ func parseImport(text string) ([]ImportRow, error) {
 		if empty {
 			continue
 		}
-		// 省掉的几列按最常见的意思补:名字跟主机一样;有端口就是 TCP、没有就是 ICMP;
+		// 省掉的几列按最常见的意思补:填了 url 就是 HTTP;名字跟主机一样;有端口就是 TCP、没有就是 ICMP;
 		// 地址族按 IP 字面量判断,域名默认 IPv4。
+		if row.Input.Protocol == "" && row.Input.URL != "" {
+			row.Input.Protocol = ProtoHTTP
+		}
+		if row.Input.Protocol == ProtoHTTP && row.Input.Host == "" {
+			if pu, err := netprobe.ParseHTTPURL(row.Input.URL); err == nil {
+				row.Input.Host = pu.Host
+			}
+		}
 		if row.Input.Name == "" {
 			row.Input.Name = row.Input.Host
+			if row.Input.Protocol == ProtoHTTP {
+				// 名字会进推送与卡片:不把查询串带进去。
+				row.Input.Name = cleanName(netprobe.RedactURL(row.Input.URL), 64)
+			}
 		}
 		if row.Input.Protocol == "" {
 			row.Input.Protocol = ProtoICMP
@@ -773,7 +788,7 @@ func (l *Library) Import(ctx context.Context, text string, commit bool) (*Import
 	}
 	taken := map[string]bool{}
 	for _, p := range pubs {
-		taken[string(p.Protocol)+"|"+p.Host+"|"+string(p.TCPMode)+"|"+strconv.Itoa(p.Port)+"|"+string(p.Family)] = true
+		taken[string(p.Protocol)+"|"+p.Host+"|"+string(p.TCPMode)+"|"+strconv.Itoa(p.Port)+"|"+string(p.Family)+"|"+p.URL] = true
 	}
 	floors := map[Origin]int{}
 	res := &ImportResult{}
@@ -783,7 +798,7 @@ func (l *Library) Import(ctx context.Context, text string, commit bool) (*Import
 			res.Errors++
 			continue
 		}
-		row.Source = OriginForHost(row.Input.Host)
+		row.Source = OriginForHost(publicHost(row.Input))
 		floor, ok := floors[row.Source]
 		if !ok {
 			if floor, err = l.store.floorFor(ctx, row.Source); err != nil {
@@ -798,7 +813,7 @@ func (l *Library) Import(ctx context.Context, text string, commit bool) (*Import
 			continue
 		}
 		row.Input = in
-		key := string(in.Protocol) + "|" + in.Host + "|" + string(in.TCPMode) + "|" + strconv.Itoa(in.Port) + "|" + string(in.Family)
+		key := string(in.Protocol) + "|" + in.Host + "|" + string(in.TCPMode) + "|" + strconv.Itoa(in.Port) + "|" + string(in.Family) + "|" + in.URL
 		if taken[key] {
 			row.Status, row.Reason = "DUPLICATE", "目标库里(或前面几行)已经有同样的目标"
 			res.Dups++

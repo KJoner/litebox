@@ -3,10 +3,14 @@ package probe
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // 卡片展示偏好:每台节点的卡片入站 / 出站各最多展示 3 项。
@@ -21,7 +25,15 @@ const (
 	CardManual = "MANUAL"
 	// MaxCardItems 是每个方向最多展示几项。
 	MaxCardItems = 3
+	// MaxCardAlias 是卡片别名的最大长度(按字符数)。
+	MaxCardAlias = 24
+	// maxAliasesPerDir 是一个方向最多存多少个别名(序列数的上限远小于它,只防一份异常的请求把这一行撑大)。
+	maxAliasesPerDir = 200
 )
+
+// 别名(V22.6)只是这台节点卡片上的显示名称:按「被测节点 × 方向 × 序列 id」存,
+// 与展示方式(自动 / 手动)、展示顺序都解耦 —— 切换模式、调整顺序都不动别名;
+// 它也不碰任何检测:公共目标的名称、序列的身份、历史、告警与推送里用的都还是原始名称。
 
 // CardPrefs 是一台节点的卡片展示偏好。
 type CardPrefs struct {
@@ -30,11 +42,65 @@ type CardPrefs struct {
 	IngressIDs   []int64 `json:"ingress_ids"`
 	OutboundMode string  `json:"outbound_mode"`
 	OutboundIDs  []int64 `json:"outbound_ids"`
-	UpdatedAt    string  `json:"updated_at"`
+	// IngressAliases / OutboundAliases 是序列 id → 卡片上的显示名称(V22.6)。
+	// 保存时为 nil 表示保持原样,空对象表示全部清掉。
+	IngressAliases  map[int64]string `json:"ingress_aliases"`
+	OutboundAliases map[int64]string `json:"outbound_aliases"`
+	UpdatedAt       string           `json:"updated_at"`
 }
 
 func defaultCardPrefs(nodeID int64) CardPrefs {
-	return CardPrefs{NodeID: nodeID, IngressMode: CardAuto, IngressIDs: []int64{}, OutboundMode: CardAuto, OutboundIDs: []int64{}}
+	return CardPrefs{NodeID: nodeID, IngressMode: CardAuto, IngressIDs: []int64{}, OutboundMode: CardAuto, OutboundIDs: []int64{},
+		IngressAliases: map[int64]string{}, OutboundAliases: map[int64]string{}}
+}
+
+func parseAliases(raw string) map[int64]string {
+	out := map[int64]string{}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return out
+	}
+	for k, v := range m {
+		if id, err := strconv.ParseInt(k, 10, 64); err == nil && id > 0 && v != "" {
+			out[id] = v
+		}
+	}
+	return out
+}
+
+func aliasesJSON(m map[int64]string) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// normalizeAlias 校验一个别名:去首尾空白,最多 MaxCardAlias 个字符,不收换行与控制字符。空串 = 用原始名称。
+func normalizeAlias(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if len([]rune(v)) > MaxCardAlias {
+		return v, fmt.Errorf("显示名称最长 %d 个字符", MaxCardAlias)
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return v, errors.New("显示名称里不能有换行或控制字符")
+		}
+	}
+	return v, nil
+}
+
+const cardPrefsColumns = `node_id, ingress_mode, ingress_ids, outbound_mode, outbound_ids, updated_at, ingress_aliases, outbound_aliases`
+
+func scanCardPrefs(r scanner) (CardPrefs, error) {
+	var p CardPrefs
+	var in, outb, inA, outA string
+	if err := r.Scan(&p.NodeID, &p.IngressMode, &in, &p.OutboundMode, &outb, &p.UpdatedAt, &inA, &outA); err != nil {
+		return CardPrefs{}, err
+	}
+	p.IngressIDs, p.OutboundIDs = parseInt64List(in), parseInt64List(outb)
+	p.IngressAliases, p.OutboundAliases = parseAliases(inA), parseAliases(outA)
+	return p, nil
 }
 
 func parseInt64List(raw string) []int64 {
@@ -55,20 +121,17 @@ func int64sJSON(ids []int64) string {
 
 // CardPrefsMap 读全部节点的偏好(没有行的节点不在里面 = 自动)。
 func (s *Store) CardPrefsMap(ctx context.Context) (map[int64]CardPrefs, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT node_id, ingress_mode, ingress_ids, outbound_mode, outbound_ids, updated_at
-		FROM probe_card_prefs`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+cardPrefsColumns+` FROM probe_card_prefs`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[int64]CardPrefs{}
 	for rows.Next() {
-		var p CardPrefs
-		var in, outb string
-		if err := rows.Scan(&p.NodeID, &p.IngressMode, &in, &p.OutboundMode, &outb, &p.UpdatedAt); err != nil {
+		p, err := scanCardPrefs(rows)
+		if err != nil {
 			return nil, err
 		}
-		p.IngressIDs, p.OutboundIDs = parseInt64List(in), parseInt64List(outb)
 		out[p.NodeID] = p
 	}
 	return out, rows.Err()
@@ -76,21 +139,15 @@ func (s *Store) CardPrefsMap(ctx context.Context) (map[int64]CardPrefs, error) {
 
 // GetCardPrefs 读一台节点的偏好;没设过时是两个方向都自动。
 func (s *Store) GetCardPrefs(ctx context.Context, nodeID int64) (CardPrefs, error) {
-	var p CardPrefs
-	var in, outb string
-	err := s.db.QueryRowContext(ctx, `SELECT node_id, ingress_mode, ingress_ids, outbound_mode, outbound_ids, updated_at
-		FROM probe_card_prefs WHERE node_id = ?`, nodeID).Scan(&p.NodeID, &p.IngressMode, &in, &p.OutboundMode, &outb, &p.UpdatedAt)
+	p, err := scanCardPrefs(s.db.QueryRowContext(ctx, `SELECT `+cardPrefsColumns+` FROM probe_card_prefs WHERE node_id = ?`, nodeID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return defaultCardPrefs(nodeID), nil
 	}
-	if err != nil {
-		return CardPrefs{}, err
-	}
-	p.IngressIDs, p.OutboundIDs = parseInt64List(in), parseInt64List(outb)
-	return p, nil
+	return p, err
 }
 
 // SetCardPrefs 保存一台节点的偏好。手动时每个方向 0~3 项、有序、不重复,而且只能是这台节点那个方向的序列。
+// 别名为 nil 时保持原样;键必须是这台节点那个方向的序列(已经删掉的序列的别名静默丢掉)。
 func (s *Store) SetCardPrefs(ctx context.Context, nodeID int64, in CardPrefs) (CardPrefs, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes WHERE id = ? AND deleted_at IS NULL`, nodeID).Scan(&exists); err != nil {
@@ -129,24 +186,68 @@ func (s *Store) SetCardPrefs(ctx context.Context, nodeID int64, in CardPrefs) (C
 		}
 		return ids, nil
 	}
-	var err error
+	cur, err := s.GetCardPrefs(ctx, nodeID)
+	if err != nil {
+		return CardPrefs{}, err
+	}
+	aliases := func(m map[int64]string, keep map[int64]string, dir Direction, what string) (map[int64]string, error) {
+		if m == nil {
+			m = keep
+		}
+		if len(m) > maxAliasesPerDir {
+			return nil, fmt.Errorf("%s的显示名称太多了", what)
+		}
+		out := map[int64]string{}
+		for id, v := range m {
+			v, err := normalizeAlias(v)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%w", what, err)
+			}
+			if v == "" {
+				continue
+			}
+			var owner int64
+			var d Direction
+			err = s.db.QueryRowContext(ctx, `SELECT node_id, direction FROM probe_targets WHERE id = ?`, id).Scan(&owner, &d)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // 序列已经删掉了:别名也就没有可以显示的地方
+			}
+			if err != nil {
+				return nil, err
+			}
+			if owner != nodeID || d != dir {
+				return nil, fmt.Errorf("%s的显示名称里有一项不属于这台节点", what)
+			}
+			out[id] = v
+		}
+		return out, nil
+	}
+	if in.IngressAliases, err = aliases(in.IngressAliases, cur.IngressAliases, DirIngress, "入站"); err != nil {
+		return CardPrefs{}, err
+	}
+	if in.OutboundAliases, err = aliases(in.OutboundAliases, cur.OutboundAliases, DirOutbound, "出站"); err != nil {
+		return CardPrefs{}, err
+	}
 	if in.IngressIDs, err = check(in.IngressMode, in.IngressIDs, DirIngress, "入站"); err != nil {
 		return CardPrefs{}, err
 	}
 	if in.OutboundIDs, err = check(in.OutboundMode, in.OutboundIDs, DirOutbound, "出站"); err != nil {
 		return CardPrefs{}, err
 	}
-	if in.IngressMode == CardAuto && in.OutboundMode == CardAuto {
+	if in.IngressMode == CardAuto && in.OutboundMode == CardAuto && len(in.IngressAliases) == 0 && len(in.OutboundAliases) == 0 {
 		if _, err := s.db.ExecContext(ctx, `DELETE FROM probe_card_prefs WHERE node_id = ?`, nodeID); err != nil {
 			return CardPrefs{}, err
 		}
 		return defaultCardPrefs(nodeID), nil
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO probe_card_prefs (node_id, ingress_mode, ingress_ids, outbound_mode, outbound_ids, updated_at)
-		VALUES (?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET ingress_mode = excluded.ingress_mode, ingress_ids = excluded.ingress_ids,
-		outbound_mode = excluded.outbound_mode, outbound_ids = excluded.outbound_ids, updated_at = excluded.updated_at`,
-		nodeID, in.IngressMode, int64sJSON(in.IngressIDs), in.OutboundMode, int64sJSON(in.OutboundIDs), now); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO probe_card_prefs (node_id, ingress_mode, ingress_ids, outbound_mode, outbound_ids,
+		updated_at, ingress_aliases, outbound_aliases)
+		VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET ingress_mode = excluded.ingress_mode, ingress_ids = excluded.ingress_ids,
+		outbound_mode = excluded.outbound_mode, outbound_ids = excluded.outbound_ids, updated_at = excluded.updated_at,
+		ingress_aliases = excluded.ingress_aliases, outbound_aliases = excluded.outbound_aliases`,
+		nodeID, in.IngressMode, int64sJSON(in.IngressIDs), in.OutboundMode, int64sJSON(in.OutboundIDs), now,
+		aliasesJSON(in.IngressAliases), aliasesJSON(in.OutboundAliases)); err != nil {
 		return CardPrefs{}, err
 	}
 	return s.GetCardPrefs(ctx, nodeID)
@@ -166,13 +267,17 @@ type CardPick struct {
 	// AutoIngress / AutoOutbound 是自动推荐会选的项(手动模式下给「恢复自动推荐」预览用)。
 	AutoIngress  []int64 `json:"auto_ingress"`
 	AutoOutbound []int64 `json:"auto_outbound"`
+	// IngressAliases / OutboundAliases 是卡片上的显示名称(只含还存在的序列)。只在展示层用。
+	IngressAliases  map[int64]string `json:"ingress_aliases"`
+	OutboundAliases map[int64]string `json:"outbound_aliases"`
 }
 
 // CoverageKey 回答一条序列覆盖的是哪个「运营商 / 地区」(自动推荐尽量各选一个)。
 type CoverageKey func(Summary) string
 
 // PickCards 按偏好算出每台节点卡片上的入站 / 出站各展示哪几项。
-// ingress 是入站的全部序列(主控 + Boce),outbound 是出站序列;outKey 给出站序列的运营商 / 地区(可为 nil)。
+// ingress 是入站的全部序列(主控 + Boce + 自建节点),outbound 是出站序列;outKey 给出站序列的运营商 / 地区(可为 nil)。
+// 别名只是跟着带出去,不参与挑选 —— 改个名字不会让卡片换一项显示。
 func PickCards(prefs map[int64]CardPrefs, nodeIDs []int64, ingress, outbound []Summary, outKey CoverageKey) map[int64]CardPick {
 	inBy := map[int64][]Summary{}
 	for _, s := range ingress {
@@ -194,7 +299,20 @@ func PickCards(prefs map[int64]CardPrefs, nodeIDs []int64, ingress, outbound []S
 		pick.AutoOutbound = autoPick(outBy[id], true, outKey)
 		pick.IngressIDs, pick.InvalidIngress = resolvePick(p.IngressMode, p.IngressIDs, inBy[id], pick.AutoIngress)
 		pick.OutboundIDs, pick.InvalidOutbound = resolvePick(p.OutboundMode, p.OutboundIDs, outBy[id], pick.AutoOutbound)
+		pick.IngressAliases = liveAliases(p.IngressAliases, inBy[id])
+		pick.OutboundAliases = liveAliases(p.OutboundAliases, outBy[id])
 		out[id] = pick
+	}
+	return out
+}
+
+// liveAliases 只留还存在的序列的别名。
+func liveAliases(m map[int64]string, have []Summary) map[int64]string {
+	out := map[int64]string{}
+	for _, s := range have {
+		if v := m[s.ID]; v != "" {
+			out[s.ID] = v
+		}
 	}
 	return out
 }
@@ -218,13 +336,16 @@ func resolvePick(mode string, ids []int64, have []Summary, auto []int64) ([]int6
 	return shown, invalid
 }
 
-// ingressKey:主控算一类;Boce 按运营商 + 大区分。
+// ingressKey:主控算一类;Boce 按运营商 + 大区分;自建节点按来源机器分。
 func ingressKey(s Summary) string {
-	if s.Source == SourceBoce {
+	switch s.Source {
+	case SourceBoce:
 		if s.Boce != nil {
 			return "BOCE:" + s.Boce.Area + ":" + s.Boce.ISPName
 		}
 		return "BOCE"
+	case SourcePeer:
+		return "PEER:" + strconv.FormatInt(s.PeerNodeID, 10)
 	}
 	return "MASTER"
 }
@@ -242,15 +363,17 @@ func activeRank(s Summary) int {
 	return 1
 }
 
-// sourceRank 让自动推荐在同档里先列主控的对外服务(升级前卡片的默认),再列 Boce,管理通道最后。
+// sourceRank 让自动推荐在同档里先列主控的对外服务(升级前卡片的默认),再列 Boce、自建节点拨测,管理通道最后。
 func sourceRank(s Summary) int {
 	switch {
 	case s.Source == SourceMaster && s.Kind == KindService:
 		return 0
 	case s.Source == SourceBoce:
 		return 1
+	case s.Source == SourcePeer:
+		return 2
 	}
-	return 2
+	return 3
 }
 
 // autoPick 是自动推荐:优先在测且有效的,尽量覆盖不同运营商 / 地区,最多 3 项。

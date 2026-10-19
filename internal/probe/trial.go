@@ -30,6 +30,8 @@ type TrialResult struct {
 	RTTMs    *float64 `json:"rtt_ms"`
 	Sent     int      `json:"sent"`
 	Received int      `json:"received"`
+	// HTTPStatus 只对 HTTP 目标:取得响应时的状态码。
+	HTTPStatus int `json:"http_status,omitempty"`
 	// VerifyState 是据此写回目标库的验证结论(采集失败、工具不可用时不写,为空)。
 	VerifyState string `json:"verify_state"`
 }
@@ -138,7 +140,8 @@ func (e *OutboundEngine) Trial(ctx context.Context, nodeID int64, ids []int64) (
 			e.ledger.settle(id, actual)
 		}
 		tr := TrialResult{PublicID: p.ID, Name: p.Name, Metric: p.Metric, Status: res.Status,
-			Label: res.Status.LabelFor(p.Metric), Error: res.Error, Peer: res.Peer, Sent: res.Sent, Received: res.Received}
+			Label: res.Status.LabelFor(p.Metric), Error: res.Error, Peer: res.Peer, Sent: res.Sent, Received: res.Received,
+			HTTPStatus: res.HTTPStatus}
 		if res.Status.Reachable() && res.RTT > 0 {
 			tr.RTTMs = ms(res.RTT.Microseconds())
 		}
@@ -168,8 +171,14 @@ func verifyOfTrial(res Result, m Metric, nodeName string) (string, string) {
 	switch {
 	case res.Status == StatusSSHError, res.Status == StatusToolError:
 		return "", ""
+	case res.Status == StatusOK && res.HTTPStatus >= 500:
+		// 网络是通的,但服务说自己出错了:不写成「验证通过」。
+		return "WARN", fmt.Sprintf("%s:取得了响应,但服务返回 HTTP %d(异常状态)", where, res.HTTPStatus)
 	case res.Status == StatusOK:
 		detail := where + ":" + res.Status.LabelFor(m)
+		if res.HTTPStatus > 0 {
+			detail += fmt.Sprintf(" HTTP %d", res.HTTPStatus)
+		}
 		if res.RTT > 0 {
 			detail += fmt.Sprintf(",%.1f ms", float64(res.RTT.Microseconds())/1000)
 		}

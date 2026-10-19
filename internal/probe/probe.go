@@ -5,6 +5,8 @@
 //     litebox-probe,跑完就退出;延迟在 VPS 上量,不含 SSH 的耗时。见 outbound.go;
 //   - 入口连通性(INGRESS):主控主动对节点的管理通道 / 订阅地址做 TCP 建连。
 //     不走 SSH、不占节点连接锁、不在节点上跑任何东西。见 engine.go。
+//     另有两种入站来源:Boce 的拨测点(付费,boce_engine.go),以及别的自建节点(PEER,V22.6)——
+//     后者由出站引擎在【来源机器】那一拍的批次里顺带测,结果记回被测机器的入站序列。
 //
 // 两类数据用 direction 分开存、分开算、分开显示,绝不合进同一个数字。
 // 两者都不是代理协议的健康检查 —— 那是部署里真实拨测的事。打开仪表盘不会触发任何一次探测,
@@ -50,12 +52,14 @@ const (
 	DirOutbound Direction = "OUTBOUND"
 )
 
-// Protocol 是探测协议。入口只有 TCP;出站有 ICMP 与 TCP。
+// Protocol 是探测协议。主控入口只有 TCP;PEER 与 Boce 有 ICMP 与 TCP;出站有 ICMP、TCP 与 HTTP。
 type Protocol string
 
 const (
 	ProtoTCP  Protocol = "TCP"
 	ProtoICMP Protocol = "ICMP"
+	// ProtoHTTP HTTP(S) 请求响应检测(只有出站;V22.6)。
+	ProtoHTTP Protocol = "HTTP"
 )
 
 // KindPublic 是出站序列的种类:指向一个公共目标。
@@ -94,6 +98,10 @@ const (
 	// 与节点本机测公共目标的 ICMP 丢包率(LOSS)方向相反、测点不同,与 Boce TCPing 也不是一回事 ——
 	// 很多机器本来就不回 ICMP,ping 不通不等于入口不可用。三者名字不同、不相加。
 	MetricBocePing Metric = "BOCE_PING"
+	// MetricHTTP 出站 HTTP(S):HTTP 请求失败率 = 未取得有效 HTTP 响应的次数 ÷ 实际发出的请求数。
+	// 200、404、500 都是取得了响应;5xx 另外标出来(服务返回异常状态),但不算请求失败 ——
+	// HTTP 有响应不等于 Web 应用健康,也不等于网络不通。耗时叫「HTTP 响应耗时」,不叫 RTT。
+	MetricHTTP Metric = "HTTP"
 )
 
 // BoceMetric 是 Boce 测法 → 口径的唯一判据。
@@ -117,6 +125,8 @@ func MetricOf(p Protocol, m TCPMode) Metric {
 	switch {
 	case p == ProtoICMP:
 		return MetricLoss
+	case p == ProtoHTTP:
+		return MetricHTTP
 	case m == TCPSyn:
 		return MetricSyn
 	}
@@ -134,6 +144,8 @@ func (m Metric) RateName() string {
 		return "TCPing 丢包率(Boce)"
 	case MetricBocePing:
 		return "Ping 丢包率(Boce)"
+	case MetricHTTP:
+		return "HTTP 请求失败率"
 	}
 	return "连接失败率"
 }
@@ -149,6 +161,8 @@ func (m Metric) MethodLabel() string {
 		return "Boce TCPing"
 	case MetricBocePing:
 		return "Boce Ping"
+	case MetricHTTP:
+		return "HTTP(S)"
 	}
 	return "TCP 建连"
 }
@@ -164,6 +178,9 @@ const (
 	SourceNode = "NODE"
 	// SourceBoce Boce 的拨测点(外部入站拨测,付费)。与主控同属入站方向,但不是同一个测点。
 	SourceBoce = "BOCE"
+	// SourcePeer 另一台自建 VPS(自建节点互测入站,V22.6):在来源机器上跑辅助程序,
+	// 测被测机器的订阅入口。来源机器自己不能当被测机器 —— 那是测自己,冒充不了公网入站质量。
+	SourcePeer = "PEER"
 )
 
 // SourceLabel 是来源给人看的名字。
@@ -175,6 +192,8 @@ func SourceLabel(source string) string {
 		return "节点本机"
 	case SourceBoce:
 		return "Boce 拨测点"
+	case SourcePeer:
+		return "自建节点"
 	}
 	return source
 }
@@ -273,6 +292,15 @@ func (s Status) LabelFor(m Metric) string {
 		case StatusTimeout:
 			return "全部丢包(ping 不通)"
 		}
+	case MetricHTTP:
+		switch s {
+		case StatusOK:
+			return "取得响应"
+		case StatusTimeout:
+			return "超时(没收到响应头)"
+		case StatusError:
+			return "未取得有效响应"
+		}
 	}
 	return s.Label()
 }
@@ -338,6 +366,8 @@ type Result struct {
 	RTTMin, RTTMax time.Duration
 	// Peer 是实际连的 IP(域名每轮重新解析,换了指向能在这里看出来)。
 	Peer string
+	// HTTPStatus 是 HTTP 序列取得响应时的状态码;其余为 0。
+	HTTPStatus int
 }
 
 // counts 把一次结果折算成发 / 收数。入口探测没有显式填 Sent / Received,
