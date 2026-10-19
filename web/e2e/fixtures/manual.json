@@ -26304,6 +26304,19 @@
         "rtt_max_ms": 177.9
       },
       "failures": []
+    },
+    "GET /api/metrics/net-rates": {
+      "interval_seconds": 30,
+      "items": [
+        {
+          "node_id": 1,
+          "rx_bps": 1262,
+          "tx_bps": 640,
+          "window_seconds": 30.02,
+          "uptime_seconds": 1123200,
+          "at": "2026-10-17T11:46:05Z"
+        }
+      ]
     }
   }
 }
