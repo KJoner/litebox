@@ -72,6 +72,10 @@ type NodeConfig struct {
 	// 节点连接锁一秒多。采得越勤,和部署、流量同步抢锁的概率越高。
 	// 置为负数可完全关闭采集。
 	MetricsInterval time.Duration `yaml:"metrics_interval"`
+	// NetRateInterval 是资产卡片实时网速的读数间隔。它只在仪表盘开着时读,
+	// 每次只读网卡与开机秒数两个累计值(不 sleep、节点忙时让路),
+	// 与上面那个要占锁一秒的资源采集是两件事。最短 10 秒;置为负数关闭。
+	NetRateInterval time.Duration `yaml:"net_rate_interval"`
 	// MetricsRetention 是资源采样的保留期。这不是计费数据,丢了不影响任何结算。
 	MetricsRetention time.Duration `yaml:"metrics_retention"`
 	// HealthInterval 是节点服务巡检的间隔(sing-box / nginx 还在不在跑)。
@@ -157,6 +161,7 @@ func Default() Config {
 			DeployDebounce:   4 * time.Second,
 			DeployMaxDelay:   30 * time.Second,
 			MetricsInterval:  5 * time.Minute,
+			NetRateInterval:  30 * time.Second,
 			HealthInterval:   2 * time.Minute,
 			MetricsRetention: 7 * 24 * time.Hour,
 		},
@@ -214,6 +219,7 @@ func applyEnv(cfg *Config) {
 	envDuration("LITEBOX_DEPLOY_DEBOUNCE", &cfg.Node.DeployDebounce)
 	envDuration("LITEBOX_TRAFFIC_SYNC_INTERVAL", &cfg.Traffic.SyncInterval)
 	envDuration("LITEBOX_NODE_METRICS_INTERVAL", &cfg.Node.MetricsInterval)
+	envDuration("LITEBOX_NODE_NET_RATE_INTERVAL", &cfg.Node.NetRateInterval)
 	envDuration("LITEBOX_NODE_HEALTH_INTERVAL", &cfg.Node.HealthInterval)
 	envStr("LITEBOX_LOG_LEVEL", &cfg.Log.Level)
 	envStr("LITEBOX_LOG_FORMAT", &cfg.Log.Format)

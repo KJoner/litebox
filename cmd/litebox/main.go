@@ -609,6 +609,18 @@ func cmdServe(args []string) error {
 		logger.Info("节点资源监控已关闭(node.metrics_interval 为负)")
 	}
 
+	// 资产卡片的实时网速。只在仪表盘开着时读,与上面的资源采集分开开关。
+	var netRates *node.NetRateSampler
+	if cfg.Node.NetRateInterval >= 0 {
+		netRates = node.NewNetRateSampler(node.NetRateOptions{
+			Service:  nodeService,
+			Logger:   logger,
+			Interval: cfg.Node.NetRateInterval,
+			Skip:     cloudSkip,
+		})
+		go netRates.Run(ctx)
+	}
+
 	// 节点服务巡检。与资源监控分开:那个可以整个关掉,而这个不能 ——
 	// 它回答的是"节点还能不能用",而不是"它忙不忙"。
 	watchdog := node.NewWatchdog(node.WatchdogOptions{
@@ -770,6 +782,7 @@ func cmdServe(args []string) error {
 		Metrics:     metricsStore,
 		HostTraffic: hostTraffic,
 		Monitor:     monitor,
+		NetRates:    netRates,
 		Watchdog:    watchdog,
 		Notifier:    notifier,
 		Settings:    settingsStore,

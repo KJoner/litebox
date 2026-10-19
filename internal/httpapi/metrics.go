@@ -23,6 +23,23 @@ func (s *Server) handleNodeMetricsLatest(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// handleNodeNetRates 返回资产卡片的实时网速,并顺延「有页面在看」的租约。
+//
+// 它只读内存,不连任何节点 —— 刷新多少次页面都不会多一条 SSH 会话;连节点的是后台那个
+// 按固定间隔跑的采样,而它只在这个接口最近两分钟被请求过时才跑。interval_seconds 为 0
+// 表示采样被关掉了,页面不必轮询。
+func (s *Server) handleNodeNetRates(w http.ResponseWriter, r *http.Request) {
+	if s.netRates == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"interval_seconds": 0, "items": []node.NetRate{}})
+		return
+	}
+	s.netRates.Touch()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"interval_seconds": int(s.netRates.Interval().Seconds()),
+		"items":            s.netRates.Snapshot(),
+	})
+}
+
 // handleNodeMetricsHistory 返回某节点的资源采样历史。
 func (s *Server) handleNodeMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.nodeIDFromPath(w, r)
