@@ -48,7 +48,7 @@ export function matchTarget(p: PublicProbeTarget, f: TargetFilter): boolean {
   }
   const q = f.q.trim().toLowerCase()
   if (q) {
-    const hay = [p.name, p.host, p.province, p.city, p.region, p.note, ispText(p.isp)].join(' ').toLowerCase()
+    const hay = [p.name, p.host, p.url, p.province, p.city, p.region, p.note, ispText(p.isp)].join(' ').toLowerCase()
     if (!hay.includes(q)) return false
   }
   return true

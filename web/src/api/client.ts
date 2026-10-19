@@ -1226,15 +1226,19 @@ export type ProbeKind = 'MGMT' | 'SERVICE' | 'PUBLIC'
 export type ProbeFamily = 'V4' | 'V6'
 /** INGRESS = 入口连通性(主控 → 这台机器);OUTBOUND = 出站网络质量(这台机器 → 公共目标) */
 export type ProbeDirection = 'INGRESS' | 'OUTBOUND'
-export type ProbeProtocol = 'TCP' | 'ICMP'
+/** HTTP = 出站 HTTP(S) 请求响应检测(只有出站;V22.6) */
+export type ProbeProtocol = 'TCP' | 'ICMP' | 'HTTP'
 /** TCP 的两种方式:CONNECT = 一次完整建连;SYN = 短超时握手近似(基于系统 TCP 建连,不是原始套接字 SYN 探测) */
 export type ProbeTCPMode = 'CONNECT' | 'SYN'
 /**
  * 一条序列看哪个比例,界面一律按它起名,不按协议自己推:
  * LOSS = ICMP 真实丢包率;CONNECT = TCP 连接失败率;SYN = TCP 握手超时无应答率(不是丢包率)。
  */
-/** BOCE = Boce 拨测点的 TCPing 丢包率;BOCE_PING = Boce 拨测点的 Ping(ICMP)丢包率。 */
-export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN' | 'BOCE' | 'BOCE_PING'
+/**
+ * BOCE = Boce 拨测点的 TCPing 丢包率;BOCE_PING = Boce 拨测点的 Ping(ICMP)丢包率;
+ * HTTP = HTTP 请求失败率(未取得有效 HTTP 响应的比例;404、5xx 都算取得了响应)。
+ */
+export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN' | 'BOCE' | 'BOCE_PING' | 'HTTP'
 /**
  * 一次结果。LOSS = ICMP 部分丢包(可达);SSH_ERROR = 采集失败(面板连不上这台机器,不是丢包);
  * TOOL_ERROR = 辅助程序不可用;BLOCKED = 目标受限;这三种与 DNS_ERROR、SKIPPED 都没有发起,不进分母。
@@ -1248,9 +1252,14 @@ export type ProbeState =
   | 'OK' | 'LOSSY' | 'FAILING' | 'DOWN' | 'PAUSED' | 'DISABLED' | 'STOPPED' | 'INVALID' | 'STALE' | 'PENDING'
   | 'COLLECT_FAILED' | 'TOOL_ERROR' | 'BLOCKED'
   | 'VANTAGE_ERROR' | 'API_ERROR' | 'EXPIRED' | 'SKIPPED'
-/** 点阵颜色。NONE = 这个窗口没有样本,**不按正常画**;SSH / TOOL 也不按失败画 —— 那几轮根本没有发出去 */
+  /** HTTP 最近一次取得了响应,但状态码是 5xx(服务返回异常状态;网络是通的) */
+  | 'HTTP_5XX'
+/**
+ * 点阵颜色。NONE = 这个窗口没有样本,**不按正常画**;SSH / TOOL 也不按失败画 —— 那几轮根本没有发出去。
+ * HTTP5XX = 这个窗口每一次都取得了 HTTP 响应,但其中有 5xx。
+ */
 export type ProbeBucketState =
-  | 'OK' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SSH' | 'TOOL' | 'BLOCKED' | 'VANTAGE' | 'API' | 'EXPIRED' | 'SKIP' | 'NONE'
+  | 'OK' | 'HTTP5XX' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SSH' | 'TOOL' | 'BLOCKED' | 'VANTAGE' | 'API' | 'EXPIRED' | 'SKIP' | 'NONE'
 
 export interface ProbeTarget {
   id: number
@@ -1266,6 +1275,8 @@ export interface ProbeTarget {
   /** Boce 序列所属的任务与拨测点;其余为 0 */
   boce_task_id: number
   vantage_id: number
+  /** 自建节点拨测(PEER)的拨测来源机器;其余为 0 */
+  peer_node_id: number
   family: ProbeFamily
   label: string
   source: string
@@ -1305,7 +1316,12 @@ export interface ProbeBucket {
   vantage_errors: number
   api_errors: number
   expired: number
-  /** 按包计(TCP 建连按建连计,握手近似按 SYN 计);loss_rate = (sent − received) / sent,一次都没发起时为 null */
+  /** HTTP 取得的响应按状态码分类(都算取得了响应);其余序列恒为 0 */
+  http_2xx: number
+  http_3xx: number
+  http_4xx: number
+  http_5xx: number
+  /** 按包计(TCP 建连按建连计,握手近似按 SYN 计,HTTP 按请求计);loss_rate = (sent − received) / sent,一次都没发起时为 null */
   sent: number
   received: number
   loss_rate: number | null
@@ -1330,6 +1346,10 @@ export interface ProbeStats {
   vantage_errors: number
   api_errors: number
   expired: number
+  http_2xx: number
+  http_3xx: number
+  http_4xx: number
+  http_5xx: number
   sent: number
   received: number
   /** 0~1。TCP 建连的连接失败率;ICMP 与握手近似时是「整轮失败」的比例。一次都没发起过时为 null,不是 0 */
@@ -1351,6 +1371,16 @@ export interface ProbeLastSample {
   received: number
   /** 实际连的 IP(域名每轮重新解析) */
   peer: string
+  /** HTTP:取得响应时的状态码 */
+  http_status?: number
+}
+
+/** 自建节点拨测的来源机器(取当前名字) */
+export interface PeerSourceInfo {
+  node_id: number
+  name: string
+  /** Ping / TCPing */
+  method: string
 }
 
 export interface ProbeSummary extends ProbeTarget {
@@ -1368,6 +1398,8 @@ export interface ProbeSummary extends ProbeTarget {
   note: string
   /** Boce 序列的任务与拨测点信息 */
   boce?: BoceSeriesInfo
+  /** 自建节点拨测(PEER)的来源机器 */
+  peer_source?: PeerSourceInfo
 }
 
 export interface ProbeCandidate {
@@ -1436,6 +1468,8 @@ export interface PublicProbeTarget {
   host: string
   protocol: ProbeProtocol
   tcp_mode: ProbeTCPMode
+  /** 只对 HTTP:完整地址(含查询串,只给管理员看);主机与端口由它推出来 */
+  url: string
   metric: ProbeMetric
   port: number
   family: ProbeFamily
@@ -1479,6 +1513,8 @@ export interface PublicProbeInput {
   host: string
   protocol: ProbeProtocol
   tcp_mode?: ProbeTCPMode
+  /** 只对 HTTP:http:// 或 https:// 的完整地址 */
+  url?: string
   port: number
   family: ProbeFamily
   interval_sec: number
@@ -1653,6 +1689,8 @@ export interface ProbeTrialResult {
   rtt_ms: number | null
   sent: number
   received: number
+  /** HTTP:取得响应时的状态码 */
+  http_status?: number
   verify_state: ProbeVerifyState | ''
 }
 
@@ -1700,7 +1738,39 @@ export interface NodeProbe {
   candidates: ProbeCandidate[]
   /** Boce 外部入站拨测的序列(每个「任务 × 拨测点」一条) */
   boce: ProbeSummary[]
+  /** 自建节点互测入站(别的自建机器 → 这台机器的订阅入口) */
+  peer: ProbeSummary[]
+  /** 新建自建节点拨测时可选的来源(除这台之外的全部机器) */
+  peer_sources: PeerSourceOption[]
   card: { prefs: CardPrefs; pick: CardPick }
+}
+
+export interface PeerSourceOption {
+  node_id: number
+  name: string
+  display_name: string
+  /** 非空 = 这台机器眼下测不了的原因(停用、暂停了本机探测、没探测过架构);仍可选 */
+  note: string
+}
+
+export interface PeerInput {
+  ref: string
+  family: ProbeFamily
+  source_node_ids: number[]
+  /** ICMP = Ping,TCP = TCPing */
+  methods: ('ICMP' | 'TCP')[]
+  /** false = 只建、不跑周期检测(手动「立即检测」仍可用) */
+  enabled?: boolean
+}
+
+export interface PeerRunResult {
+  id: number
+  status: ProbeStatus | ''
+  label: string
+  rtt_ms: number | null
+  error: string
+  /** false = 来源机器正忙,这一次没有测、什么都没记 */
+  recorded: boolean
 }
 
 export interface ProbeFailurePoint {
@@ -1711,6 +1781,8 @@ export interface ProbeFailurePoint {
   sent: number
   received: number
   peer: string
+  /** HTTP:取得了 5xx 响应的那几轮(status 是 OK) */
+  http_status: number
 }
 
 export interface ProbeHistory {
@@ -1747,6 +1819,8 @@ export interface DashboardCards {
   outbound: ProbeSummary[]
   /** Boce 外部入站拨测的序列 */
   boce: ProbeSummary[]
+  /** 自建节点互测入站的序列 */
+  peer: ProbeSummary[]
   /** 每台节点卡片上入站 / 出站各展示哪几项 */
   card_picks: CardPick[]
   cost_summary: CostRow[]
@@ -2039,6 +2113,9 @@ export interface CardPrefs {
   ingress_ids: number[]
   outbound_mode: CardMode
   outbound_ids: number[]
+  /** 序列 id → 卡片上的显示名称(只改展示,不改检测;空 = 原始名称) */
+  ingress_aliases: Record<string, string>
+  outbound_aliases: Record<string, string>
   updated_at: string
 }
 
@@ -2054,6 +2131,9 @@ export interface CardPick {
   invalid_outbound: number[]
   auto_ingress: number[]
   auto_outbound: number[]
+  /** 卡片上的显示名称(只含还存在的序列) */
+  ingress_aliases: Record<string, string>
+  outbound_aliases: Record<string, string>
 }
 
 export interface ExpiryRenewal {
@@ -3976,8 +4056,15 @@ export const api = {
   probeTrial: (nodeID: number, publicIDs: number[]) =>
     request<{ results: ProbeTrialResult[] }>(`/api/nodes/${nodeID}/probe-trial`, { method: 'POST', body: { public_ids: publicIDs } }),
   // 卡片展示偏好:只写一张表,不触发任何探测、不调 Boce。
-  setCardPrefs: (nodeID: number, body: Pick<CardPrefs, 'ingress_mode' | 'ingress_ids' | 'outbound_mode' | 'outbound_ids'>) =>
+  // 别名不传 = 保持原样,空对象 = 全部清掉。
+  setCardPrefs: (nodeID: number, body: Pick<CardPrefs, 'ingress_mode' | 'ingress_ids' | 'outbound_mode' | 'outbound_ids'>
+    & Partial<Pick<CardPrefs, 'ingress_aliases' | 'outbound_aliases'>>) =>
     request<CardPrefs>(`/api/nodes/${nodeID}/probe-card`, { method: 'PUT', body }),
+  // 自建节点互测入站:按「来源 × 测法」各建一条;立即检测的结果照常进历史。启停与删除走 updateProbeTarget / deleteProbeTarget。
+  createProbePeers: (nodeID: number, body: PeerInput) =>
+    request<{ created: ProbeTarget[]; duplicates: number }>(`/api/nodes/${nodeID}/probe-peers`, { method: 'POST', body }),
+  runProbePeers: (nodeID: number, ids: number[]) =>
+    request<{ results: PeerRunResult[] }>(`/api/nodes/${nodeID}/probe-peers/run`, { method: 'POST', body: { ids } }),
 
   // Boce 外部入站拨测。页面访问只读库;会调 Boce 的只有校验 / 余额 / 同步(免费)与手动检测(付费,经预算)。
   boceOverview: () => request<BoceOverview>('/api/boce'),

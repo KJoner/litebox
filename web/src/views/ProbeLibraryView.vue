@@ -4,7 +4,7 @@ import { message, Modal } from 'ant-design-vue'
 import { api, ApiError, type ProbeOrigin, type PublicProbeLibrary, type PublicProbeTarget } from '@/api/client'
 import { LbBatchBar, LbEmptyState, LbIcon, LbInfoTip, LbRowCard, LbTimeText } from '@/components/lb'
 import { useNarrow } from '@/composables/useNarrow'
-import { familyText, ispText, metricLabel, originText } from '@/components/asset/probeView'
+import { familyText, ispText, metricLabel, originText, publicAddr } from '@/components/asset/probeView'
 import ProbeSourceCards from '@/components/probe/ProbeSourceCards.vue'
 import ProbeLimitsCard from '@/components/probe/ProbeLimitsCard.vue'
 import ProbeTargetFilterBar from '@/components/probe/ProbeTargetFilterBar.vue'
@@ -292,7 +292,7 @@ const columns = [
                 <span class="plv__name lb-ellipsis">{{ p.name }}</span>
               </template>
               <div class="plv__card-body">
-                <span class="lb-mono plv__host">{{ p.host }}<template v-if="p.protocol === 'TCP'">:{{ p.port }}</template></span>
+                <span class="lb-mono plv__host">{{ publicAddr(p) }}</span>
                 <span>{{ metricLabel(p.metric) }} · {{ familyText(p.family) }} · {{ originText(p.source) }}</span>
                 <span>{{ placeText(p) }}</span>
                 <span :class="{ plv__warn: !!p.pause_reason }">{{ scopeText(p) }}</span>
@@ -323,7 +323,7 @@ const columns = [
                   <span v-if="record.role === 'BACKUP'" class="lb-chip">备用</span>
                   <span v-if="record.upstream_missing_since" class="lb-chip lb-chip--warn" title="上游列表里已经不见了(只标记,不删除、不停测)">上游已消失</span>
                 </span>
-                <span class="lb-mono plv__host">{{ record.host }}<template v-if="record.protocol === 'TCP'">:{{ record.port }}</template></span>
+                <span class="lb-mono plv__host">{{ publicAddr(record) }}</span>
               </div>
             </template>
             <template v-else-if="column.key === 'method'">

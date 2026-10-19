@@ -137,6 +137,11 @@ export interface AssetCard {
   probes: ProbeSummary[]
   /** Boce 外部入站拨测的序列(每个「任务 × 拨测点」一条)。 */
   boce: ProbeSummary[]
+  /** 自建节点互测入站的序列(别的自建机器 → 这台机器的订阅入口)。 */
+  peer: ProbeSummary[]
+  /** 卡片上的自定义显示名称(序列 id → 别名);只改展示,不改检测。 */
+  ingressAliases: Record<string, string>
+  outboundAliases: Record<string, string>
   /**
    * 卡片上实际展示的入站 / 出站项目(各最多 3 项,按节点的展示设置或自动推荐)。
    * 这是展示数量,不是检测数量:没展示的序列照样在测,在节点详情里看得到。
@@ -209,6 +214,7 @@ function monitorOf(
   outbound: ProbeSummary[],
   probes: ProbeSummary[],
   boce: ProbeSummary[],
+  peer: ProbeSummary[],
   cards: DashboardCards | null,
 ): MonitorState {
   if (!cards) return 'UNKNOWN'
@@ -216,8 +222,8 @@ function monitorOf(
   // Boce 有自己的开关:探测的全局开关关着时,Boce 序列照样要能看见。
   const boceOn = boce.some((p) => p.enabled)
   if (!cards.probe.enabled && !boceOn) return 'GLOBAL_OFF'
-  if (!outbound.length && !probes.length && !boce.length) return 'NONE'
-  if (!outbound.length && probes.every((p) => !p.enabled) && !boceOn) return 'PAUSED'
+  if (!outbound.length && !probes.length && !boce.length && !peer.length) return 'NONE'
+  if (!outbound.length && probes.every((p) => !p.enabled) && !boceOn && peer.every((p) => !p.enabled)) return 'PAUSED'
   return 'ON'
 }
 
@@ -228,12 +234,13 @@ function pickShown(
   outboundOn: ProbeSummary[],
   probes: ProbeSummary[],
   boce: ProbeSummary[],
+  peer: ProbeSummary[],
 ) {
   if (!pick) {
     return { ingress: probes.slice(0, 2), outbound: outboundOn.slice(0, 3), invalid: 0 }
   }
   const byID = new Map<number, ProbeSummary>()
-  for (const p of [...probes, ...boce, ...outboundAll]) byID.set(p.id, p)
+  for (const p of [...probes, ...boce, ...peer, ...outboundAll]) byID.set(p.id, p)
   const take = (ids: number[]) => ids.map((id) => byID.get(id)).filter((p): p is ProbeSummary => !!p)
   return {
     ingress: take(pick.ingress_ids),
@@ -253,9 +260,9 @@ function minLatency(list: ProbeSummary[]): number | null {
   return best
 }
 
-/** 排序用的延迟:出站优先(机器本身的网络),没有出站数据时才看入口,再没有才看 Boce。 */
-function latencyOf(outbound: ProbeSummary[], probes: ProbeSummary[], boce: ProbeSummary[]): number | null {
-  return minLatency(outbound) ?? minLatency(probes) ?? minLatency(boce)
+/** 排序用的延迟:出站优先(机器本身的网络),没有出站数据时才看入口,再没有才看 Boce、自建节点拨测。 */
+function latencyOf(outbound: ProbeSummary[], probes: ProbeSummary[], boce: ProbeSummary[], peer: ProbeSummary[]): number | null {
+  return minLatency(outbound) ?? minLatency(probes) ?? minLatency(boce) ?? minLatency(peer)
 }
 
 const failing = (p: ProbeSummary) => p.state === 'DOWN' || p.state === 'FAILING'
@@ -287,6 +294,12 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     list.push(t)
     boceBy.set(t.node_id, list)
   }
+  const peerBy = new Map<number, ProbeSummary[]>()
+  for (const t of inp.cards?.peer ?? []) {
+    const list = peerBy.get(t.node_id) ?? []
+    list.push(t)
+    peerBy.set(t.node_id, list)
+  }
   const pickBy = new Map<number, CardPick>()
   for (const p of inp.cards?.card_picks ?? []) pickBy.set(p.node_id, p)
   const externalBy = new Map<number, ExternalCheckStatus>()
@@ -299,9 +312,12 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     const probes = sortProbes(probesBy.get(n.id) ?? [])
     const outbound = outboundBy.get(n.id) ?? []
     const boce = boceBy.get(n.id) ?? []
-    const shown = pickShown(pickBy.get(n.id), outboundAllBy.get(n.id) ?? [], outbound, probes, boce)
+    const peer = peerBy.get(n.id) ?? []
+    const pick = pickBy.get(n.id)
+    const shown = pickShown(pick, outboundAllBy.get(n.id) ?? [], outbound, probes, boce, peer)
     const activeCount =
-      outbound.length + probes.filter((p) => p.enabled).length + boce.filter((p) => p.enabled).length
+      outbound.length + probes.filter((p) => p.enabled).length + boce.filter((p) => p.enabled).length +
+      peer.filter((p) => p.enabled).length
     const shownActive = [...shown.ingress, ...shown.outbound].filter((p) => p.enabled).length
     const l = labels.get(key)
     const statuses = new Set<StatusKey>()
@@ -317,7 +333,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       lr && !isPreChange(n, lr.at) && now - new Date(lr.at).getTime() <= netRateMaxAgeMs(inp.netRateInterval) ? lr : null
     if (stale || [...outbound, ...probes].some((p) => p.enabled && p.state === 'STALE')) statuses.add('STALE')
     if (outbound.some(failing) || probes.some(failing)) statuses.add('PROBE_FAIL')
-    const monitor = monitorOf(outbound, probes, boce, inp.cards)
+    const monitor = monitorOf(outbound, probes, boce, peer, inp.cards)
     if (monitor === 'NONE' || monitor === 'PAUSED' || monitor === 'GLOBAL_OFF') statuses.add('MONITOR_OFF')
     if (expiringState(n.expiry)) statuses.add('EXPIRING')
     const cyc = inp.cycles[n.id]
@@ -366,6 +382,9 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       outbound,
       probes,
       boce,
+      peer,
+      ingressAliases: pick?.ingress_aliases ?? {},
+      outboundAliases: pick?.outbound_aliases ?? {},
       shownIngress: shown.ingress,
       shownOutbound: shown.outbound,
       shownInvalid: shown.invalid,
@@ -376,7 +395,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       cardsLoaded: !!inp.cards,
       statuses,
       cloudStopped,
-      latency: latencyOf(outbound, probes, boce),
+      latency: latencyOf(outbound, probes, boce, peer),
       uptime: live
         ? { seconds: live.uptime_seconds, at: live.at }
         : m && !stale && m.uptime_seconds > 0
@@ -415,6 +434,9 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       outbound: [],
       probes: [],
       boce: [],
+      peer: [],
+      ingressAliases: {},
+      outboundAliases: {},
       shownIngress: [],
       shownOutbound: [],
       shownInvalid: 0,
@@ -463,6 +485,9 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       outbound: [],
       probes: [],
       boce: [],
+      peer: [],
+      ingressAliases: {},
+      outboundAliases: {},
       shownIngress: [],
       shownOutbound: [],
       shownInvalid: 0,
@@ -604,6 +629,9 @@ export interface AssetOverview {
   /** Boce 外部入站拨测:在测的序列与其中失败的(单列,不并进上面两个数) */
   boceTargets: number
   boceFailing: number
+  /** 自建节点互测入站:与主控入口、Boce 分开数(测点不同)。 */
+  peerTargets: number
+  peerFailing: number
 }
 
 export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): AssetOverview {
@@ -627,6 +655,8 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
     probeFailing: 0,
     boceTargets: 0,
     boceFailing: 0,
+    peerTargets: 0,
+    peerFailing: 0,
   }
   for (const c of nodes) {
     const r = c.resources
@@ -655,6 +685,11 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
       if (!p.enabled) continue
       ov.boceTargets++
       if (failing(p)) ov.boceFailing++
+    }
+    for (const p of c.peer) {
+      if (!p.enabled) continue
+      ov.peerTargets++
+      if (failing(p)) ov.peerFailing++
     }
   }
   return ov

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { ProbeBucket, ProbeMetric } from '@/api/client'
 import { formatTime } from '@/utils/format'
+import { httpCodesText } from './probeView'
 
 /**
  * 探测点阵:一个点一个时间窗口。
@@ -12,6 +13,7 @@ import { formatTime } from '@/utils/format'
  * 工具不可用 / 目标受限是空心琥珀框,色觉障碍下也分得出。
  * 采集失败与工具不可用**不按失败画**:那几轮根本没有发出去,目标那头是什么样子并不知道。
  * Boce 的拨测点异常、接口异常、未取得结果同理:第三方那一侧的问题,画成灰色点线框,不算这台 VPS 的丢包。
+ * HTTP 每次都取得了响应、但其中有 5xx:琥珀色实心带一道竖线 —— 网络通,服务说自己出错了,不冒充正常。
  */
 const props = defineProps<{
   dots: ProbeBucket[]
@@ -28,6 +30,7 @@ const props = defineProps<{
 
 const STATE_TEXT: Record<ProbeBucket['state'], string> = {
   OK: '全部成功',
+  HTTP5XX: '全部取得 HTTP 响应,但有 5xx(服务返回异常状态)',
   PARTIAL: '部分失败 / 部分丢包 / 部分无应答',
   FAIL: '全部失败',
   DNS: 'DNS 解析失败(未发起)',
@@ -48,9 +51,10 @@ function title(d: ProbeBucket): string {
     else if (props.metric === 'SYN') parts.push(`握手 ${d.attempts} 轮,发出 ${d.sent} 个 SYN、有应答 ${d.received} 个`)
     else if (props.metric === 'BOCE') parts.push(`TCPing ${d.attempts} 轮,发 ${d.sent} 次、成功 ${d.received} 次`)
     else if (props.metric === 'BOCE_PING') parts.push(`Ping ${d.attempts} 轮,发 ${d.sent} 个包、收到 ${d.received} 个`)
+    else if (props.metric === 'HTTP') parts.push(`HTTP 请求 ${d.attempts} 次,取得响应 ${d.received} 次(${httpCodesText(d)})`)
     else parts.push(`TCP 连接 ${d.attempts} 次,失败 ${d.failures} 次`)
   }
-  if (d.rtt_avg_ms != null) parts.push(`平均 ${d.rtt_avg_ms.toFixed(1)} ms`)
+  if (d.rtt_avg_ms != null) parts.push(`平均${props.metric === 'HTTP' ? '响应耗时' : ''} ${d.rtt_avg_ms.toFixed(1)} ms`)
   if (d.dns_errors) parts.push(`DNS 失败 ${d.dns_errors} 次`)
   if (d.ssh_errors) parts.push(`采集失败 ${d.ssh_errors} 次`)
   if (d.tool_errors) parts.push(`工具不可用 ${d.tool_errors} 次`)
@@ -65,11 +69,12 @@ function title(d: ProbeBucket): string {
 /** 给读屏的一句话:不念 30 个点,只念合计。 */
 const summary = computed(() => {
   const c: Record<ProbeBucket['state'], number> = {
-    OK: 0, PARTIAL: 0, FAIL: 0, DNS: 0, SSH: 0, TOOL: 0, BLOCKED: 0, VANTAGE: 0, API: 0, EXPIRED: 0, SKIP: 0, NONE: 0,
+    OK: 0, HTTP5XX: 0, PARTIAL: 0, FAIL: 0, DNS: 0, SSH: 0, TOOL: 0, BLOCKED: 0, VANTAGE: 0, API: 0, EXPIRED: 0, SKIP: 0, NONE: 0,
   }
   for (const d of props.dots) c[d.state]++
   const minutes = Math.round((props.dots.length * props.seconds) / 60)
   const parts = [`成功 ${c.OK}`, `部分失败 ${c.PARTIAL}`, `失败 ${c.FAIL}`, `DNS 失败 ${c.DNS}`]
+  if (c.HTTP5XX) parts.push(`有 HTTP 5xx ${c.HTTP5XX}`)
   if (c.SSH) parts.push(`采集失败 ${c.SSH}`)
   if (c.TOOL + c.BLOCKED) parts.push(`未发起 ${c.TOOL + c.BLOCKED}`)
   if (c.VANTAGE + c.API + c.EXPIRED) parts.push(`第三方异常 ${c.VANTAGE + c.API + c.EXPIRED}`)
@@ -116,6 +121,9 @@ const summary = computed(() => {
   height: 8px;
   border-radius: 1px;
 }
+.pd__dot--http5xx {
+  background: linear-gradient(to right, var(--warn) 0 40%, var(--warn-bg) 40% 60%, var(--warn) 60%);
+}
 .pd__dot--partial {
   background: linear-gradient(to top, var(--warn) 50%, var(--warn-bg) 50%);
   box-shadow: inset 0 0 0 1px var(--warn);
@@ -155,6 +163,7 @@ const summary = computed(() => {
   border: 1px dashed var(--fill2);
 }
 .pd--muted .pd__dot--ok,
+.pd--muted .pd__dot--http5xx,
 .pd--muted .pd__dot--fail,
 .pd--muted .pd__dot--partial {
   filter: grayscale(1);
