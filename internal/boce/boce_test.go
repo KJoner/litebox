@@ -29,7 +29,8 @@ func TestNodesParsesBothAreasAndRejectsBadRows(t *testing.T) {
 		}
 		gotArea = append(gotArea, r.URL.Query().Get("area"))
 		if r.URL.Query().Get("area") == "oversea" {
-			_, _ = w.Write([]byte(`{"error_code":0,"error":"","data":{"list":[{"id":901,"node_name":"日本东京","isp_name":"","isp_code":0}]}}`))
+			// 真实接口:海外拨测点的 ID 是负数,运营商一律「海外」。
+			_, _ = w.Write([]byte(`{"error_code":0,"error":"","data":{"list":[{"id":-840,"node_name":"美国","isp_name":"海外","isp_code":840}]}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"error_code":0,"error":"","data":{"list":[
@@ -48,7 +49,7 @@ func TestNodesParsesBothAreasAndRejectsBadRows(t *testing.T) {
 		t.Fatalf("大陆列表 = %+v", cn)
 	}
 	os, err := c.Nodes(context.Background(), testKey, AreaOversea)
-	if err != nil || len(os) != 1 || os[0].Area != AreaOversea || os[0].Name != "日本东京" {
+	if err != nil || len(os) != 1 || os[0].Area != AreaOversea || os[0].ID != -840 || os[0].Name != "美国" {
 		t.Fatalf("海外列表 = %+v, %v", os, err)
 	}
 	if gotArea[0] != "" || gotArea[1] != "oversea" {
@@ -89,6 +90,10 @@ func TestCreateTCPingSuccessAndRejection(t *testing.T) {
 	id, err := c.CreateTCPing(context.Background(), testKey, []int{31, 32}, "edge.example.com:443")
 	if err != nil || id != "LxiB1jZPNiGZbvSYxBoVNEAfR8DhZaQ" {
 		t.Fatalf("创建 = %q, %v", id, err)
+	}
+	// 海外拨测点是负数 ID,照样能交上去;0 不行。
+	if _, err := c.CreateTCPing(context.Background(), testKey, []int{0}, "edge.example.com:443"); err == nil {
+		t.Fatal("ID 0 应当被拒")
 	}
 	_, err = c.CreateTCPing(context.Background(), testKey, []int{31}, "edge.example.com:443")
 	if !IsCode(err, CodeParam) {
@@ -194,19 +199,48 @@ func TestTCPingResultParsesTheDocExample(t *testing.T) {
 	}
 }
 
+// 真实接口的一条结果(地址换成了文档地址段):round_trip_avg 与 round_trip_max 是对调的,
+// report_source 里的 min/avg/max 才是对的;每轮 5 个包。
+const liveExample = `{"done":true,"id":"20261019_7fe82767081c89c0fb12f3e02a12227b","list":[{"node_id":42,"node_name":"上海电信",
+"host":"203.0.113.17:24443","origin_ip":"198.51.100.200",
+"report_source":"TCPING 203.0.113.17:24443(203.0.113.17)\nresponse from 203.0.113.17:24443(203.0.113.17) seq=1 time=159.25 ms\n--- 203.0.113.17:24443 ping statistics ---\n5 responses, 5 ok, 0.00% failed\nround-trip min/avg/max = 151.66/156.92/159.25ms",
+"session_id":"198.51.100.200_100017","ip_region":"美国","ip_isp":"示例","error_code":0,"error":"","time_id":"x","size":0,
+"ip":"203.0.113.17","packet_loss":0,"packets_received":5,"packets_transmitted":5,
+"round_trip_avg":159.25,"round_trip_max":156.92,"round_trip_min":151.66}],"max_node":1}`
+
+func TestTCPingRTTFieldsAreSwappedUpstream(t *testing.T) {
+	res, err := parseTCPing([]byte(liveExample), testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := res.Items[0]
+	if it.RTTAvgMs != 156.92 || it.RTTMinMs != 151.66 || it.RTTMaxMs != 159.25 || it.Sent != 5 {
+		t.Fatalf("应当以原始输出的 min/avg/max 为准:avg %v min %v max %v sent %d", it.RTTAvgMs, it.RTTMinMs, it.RTTMaxMs, it.Sent)
+	}
+	// 没有原始输出时按排序取中间值:平均必然在最小与最大之间。
+	if a, mn, mx := rttTriple(159.25, 151.66, 156.92, ""); a != 156.92 || mn != 151.66 || mx != 159.25 {
+		t.Fatalf("排序兜底 = %v %v %v", a, mn, mx)
+	}
+	// 原始输出读出来不合理(avg 不在中间)时不采信,退回排序。
+	if a, _, _ := rttTriple(10, 9, 11, "round-trip min/avg/max = 5/50/6ms"); a != 10 {
+		t.Fatalf("不合理的原始输出不应采信,得到 %v", a)
+	}
+}
+
 func TestTCPingResultValidation(t *testing.T) {
 	body := `{"done":"true","id":"abc","max_node":"3","list":[
 		{"node_id":1,"packets_transmitted":10,"packets_received":11},
 		{"node_id":2,"packets_transmitted":10,"packets_received":5,"round_trip_avg":-1},
 		{"node_id":3,"packets_transmitted":4,"packets_received":2,"round_trip_avg":"20.5","ip":"not-an-ip"},
-		{"node_id":4,"error_code":-1,"error":"not found node"}
+		{"node_id":4,"error_code":-1,"error":"not found node"},
+		{"node_id":-840,"packets_transmitted":4,"packets_received":4,"round_trip_avg":180}
 	]}`
 	res, err := parseTCPing([]byte(body), testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Done || res.Rejected != 2 || len(res.Items) != 2 {
-		t.Fatalf("应当收下 2 条、拒 2 条:%+v", res)
+	if !res.Done || res.Rejected != 2 || len(res.Items) != 3 || res.Items[2].NodeID != -840 {
+		t.Fatalf("应当收下 3 条(含海外的负数 ID)、拒 2 条:%+v", res)
 	}
 	if res.Items[0].NodeID != 3 || res.Items[0].RTTAvgMs != 20.5 || res.Items[0].IP != "" {
 		t.Fatalf("第 3 条 = %+v", res.Items[0])

@@ -24,6 +24,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,9 @@ func (e *UncertainError) Error() string {
 func (e *UncertainError) Unwrap() error { return e.Err }
 
 // Node 是一个拨测点。地区与运营商只存接口实际返回的值。
+//
+// **海外拨测点的 ID 是负数**(真实接口返回 -840 = 美国、-826 = 英国……,大陆的是正数)。
+// 判有效只能看「不为 0」,按「大于 0」判会把海外的一百多个拨测点全部静默丢掉 —— 真机验证时撞到的。
 type Node struct {
 	ID      int    `json:"id"`
 	Name    string `json:"node_name"`
@@ -308,7 +312,7 @@ func (c *Client) Nodes(ctx context.Context, key string, area Area) ([]Node, erro
 	for _, it := range data.List {
 		id := int(it.ID)
 		name := cleanText(it.Name, 64)
-		if id <= 0 || id > 1e9 || name == "" || seen[id] {
+		if !validNodeID(id) || name == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
@@ -331,7 +335,7 @@ func (c *Client) CreateTCPing(ctx context.Context, key string, nodeIDs []int, ho
 	}
 	ids := make([]string, len(nodeIDs))
 	for i, id := range nodeIDs {
-		if id <= 0 {
+		if !validNodeID(id) {
 			return "", &NotSentError{Err: errors.New("拨测点 ID 非法")}
 		}
 		ids[i] = strconv.Itoa(id)
@@ -405,6 +409,7 @@ func parseTCPing(body []byte, key string) (*TCPingResult, error) {
 			RTTMin      flexFloat `json:"round_trip_min"`
 			ErrorCode   flexInt   `json:"error_code"`
 			Error       string    `json:"error"`
+			Report      string    `json:"report_source"`
 		} `json:"list"`
 		Data json.RawMessage `json:"data"`
 	}
@@ -422,7 +427,7 @@ func parseTCPing(body []byte, key string) (*TCPingResult, error) {
 	for _, it := range raw.List {
 		id := int(it.NodeID)
 		sent, recv := int(it.Transmitted), int(it.Received)
-		ok := id > 0 && id <= 1e9 && !seen[id] &&
+		ok := validNodeID(id) && !seen[id] &&
 			sent >= 0 && sent <= 10000 && recv >= 0 && recv <= sent &&
 			finiteIn(float64(it.RTTAvg), 0, 600000) && finiteIn(float64(it.RTTMin), 0, 600000) &&
 			finiteIn(float64(it.RTTMax), 0, 600000) && finiteIn(float64(it.PacketLoss), 0, 100)
@@ -431,16 +436,50 @@ func parseTCPing(body []byte, key string) (*TCPingResult, error) {
 			continue
 		}
 		seen[id] = true
+		avg, min, max := rttTriple(float64(it.RTTAvg), float64(it.RTTMin), float64(it.RTTMax), it.Report)
 		out.Items = append(out.Items, TCPingItem{
 			NodeID: id, NodeName: cleanText(it.NodeName, 64), Host: cleanText(it.Host, 255),
 			OriginIP: ipOrEmpty(it.OriginIP), IP: ipOrEmpty(it.IP),
 			IPRegion: cleanText(it.IPRegion, 64), IPISP: cleanText(it.IPISP, 32),
 			PacketLoss: float64(it.PacketLoss), Sent: sent, Received: recv,
-			RTTAvgMs: float64(it.RTTAvg), RTTMinMs: float64(it.RTTMin), RTTMaxMs: float64(it.RTTMax),
+			RTTAvgMs: avg, RTTMinMs: min, RTTMaxMs: max,
 			ErrorCode: int(it.ErrorCode), Error: cleanText(scrub(it.Error, key), 200),
 		})
 	}
 	return out, nil
+}
+
+var reportRTT = regexp.MustCompile(`min/avg/max\s*=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)`)
+
+// rttTriple 给出这一个拨测点的(平均、最小、最大)往返。
+//
+// **真实接口的 round_trip_avg 与 round_trip_max 是对调的**:同一条结果里 report_source(拨测点的原始输出)
+// 写着 `min/avg/max = 151.66/156.92/159.25`,而 JSON 字段是 avg = 159.25、max = 156.92 —— 照字段取,
+// 「平均延迟」就成了最大值。原始输出里那一行能读出来就以它为准;读不出来时把三个数排序,
+// 中间那个就是平均(平均值必然落在最小与最大之间),无论上游把哪两个字段写反都对;
+// 只给了平均、另外两个是 0 时不排序(那会把平均挪到最大值的位置)。
+func rttTriple(avg, min, max float64, report string) (float64, float64, float64) {
+	if m := reportRTT.FindStringSubmatch(report); m != nil {
+		a, _ := strconv.ParseFloat(m[1], 64)
+		b, _ := strconv.ParseFloat(m[2], 64)
+		c, _ := strconv.ParseFloat(m[3], 64)
+		if finiteIn(a, 0, 600000) && finiteIn(b, 0, 600000) && finiteIn(c, 0, 600000) && a <= b && b <= c {
+			return b, a, c
+		}
+	}
+	if avg > 0 && min > 0 && max > 0 {
+		v := []float64{avg, min, max}
+		sort.Float64s(v)
+		return v[1], v[0], v[2]
+	}
+	// 只给了一部分(另外的是 0):平均以 round_trip_avg 为准,缺的最小 / 最大用它补。
+	if min <= 0 || min > avg {
+		min = avg
+	}
+	if max <= 0 || max < avg {
+		max = avg
+	}
+	return avg, min, max
 }
 
 // Balance 查余额与剩余波点。
@@ -491,6 +530,11 @@ func ValidHost(host string) error {
 		return errors.New("Boce TCPing 不提交 IPv6 地址")
 	}
 	return nil
+}
+
+// validNodeID:非 0,绝对值不超过 10 亿。海外拨测点是负数。
+func validNodeID(id int) bool {
+	return id != 0 && id >= -1e9 && id <= 1e9
 }
 
 func finiteIn(v, lo, hi float64) bool {

@@ -57,8 +57,9 @@ export function points(v: number | null | undefined): string {
 }
 
 /** 拨测点给人看的名字:节点名 + 运营商(节点名里已经带了运营商就不重复);只用接口原样给的说法。 */
-export function vantageLabel(v: Pick<BoceVantage, 'node_name' | 'isp_name'>): string {
-  if (!v.isp_name || v.node_name.includes(v.isp_name)) return v.node_name
+export function vantageLabel(v: Pick<BoceVantage, 'node_name' | 'isp_name'> & { area?: string }): string {
+  // 海外拨测点的运营商一律是「海外」(大区另有标记),名字里不重复。
+  if (!v.isp_name || v.node_name.includes(v.isp_name) || (v.area === 'OVERSEA' && v.isp_name === '海外')) return v.node_name
   return `${v.node_name} ${v.isp_name}`
 }
 
