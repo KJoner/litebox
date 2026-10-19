@@ -22368,7 +22368,6 @@
           "id": 1,
           "node_id": 1,
           "name": "上海-alpha 三网拨测",
-          "check_type": "TCPING",
           "ref": "EP:1",
           "family": "V4",
           "vantage_ids": [
@@ -22436,13 +22435,13 @@
             "sent_at": "2026-10-17T11:01:40Z",
             "finished_at": "2026-10-17T11:02:01Z",
             "items": []
-          }
+          },
+          "test_type": "TCPING"
         },
         {
           "id": 2,
           "node_id": 1,
           "name": "海外拨测(手动)",
-          "check_type": "TCPING",
           "ref": "EP:1",
           "family": "V4",
           "vantage_ids": [
@@ -22481,7 +22480,8 @@
           "plan_daily_avg": 2.0,
           "points_per_round": 1,
           "auto_reason": "自动检测没有开启(可以手动检测)",
-          "last_run": null
+          "last_run": null,
+          "test_type": "TCPING"
         }
       ],
       "candidates": [
@@ -22501,7 +22501,7 @@
           "label": "上海-alpha · VLESS",
           "host": "2001:db8::11",
           "port": 8443,
-          "note": "Boce TCPing 接口没有说明支持 IPv6 目标:面板不提交 IPv6 入口,也不会改用 IPv4 去测(那测的就不是这个入口了)"
+          "note": "Boce TCPing / Ping 接口都没有说明支持 IPv6 目标:面板不提交 IPv6 入口,也不会改用 IPv4 去测(那测的就不是这个入口了)"
         }
       ],
       "paused": false,
@@ -22622,7 +22622,6 @@
           "id": 1,
           "node_id": 1,
           "name": "上海-alpha 三网拨测",
-          "check_type": "TCPING",
           "ref": "EP:1",
           "family": "V4",
           "vantage_ids": [
@@ -22690,13 +22689,13 @@
             "sent_at": "2026-10-17T11:01:40Z",
             "finished_at": "2026-10-17T11:02:01Z",
             "items": []
-          }
+          },
+          "test_type": "TCPING"
         },
         {
           "id": 2,
           "node_id": 1,
           "name": "海外拨测(手动)",
-          "check_type": "TCPING",
           "ref": "EP:1",
           "family": "V4",
           "vantage_ids": [
@@ -22735,7 +22734,8 @@
           "plan_daily_avg": 2.0,
           "points_per_round": 1,
           "auto_reason": "自动检测没有开启(可以手动检测)",
-          "last_run": null
+          "last_run": null,
+          "test_type": "TCPING"
         }
       ]
     },
@@ -22834,7 +22834,8 @@
               "error": "拨测点未响应:timeout",
               "charged": true
             }
-          ]
+          ],
+          "test_type": "TCPING"
         },
         {
           "id": 40,
@@ -22929,7 +22930,8 @@
               "error": "BUDGET:今日预算已用完",
               "charged": false
             }
-          ]
+          ],
+          "test_type": "TCPING"
         }
       ]
     },
