@@ -21,6 +21,8 @@ const props = defineProps<{
   metric?: ProbeMetric
   /** 整行暂停 / 失效时降成灰色(历史仍然画,但不再暗示「此刻」)。 */
   muted?: boolean
+  /** 卡片里半宽的一列:点之间只留 1px、点矮一些,30 个点在 120px 里也放得下。 */
+  dense?: boolean
 }>()
 
 
@@ -76,7 +78,7 @@ const summary = computed(() => {
 </script>
 
 <template>
-  <div class="pd" :class="{ 'pd--muted': muted }" role="img" :aria-label="summary">
+  <div class="pd" :class="{ 'pd--muted': muted, 'pd--dense': dense }" role="img" :aria-label="summary">
     <span
       v-for="d in dots"
       :key="d.at"
@@ -103,6 +105,15 @@ const summary = computed(() => {
   height: 10px;
   border-radius: 2px;
   background: var(--ok);
+}
+.pd--dense {
+  grid-auto-columns: minmax(2px, 1fr);
+  gap: 1px;
+  height: 10px;
+}
+.pd--dense .pd__dot {
+  height: 8px;
+  border-radius: 1px;
 }
 .pd__dot--partial {
   background: linear-gradient(to top, var(--warn) 50%, var(--warn-bg) 50%);

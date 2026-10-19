@@ -951,6 +951,20 @@ export interface NodeMetrics {
   collected_at: string
 }
 
+/**
+ * 资产卡片的实时网速(一个窗口的平均值)。只在仪表盘开着时由后台读,结果只在内存里;
+ * 与资源采样里的 net_rx_bps 同一个口径(除 lo 以外全部网卡)。
+ */
+export interface NetRate {
+  node_id: number
+  rx_bps: number
+  tx_bps: number
+  window_seconds: number
+  /** 读数时的开机秒数,卡片上的「在线 N 天」用它。 */
+  uptime_seconds: number
+  at: string
+}
+
 export interface MonitorStatus {
   interval_seconds: number
   retention_hours: number
@@ -3682,6 +3696,8 @@ export const api = {
 
   // 节点资源监控
   nodeMetricsLatest: () => request<{ items: NodeMetrics[] }>('/api/metrics/nodes-latest'),
+  /** 只读内存,同时顺延「有页面在看」的租约;interval_seconds 为 0 表示采样关着,不必轮询。 */
+  nodeNetRates: () => request<{ interval_seconds: number; items: NetRate[] }>('/api/metrics/net-rates'),
   nodeMetricsHistory: (id: number, hours = 6) =>
     request<{ items: NodeMetrics[]; hours: number }>(`/api/nodes/${id}/metrics`, {
       query: { hours },

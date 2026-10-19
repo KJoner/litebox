@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   api,
@@ -15,6 +15,7 @@ import {
   type NodeCycleUsage,
   type NodeHealth,
   type NodeMetrics,
+  type NetRate,
   type ProxySource,
 } from '@/api/client'
 import { formatBytes, formatRate, formatUTCDay } from '@/utils/format'
@@ -275,6 +276,56 @@ async function load() {
 // 切换时间范围只重取曲线,不刷整页 —— 指标卡与节点表跟这个范围无关。
 watch(range, loadDaily)
 onMounted(load)
+
+// ---------- 卡片实时网速 ----------
+//
+// 只在卡片视图、页面可见时轮询。这个接口只读主控内存、不连节点;连节点的是后台按固定间隔
+// 跑的采样,而它只在这个接口最近两分钟被请求过时才跑 —— 页面藏起来或切走之后,
+// 采样随之停下。读失败不算一项「读取失败」:卡片退回资源采样里的网速(并写明采样时间)。
+
+const netRates = ref<Record<number, NetRate>>({})
+const netRateInterval = ref(0)
+let netRateTimer: ReturnType<typeof setTimeout> | null = null
+let netRateGen = 0
+
+function stopNetRates() {
+  netRateGen++
+  if (netRateTimer) {
+    clearTimeout(netRateTimer)
+    netRateTimer = null
+  }
+}
+
+async function pollNetRates() {
+  stopNetRates()
+  if (view.value !== 'cards' || document.hidden) return
+  const gen = netRateGen
+  try {
+    const r = await api.nodeNetRates()
+    if (gen !== netRateGen) return
+    netRateInterval.value = r.interval_seconds
+    netRates.value = Object.fromEntries(r.items.map((x) => [x.node_id, x]))
+  } catch {
+    if (gen !== netRateGen) return
+    netRates.value = {}
+  }
+  if (netRateInterval.value > 0) netRateTimer = setTimeout(pollNetRates, netRateInterval.value * 1000)
+}
+
+function onVisibility() {
+  if (document.hidden) stopNetRates()
+  else void pollNetRates()
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibility)
+  void pollNetRates()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibility)
+  stopNetRates()
+})
+watch(view, () => void pollNetRates())
 
 // ---------- 部分失败 ----------
 
@@ -654,6 +705,8 @@ const assetCards = computed<AssetCard[]>(() =>
     sources: sourceList.value,
     proxies: proxyList.value,
     cards: dashCards.value,
+    netRates: netRates.value,
+    netRateInterval: netRateInterval.value,
   }),
 )
 

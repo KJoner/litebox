@@ -1,0 +1,24 @@
+/*
+ * 国旗字体(来源与许可见 assets/fonts/TwemojiCountryFlags.LICENSE.md)。
+ *
+ * 只覆盖「区域指示符」那一段(U+1F1E6–1F1FF,两个拼成一面国旗):
+ * 其余字符一概落到后面的字体上,页面上没有国旗时浏览器根本不会去下载它。
+ * 名字刻意不用原包的 "Twemoji Country Flags",免得与用户本机装过的同名字体混淆。
+ *
+ * 只给 .lb-flag 用,不并进全局字体栈:展示名称里自带的国旗表情在 Windows 上
+ * 仍按系统的样子显示,那是另一个问题,不跟着这次一起改。
+ */
+@font-face {
+  font-family: 'LiteBox Flags';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/TwemojiCountryFlags.woff2') format('woff2');
+  unicode-range: U+1F1E6-1F1FF;
+}
+
+.lb-flag {
+  font-family: 'LiteBox Flags', var(--font);
+  font-style: normal;
+  line-height: 1;
+}
