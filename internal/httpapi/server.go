@@ -63,6 +63,7 @@ type Server struct {
 	outbound     *probe.OutboundEngine
 	probeHelpers HelperInventory
 	probeLibrary *probe.Library
+	boce         *probe.BoceEngine
 	profiles     *subscription.ProfileStore
 	portal       *portal.Service
 	portalAccts  *portal.Store
@@ -118,6 +119,9 @@ type Options struct {
 	ProbeHelpers HelperInventory
 	// ProbeLibrary 是公共目标库的导入 / 预置 / 同步 / 验证;nil 时用 Probes 现造一个(不能联网拉取以外都一样)。
 	ProbeLibrary *probe.Library
+	// Boce 是 Boce 外部入站拨测的引擎(付费)。nil 时设置与任务照样能配、能看,
+	// 只是校验、同步、手动检测这几个会调 Boce 的接口回答「未接入」。
+	Boce *probe.BoceEngine
 	// Profiles 为 nil 时配置文件订阅整体不注册 —— 管理页与公开链接一起消失,
 	// 而不是「页面在、点了报错」。
 	Profiles *subscription.ProfileStore
@@ -155,6 +159,7 @@ func NewServer(opts Options) *Server {
 		outbound:     opts.Outbound,
 		probeHelpers: opts.ProbeHelpers,
 		probeLibrary: opts.ProbeLibrary,
+		boce:         opts.Boce,
 		profiles:     opts.Profiles,
 		subs:         opts.Subs,
 		subLimiter:   newSubRateLimiter(30, time.Minute),
@@ -480,6 +485,30 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/nodes/{id}/probe-settings", s.handleGetNodeProbeSettings)
 		authed.HandleFunc("PUT /api/nodes/{id}/probe-settings", s.handleSetNodeProbeSettings)
 		authed.HandleFunc("POST /api/nodes/{id}/probe-trial", s.handleNodeProbeTrial)
+		// 探针卡片展示偏好:只写一张表,不触发任何探测、不调 Boce。
+		authed.HandleFunc("PUT /api/nodes/{id}/probe-card", s.handleSetCardPrefs)
+	}
+	// Boce 外部入站拨测(付费)。会调 Boce 的只有校验 / 余额 / 同步(免费)与手动检测(经预算)。
+	if s.probes != nil && s.nodes != nil && s.settings != nil {
+		authed.HandleFunc("GET /api/boce", s.handleBoceOverview)
+		authed.HandleFunc("PUT /api/boce/settings", s.handleUpdateBoceSettings)
+		authed.HandleFunc("POST /api/boce/verify", longOperation(s.handleBoceVerify))
+		authed.HandleFunc("POST /api/boce/balance", longOperation(s.handleBoceBalance))
+		authed.HandleFunc("POST /api/boce/vantages/sync", longOperation(s.handleBoceSyncVantages))
+		authed.HandleFunc("GET /api/boce/vantages", s.handleBoceVantages)
+		authed.HandleFunc("POST /api/boce/resume", s.handleBoceResume)
+		authed.HandleFunc("POST /api/boce/estimate", s.handleBoceEstimate)
+		authed.HandleFunc("GET /api/boce/tasks", s.handleListAllBoceTasks)
+		authed.HandleFunc("POST /api/boce/tasks/batch", s.handleBatchBoceTasks)
+		authed.HandleFunc("PUT /api/boce/tasks/{id}", s.handleUpdateBoceTask)
+		authed.HandleFunc("PUT /api/boce/tasks/{id}/enabled", s.handleSetBoceTaskEnabled)
+		authed.HandleFunc("POST /api/boce/tasks/{id}/archive", s.handleArchiveBoceTask)
+		authed.HandleFunc("DELETE /api/boce/tasks/{id}", s.handleDeleteBoceTask)
+		authed.HandleFunc("POST /api/boce/tasks/{id}/run", longOperation(s.handleRunBoceTask))
+		authed.HandleFunc("GET /api/boce/tasks/{id}/runs", s.handleListBoceRuns)
+		authed.HandleFunc("GET /api/nodes/{id}/boce", s.handleNodeBoce)
+		authed.HandleFunc("POST /api/nodes/{id}/boce/tasks", s.handleCreateBoceTask)
+		authed.HandleFunc("PUT /api/nodes/{id}/boce/paused", s.handleSetNodeBocePaused)
 	}
 	if s.settings != nil {
 		authed.HandleFunc("GET /api/settings", s.handleGetSettings)

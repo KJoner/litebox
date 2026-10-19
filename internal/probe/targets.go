@@ -30,6 +30,10 @@ var ErrDuplicate = errors.New("这个目标已经在监测了")
 // 允许在这里单独停一条的话,它会在下一次同步时被重新打开,管理员怎么点都关不掉。
 var ErrOutboundSeries = errors.New("出站探测跟随公共目标与节点开关,请在那里启停或删除")
 
+// ErrBoceSeries 表示要直接改 / 删的是一条 Boce 序列:它跟着 Boce 任务走(拨测点在任务里增删,
+// 停用是关任务或归档),在这里单独改的话,下一次同步又会把它改回去。
+var ErrBoceSeries = errors.New("Boce 拨测序列跟随任务,请在 Boce 任务里调整拨测点或暂停任务")
+
 // Target 是一条监测序列:入口目标(主控 → 节点)或出站序列(节点 → 公共目标)。
 type Target struct {
 	ID        int64     `json:"id"`
@@ -42,11 +46,14 @@ type Target struct {
 	Kind    Kind    `json:"kind"`
 	Ref     string  `json:"ref"`
 	// PublicID 是出站序列指向的公共目标;入口目标为 0。
-	PublicID int64  `json:"public_id"`
-	Family   Family `json:"family"`
-	Label    string `json:"label"`
-	Source   string `json:"source"`
-	Enabled  bool   `json:"enabled"`
+	PublicID int64 `json:"public_id"`
+	// BoceTaskID / VantageID 是 Boce 序列所属的任务与拨测点;其余序列为 0。
+	BoceTaskID int64  `json:"boce_task_id"`
+	VantageID  int    `json:"vantage_id"`
+	Family     Family `json:"family"`
+	Label      string `json:"label"`
+	Source     string `json:"source"`
+	Enabled    bool   `json:"enabled"`
 	// ResolvedHost / ResolvedPort 是上一轮解析出来的地址与端口。
 	ResolvedHost    string `json:"resolved_host"`
 	ResolvedPort    int    `json:"resolved_port"`
@@ -70,7 +77,7 @@ type Target struct {
 const targetColumns = `id, node_id, direction, protocol, tcp_mode, kind, ref, COALESCE(public_id, 0), family, label, source, enabled,
 	resolved_host, resolved_port, generation, generation_since, ref_state, ref_error,
 	consecutive_failures, alert_state, alert_since, alert_notified, recovery_pending,
-	last_status, last_at, last_success_at, created_at, updated_at`
+	last_status, last_at, last_success_at, created_at, updated_at, COALESCE(boce_task_id, 0), vantage_id`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -81,11 +88,14 @@ func scanTarget(r scanner) (*Target, error) {
 		&t.Family, &t.Label, &t.Source, &enabled,
 		&t.ResolvedHost, &t.ResolvedPort, &t.Generation, &t.GenerationSince, &t.RefState, &t.RefError,
 		&t.ConsecutiveFailures, &t.AlertState, &t.AlertSince, &notified, &pending,
-		&t.LastStatus, &t.LastAt, &t.LastSuccessAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.LastStatus, &t.LastAt, &t.LastSuccessAt, &t.CreatedAt, &t.UpdatedAt, &t.BoceTaskID, &t.VantageID); err != nil {
 		return nil, err
 	}
 	t.Enabled = enabled == 1
 	t.Metric = MetricOf(t.Protocol, t.TCPMode)
+	if t.Source == SourceBoce {
+		t.Metric = MetricBoce
+	}
 	t.AlertNotified = notified == 1
 	t.RecoveryPending = pending == 1
 	return &t, nil
@@ -102,8 +112,20 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db, now: time.Now} }
 
+// querier 是 *sql.DB 与 *sql.Tx 共有的那一半。数据库只有一条连接:开着事务时只能经事务本身查,
+// 再用 s.db 查就会自我死锁。
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 func (s *Store) list(ctx context.Context, where string, args ...any) ([]Target, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+targetColumns+` FROM probe_targets `+where, args...)
+	return listQ(ctx, s.db, where, args...)
+}
+
+func listQ(ctx context.Context, q querier, where string, args ...any) ([]Target, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+targetColumns+` FROM probe_targets `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -120,14 +142,28 @@ func (s *Store) list(ctx context.Context, where string, args ...any) ([]Target, 
 }
 
 // List 列出一台机器上某个方向的全部序列。出站序列按公共目标的排序走。
+//
+// 入站只给主控那一类:Boce 序列另由 ListBoce 给,接口分字段返回 —— 前端按字段分区渲染,
+// 不自己按 source 去拆(拆漏一处,Boce 的丢包率就会出现在主控那一栏里)。
 func (s *Store) List(ctx context.Context, nodeID int64, dir Direction) ([]Target, error) {
-	return s.list(ctx, `WHERE node_id = ? AND direction = ? ORDER BY `+orderBy, nodeID, dir)
+	return s.list(ctx, `WHERE node_id = ? AND direction = ? AND source != 'BOCE' ORDER BY `+orderBy, nodeID, dir)
 }
 
-// ListAll 列出未删除机器上某个方向的全部序列(仪表盘聚合用)。
+// ListAll 列出未删除机器上某个方向的全部序列(仪表盘聚合用),同样不含 Boce 序列。
 func (s *Store) ListAll(ctx context.Context, dir Direction) ([]Target, error) {
-	return s.list(ctx, `WHERE direction = ? AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL)
+	return s.list(ctx, `WHERE direction = ? AND source != 'BOCE' AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL)
 		ORDER BY node_id, `+orderBy, dir)
+}
+
+// ListBoce 列出一台机器上的全部 Boce 序列(含已停用的 —— 历史要能看)。按任务、再按任务里拨测点的先后。
+func (s *Store) ListBoce(ctx context.Context, nodeID int64) ([]Target, error) {
+	return s.list(ctx, `WHERE node_id = ? AND source = 'BOCE' ORDER BY boce_task_id, id`, nodeID)
+}
+
+// ListAllBoce 列出未删除机器上的全部 Boce 序列(仪表盘聚合用)。
+func (s *Store) ListAllBoce(ctx context.Context) ([]Target, error) {
+	return s.list(ctx, `WHERE source = 'BOCE' AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL)
+		ORDER BY node_id, boce_task_id, id`)
 }
 
 // orderBy 让出站序列跟着公共目标的 sort_order 排,入口目标按种类与 id 排。
@@ -195,6 +231,9 @@ func (s *Store) Update(ctx context.Context, id int64, enabled *bool, label *stri
 	if t.Direction == DirOutbound {
 		return nil, ErrOutboundSeries
 	}
+	if t.Source == SourceBoce {
+		return nil, ErrBoceSeries
+	}
 	if label != nil {
 		l := strings.TrimSpace(*label)
 		if l == "" {
@@ -234,6 +273,9 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	}
 	if t.Direction == DirOutbound {
 		return ErrOutboundSeries
+	}
+	if t.Source == SourceBoce {
+		return ErrBoceSeries
 	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM probe_targets WHERE id = ?`, id)
 	if err != nil {

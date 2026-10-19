@@ -42,6 +42,16 @@ type nodeProbeResponse struct {
 	// Targets / Candidates 是入口连通性(主控 → 这台机器)。
 	Targets    []probe.Summary   `json:"targets"`
 	Candidates []probe.Candidate `json:"candidates"`
+	// Boce 是 Boce 外部入站拨测的序列(每个「任务 × 拨测点」一条),与主控的入口连通性分字段给。
+	Boce []probe.Summary `json:"boce"`
+	// Card 是这台节点卡片的展示偏好与此刻实际展示的项目。
+	Card nodeCardView `json:"card"`
+}
+
+// nodeCardView 是卡片展示设置要的东西:偏好本身 + 解析好的展示项(含自动推荐会选哪几项)。
+type nodeCardView struct {
+	Prefs probe.CardPrefs `json:"prefs"`
+	Pick  probe.CardPick  `json:"pick"`
 }
 
 func (s *Server) handleNodeProbe(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +72,7 @@ func (s *Server) handleNodeProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	sc := s.summaryContext(ctx)
 	now := time.Now()
-	resp := nodeProbeResponse{Probe: s.probeOverview(ctx), Candidates: cands}
+	resp := nodeProbeResponse{Probe: s.probeOverview(ctx), Candidates: cands, Boce: []probe.Summary{}}
 	for _, part := range []struct {
 		dir probe.Direction
 		dst *[]probe.Summary
@@ -81,6 +91,26 @@ func (s *Server) handleNodeProbe(w http.ResponseWriter, r *http.Request) {
 		}
 		*part.dst = sums
 	}
+	boceSeries, err := s.probes.ListBoce(ctx, id)
+	if err != nil {
+		s.logger.Error("读取 Boce 序列失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if resp.Boce, err = s.probes.Summaries(ctx, boceSeries, sc, now); err != nil {
+		s.logger.Error("汇总 Boce 序列失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	prefs, err := s.probes.GetCardPrefs(ctx, id)
+	if err != nil {
+		s.logger.Error("读取卡片展示偏好失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	ingress := append(append([]probe.Summary{}, resp.Targets...), resp.Boce...)
+	picks := probe.PickCards(map[int64]probe.CardPrefs{id: prefs}, []int64{id}, ingress, resp.Outbound, s.outboundCoverage(sc))
+	resp.Card = nodeCardView{Prefs: prefs, Pick: picks[id]}
 	resp.Public, err = s.probes.NodePublics(ctx, id)
 	if err != nil {
 		s.logger.Error("读取公共目标失败", "error", err)
@@ -183,7 +213,7 @@ func (s *Server) handleDeleteProbeTarget(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.probes.Delete(r.Context(), t.ID); err != nil {
-		if errors.Is(err, probe.ErrOutboundSeries) {
+		if errors.Is(err, probe.ErrOutboundSeries) || errors.Is(err, probe.ErrBoceSeries) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
