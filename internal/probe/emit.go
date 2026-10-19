@@ -9,9 +9,9 @@ import (
 	"github.com/litebox/litebox/internal/notify"
 )
 
-// emitProbe 推一条告警或恢复。两个方向共用,说法按方向分开:
-// 入口是「从主控连不上这台机器的这个端口」,出站是「这台机器连不出去」——
-// 混成一句的话,管理员会去查一台出口有问题的机器的入口,或者反过来。
+// emitProbe 推一条告警或恢复。两个方向共用,说法按方向与来源分开:
+// 入口是「从主控连不上这台机器的这个端口」,自建节点拨测是「从另一台自建机器连不上」,
+// 出站是「这台机器连不出去」—— 混成一句的话,管理员会去查一台出口有问题的机器的入口,或者反过来。
 //
 // 正文**不带节点的地址与端口** —— 推送会被截图、转发,管理入口不该跟着出去。
 // 出站目标是管理员登记的公共地址,只写名称不写主机,与入口一致。
@@ -28,12 +28,18 @@ func emitProbe(ctx context.Context, n Notifier, logger *slog.Logger,
 		proto = string(ProtoTCP)
 	}
 	what := "TCP 探测"
-	if t.Direction == DirOutbound {
+	source := SourceLabel(t.Source)
+	switch {
+	case t.Direction == DirOutbound:
 		what = "出站探测"
+	case t.Source == SourcePeer:
+		what = "自建节点拨测"
+		proto = PeerMethodLabel(t.Protocol)
+		source = "自建节点「" + nodeName(ctx, t.PeerNodeID) + "」"
 	}
 	var b strings.Builder
 	b.WriteString("目标:" + t.Label + "(" + familyText(t.Family) + "," + proto + ")")
-	b.WriteString("\n来源:" + SourceLabel(t.Source))
+	b.WriteString("\n来源:" + source)
 	ev := notify.Event{DedupKey: key}
 	switch kind {
 	case emitDown:
@@ -43,19 +49,26 @@ func emitProbe(ctx context.Context, n Notifier, logger *slog.Logger,
 		if r.Status != "" {
 			b.WriteString(",最近一次:" + r.Status.LabelFor(t.Metric))
 		}
-		if t.Direction == DirOutbound {
+		switch {
+		case t.Direction == DirOutbound:
 			b.WriteString("\n说明:这是这台机器在本机测到的出站结果,说明它到这个公共目标不通(机器出口、线路或目标本身都有可能)," +
 				"不代表用户连不上这台机器;面板不会因此自动重启、重新部署或停机。")
-		} else {
+		case t.Source == SourcePeer:
+			b.WriteString("\n说明:这是从另一台自建机器测到的结果,只说明从那台机器连不上这个入口(两台机器之间的线路、这个入口都有可能)," +
+				"不等于用户全部断线;面板不会因此自动重启、重新部署或停机。")
+		default:
 			b.WriteString("\n说明:这只说明从主控连不上这个端口,不等于用户全部断线;面板不会因此自动重启、重新部署或停机。")
 		}
 	case emitRecovered:
 		ev.Kind, ev.Level = notify.KindProbeRecovered, notify.LevelInfo
 		ev.Title = fmt.Sprintf("节点「%s」%s已恢复", name, what)
 		if r.Status.Reachable() {
-			if t.Protocol == ProtoICMP {
+			switch t.Protocol {
+			case ProtoICMP:
 				b.WriteString(fmt.Sprintf("\n最近一轮平均往返 %.0f ms", float64(r.RTT.Microseconds())/1000))
-			} else {
+			case ProtoHTTP:
+				b.WriteString(fmt.Sprintf("\n最近一次 HTTP 响应耗时 %.0f ms(HTTP %d)", float64(r.RTT.Microseconds())/1000, r.HTTPStatus))
+			default:
 				b.WriteString(fmt.Sprintf("\n最近一次 TCP 建连 %.0f ms", float64(r.RTT.Microseconds())/1000))
 			}
 		}

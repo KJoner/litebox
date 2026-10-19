@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/netprobe"
 	"github.com/litebox/litebox/internal/probe"
+	"github.com/litebox/litebox/internal/sshx"
 )
 
 const (
@@ -21,6 +23,8 @@ const (
 	actionProbePublicDelete = "probe.public_delete"
 	actionProbePublicScope  = "probe.public_scope"
 	actionProbeBinding      = "probe.node_binding"
+	actionProbePeerCreate   = "probe.peer_create"
+	actionProbePeerRun      = "probe.peer_run"
 )
 
 // HelperInventory 回答主控手上有哪些架构的出站探测辅助程序(*node.DirBinaryProvider)。
@@ -44,6 +48,10 @@ type nodeProbeResponse struct {
 	Candidates []probe.Candidate `json:"candidates"`
 	// Boce 是 Boce 外部入站拨测的序列(每个「任务 × 拨测点」一条),与主控的入口连通性分字段给。
 	Boce []probe.Summary `json:"boce"`
+	// Peer 是自建节点互测入站(别的自建机器 → 这台机器的订阅入口),同样分字段给;
+	// PeerSources 是新建时可选的拨测来源(除这台之外的全部机器)。
+	Peer        []probe.Summary          `json:"peer"`
+	PeerSources []probe.PeerSourceOption `json:"peer_sources"`
 	// Card 是这台节点卡片的展示偏好与此刻实际展示的项目。
 	Card nodeCardView `json:"card"`
 }
@@ -72,7 +80,8 @@ func (s *Server) handleNodeProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	sc := s.summaryContext(ctx)
 	now := time.Now()
-	resp := nodeProbeResponse{Probe: s.probeOverview(ctx), Candidates: cands, Boce: []probe.Summary{}}
+	resp := nodeProbeResponse{Probe: s.probeOverview(ctx), Candidates: cands, Boce: []probe.Summary{},
+		Peer: []probe.Summary{}, PeerSources: []probe.PeerSourceOption{}}
 	for _, part := range []struct {
 		dir probe.Direction
 		dst *[]probe.Summary
@@ -102,13 +111,29 @@ func (s *Server) handleNodeProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+	peerSeries, err := s.probes.ListPeer(ctx, id)
+	if err != nil {
+		s.logger.Error("读取自建节点拨测序列失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if resp.Peer, err = s.probes.Summaries(ctx, peerSeries, sc, now); err != nil {
+		s.logger.Error("汇总自建节点拨测序列失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if resp.PeerSources, err = s.probes.PeerSources(ctx, id); err != nil {
+		s.logger.Error("读取拨测来源失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
 	prefs, err := s.probes.GetCardPrefs(ctx, id)
 	if err != nil {
 		s.logger.Error("读取卡片展示偏好失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	ingress := append(append([]probe.Summary{}, resp.Targets...), resp.Boce...)
+	ingress := append(append(append([]probe.Summary{}, resp.Targets...), resp.Boce...), resp.Peer...)
 	picks := probe.PickCards(map[int64]probe.CardPrefs{id: prefs}, []int64{id}, ingress, resp.Outbound, s.outboundCoverage(sc))
 	resp.Card = nodeCardView{Prefs: prefs, Pick: picks[id]}
 	resp.Public, err = s.probes.NodePublics(ctx, id)
@@ -199,9 +224,12 @@ func (s *Server) handleUpdateProbeTarget(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	detail := fmt.Sprintf("入口目标「%s」", nt.Label)
+	detail := s.probeTargetDesc(r, nt)
 	if req.Enabled != nil {
 		detail += map[bool]string{true: ",恢复监测", false: ",暂停监测"}[*req.Enabled]
+		if nt.Source == probe.SourcePeer {
+			detail = s.probeTargetDesc(r, nt) + map[bool]string{true: ",恢复周期检测", false: ",暂停周期检测(仍可手动检测)"}[*req.Enabled]
+		}
 	}
 	s.auditProbe(r, actionProbeTargetUpdate, nt, detail)
 	writeJSON(w, http.StatusOK, nt)
@@ -221,7 +249,7 @@ func (s *Server) handleDeleteProbeTarget(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	s.auditProbe(r, actionProbeTargetDelete, t, fmt.Sprintf("删除入口监测目标「%s」及其历史", t.Label))
+	s.auditProbe(r, actionProbeTargetDelete, t, "删除"+s.probeTargetDesc(r, t)+"及其历史")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已删除"})
 }
 
@@ -244,6 +272,23 @@ func (s *Server) handleProbeTargetHistory(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, h)
 }
 
+// probeTargetDesc 是审计里一条入站序列的说法:PEER 写明来源机器与测法,不写地址。
+func (s *Server) probeTargetDesc(r *http.Request, t *probe.Target) string {
+	if t.Source != probe.SourcePeer {
+		return fmt.Sprintf("入口监测目标「%s」", t.Label)
+	}
+	return fmt.Sprintf("自建节点拨测「%s」(来源 %s,%s)", t.Label, s.nodeLabel(r, t.PeerNodeID), probe.PeerMethodLabel(t.Protocol))
+}
+
+func (s *Server) nodeLabel(r *http.Request, id int64) string {
+	var name string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT CASE WHEN display_name != '' THEN display_name ELSE name END
+		FROM nodes WHERE id = ?`, id).Scan(&name); err != nil || name == "" {
+		return fmt.Sprintf("#%d", id)
+	}
+	return name
+}
+
 func (s *Server) auditProbe(r *http.Request, action string, t *probe.Target, detail string) {
 	admin := adminFromContext(r.Context())
 	s.audit.Record(r.Context(), audit.Entry{
@@ -264,7 +309,11 @@ func (s *Server) auditPublic(r *http.Request, action string, id int64, detail st
 	})
 }
 
+// publicDesc 是审计里一个公共目标的说法。HTTP 目标只写到路径:查询串里常带 token、签名,不进审计。
 func publicDesc(p *probe.PublicTarget) string {
+	if p.Protocol == probe.ProtoHTTP {
+		return fmt.Sprintf("「%s」(%s %s)", p.Name, p.Metric.MethodLabel(), netprobe.RedactURL(p.URL))
+	}
 	d := fmt.Sprintf("「%s」(%s %s", p.Name, p.Metric.MethodLabel(), p.Host)
 	if p.Protocol == probe.ProtoTCP {
 		d += ":" + strconv.Itoa(p.Port)
@@ -367,7 +416,7 @@ func (s *Server) handleUpdatePublicTarget(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var changes []string
-	if before.Host != p.Host || before.Port != p.Port {
+	if before.Host != p.Host || before.Port != p.Port || before.URL != p.URL {
 		changes = append(changes, "地址改为 "+publicDesc(p)+"(各节点上的统计重新起算)")
 	}
 	if before.Enabled != p.Enabled {
@@ -489,4 +538,114 @@ func (s *Server) handleSetProbeBinding(w http.ResponseWriter, r *http.Request) {
 		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已保存"})
+}
+
+// ---------- 自建节点互测入站(PEER) ----------
+
+func (s *Server) handleCreateProbePeers(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var in probe.PeerInput
+	if err := decodeJSON(r, &in); err != nil {
+		badRequest(w, err)
+		return
+	}
+	res, err := s.probes.CreatePeers(r.Context(), id, in)
+	switch {
+	case errors.Is(err, probe.ErrNotFound):
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	case errors.Is(err, probe.ErrDuplicate):
+		writeError(w, http.StatusConflict, "选中的来源与测法在这个入口上都已经有了")
+		return
+	case errors.Is(err, probe.ErrPeerLimit):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(res.Created) > 0 {
+		first := res.Created[0]
+		var sources, methods []string
+		seenS, seenM := map[int64]bool{}, map[probe.Protocol]bool{}
+		for _, t := range res.Created {
+			if !seenS[t.PeerNodeID] {
+				seenS[t.PeerNodeID] = true
+				sources = append(sources, s.nodeLabel(r, t.PeerNodeID))
+			}
+			if !seenM[t.Protocol] {
+				seenM[t.Protocol] = true
+				methods = append(methods, probe.PeerMethodLabel(t.Protocol))
+			}
+		}
+		mode := "周期检测"
+		if !first.Enabled {
+			mode = "只手动检测"
+		}
+		s.auditProbe(r, actionProbePeerCreate, &first, fmt.Sprintf("新增自建节点拨测:入口「%s」(%s),来源 %s,测法 %s,共 %d 条(%s)",
+			first.Label, first.Family, strings.Join(sources, "、"), strings.Join(methods, "、"), len(res.Created), mode))
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+type runPeersRequest struct {
+	IDs []int64 `json:"ids"`
+}
+
+// handleRunProbePeers 立即检测这台机器上的几条 PEER 序列。结果进历史(与周期检测同一条测量)。
+func (s *Server) handleRunProbePeers(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	if s.outbound == nil {
+		writeError(w, http.StatusServiceUnavailable, "这个面板没有接入出站探测引擎")
+		return
+	}
+	var req runPeersRequest
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	for _, tid := range req.IDs {
+		t, err := s.probes.Get(r.Context(), tid)
+		if errors.Is(err, probe.ErrNotFound) || (err == nil && t.NodeID != id) {
+			writeError(w, http.StatusNotFound, "监测序列不存在或不属于这台节点")
+			return
+		}
+		if err != nil {
+			s.logger.Error("读取探测目标失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+	}
+	res, err := s.outbound.RunPeerNow(r.Context(), req.IDs)
+	switch {
+	case errors.Is(err, probe.ErrNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	case errors.Is(err, sshx.ErrBusy):
+		writeError(w, http.StatusConflict, probe.ErrPeerBusy.Error())
+		return
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	recorded := 0
+	for _, x := range res {
+		if x.Recorded {
+			recorded++
+		}
+	}
+	admin := adminFromContext(r.Context())
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionProbePeerRun,
+		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+		Detail:   fmt.Sprintf("立即检测自建节点拨测 %d 条,%d 条已记入历史", len(res), recorded),
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"results": res})
 }

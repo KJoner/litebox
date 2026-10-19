@@ -35,10 +35,13 @@ const (
 var (
 	// ErrPublicNotFound 表示公共目标不存在。
 	ErrPublicNotFound = errors.New("公共目标不存在")
-	// ErrPublicDuplicate 表示同样的 主机 + 协议 + 方式 + 端口 + 地址族 已经登记过。
-	ErrPublicDuplicate = errors.New("同样的目标(主机、协议、TCP 方式、端口、地址族)已经登记过了")
+	// ErrPublicDuplicate 表示同样的 主机 + 协议 + 方式 + 端口 + 地址族(+ URL)已经登记过。
+	ErrPublicDuplicate = errors.New("同样的目标(主机、协议、TCP 方式、端口、地址族、URL)已经登记过了")
 	// ErrPublicImmutable 表示要改协议、TCP 方式或地址族。
 	ErrPublicImmutable = errors.New("协议、TCP 方式与地址族创建后不能改:换了就是另一条测量,旧的历史与它不可比;请新建一个目标")
+	// ErrHTTPScheme 表示要把一个 HTTP 目标在 http:// 与 https:// 之间切换:TLS 握手进不进耗时,
+	// 两者量的不是同一个东西。
+	ErrHTTPScheme = errors.New("HTTP 目标的 http:// 与 https:// 创建后不能互换:TLS 握手进不进耗时,两者不可比;请新建一个目标")
 	// ErrPublicLimit 表示目标库已经满了。
 	ErrPublicLimit = fmt.Errorf("目标库最多 %d 个目标", MaxPublicTargets)
 )
@@ -50,7 +53,10 @@ type PublicTarget struct {
 	Host     string   `json:"host"`
 	Protocol Protocol `json:"protocol"`
 	TCPMode  TCPMode  `json:"tcp_mode"`
-	// Metric 由协议与 TCP 方式算出来:LOSS / CONNECT / SYN,界面按它起名。
+	// URL 只对 HTTP:完整地址(含查询串,只给管理员看)。Host / Port 由它推出来。
+	// 进日志、推送与审计时一律经 netprobe.RedactURL。
+	URL string `json:"url"`
+	// Metric 由协议与 TCP 方式算出来:LOSS / CONNECT / SYN / HTTP,界面按它起名。
 	Metric          Metric `json:"metric"`
 	Port            int    `json:"port"`
 	Family          Family `json:"family"`
@@ -99,6 +105,7 @@ type PublicInput struct {
 	Host            string   `json:"host"`
 	Protocol        Protocol `json:"protocol"`
 	TCPMode         TCPMode  `json:"tcp_mode"`
+	URL             string   `json:"url"`
 	Port            int      `json:"port"`
 	Family          Family   `json:"family"`
 	IntervalSec     int      `json:"interval_sec"`
@@ -117,7 +124,7 @@ type PublicInput struct {
 const publicColumns = `id, name, host, protocol, tcp_mode, port, family, interval_sec, count, timeout_ms,
 	apply_all, enabled, allow_restricted, sort_order, note, created_at, updated_at,
 	source, source_key, region, province, city, isp, role, verify_state, verified_at, verify_detail,
-	upstream, manual_fields, upstream_missing_since`
+	upstream, manual_fields, upstream_missing_since, url`
 
 func scanPublic(r scanner) (*PublicTarget, error) {
 	var p PublicTarget
@@ -126,7 +133,7 @@ func scanPublic(r scanner) (*PublicTarget, error) {
 	if err := r.Scan(&p.ID, &p.Name, &p.Host, &p.Protocol, &p.TCPMode, &p.Port, &p.Family, &p.IntervalSec, &p.Count,
 		&p.TimeoutMs, &applyAll, &enabled, &allow, &p.SortOrder, &p.Note, &p.CreatedAt, &p.UpdatedAt,
 		&p.Source, &p.SourceKey, &p.Region, &p.Province, &p.City, &p.ISP, &p.Role, &p.VerifyState, &p.VerifiedAt,
-		&p.VerifyDetail, &p.Upstream, &manual, &p.UpstreamMissingSince); err != nil {
+		&p.VerifyDetail, &p.Upstream, &manual, &p.UpstreamMissingSince, &p.URL); err != nil {
 		return nil, err
 	}
 	p.ApplyAll, p.Enabled, p.AllowRestricted = applyAll == 1, enabled == 1, allow == 1
@@ -191,7 +198,22 @@ func normalizePublic(in PublicInput, floor int) (PublicInput, error) {
 		return in, fmt.Errorf("运营商只能是电信 / 联通 / 移动 / 教育网 / 其他,%q 认不出", in.ISP)
 	}
 	in.ISP = isp
+	if in.Protocol != ProtoHTTP {
+		in.URL = ""
+	}
 	switch in.Protocol {
+	case ProtoHTTP:
+		// 主机与端口由 URL 推出来,表单上填的不算 —— 两处各说各的话,受限检查查的就可能不是真正要连的那个。
+		pu, err := netprobe.ParseHTTPURL(in.URL)
+		if err != nil {
+			return in, err
+		}
+		in.URL, in.Host, in.Port = pu.URL, pu.Host, pu.Port
+		// 每轮一次 GET;包数这一列不用,存默认值让 CHECK 过得去。
+		in.TCPMode, in.Count = TCPConnect, PublicDefaultCount
+		if in.TimeoutMs == 0 {
+			in.TimeoutMs = netprobe.DefaultHTTPTimeoutMs
+		}
 	case ProtoICMP:
 		if in.Port != 0 {
 			return in, errors.New("ICMP 目标不需要端口")
@@ -230,7 +252,7 @@ func normalizePublic(in PublicInput, floor int) (PublicInput, error) {
 			return in, errors.New("TCP 方式只能是建连(CONNECT)或握手近似(SYN)")
 		}
 	default:
-		return in, errors.New("协议只能是 ICMP 或 TCP")
+		return in, errors.New("协议只能是 ICMP、TCP 或 HTTP")
 	}
 	if in.Family != FamilyV4 && in.Family != FamilyV6 {
 		return in, errors.New("地址族只能是 IPv4 或 IPv6")
@@ -254,8 +276,13 @@ func normalizePublic(in PublicInput, floor int) (PublicInput, error) {
 	if in.TimeoutMs == 0 {
 		in.TimeoutMs = PublicDefaultTimeoutMs
 	}
-	if in.TimeoutMs < netprobe.MinTimeoutMs || in.TimeoutMs > netprobe.MaxTimeoutMs {
-		return in, fmt.Errorf("超时必须是 %d~%d 毫秒", netprobe.MinTimeoutMs, netprobe.MaxTimeoutMs)
+	maxTimeout := netprobe.MaxTimeoutMs
+	if in.Protocol == ProtoHTTP {
+		// HTTP 的超时管的是整个请求(DNS + 建连 + TLS + 等响应头),上限放宽到 10 秒。
+		maxTimeout = netprobe.MaxHTTPTimeoutMs
+	}
+	if in.TimeoutMs < netprobe.MinTimeoutMs || in.TimeoutMs > maxTimeout {
+		return in, fmt.Errorf("超时必须是 %d~%d 毫秒", netprobe.MinTimeoutMs, maxTimeout)
 	}
 	if err := netprobe.ValidateHost(in.Host); err != nil {
 		return in, err
@@ -269,7 +296,7 @@ func normalizePublic(in PublicInput, floor int) (PublicInput, error) {
 			return in, fmt.Errorf("%s 是%s,默认不探测;确实要测请勾选「允许受限地址与端口」", in.Host, reason)
 		}
 	}
-	if in.Protocol == ProtoTCP {
+	if in.Protocol != ProtoICMP {
 		if reason := netprobe.RestrictedPort(in.Port); reason != "" && !in.AllowRestricted {
 			return in, fmt.Errorf("%s;确实要测请勾选「允许受限地址与端口」", reason)
 		}
@@ -376,6 +403,17 @@ func (s *Store) floorFor(ctx context.Context, origin Origin) (int, error) {
 	return src.FloorSec(), nil
 }
 
+// publicHost 是归来源用的主机:HTTP 目标的主机在 URL 里 —— 只看 Host 那一栏的话,
+// 第三方的主机写进 URL 就绕过了来源的授权确认与限额。
+func publicHost(in PublicInput) string {
+	if in.Protocol == ProtoHTTP {
+		if pu, err := netprobe.ParseHTTPURL(in.URL); err == nil {
+			return pu.Host
+		}
+	}
+	return in.Host
+}
+
 // publicMeta 是新建时不由表单决定的那几列(来源、上游标识、角色、上游快照)。
 type publicMeta struct {
 	Source    Origin
@@ -390,7 +428,7 @@ type publicMeta struct {
 // 主机名属于已知第三方来源的(比如 *.ip.zstaticcdn.com),即使是手工登记的也归到那个来源,
 // 照样受它的授权确认与限额约束。
 func (s *Store) CreatePublic(ctx context.Context, in PublicInput) (*PublicTarget, error) {
-	origin := OriginForHost(in.Host)
+	origin := OriginForHost(publicHost(in))
 	floor, err := s.floorFor(ctx, origin)
 	if err != nil {
 		return nil, err
@@ -435,11 +473,11 @@ func (s *Store) createPublic(ctx context.Context, db execer, in PublicInput, met
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO probe_public_targets (name, host, protocol, tcp_mode, port, family, interval_sec, count, timeout_ms,
 			apply_all, enabled, allow_restricted, sort_order, note, created_at, updated_at,
-			source, source_key, region, province, city, isp, role, upstream)
-		VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			source, source_key, region, province, city, isp, role, upstream, url)
+		VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.Name, in.Host, in.Protocol, in.TCPMode, in.Port, in.Family, in.IntervalSec, in.Count, in.TimeoutMs,
 		b2i(enabled), b2i(in.AllowRestricted), in.SortOrder, in.Note, now, now,
-		meta.Source, meta.SourceKey, in.Region, in.Province, in.City, in.ISP, meta.Role, meta.Upstream)
+		meta.Source, meta.SourceKey, in.Region, in.Province, in.City, in.ISP, meta.Role, meta.Upstream, in.URL)
 	if isUnique(err) {
 		return 0, ErrPublicDuplicate
 	}
@@ -452,7 +490,7 @@ func (s *Store) createPublic(ctx context.Context, db execer, in PublicInput, met
 // syncedFields 是上游同步会改写的字段:导入之后管理员手工改过它们,同步就不再覆盖。
 var syncedFields = []string{"name", "host", "port", "region", "province", "city", "isp"}
 
-// UpdatePublic 改一个公共目标。协议、TCP 方式与地址族不可改;改主机或端口会让各机器上的序列换代
+// UpdatePublic 改一个公共目标。协议、TCP 方式与地址族不可改;改主机、端口或 URL 会让各机器上的序列换代
 // (新旧样本不混进同一个比例),由 SyncOutbound 完成。从暂停改成启用要过限额检查。
 func (s *Store) UpdatePublic(ctx context.Context, id int64, in PublicInput) (*PublicTarget, error) {
 	cur, err := s.getPublicRaw(ctx, id)
@@ -464,6 +502,20 @@ func (s *Store) UpdatePublic(ctx context.Context, id int64, in PublicInput) (*Pu
 	}
 	if in.Protocol != cur.Protocol || in.Family != cur.Family || (cur.Protocol == ProtoTCP && in.TCPMode != cur.TCPMode) {
 		return nil, ErrPublicImmutable
+	}
+	if cur.Protocol == ProtoHTTP {
+		pu, err := netprobe.ParseHTTPURL(in.URL)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(cur.URL, pu.Scheme+"://") {
+			return nil, ErrHTTPScheme
+		}
+		// 换路径、换主机都还是这个目标(改了就换代,见 SyncOutbound);但主机换到另一个来源名下不行 ——
+		// 来源决定授权与限额,而一个已经对节点生效的目标不能借编辑换个来源。
+		if OriginForHost(pu.Host) != cur.Source {
+			return nil, errors.New("改了 URL 之后主机归属的来源变了,请新建一个目标")
+		}
 	}
 	floor, err := s.floorFor(ctx, cur.Source)
 	if err != nil {
@@ -508,11 +560,11 @@ func (s *Store) UpdatePublic(ctx context.Context, id int64, in PublicInput) (*Pu
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE probe_public_targets SET name = ?, host = ?, port = ?, interval_sec = ?, count = ?, timeout_ms = ?,
 			enabled = ?, allow_restricted = ?, sort_order = ?, note = ?, region = ?, province = ?, city = ?, isp = ?,
-			manual_fields = ?, updated_at = ?
+			manual_fields = ?, updated_at = ?, url = ?
 		 WHERE id = ?`,
 		in.Name, in.Host, in.Port, in.IntervalSec, in.Count, in.TimeoutMs,
 		b2i(enabled), b2i(in.AllowRestricted), in.SortOrder, in.Note, in.Region, in.Province, in.City, in.ISP,
-		strings.Join(manual, ","), now, id)
+		strings.Join(manual, ","), now, in.URL, id)
 	if isUnique(err) {
 		return nil, ErrPublicDuplicate
 	}
@@ -926,7 +978,7 @@ func publicRef(id int64) string { return "PUB:" + strconv.FormatInt(id, 10) }
 //
 //   - 第一次生效时建行;之后失效只把 enabled 置 0 并清告警状态,**不删行** ——
 //     关掉再打开,之前的历史还在;
-//   - 名称跟着公共目标走;主机或端口变了就换代(新旧样本不混进同一个比例);
+//   - 名称跟着公共目标走;主机、端口或 URL 变了就换代(新旧样本不混进同一个比例);
 //   - 从没生效过的组合不建行:选「部分节点」不会给其余机器留一堆空序列。
 //
 // 公共目标、来源、范围、节点覆盖、本机设置改动之后都调它,出站引擎每轮开始也调一次
@@ -967,14 +1019,15 @@ func (s *Store) SyncOutbound(ctx context.Context) error {
 				}
 				if _, err := tx.ExecContext(ctx, `
 					INSERT INTO probe_targets (node_id, direction, protocol, tcp_mode, kind, ref, public_id, family, label, source,
-						enabled, resolved_host, resolved_port, generation, generation_since, created_at, updated_at)
-					VALUES (?, 'OUTBOUND', ?, ?, 'PUBLIC', ?, ?, ?, ?, 'NODE', 1, ?, ?, 1, ?, ?, ?)`,
-					n, p.Protocol, p.TCPMode, publicRef(p.ID), p.ID, p.Family, p.Name, p.Host, p.Port, now, now, now); err != nil {
+						enabled, resolved_host, resolved_port, generation, generation_since, created_at, updated_at, resolved_url)
+					VALUES (?, 'OUTBOUND', ?, ?, 'PUBLIC', ?, ?, ?, ?, 'NODE', 1, ?, ?, 1, ?, ?, ?, ?)`,
+					n, p.Protocol, p.TCPMode, publicRef(p.ID), p.ID, p.Family, p.Name, p.Host, p.Port, now, now, now, p.URL); err != nil {
 					return err
 				}
 				continue
 			}
-			moved := t.ResolvedHost != p.Host || t.ResolvedPort != p.Port
+			// HTTP 换一个路径或查询串也是另一个请求:同一台主机上 /generate_204 与 /big 的耗时不可比。
+			moved := t.ResolvedHost != p.Host || t.ResolvedPort != p.Port || t.ResolvedURL != p.URL
 			if t.Label == p.Name && t.Enabled == on && !moved {
 				continue
 			}
@@ -982,9 +1035,9 @@ func (s *Store) SyncOutbound(ctx context.Context) error {
 			args := []any{p.Name, b2i(on), now}
 			if moved {
 				// 换了地址就换代:旧地址上的结果与新地址无关,而改地址常常正是为了换掉一个坏目标。
-				q += `, resolved_host = ?, resolved_port = ?, generation = generation + 1, generation_since = ?,
+				q += `, resolved_host = ?, resolved_port = ?, resolved_url = ?, generation = generation + 1, generation_since = ?,
 					last_status = '', last_at = '', last_success_at = ''`
-				args = append(args, p.Host, p.Port, now)
+				args = append(args, p.Host, p.Port, p.URL, now)
 			}
 			if moved || !on {
 				// 停测的序列不能挂着一个「连续失败」;换代之后旧的告警状态也不再成立。

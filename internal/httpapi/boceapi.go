@@ -750,7 +750,12 @@ func (s *Server) handleSetCardPrefs(w http.ResponseWriter, r *http.Request) {
 		}
 		return fmt.Sprintf("手动 %d 项", len(ids))
 	}
+	aliases := ""
+	if n, m := len(p.IngressAliases), len(p.OutboundAliases); n+m > 0 {
+		aliases = fmt.Sprintf(";自定义显示名称入站 %d 个、出站 %d 个", n, m)
+	}
 	s.auditBoce(r, actionCardPrefs, "node", strconv.FormatInt(id, 10),
-		"探针卡片展示:入站"+modeText(p.IngressMode, p.IngressIDs)+",出站"+modeText(p.OutboundMode, p.OutboundIDs)+"(只改展示,不影响检测)")
+		"探针卡片展示:入站"+modeText(p.IngressMode, p.IngressIDs)+",出站"+modeText(p.OutboundMode, p.OutboundIDs)+aliases+
+			"(只改展示,不影响检测)")
 	writeJSON(w, http.StatusOK, p)
 }

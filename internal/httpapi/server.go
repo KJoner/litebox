@@ -478,6 +478,9 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("PUT /api/probe-targets/{id}", s.handleUpdateProbeTarget)
 		authed.HandleFunc("DELETE /api/probe-targets/{id}", s.handleDeleteProbeTarget)
 		authed.HandleFunc("GET /api/probe-targets/{id}/history", s.handleProbeTargetHistory)
+		// 自建节点互测入站(V22.6):在别的自建机器上测这台机器的订阅入口。启停与删除走上面两条通用路由。
+		authed.HandleFunc("POST /api/nodes/{id}/probe-peers", s.handleCreateProbePeers)
+		authed.HandleFunc("POST /api/nodes/{id}/probe-peers/run", s.handleRunProbePeers)
 		// 公共目标库(V22.2):来源、限额、批量、导入、预置与同步、验证、节点覆盖与试测。
 		authed.HandleFunc("PUT /api/probe/sources/{kind}", s.handleUpdateProbeSource)
 		authed.HandleFunc("PUT /api/probe/limits", s.handleUpdateProbeLimits)

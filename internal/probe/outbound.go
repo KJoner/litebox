@@ -130,8 +130,10 @@ func (e *OutboundEngine) Run(ctx context.Context) {
 }
 
 type outboundJob struct {
-	nodeID int64
-	series []Target
+	// nodeID 是执行这一批的机器:出站序列是它自己的,PEER 序列是它替别的机器测的。
+	nodeID  int64
+	series  []Target
+	targets []netprobe.Target
 	// spends 是这台机器这一拍为第三方目标预占的额度(序列 id → 账本编号)。
 	spends map[int64]int64
 	resp   netprobe.Response
@@ -176,6 +178,13 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	if err != nil {
 		return fail("读取出站序列失败", err)
 	}
+	// 自建节点互测入站:在来源机器上测,所以与那台机器的出站目标并进同一次执行。
+	peers, err := e.store.list(ctx, `WHERE source = 'PEER' AND enabled = 1
+		AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL)
+		AND peer_node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL) ORDER BY peer_node_id, id`)
+	if err != nil {
+		return fail("读取自建节点拨测序列失败", err)
+	}
 	g, err := e.store.LoadGate(ctx)
 	if err != nil {
 		return fail("读取公共目标失败", err)
@@ -184,6 +193,7 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	if err != nil {
 		return fail("读取节点状态失败", err)
 	}
+	peerInterval := peerIntervalOf(cfg)
 
 	nowTS := start.UTC().Format(time.RFC3339)
 	quiet := cfg.Quiet.Active(start)
@@ -211,14 +221,37 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 		}
 		due = append(due, dueItem{t: t, due: at})
 	}
+	for _, t := range peers {
+		// 来源机器停用或暂停了本机探测:它替别人测的也一起停(那是这台机器的负载开关)。
+		if disabled[t.NodeID] || disabled[t.PeerNodeID] || g.Nodes[t.PeerNodeID].Paused {
+			continue
+		}
+		at, seen := e.nextDue[t.ID]
+		if !seen {
+			at = start
+			if last, err := time.Parse(time.RFC3339, t.LastAt); err == nil {
+				at = last.Add(peerInterval)
+			}
+			e.nextDue[t.ID] = at
+		}
+		if start.Before(at) {
+			continue
+		}
+		due = append(due, dueItem{t: t, due: at})
+	}
 	e.mu.Unlock()
 	// 到期越早的越先放行:上一拍被限额延后的,这一拍排在最前面,不会被新到期的一直挤掉。
-	sort.SliceStable(due, func(i, j int) bool {
-		if !due[i].due.Equal(due[j].due) {
-			return due[i].due.Before(due[j].due)
+	sortDue(due)
+	var peerNodes []int64
+	for _, d := range due {
+		if d.t.Source == SourcePeer {
+			peerNodes = append(peerNodes, d.t.NodeID)
 		}
-		return due[i].t.ID < due[j].t.ID
-	})
+	}
+	topo, err := e.store.loadTopology(ctx, uniqueIDs(peerNodes))
+	if err != nil {
+		return fail("读取被测入口的地址失败", err)
+	}
 
 	total, byPub := e.ledger.usage(start)
 	adm := &admission{budget: limits.ThirdPartyBudgetPerMin, total: total, byPub: byPub, perTick: map[int64]int{}}
@@ -228,26 +261,48 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	updates := map[int64]*TargetUpdate{}
 	for _, d := range due {
 		t := d.t
-		if reason := e.skipReason(ctx, t.NodeID); reason != "" {
-			// 停着的云实例:记「未执行」,不连 SSH —— 连不上的原因是没开机,不是网络。
-			st.Skipped++
+		exec := t.NodeID
+		var ht netprobe.Target
+		if t.Source == SourcePeer {
+			exec = t.PeerNodeID
 			u := updateOf(t)
-			u.LastStatus, u.LastAt = string(StatusSkipped), nowTS
 			updates[t.ID] = u
-			samples = append(samples, Sample{TargetID: t.ID, Generation: t.Generation, Source: t.Source, At: start,
-				Result: Result{Status: StatusSkipped, Error: SkipCloudStopped}})
-			e.schedule(t, g, start)
-			continue
+			if reason := e.peerSkip(ctx, t); reason != "" {
+				st.Skipped++
+				u.LastStatus, u.LastAt = string(StatusSkipped), nowTS
+				samples = append(samples, Sample{TargetID: t.ID, Generation: u.Generation, Source: t.Source, At: start,
+					Result: Result{Status: StatusSkipped, Error: reason}})
+				e.scheduleAt(t.ID, start.Add(peerInterval))
+				continue
+			}
+			var ok bool
+			if ht, ok = peerPlan(t, topo, cfg.Timeout, nowTS, u); !ok {
+				e.scheduleAt(t.ID, start.Add(peerInterval))
+				continue
+			}
+		} else {
+			if reason := e.skipReason(ctx, t.NodeID); reason != "" {
+				// 停着的云实例:记「未执行」,不连 SSH —— 连不上的原因是没开机,不是网络。
+				st.Skipped++
+				u := updateOf(t)
+				u.LastStatus, u.LastAt = string(StatusSkipped), nowTS
+				updates[t.ID] = u
+				samples = append(samples, Sample{TargetID: t.ID, Generation: t.Generation, Source: t.Source, At: start,
+					Result: Result{Status: StatusSkipped, Error: SkipCloudStopped}})
+				e.schedule(t, g, start)
+				continue
+			}
+			ht = helperTarget(t.ID, g.Publics[t.PublicID])
 		}
-		job := byNode[t.NodeID]
+		job := byNode[exec]
 		if job == nil {
-			job = &outboundJob{nodeID: t.NodeID, spends: map[int64]int64{}}
+			job = &outboundJob{nodeID: exec, spends: map[int64]int64{}}
 		}
 		if len(job.series) >= limits.RoundMax || len(job.series) >= netprobe.MaxTargets {
 			st.Deferred++
 			continue
 		}
-		if g.ThirdParty(t.PublicID) {
+		if t.Source != SourcePeer && g.ThirdParty(t.PublicID) {
 			cost := attemptsOf(g.Publics[t.PublicID])
 			if !adm.allow(t.PublicID, cost, g.PerTargetPerMin(t.PublicID)) {
 				st.Deferred++
@@ -255,44 +310,23 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 			}
 			job.spends[t.ID] = e.ledger.add(start, t.PublicID, cost)
 		}
-		if byNode[t.NodeID] == nil {
-			byNode[t.NodeID] = job
-			nodeOrder = append(nodeOrder, t.NodeID)
+		if byNode[exec] == nil {
+			byNode[exec] = job
+			nodeOrder = append(nodeOrder, exec)
 		}
 		job.series = append(job.series, t)
+		job.targets = append(job.targets, ht)
 	}
 	jobs := make([]*outboundJob, 0, len(nodeOrder))
 	for _, n := range nodeOrder {
 		jobs = append(jobs, byNode[n])
 	}
-
-	sem := make(chan struct{}, limits.NodeConcurrency)
-	var wg sync.WaitGroup
-	for _, j := range jobs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(j *outboundJob) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			req := netprobe.Request{Version: netprobe.Version, Targets: make([]netprobe.Target, 0, len(j.series))}
-			for _, t := range j.series {
-				req.Targets = append(req.Targets, helperTarget(t.ID, g.Publics[t.PublicID]))
-			}
-			j.resp, j.err = e.runner.Run(ctx, j.nodeID, req)
-		}(j)
-	}
-	wg.Wait()
+	e.runJobs(ctx, jobs, limits.NodeConcurrency)
 	if parent.Err() != nil {
 		// 面板正在关机:这一拍的结果多半是「被取消」,不落库、不告警。预占的额度也不必结算了。
 		return st
 	}
 
-	type emitted struct {
-		t      Target
-		u      TargetUpdate
-		kind   string
-		result Result
-	}
 	var toSend []emitted
 	for _, j := range jobs {
 		if errors.Is(j.err, sshx.ErrBusy) {
@@ -305,26 +339,8 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 		}
 		st.Nodes++
 		e.noteSSH(j.nodeID, j.err)
-		byID := map[int64]netprobe.Result{}
-		for _, r := range j.resp.Results {
-			byID[r.ID] = r
-		}
 		for _, t := range j.series {
-			var res Result
-			var re *RunError
-			switch {
-			case errors.As(j.err, &re):
-				res = Result{Status: re.Status, Error: re.Text}
-			case j.err != nil:
-				res = Result{Status: StatusSSHError, Error: sshErrorText(j.err)}
-			default:
-				hr, ok := byID[t.ID]
-				if !ok {
-					res = Result{Status: StatusToolError, Error: "辅助程序没有返回这个目标的结果"}
-				} else {
-					res = fromHelper(hr)
-				}
-			}
+			res := j.result(t)
 			if id, ok := j.spends[t.ID]; ok {
 				// 按实际发出的次数结算:没发起的(DNS 失败、目标受限、采集失败、工具不可用)一次都不算。
 				actual := 0
@@ -341,25 +357,24 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 			default:
 				st.Probed++
 			}
-			u := updateOf(t)
-			u.LastStatus, u.LastAt = string(res.Status), nowTS
-			if res.Status.Reachable() {
-				u.LastSuccessAt = nowTS
+			u := updates[t.ID]
+			if u == nil {
+				u = updateOf(t)
+				updates[t.ID] = u
 			}
-			a, emits := decideAlert(alertOf(u), res.Status, cfg.AlertAfter, quiet, nowTS)
-			applyAlert(u, a)
-			for _, k := range emits {
-				toSend = append(toSend, emitted{t: t, u: *u, kind: k, result: res})
+			toSend = append(toSend, applyResult(t, u, res, cfg.AlertAfter, quiet, nowTS)...)
+			samples = append(samples, Sample{TargetID: t.ID, Generation: u.Generation, Source: t.Source, At: start, Result: res})
+			if t.Source == SourcePeer {
+				e.scheduleAt(t.ID, start.Add(peerInterval))
+			} else {
+				e.schedule(t, g, start)
 			}
-			updates[t.ID] = u
-			samples = append(samples, Sample{TargetID: t.ID, Generation: t.Generation, Source: t.Source, At: start, Result: res})
-			e.schedule(t, g, start)
 		}
 	}
 	// 这一拍没轮到的序列,免打扰结束后也要补发攒着的推送(与入口探测同一条规矩)。
 	if !quiet {
-		for _, t := range series {
-			if _, done := updates[t.ID]; done || disabled[t.NodeID] {
+		for _, t := range append(series, peers...) {
+			if _, done := updates[t.ID]; done || disabled[t.NodeID] || (t.Source == SourcePeer && disabled[t.PeerNodeID]) {
 				continue
 			}
 			if !t.RecoveryPending && !(t.AlertState == "DOWN" && !t.AlertNotified) {
@@ -387,6 +402,79 @@ func (e *OutboundEngine) RunOnce(parent context.Context) OutboundStatus {
 	}
 	e.maybePrune(ctx, start)
 	return st
+}
+
+// emitted 是一条要推的告警或恢复。
+type emitted struct {
+	t      Target
+	u      TargetUpdate
+	kind   string
+	result Result
+}
+
+// runJobs 并发跑完一批机器的执行(每台一次 SSH,有上限)。
+func (e *OutboundEngine) runJobs(ctx context.Context, jobs []*outboundJob, concurrency int) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(j *outboundJob) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			req := netprobe.Request{Version: netprobe.Version, Targets: j.targets}
+			j.resp, j.err = e.runner.Run(ctx, j.nodeID, req)
+		}(j)
+	}
+	wg.Wait()
+}
+
+// result 是一条序列在这次执行里的结果。执行没拿到结果时按原因记采集失败 / 工具不可用 ——
+// 那是执行这一侧的问题,与目标通不通无关。
+func (j *outboundJob) result(t Target) Result {
+	var re *RunError
+	switch {
+	case errors.As(j.err, &re):
+		return Result{Status: re.Status, Error: re.Text}
+	case j.err != nil:
+		return Result{Status: StatusSSHError, Error: sshErrorText(j.err)}
+	}
+	for _, r := range j.resp.Results {
+		if r.ID == t.ID {
+			return fromHelper(r)
+		}
+	}
+	return Result{Status: StatusToolError, Error: "辅助程序没有返回这个目标的结果"}
+}
+
+// applyResult 把一次结果写进序列的状态并过一遍告警状态机,返回要推的几条。
+func applyResult(t Target, u *TargetUpdate, res Result, alertAfter int, quiet bool, nowTS string) []emitted {
+	u.LastStatus, u.LastAt = string(res.Status), nowTS
+	if res.Status.Reachable() {
+		u.LastSuccessAt = nowTS
+	}
+	a, emits := decideAlert(alertOf(u), res.Status, alertAfter, quiet, nowTS)
+	applyAlert(u, a)
+	var out []emitted
+	for _, k := range emits {
+		out = append(out, emitted{t: t, u: *u, kind: k, result: res})
+	}
+	return out
+}
+
+func uniqueIDs(ids []int64) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // noteSSH 在一台机器的 SSH 状态翻转时写一条日志。原始错误只进日志(带地址,给管理员排查),
@@ -418,9 +506,21 @@ func (e *OutboundEngine) schedule(t Target, g *OutboundGate, start time.Time) {
 	if g.ThirdParty(t.PublicID) {
 		next = next.Add(jitter(t.NodeID, t.PublicID, interval, start))
 	}
+	e.scheduleAt(t.ID, next)
+}
+
+func (e *OutboundEngine) scheduleAt(id int64, at time.Time) {
 	e.mu.Lock()
-	e.nextDue[t.ID] = next
+	e.nextDue[id] = at
 	e.mu.Unlock()
+}
+
+// peerIntervalOf 是 PEER 序列的间隔:继承入口检测的全局间隔(首期不做每个来源独立调度)。
+func peerIntervalOf(cfg Config) time.Duration {
+	if cfg.Interval > 0 {
+		return cfg.Interval
+	}
+	return DefaultInterval
 }
 
 func (e *OutboundEngine) skipReason(ctx context.Context, nodeID int64) string {
@@ -453,6 +553,9 @@ func helperTarget(id int64, p PublicTarget) netprobe.Target {
 		TimeoutMs: p.TimeoutMs, AllowRestricted: p.AllowRestricted,
 	}
 	switch {
+	case p.Protocol == ProtoHTTP:
+		// 主机与端口由辅助程序从 URL 再推一遍;这里照样带上,日志里看得出是哪台主机。
+		ht.URL = p.URL
 	case p.Protocol == ProtoICMP:
 		ht.Count, ht.IntervalMs = p.Count, PublicPacketIntervalMs
 	case p.TCPMode == TCPSyn:
@@ -468,7 +571,7 @@ func fromHelper(r netprobe.Result) Result {
 		Status: Status(r.Status), Error: r.Error, Peer: r.IP,
 		RTT: time.Duration(r.RTTUs) * time.Microsecond, DNS: time.Duration(r.DNSUs) * time.Microsecond,
 		RTTMin: time.Duration(r.MinUs) * time.Microsecond, RTTMax: time.Duration(r.MaxUs) * time.Microsecond,
-		Sent: r.Sent, Received: r.Received, RTTN: r.RTTN,
+		Sent: r.Sent, Received: r.Received, RTTN: r.RTTN, HTTPStatus: r.HTTPStatus,
 	}
 	switch res.Status {
 	case StatusOK, StatusLoss, StatusTimeout, StatusRefused, StatusUnreachable, StatusError,
@@ -478,6 +581,9 @@ func fromHelper(r netprobe.Result) Result {
 	}
 	if res.Received > res.Sent || res.Sent < 0 || res.RTTN < 0 || res.RTTN > res.Received {
 		return Result{Status: StatusToolError, Error: "辅助程序返回的发 / 收数不合理"}
+	}
+	if res.HTTPStatus != 0 && (res.Status != StatusOK || res.HTTPStatus < 100 || res.HTTPStatus > 599) {
+		return Result{Status: StatusToolError, Error: "辅助程序返回的 HTTP 状态码不合理"}
 	}
 	if !res.Status.Attempted() {
 		// 没有发起的结果不带发 / 收数,不然会进分母。

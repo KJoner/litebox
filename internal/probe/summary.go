@@ -29,6 +29,9 @@ const (
 	StateAPIError     = "API_ERROR"     // Boce 接口异常
 	StateExpired      = "EXPIRED"       // 任务建了但没取到结果
 	StateSkipped      = "SKIPPED"       // 未执行(预算保护等)
+	// StateHTTP5xx HTTP 序列最近一次取得了响应,但状态码是 5xx:网络通,服务说自己出错了。
+	// 不冒充正常,也不算请求失败。
+	StateHTTP5xx = "HTTP_5XX"
 )
 
 // LastSample 是最近一次结果。
@@ -42,6 +45,8 @@ type LastSample struct {
 	Sent     int    `json:"sent"`
 	Received int    `json:"received"`
 	Peer     string `json:"peer"`
+	// HTTPStatus 只对 HTTP 序列:取得响应时的状态码。
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 // Summary 是卡片上一个目标那一行要的全部数据。
@@ -63,6 +68,17 @@ type Summary struct {
 	Note        string `json:"note"`
 	// Boce 是 Boce 序列的任务与拨测点信息;别的序列没有。
 	Boce *BoceSeriesInfo `json:"boce,omitempty"`
+	// PeerSource 是 PEER 序列的拨测来源机器;别的序列没有。
+	PeerSource *PeerSourceInfo `json:"peer_source,omitempty"`
+}
+
+// PeerSourceInfo 是 PEER 序列的拨测来源(取当前的节点名,改名之后跟着变)。
+type PeerSourceInfo struct {
+	NodeID int64 `json:"node_id"`
+	// Name 是展示名称(没填时是内部名称)。
+	Name string `json:"name"`
+	// Method 是 Ping / TCPing。
+	Method string `json:"method"`
 }
 
 // DotCount 是点阵的点数。
@@ -123,6 +139,10 @@ func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryConte
 		dot := dotWidth(interval)
 		sm := Summary{Target: t, SourceLabel: SourceLabel(t.Source), DotSeconds: int(dot.Seconds()),
 			IntervalSec: int(interval.Seconds())}
+		if t.Source == SourcePeer {
+			sm.PeerSource = sc.peerSource(t)
+			sm.SourceLabel = "自建节点 " + sm.PeerSource.Name
+		}
 		if t.Kind == KindMgmt {
 			sm.Note = MgmtNote
 		}
@@ -133,7 +153,7 @@ func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryConte
 		if n := len(rows); n > 0 {
 			r := rows[n-1]
 			ls := &LastSample{At: r.at.Format(time.RFC3339), Status: r.status(), Label: r.status().LabelFor(t.Metric),
-				Error: r.res.Error, Peer: r.res.Peer}
+				Error: r.res.Error, Peer: r.res.Peer, HTTPStatus: r.res.HTTPStatus}
 			ls.Sent, ls.Received = r.res.counts()
 			if r.status().Reachable() {
 				ls.RTTMs = ms(r.res.RTT.Microseconds())
@@ -175,6 +195,12 @@ func targetState(t Target, sm Summary, sc SummaryContext, lastAt, now time.Time)
 		}
 		return lastState(t, sm, lastAt, now)
 	}
+	if t.Source == SourcePeer {
+		if st, txt, ok := sc.peerState(t); ok {
+			return st, txt
+		}
+		return lastState(t, sm, lastAt, now)
+	}
 	switch {
 	case !sc.Config.Enabled:
 		return StatePaused, "探测已在设置里全局关闭"
@@ -209,6 +235,8 @@ func lastState(t Target, sm Summary, lastAt, now time.Time) (string, string) {
 	case sm.Stale:
 		return StateStale, fmt.Sprintf("数据过期:上次探测在 %s 前", ago(now.Sub(lastAt)))
 	// 这三种排在 DOWN 之前:这一轮没有测,手上的告警状态说的是之前的事,此刻目标怎样并不知道。
+	case last == StatusSSHError && t.Source == SourcePeer:
+		return StateCollectFailed, "采集失败:面板连不上拨测来源机器,不代表被测入口不可达"
 	case last == StatusSSHError:
 		return StateCollectFailed, "采集失败:面板连不上这台机器,不代表目标不可达"
 	case last == StatusToolError:
@@ -236,6 +264,8 @@ func lastState(t Target, sm Summary, lastAt, now time.Time) (string, string) {
 			return StateLossy, fmt.Sprintf("最近一轮%s %d/%d", what, sm.Last.Sent-sm.Last.Received, sm.Last.Sent)
 		}
 		return StateLossy, "最近一轮部分" + what
+	case sm.Last != nil && sm.Last.HTTPStatus >= 500:
+		return StateHTTP5xx, fmt.Sprintf("取得了响应,但服务返回 HTTP %d(异常状态)", sm.Last.HTTPStatus)
 	}
 	return StateOK, "正常"
 }
