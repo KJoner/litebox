@@ -603,6 +603,40 @@ PUT    /api/nodes/{id}/probe-card        {ingress_mode, ingress_ids, outbound_mo
 
 定义与安全规则见 `docs/asset-probe/07-boce-delivery.md`。
 
+### 自建节点拨测、出站 HTTP(S) 与卡片显示名称(V22.6)
+
+```
+POST   /api/nodes/{id}/probe-peers       {ref, family, source_node_ids, methods: ["ICMP" | "TCP"], enabled?}:
+                                         在这台机器的一个订阅入口上按「来源 × 测法」各建一条自建节点拨测;
+                                         ref 只能是候选里的对外服务(管理通道 400),来源不能是这台自己(400),
+                                         全部已存在 409,超过上限(每台被测 24 条 / 每台来源 32 条)409;
+                                         返回 {created, duplicates}。enabled = false 表示只建、不跑周期检测
+POST   /api/nodes/{id}/probe-peers/run   {ids}:立即检测这台机器上的几条 PEER 序列(在来源机器上跑);结果进历史、
+                                         过告警状态机;来源正忙的那几条 recorded = false、什么都不记;
+                                         不属于这台机器的序列 404;全局关闭 / 来源停用 / 来源暂停 / 停机 / 入口失效 400
+PUT    /api/probe-targets/{id}           PEER 序列也走这里启停(暂停 = 停周期检测,仍可手动测)与改名
+DELETE /api/probe-targets/{id}           PEER 序列也走这里删(连历史)
+```
+
+* `GET /api/nodes/{id}/probe` 多 `peer`(PEER 序列汇总)与 `peer_sources`(可选来源:除这台之外的全部机器,
+  `note` 写着眼下测不了的原因);`targets` 仍然只有主控的入口目标;
+* `GET /api/dashboard/cards` 多 `peer`;`card_picks` 每项多 `ingress_aliases` / `outbound_aliases`;
+  `probe.sources` 多一项 `PEER`;
+* PEER 序列:`source = PEER`、`peer_node_id` 是来源机器、`peer_source = {node_id, name, method}`(名字取当前的);
+  Ping 是 `protocol = ICMP`、`metric = LOSS`、`resolved_port = 0`,TCPing 是 `TCP` / `CONNECT`;
+  卡片状态的说法按来源写(「采集失败:面板连不上拨测来源机器,不代表被测入口不可达」);
+* 公共目标多 `url`(只对 HTTP);`protocol` 多 `HTTP`、`metric` 多 `HTTP`(HTTP 请求失败率);新建 / 编辑时 HTTP 目标
+  传 `url`,主机与端口由它推出来;超时 200~10000 ms(默认 5000);带账号密码的 URL 400;
+  编辑时 http 与 https 互换 400;改 URL 换代;
+* 明细 / 统计 / 点阵多 `http_2xx` / `http_3xx` / `http_4xx` / `http_5xx`;最近一次与历史异常点多 `http_status`;
+  点阵状态多 `HTTP5XX`、卡片状态多 `HTTP_5XX`(取得了响应但是 5xx,不算请求失败);试测结果多 `http_status`;
+* `PUT /api/nodes/{id}/probe-card` 多 `ingress_aliases` / `outbound_aliases`(序列 id → 名称,最多 24 个字符;
+  不传 = 保持,`{}` = 清掉;键不属于这台节点那个方向 400,已删除的序列静默丢掉);只改展示,不碰任何检测;
+* 推送:PEER 的告警与恢复写「自建节点拨测」与来源机器名;HTTP 恢复写「HTTP 响应耗时 N ms(HTTP 204)」;
+  审计里 HTTP 目标只写到路径(查询串换成「?…」)。
+
+定义与安全规则见 `docs/asset-probe/10-probe-enhance-delivery.md`。
+
 ## 巡检与推送接口
 
 ```text
