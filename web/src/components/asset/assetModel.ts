@@ -8,6 +8,7 @@ import type {
   ExternalCheckStatus,
   ExternalProxy,
   Node,
+  NetRate,
   NodeCycleUsage,
   NodeMetrics,
   ProbeSummary,
@@ -82,6 +83,22 @@ export interface CardResources {
   /** 采样过期,或说的是改管理地址之前的机器:数字照给,颜色降灰,不当实时看。 */
   stale: boolean
   collectedAt: string | null
+  /**
+   * 网速来自卡片的实时读数(仪表盘开着时每 30 秒一次)还是资源采样(5 分钟一次)。
+   * 前者新鲜时用前者;两者口径相同(除 lo 以外全部网卡),只是窗口与时间不同。
+   */
+  rateLive: boolean
+  /** 网速那一行的时间;rateStale 为真时降灰并写明过期。 */
+  rateAt: string | null
+  rateStale: boolean
+  /** 实时读数的窗口(秒),悬停说明用。 */
+  rateWindow: number | null
+}
+
+/** 开机时长的读数:那一刻的秒数 + 读数时间,显示时按「现在」往前推。 */
+export interface CardUptime {
+  seconds: number
+  at: string
 }
 
 export interface CardTraffic {
@@ -139,6 +156,8 @@ export interface AssetCard {
   cloudStopped: boolean
   /** 排序用。 */
   latency: number | null
+  /** 开机时长;只在读数可信(实时读数新鲜,或资源采样没过期)时给,否则 null。 */
+  uptime: CardUptime | null
 }
 
 export interface AssetInputs {
@@ -148,6 +167,17 @@ export interface AssetInputs {
   sources: ProxySource[]
   proxies: ExternalProxy[]
   cards: DashboardCards | null
+  /** 卡片实时网速(只在仪表盘开着时有),按节点 ID。没有就退回资源采样里的网速。 */
+  netRates?: Record<number, NetRate>
+  /** 实时网速的读数间隔(秒);0 表示采样关着。 */
+  netRateInterval?: number
+  /** 「现在」,判断实时读数新不新鲜用;测试里固定。 */
+  now?: number
+}
+
+/** 实时读数超过这么久就不算「此刻」:三个间隔,至少 90 秒(轮询偶尔晚一拍不至于来回跳)。 */
+export function netRateMaxAgeMs(intervalSec: number | undefined): number {
+  return Math.max((intervalSec || 30) * 3, 90) * 1000
 }
 
 function pct(used: number, total: number): number | null {
@@ -281,6 +311,10 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     if (n.status === 'DISABLED') statuses.add('DISABLED')
     if (cloudStopped) statuses.add('STOPPED')
     const stale = !!m && (isMetricsStale(m.collected_at) || isPreChange(n, m.collected_at))
+    const lr = inp.netRates?.[n.id]
+    const now = inp.now ?? Date.now()
+    const live =
+      lr && !isPreChange(n, lr.at) && now - new Date(lr.at).getTime() <= netRateMaxAgeMs(inp.netRateInterval) ? lr : null
     if (stale || [...outbound, ...probes].some((p) => p.enabled && p.state === 'STALE')) statuses.add('STALE')
     if (outbound.some(failing) || probes.some(failing)) statuses.add('PROBE_FAIL')
     const monitor = monitorOf(outbound, probes, boce, inp.cards)
@@ -309,10 +343,14 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
         disk: m ? pct(m.disk_used_kb, m.disk_total_kb) : null,
         memDetail: m ? `${formatBytes(m.mem_used_kb * 1024)} / ${formatBytes(m.mem_total_kb * 1024)}` : '',
         diskDetail: m ? `${formatBytes(m.disk_used_kb * 1024)} / ${formatBytes(m.disk_total_kb * 1024)}` : '',
-        rx: m ? m.net_rx_bps : null,
-        tx: m ? m.net_tx_bps : null,
+        rx: live ? live.rx_bps : m ? m.net_rx_bps : null,
+        tx: live ? live.tx_bps : m ? m.net_tx_bps : null,
         stale,
         collectedAt: m?.collected_at ?? null,
+        rateLive: !!live,
+        rateAt: live ? live.at : (m?.collected_at ?? null),
+        rateStale: live ? false : stale,
+        rateWindow: live ? live.window_seconds : null,
       },
       resourcesNote: m ? '' : '还没有资源采样',
       traffic:
@@ -339,6 +377,11 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       statuses,
       cloudStopped,
       latency: latencyOf(outbound, probes, boce),
+      uptime: live
+        ? { seconds: live.uptime_seconds, at: live.at }
+        : m && !stale && m.uptime_seconds > 0
+          ? { seconds: m.uptime_seconds, at: m.collected_at }
+          : null,
     })
   }
 
@@ -383,6 +426,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       statuses,
       cloudStopped: false,
       latency: null,
+      uptime: null,
     })
   }
 
@@ -430,6 +474,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       statuses,
       cloudStopped: false,
       latency: ext?.last_check_ok && ext.latency_ms != null ? ext.latency_ms : null,
+      uptime: null,
     })
   }
   return out
@@ -586,7 +631,7 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
   for (const c of nodes) {
     const r = c.resources
     if (r && r.rx != null && r.tx != null) {
-      if (r.stale) ov.rateStale++
+      if (r.rateStale) ov.rateStale++
       else {
         ov.rx += r.rx
         ov.tx += r.tx
@@ -620,6 +665,38 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
 export function money(amount: string, currency: string): string {
   if (!amount) return ''
   return currency ? `${amount} ${currency}` : amount
+}
+
+/** 「4.79 GB」→「4.79G」,「500.0 GB」→「500G」:半宽的格子里放「已用 / 总量」。 */
+export function shortBytes(n: number): string {
+  const s = formatBytes(n)
+  const m = /^([\d.]+) ([KMGTP]?)B$/.exec(s)
+  if (!m) return s
+  const v = m[1].includes('.') ? m[1].replace(/\.?0+$/, '') : m[1]
+  return `${v}${m[2] || 'B'}`
+}
+
+/** 开机时长的短说法:满一天说天,满一小时说小时,否则说分钟。 */
+export function uptimeText(seconds: number): string {
+  if (seconds >= 86400) return `${Math.floor(seconds / 86400)} 天`
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)} 小时`
+  return `${Math.max(1, Math.floor(seconds / 60))} 分钟`
+}
+
+/** 读数那一刻的开机秒数按「现在」往前推。读数时间不可解析时不推。 */
+export function uptimeNow(u: CardUptime, now = Date.now()): number {
+  const at = new Date(u.at).getTime()
+  return Number.isNaN(at) ? u.seconds : u.seconds + Math.max(0, (now - at) / 1000)
+}
+
+/**
+ * 地区代码(ISO 3166-1 alpha-2,后端已校验成两位大写字母)→ 国旗。
+ * 两个「区域指示符」拼成一面旗;字形由 styles/flags.css 的字体给,Windows 上也看得到。
+ * 不是两位字母时返回空串,调用方画「未设置」。
+ */
+export function regionFlag(code: string): string {
+  if (!/^[A-Z]{2}$/.test(code)) return ''
+  return String.fromCodePoint(...[...code].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65))
 }
 
 // 比例、延迟、地址族的文字在 probeView.ts,这里转出去给原来的调用方。
