@@ -163,4 +163,17 @@ test.describe('@visual 状态', () => {
     await page.waitForTimeout(400)
     await expect(page.getByRole('dialog').filter({ hasText: '探针卡片展示设置' })).toHaveScreenshot('card-display-light-1440.png')
   })
+
+  test('新增探测目标弹窗 · HTTP(S)', async ({ page, api }) => {
+    adminOnly(api)
+    await page.goto('/probe-library')
+    await settle(page)
+    await page.getByTestId('public-target-add').click()
+    const form = page.getByTestId('public-target-form')
+    await form.getByTestId('ptm-proto-http').click()
+    await form.getByTestId('ptm-url').fill('https://www.example.com/generate_204')
+    await form.getByPlaceholder('例如 自建测速点').fill('示例 204')
+    await page.waitForTimeout(400)
+    await expect(page.getByRole('dialog').filter({ hasText: '新增探测目标' })).toHaveScreenshot('public-target-http-light-1440.png')
+  })
 })

@@ -204,14 +204,16 @@ test('卡片展示设置:入站 / 出站各最多 3 项,只写偏好,不碰 Boce
   const ingress = dlg.getByTestId('card-display-ingress')
   await expect(ingress).toContainText('(3/3)')
   await expect(ingress).toContainText('Boce TCPing · 上海 电信')
-  await expect(ingress.getByLabel('添加入站(主控 / Boce)展示项')).toHaveClass(/ant-select-disabled/)
+  await expect(ingress.getByLabel('添加入站(主控 / Boce / 自建节点)展示项')).toHaveClass(/ant-select-disabled/)
   await ingress.getByRole('button', { name: '不显示第 3 项' }).click()
   await ingress.getByRole('button', { name: '上移第 2 项' }).click()
   await expect(dlg.getByTestId('card-display-outbound')).toContainText('自动推荐')
   await page.getByTestId('card-display-save').click()
   await expect.poll(() => api.requests('PUT', '/api/nodes/1/probe-card').length).toBe(1)
+  // 调整顺序、移除一项都不动显示名称:原有的两个别名原样带回去(与展示方式、顺序解耦)。
   expect(api.requests('PUT', '/api/nodes/1/probe-card')[0]!.body).toEqual({
     ingress_mode: 'MANUAL', ingress_ids: [22, 21], outbound_mode: 'AUTO', outbound_ids: [],
+    ingress_aliases: { 22: '广东联通入口' }, outbound_aliases: { 12: '示例网站' },
   })
   // 改展示不调任何 Boce 接口。
   expect(api.mutations().map((m) => m.path)).toEqual(['/api/nodes/1/probe-card'])

@@ -64,10 +64,19 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   const boxOut = await icmp.boundingBox()
   expect(boxIn && boxOut && boxIn.x < boxOut.x).toBeTruthy()
   await expect(a.getByTestId('probe-row-22')).toContainText('最近一轮丢包 1/10')
-  // 没选上的照样在测:卡片只说「还有几个」,不画出来。拨测点异常的那一条(北京移动)没选上。
+  // 卡片别名(V22.6):「广东 联通」在这台节点的卡片上叫「广东联通入口」,悬停说明里仍有原始名称与来源;
+  // 口径名(TCPing 丢包)不被别名覆盖。出站「示例网站 443(演示)」同理叫「示例网站」。
+  const aliased = a.getByTestId('probe-row-22').getByTestId('probe-row-name')
+  await expect(aliased).toHaveText('广东联通入口')
+  await expect(aliased).toHaveAttribute('title', /显示名称「广东联通入口」,原始名称[\s\S]*广东 联通[\s\S]*Boce 第三方拨测点/)
+  await expect(a.getByTestId('probe-row-22')).toContainText('TCPing 丢包')
+  await expect(a.getByTestId('probe-row-12').getByTestId('probe-row-name')).toHaveText('示例网站')
+  // 没选上的照样在测:卡片只说「还有几个」,不画出来。拨测点异常的那一条(北京移动)没选上,
+  // 两条自建节点拨测(东京-beta → 这台)也没选上。
   await expect(a.getByTestId('probe-row-23')).toHaveCount(0)
   await expect(a.getByTestId('probe-row-14')).toHaveCount(0)
-  await expect(a).toContainText('还有 3 个目标')
+  await expect(a.getByTestId('probe-row-31')).toHaveCount(0)
+  await expect(a).toContainText('还有 5 个目标')
   await expect(a.getByTestId('probe-row-1')).toHaveAttribute('data-direction', 'INGRESS')
   await expect(a.getByTestId('probe-row-1')).toContainText('上海-alpha · VLESS')
   // 10 ms 以上取整显示。
