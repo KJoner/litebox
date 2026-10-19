@@ -161,13 +161,13 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
           <div
             class="acv__v lb-tabular"
             :class="{ 'acv__v--bad': ov.outboundFailing + ov.probeFailing }"
-            :title="`出站 ${ov.outboundTargets} 条序列失败 ${ov.outboundFailing};入口 ${ov.probeTargets} 个目标失败 ${ov.probeFailing}` + (ov.boceTargets ? `;Boce 外部拨测 ${ov.boceTargets} 条失败 ${ov.boceFailing}(第三方测点,单列)` : '')"
+            :title="`出站 ${ov.outboundTargets} 条序列失败 ${ov.outboundFailing};入口 ${ov.probeTargets} 个目标失败 ${ov.probeFailing}` + (ov.boceTargets ? `;Boce 外部拨测 ${ov.boceTargets} 条失败 ${ov.boceFailing}(第三方测点,单列)` : '') + (ov.peerTargets ? `;自建节点拨测 ${ov.peerTargets} 条失败 ${ov.peerFailing}(别的自建机器测的,单列)` : '')"
           >
             {{ ov.outboundFailing + ov.probeFailing }}
             <span class="acv__unit">/ {{ ov.outboundTargets + ov.probeTargets }} 失败</span>
           </div>
           <div class="acv__h">
-            出站 {{ ov.outboundTargets }} · 入口 {{ ov.probeTargets }}<span v-if="ov.boceTargets" class="acv__nowrap"> · Boce {{ ov.boceTargets }}</span>
+            出站 {{ ov.outboundTargets }} · 入口 {{ ov.probeTargets }}<span v-if="ov.boceTargets" class="acv__nowrap"> · Boce {{ ov.boceTargets }}</span><span v-if="ov.peerTargets" class="acv__nowrap"> · 互测 {{ ov.peerTargets }}</span>
           </div>
         </template>
         <template v-else>

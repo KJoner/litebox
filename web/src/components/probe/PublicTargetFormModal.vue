@@ -18,6 +18,7 @@ import { originText } from '@/components/asset/probeView'
 
 /**
  * 新增 / 编辑一个公共目标。协议、TCP 方式与地址族创建后不能改(换了就是另一条测量)。
+ * HTTP(S)(V22.6)填完整 URL,主机与端口由它推出来;URL 可以改(统计重新起算),http 与 https 不能互换。
  * 主机属于已知第三方来源的(*.ip.zstaticcdn.com 等),服务端会把它归到那个来源 ——
  * 间隔不能低于那个来源的下限,对节点启用之前要先确认授权。
  */
@@ -34,11 +35,15 @@ const emit = defineEmits<{
 }>()
 
 const SYN_MAX = 900
+/** HTTP 一次请求(DNS + 建连 + TLS + 等响应头)的总超时上限与默认值,与辅助程序一致。 */
+const HTTP_MAX = 10000
+const HTTP_DEFAULT = 5000
 const saving = ref(false)
 const formError = ref('')
 const form = reactive({
   name: '',
   host: '',
+  url: '',
   protocol: 'ICMP' as ProbeProtocol,
   tcp_mode: 'CONNECT' as ProbeTCPMode,
   port: null as number | null,
@@ -64,14 +69,15 @@ watch(
     const p = props.target
     if (p) {
       Object.assign(form, {
-        name: p.name, host: p.host, protocol: p.protocol, tcp_mode: p.tcp_mode, port: p.protocol === 'TCP' ? p.port : null,
+        name: p.name, host: p.host, url: p.url ?? '', protocol: p.protocol, tcp_mode: p.tcp_mode,
+        port: p.protocol === 'TCP' ? p.port : null,
         family: p.family, interval_sec: p.interval_sec, count: p.count, timeout_ms: p.timeout_ms, sort_order: p.sort_order,
         note: p.note, region: p.region, province: p.province, city: p.city, isp: p.isp,
         allow_restricted: p.allow_restricted, enabled: p.enabled,
       })
     } else {
       Object.assign(form, {
-        name: '', host: '', protocol: 'ICMP', tcp_mode: 'CONNECT', port: null, family: 'V4', interval_sec: 60, count: 4,
+        name: '', host: '', url: '', protocol: 'ICMP', tcp_mode: 'CONNECT', port: null, family: 'V4', interval_sec: 60, count: 4,
         timeout_ms: 1000, sort_order: props.nextSort, note: '', region: '', province: '', city: '', isp: '',
         allow_restricted: false, enabled: true,
       })
@@ -81,16 +87,33 @@ watch(
 
 watch(
   () => [form.protocol, form.tcp_mode] as const,
-  ([proto, mode]) => {
+  ([proto, mode], old) => {
     if (props.target) return
     // 握手近似每次最多等 900 毫秒(要早于内核 1 秒的首次 SYN 重发)。
     if (proto === 'TCP' && mode === 'SYN' && (form.timeout_ms ?? 0) > SYN_MAX) form.timeout_ms = SYN_MAX
+    // HTTP 的超时管整个请求,默认 5 秒;换回 ICMP / TCP 时夹回它们的上限。
+    if (proto === 'HTTP' && old?.[0] !== 'HTTP') form.timeout_ms = HTTP_DEFAULT
+    if (proto !== 'HTTP' && (form.timeout_ms ?? 0) > 3000) form.timeout_ms = 1000
   },
 )
 
+const isHTTP = computed(() => form.protocol === 'HTTP')
+/** URL 推出来的主机与端口(只做预览;以服务端校验为准)。 */
+const parsedURL = computed<{ host: string; port: number; https: boolean } | null>(() => {
+  if (!isHTTP.value) return null
+  try {
+    const u = new URL(form.url.trim())
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    const https = u.protocol === 'https:'
+    return { host: u.hostname.replace(/^\[|\]$/g, ''), port: u.port ? Number(u.port) : https ? 443 : 80, https }
+  } catch {
+    return null
+  }
+})
+
 /** 这个主机会归到哪个第三方来源(与服务端 OriginForHost 同一张后缀表)。 */
 const thirdParty = computed<ProbeSource | null>(() => {
-  const h = form.host.trim().toLowerCase().replace(/\.$/, '')
+  const h = (isHTTP.value ? (parsedURL.value?.host ?? '') : form.host).trim().toLowerCase().replace(/\.$/, '')
   const kind = props.target?.source && props.target.source !== 'MANUAL'
     ? props.target.source
     : h.endsWith('.ip.zstaticcdn.com')
@@ -111,7 +134,8 @@ async function submit() {
   formError.value = ''
   const body: PublicProbeInput = {
     name: form.name.trim(),
-    host: form.host.trim(),
+    host: isHTTP.value ? (parsedURL.value?.host ?? '') : form.host.trim(),
+    url: isHTTP.value ? form.url.trim() : '',
     protocol: form.protocol,
     tcp_mode: form.protocol === 'TCP' ? form.tcp_mode : 'CONNECT',
     port: form.protocol === 'TCP' ? form.port ?? 0 : 0,
@@ -184,13 +208,14 @@ async function submit() {
             <span class="ptm__req">*</span> 协议
             <LbInfoTip
               :width="340"
-              text="ICMP:往返时间与真实丢包率(每轮连发几个包)。TCP 建连:一次完整建连,看连接失败率(内核在超时内会照常重发 SYN,丢了第一个 SYN 只表现为延迟变大)。TCP 握手近似:每次只等一个 SYN 的应答、每轮做几次,看握手超时无应答率 —— 它基于系统的 TCP 建连,不是原始套接字的 SYN 探测,也不是真实的 TCP 丢包率。创建后不能改。"
+              text="ICMP:往返时间与真实丢包率(每轮连发几个包)。TCP 建连:一次完整建连,看连接失败率(内核在超时内会照常重发 SYN,丢了第一个 SYN 只表现为延迟变大)。TCP 握手近似:每次只等一个 SYN 的应答、每轮做几次,看握手超时无应答率 —— 它基于系统的 TCP 建连,不是原始套接字的 SYN 探测,也不是真实的 TCP 丢包率。HTTP(S):每轮一次 GET,计时从发起请求(含 DNS、建连、TLS)到收到响应头,看 HTTP 请求失败率;不跟随跳转、不下载正文、校验证书,200 / 404 / 5xx 都算取得了响应。创建后不能改。"
             />
           </span>
           <div class="ptm__inline">
             <a-radio-group v-model:value="form.protocol" :disabled="!!target" button-style="solid" size="small">
               <a-radio-button value="ICMP">ICMP</a-radio-button>
               <a-radio-button value="TCP">TCP</a-radio-button>
+              <a-radio-button value="HTTP" data-testid="ptm-proto-http">HTTP(S)</a-radio-button>
             </a-radio-group>
             <a-radio-group v-if="form.protocol === 'TCP'" v-model:value="form.tcp_mode" :disabled="!!target" button-style="solid" size="small">
               <a-radio-button value="CONNECT">建连</a-radio-button>
@@ -205,7 +230,30 @@ async function submit() {
             <a-radio-button value="V6">IPv6</a-radio-button>
           </a-radio-group>
         </div>
-        <div class="lb-group__row ptm__row">
+        <div v-if="isHTTP" class="lb-group__row ptm__row">
+          <span class="lb-group__label">
+            <span class="ptm__req">*</span> URL
+            <LbInfoTip
+              :width="340"
+              text="完整的 http:// 或 https:// 地址,可以带端口、路径与查询参数,例如 https://www.example.com/generate_204、http://example.com:8080/health。不收账号密码;不跟随 301 / 302,3xx 本身就是结果;不读节点上的 HTTP_PROXY 之类的代理设置;解析到私网、回环等受限地址时拒绝探测(只连查过的那个地址)。查询参数不会写进日志、推送与审计。"
+            />
+          </span>
+          <div class="ptm__url">
+            <a-input
+              v-model:value="form.url"
+              class="lb-mono"
+              placeholder="https://www.example.com/generate_204"
+              :maxlength="2048"
+              data-testid="ptm-url"
+            />
+            <span class="ptm__muted">
+              <template v-if="parsedURL">将由各节点连接 {{ parsedURL.host }}:{{ parsedURL.port }}({{ parsedURL.https ? 'HTTPS,校验证书' : 'HTTP' }})</template>
+              <template v-else-if="form.url.trim()">只支持 http:// 与 https:// 开头的完整地址</template>
+              <template v-else>示例:https://www.example.com/generate_204 · http://example.com:8080/health</template>
+            </span>
+          </div>
+        </div>
+        <div v-else class="lb-group__row ptm__row">
           <span class="lb-group__label">
             <span class="ptm__req">*</span> 主机
             <LbInfoTip
@@ -237,13 +285,13 @@ async function submit() {
             超时
             <LbInfoTip
               :width="300"
-              :text="isSyn ? '每次握手最多等多久,200~900 毫秒:要早于内核 1 秒的首次 SYN 重发,每次才只有一个 SYN 在路上。应答晚于它记为无应答。' : '单个包 / 单次建连的超时,200~3000 毫秒。'"
+              :text="isSyn ? '每次握手最多等多久,200~900 毫秒:要早于内核 1 秒的首次 SYN 重发,每次才只有一个 SYN 在路上。应答晚于它记为无应答。' : isHTTP ? '整个请求(DNS + 建连 + TLS + 等响应头)的总超时,200~10000 毫秒;超时不会记一个假的 0 毫秒耗时。' : '单个包 / 单次建连的超时,200~3000 毫秒。'"
             />
           </span>
           <a-input-number
             v-model:value="form.timeout_ms"
             :min="200"
-            :max="isSyn ? SYN_MAX : 3000"
+            :max="isSyn ? SYN_MAX : isHTTP ? HTTP_MAX : 3000"
             :precision="0"
             addon-after="毫秒"
             class="ptm__num"
@@ -307,7 +355,7 @@ async function submit() {
         </div>
       </div>
       <div v-if="target" class="ptm__muted">
-        改主机或端口之后,各台机器上的统计从改动那一刻重新起算。
+        改主机、端口或 URL 之后,各台机器上的统计从改动那一刻重新起算<template v-if="target.protocol === 'HTTP'">;http:// 与 https:// 不能互换</template>。
         <template v-if="target.source !== 'MANUAL'">从来源导入的目标,手工改过的名称、地址、地区等字段在之后同步时不会被上游覆盖。</template>
       </div>
     </div>
@@ -337,6 +385,12 @@ async function submit() {
 }
 .ptm__num {
   width: 180px;
+}
+.ptm__url {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 .ptm__req {
   color: var(--bad);

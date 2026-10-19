@@ -18,8 +18,10 @@ import ProbeChart from '@/components/asset/ProbeChart.vue'
 import NodeTargetPicker from '@/components/probe/NodeTargetPicker.vue'
 import CardDisplayModal from '@/components/probe/CardDisplayModal.vue'
 import NodeBocePanel from '@/components/boce/NodeBocePanel.vue'
+import NodePeerPanel from './NodePeerPanel.vue'
 import {
   familyText,
+  httpCodesText,
   isBoceMetric,
   ispText,
   originText,
@@ -31,6 +33,7 @@ import {
   rateOf,
   rateText,
   rateTitle,
+  redactUrl,
   rttText,
 } from '@/components/asset/probeView'
 
@@ -43,9 +46,10 @@ import {
  *     目标本身在「探测目标库」里建;
  *   - 入口连通性:主控对这台机器的管理通道与订阅地址做 TCP 建连。目标只能从下拉里选 ——
  *     候选是这台机器已登记的地址与端口,不收自由输入(那会让面板变成一个扫描器);
- *   - 外部入站拨测(Boce,付费):Boce 的拨测点从各地区 / 运营商对订阅入口做 TCPing 或 Ping,按任务的时间表执行。
+ *   - 外部入站拨测(Boce,付费):Boce 的拨测点从各地区 / 运营商对订阅入口做 TCPing 或 Ping,按任务的时间表执行;
+ *   - 自建节点拨测(PEER,V22.6):别的自建机器对这台的订阅入口做 Ping / TCPing,见 NodePeerPanel。
  *
- * 顶上的筛选按来源(节点本机 / 主控 / Boce)与关键词过滤三块的行;「卡片展示设置」决定仪表盘卡片上
+ * 顶上的筛选按来源(节点本机 / 主控 / Boce / 自建节点)与关键词过滤各块的行;「卡片展示设置」决定仪表盘卡片上
  * 入站、出站各显示哪 3 项 —— 只改展示,不改检测。打开这一页只读库,不触发任何一次探测、不调 Boce。
  */
 const props = defineProps<{ nodeId: number }>()
@@ -58,11 +62,12 @@ const allSeries = computed(() => [
   ...(data.value?.outbound ?? []),
   ...(data.value?.targets ?? []),
   ...(data.value?.boce ?? []),
+  ...(data.value?.peer ?? []),
 ])
 
 // ---------- 筛选:来源 + 关键词(只过滤显示,不影响检测) ----------
 
-type SourceFilter = 'ALL' | 'NODE' | 'MASTER' | 'BOCE'
+type SourceFilter = 'ALL' | 'NODE' | 'MASTER' | 'BOCE' | 'PEER'
 const sourceFilter = ref<SourceFilter>('ALL')
 const keyword = ref('')
 const sourceOptions: { value: SourceFilter; label: string }[] = [
@@ -70,6 +75,7 @@ const sourceOptions: { value: SourceFilter; label: string }[] = [
   { value: 'NODE', label: '节点本机(出站)' },
   { value: 'MASTER', label: '主控(入站)' },
   { value: 'BOCE', label: 'Boce(入站)' },
+  { value: 'PEER', label: '自建节点(入站)' },
 ]
 function showSource(s: SourceFilter): boolean {
   return sourceFilter.value === 'ALL' || sourceFilter.value === s
@@ -97,7 +103,8 @@ async function load() {
       const out = data.value.outbound.find((t) => t.enabled)
       const ts = data.value.targets
       selected.value =
-        (out ?? ts.find((t) => t.kind === 'SERVICE') ?? ts[0] ?? data.value.boce.find((t) => t.enabled))?.id ?? null
+        (out ?? ts.find((t) => t.kind === 'SERVICE') ?? ts[0] ?? data.value.boce.find((t) => t.enabled) ??
+          data.value.peer.find((t) => t.enabled))?.id ?? null
     }
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '读取探测数据失败'
@@ -314,6 +321,8 @@ function stateMeta(t: ProbeSummary): LbStatusMeta {
       return { text: '未取得结果', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' }
     case 'SKIPPED':
       return metaOf.paused('未执行')
+    case 'HTTP_5XX':
+      return metaOf.warn(`HTTP ${t.last?.http_status ?? '5xx'}`, 'triangle')
     default:
       return metaOf.mute('等待首次探测', 'ring')
   }
@@ -379,7 +388,7 @@ const missingHelpers = computed(() => {
             出站网络质量
             <LbInfoTip
               :width="380"
-              text="这台机器在本机测公共目标:ICMP 看往返时间与真实丢包率(按包);TCP 建连看建连时间与连接失败率;TCP 握手近似看握手超时无应答率(基于系统 TCP 建连,不是原始套接字的 SYN 探测,不是丢包率)。延迟在 VPS 上量,不含 SSH 的耗时。面板经已有的 SSH 连接临时启动一个辅助程序(/opt/litebox/litebox-probe,跑完就退出、不常驻、不监听端口);节点正在部署或同步时那一轮让路。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入任何比例。"
+              text="这台机器在本机测公共目标:ICMP 看往返时间与真实丢包率(按包);TCP 建连看建连时间与连接失败率;TCP 握手近似看握手超时无应答率(基于系统 TCP 建连,不是原始套接字的 SYN 探测,不是丢包率);HTTP(S) 看从发起请求到收到响应头的耗时与 HTTP 请求失败率(GET、不跟随跳转、不下载正文,200 / 404 / 5xx 都算取得了响应,5xx 另外标出来)。延迟在 VPS 上量,不含 SSH 的耗时。面板经已有的 SSH 连接临时启动一个辅助程序(/opt/litebox/litebox-probe,跑完就退出、不常驻、不监听端口);节点正在部署或同步时那一轮让路。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入任何比例。"
             />
           </h3>
           <span class="nn__muted">节点本机 · 目标在<RouterLink to="/probe-library">探测目标库</RouterLink>里配置</span>
@@ -443,7 +452,7 @@ const missingHelpers = computed(() => {
                 <span class="lb-chip">{{ protoChip(p) }}</span>
                 <span class="lb-chip">{{ familyText(p.family) }}</span>
                 <span v-if="p.third_party" class="lb-chip">{{ originText(p.source) }}</span>
-                <span class="nn__addr lb-mono">{{ p.host }}</span>
+                <span class="nn__addr lb-mono">{{ p.protocol === 'HTTP' ? redactUrl(p.url) : p.host }}</span>
                 <span class="nn__muted lb-tabular">每 {{ p.node_interval_sec }} 秒</span>
               </button>
               <div class="lb-seg lb-seg--sm nn__mode" role="radiogroup" :aria-label="`${p.name} 在这台机器上`">
@@ -573,13 +582,31 @@ const missingHelpers = computed(() => {
         />
       </div>
 
+      <!-- ④ 自建节点拨测(PEER) -->
+      <div v-if="showSource('PEER')" class="nn__sec">
+        <NodePeerPanel
+          :node-id="nodeId"
+          :series="data.peer"
+          :candidates="data.candidates"
+          :sources="data.peer_sources"
+          :selected="selected"
+          :keyword="keyword"
+          :interval-sec="data.probe.interval_sec"
+          :timeout-ms="data.probe.timeout_ms"
+          :state-meta="stateMeta"
+          @select="(id: number) => (selected = id)"
+          @changed="load"
+        />
+      </div>
+
       <!-- 历史 -->
       <div v-if="selectedTarget" class="nn__hist">
         <div class="nn__hist-head">
           <div class="nn__hist-title">
             {{ selectedTarget.label }}
             <span class="nn__muted">
-              · {{ selectedTarget.direction === 'OUTBOUND' ? '出站' : '入站' }} · {{ protoChip(selectedTarget) }} ·
+              · {{ selectedTarget.direction === 'OUTBOUND' ? '出站' : '入站' }} ·
+              {{ selectedTarget.peer_source ? selectedTarget.peer_source.method : protoChip(selectedTarget) }} ·
               {{ familyText(selectedTarget.family) }} · {{ selectedTarget.source_label }}
               <template v-if="selectedTarget.boce"> · 任务「{{ selectedTarget.boce.task_name }}」</template>
             </span>
@@ -624,19 +651,28 @@ const missingHelpers = computed(() => {
               <div><span>Ping 发 / 收</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
               <div><span>整轮 ping 不通</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
             </template>
+            <template v-else-if="selMetric === 'HTTP'">
+              <div><span>{{ rateFullName('HTTP') }}</span><b>{{ rateText(history.stats.loss_rate) }}</b></div>
+              <div><span>请求 / 取得响应</span><b>{{ history.stats.attempts }} / {{ history.stats.received }}</b></div>
+              <div><span>状态码(都算取得了响应)</span><b>{{ httpCodesText(history.stats) }}</b></div>
+              <div>
+                <span>最近一次</span>
+                <b>{{ selectedTarget.last?.http_status ? `HTTP ${selectedTarget.last.http_status}` : (selectedTarget.last?.label ?? '—') }}</b>
+              </div>
+            </template>
             <template v-else>
               <div><span>{{ rateFullName('CONNECT') }}</span><b>{{ rateText(history.stats.failure_rate) }}</b></div>
               <div><span>TCP 连接次数</span><b>{{ history.stats.attempts }}</b></div>
               <div><span>失败</span><b>{{ history.stats.failures }}</b></div>
             </template>
-            <div><span>平均 RTT</span><b>{{ rttText(history.stats.rtt_avg_ms) }}</b></div>
+            <div><span>{{ selMetric === 'HTTP' ? '平均响应耗时' : '平均 RTT' }}</span><b>{{ rttText(history.stats.rtt_avg_ms) }}</b></div>
             <div><span>最小 / 最大</span><b>{{ rttText(history.stats.rtt_min_ms) }} / {{ rttText(history.stats.rtt_max_ms) }}</b></div>
             <div v-if="!isBoceMetric(selMetric)"><span>DNS 失败(不计入)</span><b>{{ history.stats.dns_errors }}</b></div>
             <div v-if="isBoceMetric(selMetric)">
               <span>拨测点异常 / 接口异常 / 未取得结果(不计入)</span>
               <b>{{ history.stats.vantage_errors }} / {{ history.stats.api_errors }} / {{ history.stats.expired }}</b>
             </div>
-            <div v-if="selectedTarget.direction === 'OUTBOUND'">
+            <div v-if="selectedTarget.direction === 'OUTBOUND' || selectedTarget.source === 'PEER'">
               <span>采集失败 / 工具不可用(不计入)</span><b>{{ history.stats.ssh_errors }} / {{ history.stats.tool_errors }}</b>
             </div>
             <div><span>未执行({{ isBoceMetric(selMetric) ? '预算保护、关机等' : '关机等' }})</span><b>{{ history.stats.skipped }}</b></div>
@@ -659,7 +695,7 @@ const missingHelpers = computed(() => {
                   f.status === 'SSH_ERROR' || f.status === 'TOOL_ERROR' || f.status === 'SKIPPED' ||
                   f.status === 'VANTAGE_ERROR' || f.status === 'API_ERROR' || f.status === 'EXPIRED'
                     ? 'nn__muted'
-                    : f.status === 'DNS_ERROR' || f.status === 'LOSS' || f.status === 'BLOCKED'
+                    : f.status === 'DNS_ERROR' || f.status === 'LOSS' || f.status === 'BLOCKED' || f.status === 'OK'
                       ? 'nn__warn'
                       : 'nn__bad'
                 "
@@ -667,7 +703,7 @@ const missingHelpers = computed(() => {
                 {{ f.label }}
               </span>
               <span class="nn__muted">
-                <template v-if="f.status === 'LOSS' || (selMetric !== 'CONNECT' && f.sent)">
+                <template v-if="f.status === 'LOSS' || (selMetric !== 'CONNECT' && selMetric !== 'HTTP' && f.sent)">
                   {{ f.received }}/{{ f.sent }} {{ selMetric === 'SYN' ? '有应答' : selMetric === 'BOCE' ? '成功' : '收到' }} ·
                 </template>{{ f.error }}
               </span>
@@ -691,7 +727,7 @@ const missingHelpers = computed(() => {
       :node-id="nodeId"
       :prefs="data.card.prefs"
       :pick="data.card.pick"
-      :ingress="[...data.targets, ...data.boce]"
+      :ingress="[...data.targets, ...data.boce, ...data.peer]"
       :outbound="data.outbound"
       @close="cardOpen = false"
       @saved="onCardSaved"

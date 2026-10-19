@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ProbeBucket, ProbeMetric } from '@/api/client'
 import { formatTime } from '@/utils/format'
-import { rateText, rttText } from './probeView'
+import { httpCodesText, rateText, rttText } from './probeView'
 
 /**
  * 延迟曲线。横轴按时间等距(每个窗口一格),纵轴是窗口内的平均 RTT
@@ -130,9 +130,13 @@ const hoverText = computed(() => {
       parts.push(`TCPing 发 ${b.sent} 次 · 成功 ${b.received} · TCPing 丢包 ${rateText(b.loss_rate)}`)
     else if (props.metric === 'BOCE_PING')
       parts.push(`Ping 发 ${b.sent} 个包 · 收到 ${b.received} · Ping 丢包 ${rateText(b.loss_rate)}`)
+    else if (props.metric === 'HTTP')
+      parts.push(`HTTP 请求 ${b.attempts} 次 · 取得响应 ${b.received} · 请求失败 ${rateText(b.loss_rate)} · ${httpCodesText(b)}`)
     else parts.push(`连接 ${b.attempts} 次 · 失败 ${b.failures}`)
   }
-  if (b.rtt_avg_ms != null) parts.push(`平均 ${rttText(b.rtt_avg_ms)}(${rttText(b.rtt_min_ms)} ~ ${rttText(b.rtt_max_ms)})`)
+  if (b.rtt_avg_ms != null) {
+    parts.push(`平均${props.metric === 'HTTP' ? '响应耗时' : ''} ${rttText(b.rtt_avg_ms)}(${rttText(b.rtt_min_ms)} ~ ${rttText(b.rtt_max_ms)})`)
+  }
   if (b.dns_errors) parts.push(`DNS 失败 ${b.dns_errors}`)
   if (b.ssh_errors) parts.push(`采集失败 ${b.ssh_errors}(不是丢包)`)
   if (b.tool_errors) parts.push(`工具不可用 ${b.tool_errors}`)
@@ -158,7 +162,7 @@ const hoverText = computed(() => {
       :height="H"
       role="img"
       :aria-label="
-        metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : metric === 'BOCE' ? 'Boce TCPing 往返时间曲线' : metric === 'BOCE_PING' ? 'Boce Ping 往返时间曲线' : 'TCP 建连时间曲线'
+        metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : metric === 'BOCE' ? 'Boce TCPing 往返时间曲线' : metric === 'BOCE_PING' ? 'Boce Ping 往返时间曲线' : metric === 'HTTP' ? 'HTTP 响应耗时曲线' : 'TCP 建连时间曲线'
       "
       @mousemove="onMove"
       @mouseleave="hover = null"

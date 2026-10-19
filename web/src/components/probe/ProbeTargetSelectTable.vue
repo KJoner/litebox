@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import type { NodePublicProbe, PublicProbeTarget } from '@/api/client'
-import { familyText, ispText, metricLabel, originText } from '@/components/asset/probeView'
+import { familyText, ispText, metricLabel, originText, publicAddr } from '@/components/asset/probeView'
 import ProbeTargetFilterBar from './ProbeTargetFilterBar.vue'
 import { useTargetFilter } from './targetFilter'
 
@@ -76,7 +76,7 @@ function nodeText(p: PublicProbeTarget | NodePublicProbe): string {
                 {{ p.name }}
                 <span v-if="p.role === 'BACKUP'" class="lb-chip">备用</span>
               </div>
-              <div class="lb-mono pst__muted">{{ p.host }}<template v-if="p.protocol === 'TCP'">:{{ p.port }}</template></div>
+              <div class="lb-mono pst__muted">{{ publicAddr(p) }}</div>
             </td>
             <td>{{ metricLabel(p.metric) }} · {{ familyText(p.family) }}</td>
             <td>{{ [p.province, p.city, ispText(p.isp)].filter(Boolean).join(' ') || p.region || '—' }}</td>

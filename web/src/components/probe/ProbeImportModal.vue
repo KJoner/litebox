@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { api, ApiError, type ProbeImportResult } from '@/api/client'
-import { familyText, ispText, metricLabel, originText, tcpModeOf } from '@/components/asset/probeView'
+import { familyText, ispText, metricLabel, originText, redactUrl, tcpModeOf } from '@/components/asset/probeView'
 
 /**
  * 批量导入自定义目标:粘贴 CSV 或 TSV(第一行是表头),先预览再提交。导入的目标不对任何节点生效。
@@ -58,7 +58,7 @@ const canCommit = computed(() => !!preview.value && preview.value.ok > 0)
   <a-modal :open="open" title="批量导入目标" :width="820" :mask-closable="false" @cancel="emit('close')">
     <div class="pim" data-testid="probe-import">
       <div class="pim__muted">
-        粘贴 CSV 或 TSV,第一行是表头。可用列:name、host(必填)、protocol(ICMP / TCP,有端口时默认 TCP)、tcp_mode(CONNECT / SYN)、
+        粘贴 CSV 或 TSV,第一行是表头。可用列:name、host(必填;HTTP 目标填 url 代替)、url(http:// 或 https:// 的完整地址,填了就是 HTTP)、protocol(ICMP / TCP / HTTP,有端口时默认 TCP)、tcp_mode(CONNECT / SYN)、
         port、family(V4 / V6,域名默认 V4)、interval_sec、timeout_ms、count、region、province、city、isp(电信 / 联通 / 移动 / 教育网 / 其他)、note;
         中文列名(名称、主机、端口…)也认。受限地址(私网、文档地址段等)与受限端口默认拒绝,确实要测请导入后在编辑里放开。
         <button type="button" class="lb-linkbtn" @click="text = SAMPLE">填入格式示例</button>
@@ -84,7 +84,7 @@ const canCommit = computed(() => !!preview.value && preview.value.ok > 0)
                   <span v-else class="pim__bad" :title="r.reason">错误:{{ r.reason }}</span>
                 </td>
                 <td class="lb-ellipsis">{{ r.input.name }}</td>
-                <td class="lb-mono">{{ r.input.host }}<template v-if="r.input.port">:{{ r.input.port }}</template></td>
+                <td class="lb-mono">{{ r.input.protocol === 'HTTP' ? redactUrl(r.input.url ?? '') : r.input.host }}<template v-if="r.input.port && r.input.protocol !== 'HTTP'">:{{ r.input.port }}</template></td>
                 <td>{{ metricLabel(tcpModeOf(r.input.protocol, r.input.tcp_mode)) }} · {{ familyText(r.input.family) }}</td>
                 <td>{{ [r.input.region, r.input.province, r.input.city, ispText(r.input.isp ?? '')].filter(Boolean).join(' ') || '—' }}</td>
                 <td>{{ r.status === 'OK' ? originText(r.source) : '' }}</td>
