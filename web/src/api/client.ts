@@ -1233,7 +1233,8 @@ export type ProbeTCPMode = 'CONNECT' | 'SYN'
  * 一条序列看哪个比例,界面一律按它起名,不按协议自己推:
  * LOSS = ICMP 真实丢包率;CONNECT = TCP 连接失败率;SYN = TCP 握手超时无应答率(不是丢包率)。
  */
-export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN' | 'BOCE'
+/** BOCE = Boce 拨测点的 TCPing 丢包率;BOCE_PING = Boce 拨测点的 Ping(ICMP)丢包率。 */
+export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN' | 'BOCE' | 'BOCE_PING'
 /**
  * 一次结果。LOSS = ICMP 部分丢包(可达);SSH_ERROR = 采集失败(面板连不上这台机器,不是丢包);
  * TOOL_ERROR = 辅助程序不可用;BLOCKED = 目标受限;这三种与 DNS_ERROR、SKIPPED 都没有发起,不进分母。
@@ -1895,11 +1896,14 @@ export interface BoceVantage {
   missing_since: string
 }
 
+/** Boce 的检测方式。创建后不可改:换测法就是另一条测量。 */
+export type BoceTestType = 'TCPING' | 'PING'
+
 export interface BoceTask extends BoceScheduleSpec {
   id: number
   node_id: number
   name: string
-  check_type: 'TCPING'
+  test_type: BoceTestType
   ref: string
   family: ProbeFamily
   vantage_ids: number[]
@@ -1948,6 +1952,8 @@ export interface BoceRun {
   task_id: number
   node_id: number
   trigger: 'SCHEDULE' | 'MANUAL'
+  /** 这一轮提交时的测法 */
+  test_type: BoceTestType
   slot: string
   state: BoceRunState
   state_text: string
@@ -1990,6 +1996,8 @@ export interface BoceTaskView extends BoceTask {
 
 export interface BoceTaskInput extends BoceScheduleSpec {
   name: string
+  /** 创建时空 = TCPing;修改时不传(测法不能改) */
+  test_type?: BoceTestType
   ref?: string
   family?: ProbeFamily
   vantage_ids: number[]

@@ -11,9 +11,17 @@ import type { ProbeISP, ProbeMetric, ProbeOrigin, ProbeState, ProbeStats, ProbeS
  *     它基于系统的 TCP 建连,不是原始套接字的 SYN 探测,**不能叫丢包率**;RST 也是应答;
  *   - BOCE(Boce 拨测点的 TCPing):TCPing 丢包率 = Σ(发 − 收) ÷ Σ发,按 Boce 报告的包数。
  *     第三方拨测点从外面测的,与 ICMP 丢包率、主控的 TCP 连接失败率名字不同、不相加;
+ *   - BOCE_PING(Boce 拨测点的 Ping):Ping 丢包率,同样按 Boce 报告的包数。它与节点本机测公共目标的
+ *     ICMP 丢包率(LOSS)方向相反、测点不同,与 Boce TCPing 也不是一回事 —— 很多机器本来就不回 ICMP,
+ *     ping 不通不等于入口不可用;
  *     拨测点异常、接口异常、未取得结果都不进分母,也不按失败画。
  * 采集失败、工具不可用、DNS 失败、目标受限都没有发起,不进分母 —— 分母为 0 时显示「—」,不是 0%。
  */
+
+/** 是不是 Boce 拨测点测的(TCPing 或 Ping)。几处只对第三方测点成立的说法(未执行、拨测点异常)看它。 */
+export function isBoceMetric(m: ProbeMetric | string): boolean {
+  return m === 'BOCE' || m === 'BOCE_PING'
+}
 
 /** 状态的色调。采集失败不按坏画:那是面板连不上机器,目标那头怎样并不知道。 */
 export function probeTone(state: ProbeState): 'bad' | 'warn' | 'muted' | '' {
@@ -62,6 +70,8 @@ export function rateName(metric: ProbeMetric): string {
       return '无应答'
     case 'BOCE':
       return 'TCPing 丢包'
+    case 'BOCE_PING':
+      return 'Ping 丢包'
   }
   return '失败率'
 }
@@ -75,6 +85,8 @@ export function rateFullName(metric: ProbeMetric): string {
       return '握手超时无应答率'
     case 'BOCE':
       return 'Boce TCPing 丢包率'
+    case 'BOCE_PING':
+      return 'Boce Ping 丢包率'
   }
   return 'TCP 连接失败率'
 }
@@ -91,6 +103,9 @@ export function rateTitle(s: ProbeStats, metric: ProbeMetric, span: string): str
     case 'BOCE':
       head = `${span}:Boce 拨测点 TCPing ${s.attempts} 轮,发 ${s.sent} 次、成功 ${s.received} 次 —— 这是 Boce 的 TCPing 丢包率,不是 ICMP 丢包率`
       break
+    case 'BOCE_PING':
+      head = `${span}:Boce 拨测点 Ping ${s.attempts} 轮,发 ${s.sent} 个包、收到 ${s.received} 个 —— 这是 Boce 拨测点的 Ping 丢包率,不是节点本机的 ICMP 丢包率;很多机器本来就不回 ICMP`
+      break
     default:
       head = `${span}:TCP 连接 ${s.attempts} 次,失败 ${s.failures} 次`
   }
@@ -103,7 +118,7 @@ export function rateTitle(s: ProbeStats, metric: ProbeMetric, span: string): str
   if (s.vantage_errors) notSent.push(`拨测点异常 ${s.vantage_errors}`)
   if (s.api_errors) notSent.push(`接口异常 ${s.api_errors}`)
   if (s.expired) notSent.push(`未取得结果 ${s.expired}`)
-  if (s.skipped && metric === 'BOCE') notSent.push(`未执行 ${s.skipped}`)
+  if (s.skipped && isBoceMetric(metric)) notSent.push(`未执行 ${s.skipped}`)
   if (notSent.length) parts.push(`未发起(不计入):${notSent.join('、')}`)
   return parts.join(';')
 }
@@ -117,6 +132,8 @@ export function metricLabel(metric: ProbeMetric): string {
       return 'TCP 握手(近似 SYN)'
     case 'BOCE':
       return 'Boce TCPing'
+    case 'BOCE_PING':
+      return 'Boce Ping'
   }
   return 'TCP 建连'
 }
@@ -126,6 +143,7 @@ export function protoChip(p: { metric: ProbeMetric; resolved_port?: number; port
   if (p.metric === 'LOSS') return 'ICMP'
   const port = p.port ?? (p.direction === 'OUTBOUND' ? p.resolved_port : 0)
   if (p.metric === 'BOCE') return 'TCPing'
+  if (p.metric === 'BOCE_PING') return 'Ping'
   const head = p.metric === 'SYN' ? 'SYN' : 'TCP'
   return port ? `${head} ${port}` : head
 }
@@ -133,7 +151,9 @@ export function protoChip(p: { metric: ProbeMetric; resolved_port?: number; port
 export function targetTitle(p: ProbeSummary): string {
   if (p.source === 'BOCE') {
     const peer = p.last?.peer ? `,拨测点解析到 ${p.last.peer}` : ''
-    return `Boce 拨测点「${p.boce?.vantage_name ?? p.label}」→ ${p.resolved_host}:${p.resolved_port}${peer}`
+    // Ping 只测地址,端口不参与(序列里记的是 0)。
+    const where = p.metric === 'BOCE_PING' ? p.resolved_host : `${p.resolved_host}:${p.resolved_port}`
+    return `Boce 拨测点「${p.boce?.vantage_name ?? p.label}」${p.metric === 'BOCE_PING' ? ' Ping' : ''} → ${where}${peer}`
   }
   const where = p.protocol === 'ICMP' ? p.resolved_host : `${p.resolved_host}:${p.resolved_port}`
   const peer = p.last?.peer && p.last.peer !== p.resolved_host ? `,最近一次连的是 ${p.last.peer}` : ''

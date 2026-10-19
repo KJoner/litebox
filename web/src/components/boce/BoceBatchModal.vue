@@ -16,7 +16,7 @@ import { LbInfoTip } from '@/components/lb'
 import BoceVantagePicker from './BoceVantagePicker.vue'
 import BoceScheduleEditor from './BoceScheduleEditor.vue'
 import BoceEstimatePanel from './BoceEstimatePanel.vue'
-import { emptyTaskInput, specOf } from './boceText'
+import { emptyTaskInput, specOf, targetText, TEST_TYPES } from './boceText'
 
 /**
  * 把同一份 Boce 任务模板批量应用到几台节点:每台各建一个独立任务,之后可以在节点详情里单独调整。
@@ -82,7 +82,12 @@ function applyTemplate(id: unknown) {
   templateID.value = Number(id) || 0
   const t = tasks.value.find((x) => x.id === templateID.value)
   if (!t) return
-  Object.assign(form, { ...specOf(t), vantage_ids: [...t.vantage_ids], month_points_limit: t.month_points_limit })
+  Object.assign(form, {
+    ...specOf(t),
+    test_type: t.test_type,
+    vantage_ids: [...t.vantage_ids],
+    month_points_limit: t.month_points_limit,
+  })
 }
 
 const ready = computed(() => props.nodes.filter((n) => refs.value[n.id]))
@@ -169,6 +174,12 @@ function nodeName(id: number): string {
             <span class="lb-group__label">任务名称</span>
             <a-input v-model:value="form.name" :maxlength="64" placeholder="留空 = 用各自的入口名" aria-label="任务名称" />
           </div>
+          <div class="lb-group__row bbm__row">
+            <span class="lb-group__label">检测类型</span>
+            <a-radio-group v-model:value="form.test_type" option-type="button" button-style="solid" size="small" aria-label="检测类型">
+              <a-radio-button v-for="t in TEST_TYPES" :key="t.value" :value="t.value" :title="t.hint">{{ t.label }}</a-radio-button>
+            </a-radio-group>
+          </div>
         </div>
         <div class="bbm__sec">
           <div class="bbm__title">拨测点</div>
@@ -191,7 +202,7 @@ function nodeName(id: number): string {
         <div class="bbm__sec">
           <div class="bbm__title">
             各节点的被测入口
-            <LbInfoTip :width="300" text="只能选这台节点的订阅入口;IPv6 入口列出来但选不了(Boce TCPing 没有说明支持 IPv6)。没有可选入口的节点会被跳过。" />
+            <LbInfoTip :width="300" text="只能选这台节点的订阅入口;IPv6 入口列出来但选不了(Boce 的 TCPing / Ping 都没有说明支持 IPv6)。没有可选入口的节点会被跳过。" />
           </div>
           <div v-for="n in nodes" :key="n.id" class="bbm__node">
             <span class="bbm__node-name lb-ellipsis">{{ n.display_name || n.name }}</span>
@@ -202,7 +213,7 @@ function nodeName(id: number): string {
               :aria-label="`${n.display_name || n.name} 的被测入口`"
             >
               <a-select-option v-for="c in cands[n.id] ?? []" :key="c.ref" :value="c.ref" :disabled="!!c.note" :title="c.note">
-                {{ c.label }} · {{ c.host }}:{{ c.port }}
+                {{ c.label }} · {{ targetText(form.test_type, c.host, c.port) }}
               </a-select-option>
             </a-select>
             <span v-if="results" class="bbm__res">

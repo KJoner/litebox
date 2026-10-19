@@ -5,10 +5,10 @@ import { api, ApiError, type BoceTaskView, type BoceVantage, type NodeBoce, type
 import { LbIcon, LbInfoTip, LbStatusTag, metaOf, type LbStatusMeta } from '@/components/lb'
 import { formatRelative, formatTime } from '@/utils/format'
 import ProbeDots from '@/components/asset/ProbeDots.vue'
-import { probeMuted, probeValue, rateOf, rateText, rateTitle } from '@/components/asset/probeView'
+import { probeMuted, probeValue, rateName, rateOf, rateText, rateTitle } from '@/components/asset/probeView'
 import BoceTaskFormModal from './BoceTaskFormModal.vue'
 import BoceRunsModal from './BoceRunsModal.vue'
-import { newRequestID, points, runStateMeta, scheduleText, yuan } from './boceText'
+import { newRequestID, points, runStateMeta, scheduleText, targetText, testTypeLabel, yuan } from './boceText'
 
 /**
  * 节点详情「网络监测」里的 Boce 外部入站拨测:这台节点的任务、每个拨测点的序列、手动检测与执行记录。
@@ -281,7 +281,7 @@ function seriesMeta(s: ProbeSummary): LbStatusMeta {
         外部入站拨测(Boce)
         <LbInfoTip
           :width="380"
-          text="Boce 是付费的第三方拨测服务:从它在各省各运营商(以及海外)的拨测点对这台机器的订阅入口做 TCPing,看「从外面某个地区连进来」怎么样。请求由主控发起,节点上什么都不装。比例叫 TCPing 丢包率(按 Boce 报告的包数),与主控的 TCP 连接失败率、节点的 ICMP 丢包率是不同的口径;拨测点异常、接口异常、未取得结果都不计入。"
+          text="Boce 是付费的第三方拨测服务:从它在各省各运营商(以及海外)的拨测点对这台机器的订阅入口做 TCPing(连端口)或 Ping(只看地址),看「从外面某个地区连进来」怎么样。请求由主控发起,节点上什么都不装。比例分别叫 TCPing 丢包率与 Ping 丢包率(按 Boce 报告的包数),与主控的 TCP 连接失败率、节点本机的 ICMP 丢包率都是不同的口径;很多机器本来就不回 ICMP,ping 不通不等于入口不可用。拨测点异常、接口异常、未取得结果都不计入。"
         />
       </h3>
       <label class="nbp__pause">
@@ -328,8 +328,8 @@ function seriesMeta(s: ProbeSummary): LbStatusMeta {
             />
           </div>
           <div class="nbp__meta lb-tabular">
-            <span class="lb-chip">TCPing</span>
-            <span class="lb-mono nbp__muted">{{ t.target_host ? `${t.target_host}:${t.target_port}` : t.ref }}</span>
+            <span class="lb-chip" data-testid="boce-task-type">{{ testTypeLabel(t.test_type) }}</span>
+            <span class="lb-mono nbp__muted">{{ t.target_host ? targetText(t.test_type, t.target_host, t.target_port) : t.ref }}</span>
             <span>{{ t.vantage_ids.length }} 个拨测点</span>
             <span>{{ scheduleText(t) }}({{ t.timezone }})</span>
             <span>本月已用 {{ points(t.month_points) }} · 预计 {{ points(t.plan_month_points) }} / 月</span>
@@ -364,11 +364,11 @@ function seriesMeta(s: ProbeSummary): LbStatusMeta {
                 <span v-if="s.last && (s.last.status === 'OK' || s.last.status === 'LOSS')" class="nbp__rtt lb-tabular" :title="s.state_text">
                   {{ probeValue(s) }}
                 </span>
-                <span class="nbp__muted lb-tabular" :title="rateTitle(s.h24, 'BOCE', '近 24 小时')">
-                  24h TCPing 丢包 {{ rateText(rateOf(s.h24, 'BOCE')) }}
+                <span class="nbp__muted lb-tabular" :title="rateTitle(s.h24, s.metric, '近 24 小时')">
+                  24h {{ rateName(s.metric) }} {{ rateText(rateOf(s.h24, s.metric)) }}
                 </span>
               </button>
-              <ProbeDots :dots="s.dots" :seconds="s.dot_seconds" metric="BOCE" :muted="probeMuted(s.state)" />
+              <ProbeDots :dots="s.dots" :seconds="s.dot_seconds" :metric="s.metric" :muted="probeMuted(s.state)" />
               <div v-if="s.state !== 'OK' && s.state !== 'PENDING'" class="nbp__muted">{{ s.state_text }}</div>
             </li>
           </ul>

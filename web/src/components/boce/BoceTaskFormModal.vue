@@ -15,14 +15,17 @@ import { LbIcon, LbInfoTip } from '@/components/lb'
 import BoceVantagePicker from './BoceVantagePicker.vue'
 import BoceScheduleEditor from './BoceScheduleEditor.vue'
 import BoceEstimatePanel from './BoceEstimatePanel.vue'
-import { emptyTaskInput, specOf } from './boceText'
+import { emptyTaskInput, specOf, targetText, TEST_TYPES } from './boceText'
 
 /**
  * 新建 / 编辑 / 复制一个 Boce 拨测任务。
  *
  * 被测目标只能从这台节点的订阅入口里选(服务端再校验一次);IPv6 入口列出来但选不了,写明原因 ——
- * Boce 的 TCPing 文档没有说明支持 IPv6,面板不会悄悄改用 IPv4 去测。新建的任务默认不开自动检测:
+ * Boce 的 TCPing / Ping 文档都没有说明支持 IPv6,面板不会悄悄改用 IPv4 去测。新建的任务默认不开自动检测:
  * 看过下面的费用估算再打开。保存任务本身不会创建任何付费检测。
+ *
+ * 检测方式(TCPing / Ping)创建后不能改:换测法就是另一条测量,旧的点阵与丢包率与它不可比 ——
+ * 要换就复制一份任务(复制时可以选别的测法)。Ping 只测入口的地址,端口不参与。
  */
 const props = defineProps<{
   open: boolean
@@ -55,6 +58,7 @@ watch(
       Object.assign(form, {
         ...specOf(base),
         name: props.copy ? `${base.name}(副本)` : base.name,
+        test_type: base.test_type,
         ref: base.ref,
         vantage_ids: [...base.vantage_ids],
         month_points_limit: base.month_points_limit,
@@ -71,6 +75,7 @@ watch(
 )
 
 const keepIDs = computed(() => (editing.value ? (props.task?.vantage_ids ?? []) : []))
+const typeHint = computed(() => TEST_TYPES.find((t) => t.value === form.test_type)?.hint ?? '')
 
 // ---------- 估算(防抖) ----------
 
@@ -165,6 +170,25 @@ async function save() {
           <a-input v-model:value="form.name" :maxlength="64" placeholder="留空 = 用入口名" aria-label="任务名称" />
         </div>
         <div class="lb-group__row btf__row">
+          <span class="lb-group__label">检测类型</span>
+          <div class="btf__type">
+            <a-radio-group
+              v-model:value="form.test_type"
+              option-type="button"
+              button-style="solid"
+              size="small"
+              :disabled="editing"
+              aria-label="检测类型"
+              data-testid="boce-test-type"
+            >
+              <a-radio-button v-for="t in TEST_TYPES" :key="t.value" :value="t.value">{{ t.label }}</a-radio-button>
+            </a-radio-group>
+            <span class="btf__muted">
+              {{ typeHint }}<template v-if="editing">创建后不能更换检测方式,要换请复制任务。</template>
+            </span>
+          </div>
+        </div>
+        <div class="lb-group__row btf__row">
           <span class="lb-group__label">
             被测入口
             <LbInfoTip :width="320" text="只能从这台节点的订阅入口里选,地址与端口由服务端按入口配置解析(NAT 映射的公网端口照订阅的规则走);入口地址或端口变了,测量跟着走,历史按目标版本分开统计。创建后不能更换,要测别的入口请复制任务。" />
@@ -177,13 +201,9 @@ async function save() {
             class="btf__target"
           >
             <a-select-option v-for="c in node.candidates" :key="c.ref" :value="c.ref" :disabled="!!c.note" :title="c.note">
-              {{ c.label }} · {{ c.host }}:{{ c.port }}<template v-if="c.note"> —— {{ c.note }}</template>
+              {{ c.label }} · {{ targetText(form.test_type, c.host, c.port) }}<template v-if="c.note"> —— {{ c.note }}</template>
             </a-select-option>
           </a-select>
-        </div>
-        <div class="lb-group__row btf__row">
-          <span class="lb-group__label">检测类型</span>
-          <span class="btf__muted">TCPing(首期只支持这一种;Boce 拨测点对入口的端口做 TCP 连接测速)</span>
         </div>
       </div>
 
@@ -234,6 +254,13 @@ async function save() {
 }
 .btf__target {
   width: 100%;
+}
+.btf__type {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
 }
 .btf__sec {
   display: flex;

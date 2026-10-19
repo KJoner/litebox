@@ -20,6 +20,7 @@ import CardDisplayModal from '@/components/probe/CardDisplayModal.vue'
 import NodeBocePanel from '@/components/boce/NodeBocePanel.vue'
 import {
   familyText,
+  isBoceMetric,
   ispText,
   originText,
   probeMuted,
@@ -42,7 +43,7 @@ import {
  *     目标本身在「探测目标库」里建;
  *   - 入口连通性:主控对这台机器的管理通道与订阅地址做 TCP 建连。目标只能从下拉里选 ——
  *     候选是这台机器已登记的地址与端口,不收自由输入(那会让面板变成一个扫描器);
- *   - 外部入站拨测(Boce,付费):Boce 的拨测点从各地区 / 运营商对订阅入口做 TCPing,按任务的时间表执行。
+ *   - 外部入站拨测(Boce,付费):Boce 的拨测点从各地区 / 运营商对订阅入口做 TCPing 或 Ping,按任务的时间表执行。
  *
  * 顶上的筛选按来源(节点本机 / 主控 / Boce)与关键词过滤三块的行;「卡片展示设置」决定仪表盘卡片上
  * 入站、出站各显示哪 3 项 —— 只改展示,不改检测。打开这一页只读库,不触发任何一次探测、不调 Boce。
@@ -618,6 +619,11 @@ const missingHelpers = computed(() => {
               <div><span>TCPing 发 / 成功</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
               <div><span>整轮连不上</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
             </template>
+            <template v-else-if="selMetric === 'BOCE_PING'">
+              <div><span>{{ rateFullName('BOCE_PING') }}(按包)</span><b>{{ rateText(history.stats.loss_rate) }}</b></div>
+              <div><span>Ping 发 / 收</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
+              <div><span>整轮 ping 不通</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
+            </template>
             <template v-else>
               <div><span>{{ rateFullName('CONNECT') }}</span><b>{{ rateText(history.stats.failure_rate) }}</b></div>
               <div><span>TCP 连接次数</span><b>{{ history.stats.attempts }}</b></div>
@@ -625,15 +631,15 @@ const missingHelpers = computed(() => {
             </template>
             <div><span>平均 RTT</span><b>{{ rttText(history.stats.rtt_avg_ms) }}</b></div>
             <div><span>最小 / 最大</span><b>{{ rttText(history.stats.rtt_min_ms) }} / {{ rttText(history.stats.rtt_max_ms) }}</b></div>
-            <div v-if="selMetric !== 'BOCE'"><span>DNS 失败(不计入)</span><b>{{ history.stats.dns_errors }}</b></div>
-            <div v-if="selMetric === 'BOCE'">
+            <div v-if="!isBoceMetric(selMetric)"><span>DNS 失败(不计入)</span><b>{{ history.stats.dns_errors }}</b></div>
+            <div v-if="isBoceMetric(selMetric)">
               <span>拨测点异常 / 接口异常 / 未取得结果(不计入)</span>
               <b>{{ history.stats.vantage_errors }} / {{ history.stats.api_errors }} / {{ history.stats.expired }}</b>
             </div>
             <div v-if="selectedTarget.direction === 'OUTBOUND'">
               <span>采集失败 / 工具不可用(不计入)</span><b>{{ history.stats.ssh_errors }} / {{ history.stats.tool_errors }}</b>
             </div>
-            <div><span>未执行({{ selMetric === 'BOCE' ? '预算保护、关机等' : '关机等' }})</span><b>{{ history.stats.skipped }}</b></div>
+            <div><span>未执行({{ isBoceMetric(selMetric) ? '预算保护、关机等' : '关机等' }})</span><b>{{ history.stats.skipped }}</b></div>
             <div>
               <span>上次可达</span>
               <b>{{ selectedTarget.last_success_at ? formatRelative(selectedTarget.last_success_at) : '—' }}</b>

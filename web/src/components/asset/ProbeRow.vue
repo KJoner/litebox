@@ -17,11 +17,11 @@ import {
 
 /**
  * 探测的一行:名称 · 协议 · 地址族 · 最近一次的延迟,下面是点阵与 1h / 24h 的丢包率(ICMP)、
- * 连接失败率(TCP 建连)、握手无应答率(TCP 握手近似)或 TCPing 丢包率(Boce)。出站与入站共用 ——
+ * 连接失败率(TCP 建连)、握手无应答率(TCP 握手近似)、TCPing 丢包率或 Ping 丢包率(Boce)。出站与入站共用 ——
  * 规则都在 probeView.ts。Boce 的一行带「Boce」标记,名字是拨测点(地区 + 运营商,接口原样)。
  *
  * compact:资产卡片上入站 / 出站并排的半宽一列。只留名字与延迟,协议、端口、地址族、来源
- * 收进名字的悬停说明 —— 比例那一行照旧按 metric 起名(丢包 / 失败率 / 无应答 / TCPing 丢包),
+ * 收进名字的悬停说明 —— 比例那一行照旧按 metric 起名(丢包 / 失败率 / 无应答 / TCPing 丢包 / Ping 丢包),
  * 少了它,同一列里的两个百分比就分不清是哪一种口径。
  */
 const props = defineProps<{ p: ProbeSummary; compact?: boolean }>()

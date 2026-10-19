@@ -128,6 +128,8 @@ const hoverText = computed(() => {
       parts.push(`发出 ${b.sent} 个 SYN · 有应答 ${b.received} · 无应答 ${rateText(b.loss_rate)}`)
     else if (props.metric === 'BOCE')
       parts.push(`TCPing 发 ${b.sent} 次 · 成功 ${b.received} · TCPing 丢包 ${rateText(b.loss_rate)}`)
+    else if (props.metric === 'BOCE_PING')
+      parts.push(`Ping 发 ${b.sent} 个包 · 收到 ${b.received} · Ping 丢包 ${rateText(b.loss_rate)}`)
     else parts.push(`连接 ${b.attempts} 次 · 失败 ${b.failures}`)
   }
   if (b.rtt_avg_ms != null) parts.push(`平均 ${rttText(b.rtt_avg_ms)}(${rttText(b.rtt_min_ms)} ~ ${rttText(b.rtt_max_ms)})`)
@@ -156,7 +158,7 @@ const hoverText = computed(() => {
       :height="H"
       role="img"
       :aria-label="
-        metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : metric === 'BOCE' ? 'Boce TCPing 往返时间曲线' : 'TCP 建连时间曲线'
+        metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : metric === 'BOCE' ? 'Boce TCPing 往返时间曲线' : metric === 'BOCE_PING' ? 'Boce Ping 往返时间曲线' : 'TCP 建连时间曲线'
       "
       @mousemove="onMove"
       @mouseleave="hover = null"

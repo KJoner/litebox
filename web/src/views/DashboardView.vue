@@ -563,7 +563,7 @@ const attention = computed<AttentionItem[]>(() => {
       icon: 'activity',
       title: nodeName(t.node_id),
       cat: '节点 · Boce 外部拨测',
-      text: `Boce 拨测点「${t.boce?.vantage_name ?? t.label}」连续 ${t.consecutive_failures} 轮 TCPing 全部失败 —— 只说明这个地区 / 运营商到这里不通,不等于机器离线`,
+      text: `Boce 拨测点「${t.boce?.vantage_name ?? t.label}」连续 ${t.consecutive_failures} 轮 ${t.metric === 'BOCE_PING' ? 'Ping' : 'TCPing'} 全部失败 —— 只说明这个地区 / 运营商到这里不通,不等于机器离线`,
       to: `/nodes/${t.node_id}/network`,
       action: '查看探测',
     })

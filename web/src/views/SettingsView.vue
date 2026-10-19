@@ -903,7 +903,7 @@ const probeTip = computed(
       <section id="set-boce">
         <LbSectionTitle
           title="Boce 外部拨测"
-          tip="付费的第三方入站拨测:从 Boce 各省各运营商(以及海外)的拨测点对节点的订阅入口做 TCPing,请求由主控发起,节点上什么都不装。默认关、没有预算时不创建任何付费检测;任务在节点详情的「网络监测」里配。"
+          tip="付费的第三方入站拨测:从 Boce 各省各运营商(以及海外)的拨测点对节点的订阅入口做 TCPing 或 Ping,请求由主控发起,节点上什么都不装。默认关、没有预算时不创建任何付费检测;任务在节点详情的「网络监测」里配。"
         >
           <template #badge>
             <span class="lb-effect lb-effect--now">下一拍起生效</span>
