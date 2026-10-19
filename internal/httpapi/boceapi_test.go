@@ -32,7 +32,7 @@ func (f *apiFakeBoce) Nodes(_ context.Context, _ string, area boce.Area) ([]boce
 		{ID: 32, Name: "广东", ISPName: "联通", ISPCode: 2, Area: area}}, nil
 }
 
-func (f *apiFakeBoce) CreateTCPing(context.Context, string, []int, string) (string, error) {
+func (f *apiFakeBoce) Create(context.Context, string, boce.Method, []int, string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -40,11 +40,11 @@ func (f *apiFakeBoce) CreateTCPing(context.Context, string, []int, string) (stri
 	return fmt.Sprintf("t%d", f.creates), nil
 }
 
-func (f *apiFakeBoce) TCPingResult(_ context.Context, _ string, id string) (*boce.TCPingResult, error) {
+func (f *apiFakeBoce) Result(_ context.Context, _ string, _ boce.Method, id string) (*boce.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return &boce.TCPingResult{ID: id}, nil
+	return &boce.Result{ID: id}, nil
 }
 
 func (f *apiFakeBoce) Balance(context.Context, string) (boce.Balance, error) {
@@ -273,5 +273,35 @@ func TestBoceAPI(t *testing.T) {
 	decodeBody(t, env.do(t, http.MethodGet, "/api/boce", nil), &usage)
 	if usage.Usage.MonthPoints != 2 {
 		t.Fatalf("删任务不能让估算消耗消失:%+v", usage.Usage)
+	}
+
+	// Ping 任务:测法跟着任务返回;改测法 400,不认识的测法 400。
+	var ping probe.BoceTask
+	decodeBody(t, env.do(t, http.MethodPost, fmt.Sprintf("/api/nodes/%d/boce/tasks", node), map[string]any{
+		"ref": nb.Candidates[0].Ref, "test_type": "PING", "vantage_ids": []int{31},
+		"schedule_mode": "INTERVAL", "interval_min": 60, "window_start": "08:00", "window_end": "24:00"}), &ping)
+	if ping.ID == 0 || ping.TestType != boce.MethodPing {
+		t.Fatalf("Ping 任务 = %+v", ping)
+	}
+	for _, body := range []map[string]any{
+		{"test_type": "TCPING", "vantage_ids": []int{31}, "schedule_mode": "INTERVAL", "interval_min": 60,
+			"window_start": "08:00", "window_end": "24:00"},
+	} {
+		resp = env.do(t, http.MethodPut, fmt.Sprintf("/api/boce/tasks/%d", ping.ID), body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("改测法应当 400,得到 %d", resp.StatusCode)
+		}
+	}
+	resp = env.do(t, http.MethodPost, fmt.Sprintf("/api/nodes/%d/boce/tasks", node), map[string]any{
+		"ref": nb.Candidates[0].Ref, "test_type": "DNS", "vantage_ids": []int{31},
+		"schedule_mode": "INTERVAL", "interval_min": 60, "window_start": "08:00", "window_end": "24:00"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("不认识的测法应当 400,得到 %d", resp.StatusCode)
+	}
+	decodeBody(t, env.do(t, http.MethodGet, fmt.Sprintf("/api/nodes/%d/probe", node), nil), &np)
+	if len(np.Boce) != 1 || np.Boce[0].Metric != probe.MetricBocePing || np.Boce[0].Protocol != probe.ProtoICMP {
+		t.Fatalf("Ping 序列的口径应当是 BOCE_PING:%+v", np.Boce)
 	}
 }

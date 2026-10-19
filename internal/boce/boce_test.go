@@ -87,22 +87,22 @@ func TestCreateTCPingSuccessAndRejection(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"error_code":0,"data":{"id":"LxiB1jZPNiGZbvSYxBoVNEAfR8DhZaQ"},"error":""}`))
 	})
-	id, err := c.CreateTCPing(context.Background(), testKey, []int{31, 32}, "edge.example.com:443")
+	id, err := c.Create(context.Background(), testKey, MethodTCPing, []int{31, 32}, "edge.example.com:443")
 	if err != nil || id != "LxiB1jZPNiGZbvSYxBoVNEAfR8DhZaQ" {
 		t.Fatalf("创建 = %q, %v", id, err)
 	}
 	// 海外拨测点是负数 ID,照样能交上去;0 不行。
-	if _, err := c.CreateTCPing(context.Background(), testKey, []int{0}, "edge.example.com:443"); err == nil {
+	if _, err := c.Create(context.Background(), testKey, MethodTCPing, []int{0}, "edge.example.com:443"); err == nil {
 		t.Fatal("ID 0 应当被拒")
 	}
-	_, err = c.CreateTCPing(context.Background(), testKey, []int{31}, "edge.example.com:443")
+	_, err = c.Create(context.Background(), testKey, MethodTCPing, []int{31}, "edge.example.com:443")
 	if !IsCode(err, CodeParam) {
 		t.Fatalf("应当是参数错误(确定的拒绝),得到 %v", err)
 	}
 	// 本地就拦下的输入不发请求。
 	before := calls.Load()
 	for _, h := range []string{"[2001:db8::1]:443", "2001:db8::1", "example.com", "a b:1", "example.com:70000"} {
-		if _, err := c.CreateTCPing(context.Background(), testKey, []int{31}, h); err == nil {
+		if _, err := c.Create(context.Background(), testKey, MethodTCPing, []int{31}, h); err == nil {
 			t.Fatalf("%q 应当被拒", h)
 		} else if !errors.As(err, new(*NotSentError)) {
 			t.Fatalf("%q 的错误应当是没发出去,得到 %T", h, err)
@@ -119,7 +119,7 @@ func TestCreateTCPingClassifiesUncertainty(t *testing.T) {
 	url := dead.URL
 	dead.Close()
 	c := New(WithBaseURL(url))
-	_, err := c.CreateTCPing(context.Background(), testKey, []int{31}, "198.51.100.7:443")
+	_, err := c.Create(context.Background(), testKey, MethodTCPing, []int{31}, "198.51.100.7:443")
 	if !errors.As(err, new(*NotSentError)) {
 		t.Fatalf("连不上应当是 NotSentError,得到 %T %v", err, err)
 	}
@@ -130,7 +130,7 @@ func TestCreateTCPingClassifiesUncertainty(t *testing.T) {
 	defer slow.Close()
 	defer close(block)
 	c = New(WithBaseURL(slow.URL), WithHTTPClient(&http.Client{Timeout: 200 * time.Millisecond}))
-	_, err = c.CreateTCPing(context.Background(), testKey, []int{31}, "198.51.100.7:443")
+	_, err = c.Create(context.Background(), testKey, MethodTCPing, []int{31}, "198.51.100.7:443")
 	if !errors.As(err, new(*UncertainError)) {
 		t.Fatalf("响应超时应当是 UncertainError,得到 %T %v", err, err)
 	}
@@ -145,7 +145,7 @@ func TestCreateTCPingClassifiesUncertainty(t *testing.T) {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(body))
 		})
-		_, err := c.CreateTCPing(context.Background(), testKey, []int{31}, "198.51.100.7:443")
+		_, err := c.Create(context.Background(), testKey, MethodTCPing, []int{31}, "198.51.100.7:443")
 		if !errors.As(err, new(*UncertainError)) {
 			t.Fatalf("响应 %q(%d)应当是 UncertainError,得到 %T %v", body, status, err, err)
 		}
@@ -153,7 +153,7 @@ func TestCreateTCPingClassifiesUncertainty(t *testing.T) {
 
 	// 4xx 是网关层面的拒绝,任务不会建出来:确定的失败。
 	_, c = newServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(429) })
-	_, err = c.CreateTCPing(context.Background(), testKey, []int{31}, "198.51.100.7:443")
+	_, err = c.Create(context.Background(), testKey, MethodTCPing, []int{31}, "198.51.100.7:443")
 	var ae *APIError
 	if !errors.As(err, &ae) {
 		t.Fatalf("429 应当是确定的拒绝,得到 %T %v", err, err)
@@ -185,7 +185,7 @@ func TestTCPingResultParsesTheDocExample(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(docExample))
 	})
-	res, err := c.TCPingResult(context.Background(), testKey, "f76bff98111f345307ab8d0445d68e6513")
+	res, err := c.Result(context.Background(), testKey, MethodTCPing, "f76bff98111f345307ab8d0445d68e6513")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ const liveExample = `{"done":true,"id":"20261019_7fe82767081c89c0fb12f3e02a12227
 "round_trip_avg":159.25,"round_trip_max":156.92,"round_trip_min":151.66}],"max_node":1}`
 
 func TestTCPingRTTFieldsAreSwappedUpstream(t *testing.T) {
-	res, err := parseTCPing([]byte(liveExample), testKey)
+	res, err := parseResult([]byte(liveExample), testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestTCPingResultValidation(t *testing.T) {
 		{"node_id":4,"error_code":-1,"error":"not found node"},
 		{"node_id":-840,"packets_transmitted":4,"packets_received":4,"round_trip_avg":180}
 	]}`
-	res, err := parseTCPing([]byte(body), testKey)
+	res, err := parseResult([]byte(body), testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,11 +249,65 @@ func TestTCPingResultValidation(t *testing.T) {
 		t.Fatal("not found node 应当认成节点下线")
 	}
 	// 任务 ID 失效时顶层带 error_code。
-	if _, err := parseTCPing([]byte(`{"error_code":4,"error":"task id invalid"}`), testKey); !IsCode(err, CodeTaskID) {
+	if _, err := parseResult([]byte(`{"error_code":4,"error":"task id invalid"}`), testKey); !IsCode(err, CodeTaskID) {
 		t.Fatalf("应当是任务 ID 失效,得到 %v", err)
 	}
-	if _, err := parseTCPing([]byte(`{"done":"maybe"}`), testKey); err == nil {
+	if _, err := parseResult([]byte(`{"done":"maybe"}`), testKey); err == nil {
 		t.Fatal("认不出的 done 应当报错")
+	}
+}
+
+// Ping 走自己的两条路径、host 只收地址(不带端口);原始输出是 Linux ping 的
+// `rtt min/avg/max/mdev = …`,同样以它为准(字段可能同样对调)。
+func TestPingUsesItsOwnPathsAndAddressOnly(t *testing.T) {
+	var calls atomic.Int32
+	_, c := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		switch r.URL.Path {
+		case "/v3/task/create/ping":
+			if r.URL.Query().Get("host") != "198.51.100.7" || r.URL.Query().Get("node_ids") != "42,-840" {
+				_, _ = w.Write([]byte(`{"error_code":2,"error":"参数错误"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"error_code":0,"data":{"id":"20261019_ping0001"},"error":""}`))
+		case "/v3/task/ping/20261019_ping0001":
+			_, _ = w.Write([]byte(`{"done":true,"id":"20261019_ping0001","max_node":1,"list":[{"node_id":42,"node_name":"上海电信",
+"host":"198.51.100.7","report_source":"PING 198.51.100.7 (198.51.100.7) 56(84) bytes of data.\n--- 198.51.100.7 ping statistics ---\n10 packets transmitted, 9 received, 10% packet loss, time 9012ms\nrtt min/avg/max/mdev = 150.10/152.30/158.60/2.40 ms",
+"ip":"198.51.100.7","packet_loss":10,"packets_transmitted":10,"packets_received":9,
+"round_trip_avg":158.6,"round_trip_max":152.3,"round_trip_min":150.1,"error_code":0,"error":""}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	id, err := c.Create(context.Background(), testKey, MethodPing, []int{42, -840}, "198.51.100.7")
+	if err != nil || id != "20261019_ping0001" {
+		t.Fatalf("创建 = %q, %v", id, err)
+	}
+	res, err := c.Result(context.Background(), testKey, MethodPing, id)
+	if err != nil || len(res.Items) != 1 {
+		t.Fatalf("结果 = %+v, %v", res, err)
+	}
+	it := res.Items[0]
+	if it.Sent != 10 || it.Received != 9 || it.RTTAvgMs != 152.3 || it.RTTMinMs != 150.1 || it.RTTMaxMs != 158.6 {
+		t.Fatalf("应当以 rtt min/avg/max/mdev 那一行为准: %+v", it)
+	}
+
+	before := calls.Load()
+	for _, h := range []string{"198.51.100.7:443", "example.com:80", "2001:db8::1", "[2001:db8::1]", "a b", ""} {
+		if _, err := c.Create(context.Background(), testKey, MethodPing, []int{42}, h); err == nil {
+			t.Fatalf("Ping 的 %q 应当被拒", h)
+		} else if !errors.As(err, new(*NotSentError)) {
+			t.Fatalf("%q 的错误应当是没发出去,得到 %T", h, err)
+		}
+	}
+	if _, err := c.Create(context.Background(), testKey, Method("DNS"), []int{42}, "example.com"); err == nil {
+		t.Fatal("不认识的测法应当被拒")
+	}
+	if _, err := c.Result(context.Background(), testKey, Method(""), id); err == nil {
+		t.Fatal("取结果时不认识的测法应当被拒")
+	}
+	if calls.Load() != before {
+		t.Fatal("本地校验没过的输入不应发出请求")
 	}
 }
 

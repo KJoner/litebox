@@ -69,9 +69,11 @@ func BoceRunStateText(st string) string {
 type BoceRun struct {
 	ID int64 `json:"id"`
 	// TaskID 为 0 表示任务已经删了(执行记录与估算消耗留着)。
-	TaskID         int64        `json:"task_id"`
-	NodeID         int64        `json:"node_id"`
-	Trigger        string       `json:"trigger"`
+	TaskID  int64  `json:"task_id"`
+	NodeID  int64  `json:"node_id"`
+	Trigger string `json:"trigger"`
+	// TestType 是这一轮提交时的测法;取结果按它选接口。
+	TestType       boce.Method  `json:"test_type"`
 	Slot           string       `json:"slot"`
 	State          string       `json:"state"`
 	StateText      string       `json:"state_text"`
@@ -118,14 +120,14 @@ type BoceResult struct {
 	Charged    bool    `json:"charged"`
 }
 
-const boceRunColumns = `id, COALESCE(task_id, 0), node_id, trigger_kind, slot, state, vendor_task_id, host, generation, vantage_ids,
+const boceRunColumns = `id, COALESCE(task_id, 0), node_id, trigger_kind, test_type, slot, state, vendor_task_id, host, generation, vantage_ids,
 	points, points_reserved, day_key, month_key, attempts, polls, next_poll_at, results, error_code, error,
 	created_at, sent_at, finished_at`
 
 func scanBoceRun(r scanner) (*BoceRun, error) {
 	var b BoceRun
 	var vids string
-	if err := r.Scan(&b.ID, &b.TaskID, &b.NodeID, &b.Trigger, &b.Slot, &b.State, &b.VendorTaskID, &b.Host, &b.Generation, &vids,
+	if err := r.Scan(&b.ID, &b.TaskID, &b.NodeID, &b.Trigger, &b.TestType, &b.Slot, &b.State, &b.VendorTaskID, &b.Host, &b.Generation, &vids,
 		&b.Points, &b.PointsReserved, &b.DayKey, &b.MonthKey, &b.Attempts, &b.Polls, &b.NextPollAt, &b.Results,
 		&b.ErrorCode, &b.Error, &b.CreatedAt, &b.SentAt, &b.FinishedAt); err != nil {
 		return nil, err
@@ -209,8 +211,8 @@ func (s *Store) fillBoceItems(ctx context.Context, runs []BoceRun) error {
 			return err
 		}
 		it.Charged = charged == 1
-		it.Label = it.Status.LabelFor(MetricBoce)
 		if i, ok := idx[runID]; ok {
+			it.Label = it.Status.LabelFor(BoceMetric(runs[i].TestType))
 			runs[i].Items = append(runs[i].Items, it)
 		}
 	}
@@ -383,10 +385,14 @@ func (s *Store) reserveBoceRun(ctx context.Context, cfg BoceConfig, req boceRunR
 	if state == BoceRunSkipped {
 		finished = nowTS
 	}
-	r, err := tx.ExecContext(ctx, `INSERT INTO boce_runs (task_id, node_id, trigger_kind, slot, idem_key, state, host, generation,
+	testType := req.Task.TestType
+	if !testType.Valid() {
+		testType = boce.MethodTCPing
+	}
+	r, err := tx.ExecContext(ctx, `INSERT INTO boce_runs (task_id, node_id, trigger_kind, test_type, slot, idem_key, state, host, generation,
 		vantage_ids, points, points_reserved, day_key, month_key, error, created_at, finished_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		req.Task.ID, req.Task.NodeID, req.Trigger, slot, req.IdemKey, state, req.Host, req.Generation,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		req.Task.ID, req.Task.NodeID, req.Trigger, testType, slot, req.IdemKey, state, req.Host, req.Generation,
 		intsJSON(req.Vantages), points, points, day, month, errText, nowTS, finished)
 	if err != nil {
 		return res, err
@@ -473,7 +479,7 @@ func (s *Store) PruneBoceRuns(ctx context.Context, now time.Time) (int64, error)
 //
 // error_code 非 0 是拨测点的事(上游:「视为拨测节点未响应」),不是目标不通;
 // 一个包都没发出去也说明不了目标怎样。只有拨测点真的发了包,收发数才进比例。
-func classifyBoceItem(it boce.TCPingItem) (Status, string) {
+func classifyBoceItem(m boce.Method, it boce.Item) (Status, string) {
 	switch {
 	case it.ErrorCode != 0:
 		msg := "拨测点未响应"
@@ -489,7 +495,10 @@ func classifyBoceItem(it boce.TCPingItem) (Status, string) {
 	case it.Received >= it.Sent:
 		return StatusOK, ""
 	case it.Received > 0:
-		return StatusLoss, fmt.Sprintf("TCPing 收到 %d/%d", it.Received, it.Sent)
+		return StatusLoss, fmt.Sprintf("%s 收到 %d/%d", m.Label(), it.Received, it.Sent)
+	}
+	if m == boce.MethodPing {
+		return StatusTimeout, fmt.Sprintf("Ping %d 个包全部没有回应", it.Sent)
 	}
 	return StatusTimeout, fmt.Sprintf("TCPing %d 次全部失败", it.Sent)
 }
@@ -507,7 +516,7 @@ type boceEmit struct {
 // boceSave 是一次落库的参数。
 type boceSave struct {
 	run   *BoceRun
-	items []boce.TCPingItem
+	items []boce.Item
 	// final 为真时这一轮收尾:没出结果的拨测点记 EXPIRED,state 写成 finalState。
 	final      bool
 	finalState string
@@ -576,12 +585,12 @@ func (s *Store) saveBoceResults(ctx context.Context, p boceSave) ([]boceEmit, in
 		res     Result
 	}
 	var fresh []pending
-	insert := func(v int, st Status, it *boce.TCPingItem, errText string, charged bool) error {
+	insert := func(v int, st Status, it *boce.Item, errText string, charged bool) error {
 		var tid int64
 		if t, ok := series[v]; ok {
 			tid = t.ID
 		}
-		var item boce.TCPingItem
+		var item boce.Item
 		if it != nil {
 			item = *it
 		}
@@ -625,7 +634,7 @@ func (s *Store) saveBoceResults(ctx context.Context, p boceSave) ([]boceEmit, in
 			if !asked[it.NodeID] {
 				continue // 上游给了一个我们没要的拨测点:不收
 			}
-			st, msg := classifyBoceItem(it)
+			st, msg := classifyBoceItem(run.TestType, it)
 			if err := insert(it.NodeID, st, &it, msg, !it.NodeOffline()); err != nil {
 				return nil, 0, err
 			}

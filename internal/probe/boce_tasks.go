@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,8 +24,12 @@ import (
 // 错误。
 var (
 	ErrBoceTaskNotFound = errors.New("Boce 任务不存在")
-	// ErrBoceIPv6 Boce 的 TCPing 文档没有说明支持 IPv6:不提交,也不改用 IPv4 测(那测的就不是这个入口了)。
-	ErrBoceIPv6 = errors.New("Boce TCPing 接口没有说明支持 IPv6 目标:面板不提交 IPv6 入口,也不会改用 IPv4 去测(那测的就不是这个入口了)")
+	// ErrBoceIPv6 Boce 的 TCPing / Ping 文档都没有说明支持 IPv6:不提交,也不改用 IPv4 测(那测的就不是这个入口了)。
+	ErrBoceIPv6 = errors.New("Boce TCPing / Ping 接口都没有说明支持 IPv6 目标:面板不提交 IPv6 入口,也不会改用 IPv4 去测(那测的就不是这个入口了)")
+	// ErrBoceTestType 不认识的测法。
+	ErrBoceTestType = errors.New("检测方式只能是 TCPing 或 Ping")
+	// ErrBoceTestTypeImmutable 测法创建后不能改:换测法就是另一条测量,旧的点阵与丢包率与它不可比。
+	ErrBoceTestTypeImmutable = errors.New("任务创建后不能更换检测方式:换测法就是另一条测量,请复制任务后修改")
 	// ErrBoceTargetNotAllowed 被测目标只能是这台节点的订阅入口 —— 不收自由输入的地址。
 	ErrBoceTargetNotAllowed = errors.New("被测目标只能从这台节点的订阅入口里选")
 	ErrBoceRefImmutable     = errors.New("任务创建后不能更换被测入口:换目标就是另一条测量,请复制任务后修改")
@@ -32,12 +38,13 @@ var (
 
 // BoceTask 是一个任务的定义与最近状态。
 type BoceTask struct {
-	ID        int64  `json:"id"`
-	NodeID    int64  `json:"node_id"`
-	Name      string `json:"name"`
-	CheckType string `json:"check_type"`
-	Ref       string `json:"ref"`
-	Family    Family `json:"family"`
+	ID     int64  `json:"id"`
+	NodeID int64  `json:"node_id"`
+	Name   string `json:"name"`
+	// TestType 是测法(TCPING / PING),创建后不可改。0043 的 check_type 列已冻结,看这一列。
+	TestType boce.Method `json:"test_type"`
+	Ref      string      `json:"ref"`
+	Family   Family      `json:"family"`
 	// VantageIDs 是选中的拨测点(有序)。
 	VantageIDs []int `json:"vantage_ids"`
 	ScheduleSpec
@@ -66,18 +73,20 @@ func (t *BoceTask) Schedule() (Schedule, error) {
 }
 
 // BoceTaskInput 是创建 / 修改任务的输入。Enabled 为 nil 表示不改(创建时默认关)。
+// TestType 创建时空 = TCPing;修改时空 = 不改,给了别的值就拒绝(测法不能改)。
 type BoceTaskInput struct {
-	Name       string `json:"name"`
-	Ref        string `json:"ref"`
-	Family     Family `json:"family"`
-	VantageIDs []int  `json:"vantage_ids"`
+	Name       string      `json:"name"`
+	TestType   boce.Method `json:"test_type"`
+	Ref        string      `json:"ref"`
+	Family     Family      `json:"family"`
+	VantageIDs []int       `json:"vantage_ids"`
 	ScheduleSpec
 	MonthPointsLimit int    `json:"month_points_limit"`
 	Enabled          *bool  `json:"enabled"`
 	Note             string `json:"note"`
 }
 
-const boceTaskColumns = `id, node_id, name, check_type, ref, family, vantage_ids, schedule_mode, interval_min, times,
+const boceTaskColumns = `id, node_id, name, test_type, ref, family, vantage_ids, schedule_mode, interval_min, times,
 	window_start, window_end, weekdays, timezone, month_points_limit, enabled, auto_paused_reason, consecutive_failures,
 	next_run_at, last_run_at, last_state, last_error, archived_at, note, created_at, updated_at`
 
@@ -85,7 +94,7 @@ func scanBoceTask(r scanner) (*BoceTask, error) {
 	var t BoceTask
 	var vids, times string
 	var enabled int
-	if err := r.Scan(&t.ID, &t.NodeID, &t.Name, &t.CheckType, &t.Ref, &t.Family, &vids, &t.Mode, &t.IntervalMin, &times,
+	if err := r.Scan(&t.ID, &t.NodeID, &t.Name, &t.TestType, &t.Ref, &t.Family, &vids, &t.Mode, &t.IntervalMin, &times,
 		&t.WindowStart, &t.WindowEnd, &t.Weekdays, &t.Timezone, &t.MonthPointsLimit, &enabled, &t.AutoPausedReason,
 		&t.ConsecutiveFailures, &t.NextRunAt, &t.LastRunAt, &t.LastState, &t.LastError, &t.ArchivedAt, &t.Note,
 		&t.CreatedAt, &t.UpdatedAt); err != nil {
@@ -228,6 +237,12 @@ func (s *Store) normalizeBoceInput(ctx context.Context, in *BoceTaskInput, vmap 
 
 // CreateBoceTask 在一台节点上建任务。默认不开自动检测 —— 管理员看过费用估算再打开。
 func (s *Store) CreateBoceTask(ctx context.Context, nodeID int64, in BoceTaskInput) (*BoceTask, error) {
+	if in.TestType == "" {
+		in.TestType = boce.MethodTCPing
+	}
+	if !in.TestType.Valid() {
+		return nil, ErrBoceTestType
+	}
 	if in.Family == "" {
 		in.Family = FamilyV4
 	}
@@ -272,10 +287,11 @@ func (s *Store) CreateBoceTask(ctx context.Context, nodeID int64, in BoceTaskInp
 		return nil, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `INSERT INTO boce_tasks (node_id, name, check_type, ref, family, vantage_ids, schedule_mode,
+	// check_type 是 0043 的列,CHECK 只收 'TCPING',已冻结;测法写 test_type。
+	res, err := tx.ExecContext(ctx, `INSERT INTO boce_tasks (node_id, name, check_type, test_type, ref, family, vantage_ids, schedule_mode,
 		interval_min, times, window_start, window_end, weekdays, timezone, month_points_limit, enabled, note, created_at, updated_at)
-		VALUES (?,?,'TCPING',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		nodeID, in.Name, hit.Ref, FamilyV4, intsJSON(in.VantageIDs), in.Mode, in.IntervalMin, strings.Join(in.Times, ","),
+		VALUES (?,?,'TCPING',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		nodeID, in.Name, in.TestType, hit.Ref, FamilyV4, intsJSON(in.VantageIDs), in.Mode, in.IntervalMin, strings.Join(in.Times, ","),
 		in.WindowStart, in.WindowEnd, in.Weekdays, in.Timezone, in.MonthPointsLimit, b2i(enabled), in.Note, nowTS, nowTS)
 	if err != nil {
 		return nil, err
@@ -285,7 +301,7 @@ func (s *Store) CreateBoceTask(ctx context.Context, nodeID int64, in BoceTaskInp
 	if err != nil {
 		return nil, err
 	}
-	if err := s.syncBoceSeriesTx(ctx, tx, t, vmap, hit.Host, hit.Port); err != nil {
+	if err := s.syncBoceSeriesTx(ctx, tx, t, vmap, hit.Host, boceTargetPort(t.TestType, hit.Port)); err != nil {
 		return nil, err
 	}
 	if err := setNextRunTx(ctx, tx, t, now); err != nil {
@@ -308,6 +324,9 @@ func (s *Store) UpdateBoceTask(ctx context.Context, id int64, in BoceTaskInput) 
 	}
 	if (in.Ref != "" && in.Ref != t.Ref) || (in.Family != "" && in.Family != t.Family) {
 		return nil, ErrBoceRefImmutable
+	}
+	if in.TestType != "" && in.TestType != t.TestType {
+		return nil, ErrBoceTestTypeImmutable
 	}
 	vmap, err := s.boceVantageMap(ctx)
 	if err != nil {
@@ -486,8 +505,8 @@ func (s *Store) syncBoceSeriesTx(ctx context.Context, tx querier, t *BoceTask, v
 		if _, err := tx.ExecContext(ctx, `INSERT INTO probe_targets (node_id, direction, protocol, tcp_mode, kind, ref, family,
 			label, source, enabled, resolved_host, resolved_port, generation, generation_since, created_at, updated_at,
 			boce_task_id, vantage_id)
-			VALUES (?, 'INGRESS', 'TCP', 'CONNECT', 'SERVICE', ?, ?, ?, 'BOCE', 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.NodeID, t.Ref, t.Family, label, host, port, gen, genSince, now, now, t.ID, v); err != nil {
+			VALUES (?, 'INGRESS', ?, 'CONNECT', 'SERVICE', ?, ?, ?, 'BOCE', 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.NodeID, boceProtocol(t.TestType), t.Ref, t.Family, label, host, port, gen, genSince, now, now, t.ID, v); err != nil {
 			return err
 		}
 	}
@@ -503,6 +522,23 @@ func (s *Store) syncBoceSeriesTx(ctx context.Context, tx querier, t *BoceTask, v
 		}
 	}
 	return nil
+}
+
+// boceTargetPort 是 Boce 序列记的端口:Ping 与端口无关,一律记 0 —— 入口换了端口而地址没变时,
+// ping 测的还是同一个东西,不该换代、把历史切成两段。
+func boceTargetPort(m boce.Method, port int) int {
+	if m == boce.MethodPing {
+		return 0
+	}
+	return port
+}
+
+// boceSubmitHost 是提交给 Boce 的 host:TCPing 是「地址:端口」,Ping 只要地址。
+func boceSubmitHost(m boce.Method, host string, port int) string {
+	if m == boce.MethodPing {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // boceGrace 是错过的时间槽还补不补的界线:10 分钟之内补最近的一个,再晚就跳过 ——

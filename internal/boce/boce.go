@@ -1,5 +1,9 @@
-// Package boce 是 Boce(boce.com)拨测接口的客户端,只做四件事:拨测点列表、创建 TCPing 任务、
-// 取 TCPing 结果、查波点余额。它不知道任务、预算与调度 —— 那些在 internal/probe 里。
+// Package boce 是 Boce(boce.com)拨测接口的客户端,只做四件事:拨测点列表、创建检测任务(TCPing / Ping)、
+// 取检测结果、查波点余额。它不知道任务、预算与调度 —— 那些在 internal/probe 里。
+//
+// TCPing 与 Ping 两个接口的形状一样(创建 /v3/task/create/<测法>、取结果 /v3/task/<测法>/{id},
+// 结果字段相同),区别只在 host:TCPing 要「地址:端口」,Ping 只要地址。所以测法是一个参数,
+// 不是两套代码 —— 两套各写一份的话,脱敏、校验、RTT 对调那几条规矩迟早只在其中一套上生效。
 //
 // 三条硬规矩:
 //
@@ -109,6 +113,39 @@ func (e *UncertainError) Error() string {
 }
 func (e *UncertainError) Unwrap() error { return e.Err }
 
+// Method 是 Boce 的检测方式。取值就是库里与接口上用的那个字符串。
+type Method string
+
+const (
+	// MethodTCPing 对「地址:端口」做 TCP 建连(每轮每个拨测点 5 次,真实接口实测)。
+	MethodTCPing Method = "TCPING"
+	// MethodPing 对地址做 ICMP ping(每轮每个拨测点 5 个包,真实接口实测)。它与端口无关,也与代理协议无关:
+	// 很多机器本来就不回 ICMP,ping 不通不等于入口不可用。
+	MethodPing Method = "PING"
+)
+
+// Valid 回答是不是认识的测法。
+func (m Method) Valid() bool { return m == MethodTCPing || m == MethodPing }
+
+// Label 是给人看的名字。
+func (m Method) Label() string {
+	if m == MethodPing {
+		return "Ping"
+	}
+	return "TCPing"
+}
+
+// path 是接口路径里的那一段。不认识的测法没有路径 —— 调用方在那之前就该拒绝。
+func (m Method) path() string {
+	switch m {
+	case MethodTCPing:
+		return "tcping"
+	case MethodPing:
+		return "ping"
+	}
+	return ""
+}
+
 // Node 是一个拨测点。地区与运营商只存接口实际返回的值。
 //
 // **海外拨测点的 ID 是负数**(真实接口返回 -840 = 美国、-826 = 英国……,大陆的是正数)。
@@ -127,8 +164,8 @@ type Balance struct {
 	Points int64  `json:"point"`
 }
 
-// TCPingItem 是一个拨测点的结果。
-type TCPingItem struct {
+// Item 是一个拨测点的结果(TCPing 与 Ping 字段相同)。
+type Item struct {
 	NodeID   int
 	NodeName string
 	Host     string
@@ -150,16 +187,16 @@ type TCPingItem struct {
 }
 
 // NodeOffline 回答这个拨测点是不是下线了(上游说这种情况不扣波点)。
-func (it TCPingItem) NodeOffline() bool {
+func (it Item) NodeOffline() bool {
 	return it.ErrorCode != 0 && strings.Contains(strings.ToLower(it.Error), "not found node")
 }
 
-// TCPingResult 是一次取结果。Done 为假时 Items 可能只有一部分。
-type TCPingResult struct {
+// Result 是一次取结果。Done 为假时 Items 可能只有一部分。
+type Result struct {
 	Done    bool
 	ID      string
 	MaxNode int
-	Items   []TCPingItem
+	Items   []Item
 	// Rejected 是被校验拒掉的条目数(字段缺失或超范围),不静默丢。
 	Rejected int
 }
@@ -167,8 +204,8 @@ type TCPingResult struct {
 // API 是 probe 包用到的全部接口,测试里换成假的。
 type API interface {
 	Nodes(ctx context.Context, key string, area Area) ([]Node, error)
-	CreateTCPing(ctx context.Context, key string, nodeIDs []int, host string) (string, error)
-	TCPingResult(ctx context.Context, key, taskID string) (*TCPingResult, error)
+	Create(ctx context.Context, key string, m Method, nodeIDs []int, host string) (string, error)
+	Result(ctx context.Context, key string, m Method, taskID string) (*Result, error)
 	Balance(ctx context.Context, key string) (Balance, error)
 }
 
@@ -322,15 +359,19 @@ func (c *Client) Nodes(ctx context.Context, key string, area Area) ([]Node, erro
 	return out, nil
 }
 
-// CreateTCPing 建一个 TCPing 任务:一个 host(域名或 IP 加端口),多个拨测点。返回任务 ID。
+// Create 建一个检测任务:一个 host(TCPing 是「域名或 IPv4:端口」,Ping 是「域名或 IPv4」),
+// 多个拨测点。返回任务 ID。
 //
 // 错误分三种:*APIError(上游明确拒绝,没建任务)、*NotSentError(确定没发出去,可以重试)、
 // *UncertainError(发出去了但不知道结果,绝不重试)。
-func (c *Client) CreateTCPing(ctx context.Context, key string, nodeIDs []int, host string) (string, error) {
+func (c *Client) Create(ctx context.Context, key string, m Method, nodeIDs []int, host string) (string, error) {
+	if !m.Valid() {
+		return "", &NotSentError{Err: errors.New("不认识的检测方式")}
+	}
 	if len(nodeIDs) == 0 || len(nodeIDs) > MaxNodeIDs {
 		return "", &NotSentError{Err: fmt.Errorf("拨测点数量必须是 1~%d", MaxNodeIDs)}
 	}
-	if err := ValidHost(host); err != nil {
+	if err := ValidTarget(m, host); err != nil {
 		return "", &NotSentError{Err: err}
 	}
 	ids := make([]string, len(nodeIDs))
@@ -343,7 +384,7 @@ func (c *Client) CreateTCPing(ctx context.Context, key string, nodeIDs []int, ho
 	q := url.Values{}
 	q.Set("node_ids", strings.Join(ids, ","))
 	q.Set("host", host)
-	body, wrote, err := c.get(ctx, "/v3/task/create/tcping", q, key)
+	body, wrote, err := c.get(ctx, "/v3/task/create/"+m.path(), q, key)
 	if err != nil {
 		var hs *httpStatusError
 		switch {
@@ -373,20 +414,24 @@ func (c *Client) CreateTCPing(ctx context.Context, key string, nodeIDs []int, ho
 	return data.ID, nil
 }
 
-// TCPingResult 取一次结果。上游的这个接口没有 data 外层:done / id / max_node / list 在顶层;
-// 任务 ID 失效时返回顶层的 error_code(4)。
-func (c *Client) TCPingResult(ctx context.Context, key, taskID string) (*TCPingResult, error) {
+// Result 取一次结果。上游的这个接口没有 data 外层:done / id / max_node / list 在顶层;
+// 任务 ID 失效时返回顶层的 error_code(4)。测法必须与建任务时的一致:拿 Ping 的任务 ID 去问
+// TCPing 的接口,上游只会说任务 ID 失效,而那会被记成「任务未取得结果」。
+func (c *Client) Result(ctx context.Context, key string, m Method, taskID string) (*Result, error) {
+	if !m.Valid() {
+		return nil, errors.New("不认识的检测方式")
+	}
 	if !validTaskID(taskID) {
 		return nil, errors.New("任务 ID 非法")
 	}
-	body, _, err := c.get(ctx, "/v3/task/tcping/"+url.PathEscape(taskID), url.Values{}, key)
+	body, _, err := c.get(ctx, "/v3/task/"+m.path()+"/"+url.PathEscape(taskID), url.Values{}, key)
 	if err != nil {
 		return nil, err
 	}
-	return parseTCPing(body, key)
+	return parseResult(body, key)
 }
 
-func parseTCPing(body []byte, key string) (*TCPingResult, error) {
+func parseResult(body []byte, key string) (*Result, error) {
 	var raw struct {
 		ErrorCode *flexInt `json:"error_code"`
 		Error     string   `json:"error"`
@@ -422,7 +467,7 @@ func parseTCPing(body []byte, key string) (*TCPingResult, error) {
 	if len(raw.List) > maxItems {
 		return nil, fmt.Errorf("结果超过 %d 条,已拒绝", maxItems)
 	}
-	out := &TCPingResult{Done: bool(raw.Done), ID: cleanText(raw.ID, maxTaskIDLen), MaxNode: clampInt(int(raw.MaxNode), 0, maxItems)}
+	out := &Result{Done: bool(raw.Done), ID: cleanText(raw.ID, maxTaskIDLen), MaxNode: clampInt(int(raw.MaxNode), 0, maxItems)}
 	seen := map[int]bool{}
 	for _, it := range raw.List {
 		id := int(it.NodeID)
@@ -437,7 +482,7 @@ func parseTCPing(body []byte, key string) (*TCPingResult, error) {
 		}
 		seen[id] = true
 		avg, min, max := rttTriple(float64(it.RTTAvg), float64(it.RTTMin), float64(it.RTTMax), it.Report)
-		out.Items = append(out.Items, TCPingItem{
+		out.Items = append(out.Items, Item{
 			NodeID: id, NodeName: cleanText(it.NodeName, 64), Host: cleanText(it.Host, 255),
 			OriginIP: ipOrEmpty(it.OriginIP), IP: ipOrEmpty(it.IP),
 			IPRegion: cleanText(it.IPRegion, 64), IPISP: cleanText(it.IPISP, 32),
@@ -449,7 +494,10 @@ func parseTCPing(body []byte, key string) (*TCPingResult, error) {
 	return out, nil
 }
 
-var reportRTT = regexp.MustCompile(`min/avg/max\s*=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)`)
+// reportRTT 认两种原始输出:TCPing 的 `round-trip min/avg/max = a/b/c ms`,与 Linux ping 的
+// `rtt min/avg/max/mdev = a/b/c/d ms`(多一个 mdev,不认它的话 Ping 的结果永远退回去排序猜)。
+// 真实接口上 Ping 的三个字段没有对调(TCPing 的对调了),两种都以原始输出为准,一处规则。
+var reportRTT = regexp.MustCompile(`min/avg/max(?:/[a-z]+)?\s*=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)`)
 
 // rttTriple 给出这一个拨测点的(平均、最小、最大)往返。
 //
@@ -512,8 +560,32 @@ var taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9_\-]{1,128}$`)
 func validTaskID(id string) bool { return taskIDPattern.MatchString(id) }
 
 var hostPattern = regexp.MustCompile(`^[A-Za-z0-9.\-]{1,253}:[0-9]{1,5}$`)
+var addrPattern = regexp.MustCompile(`^[A-Za-z0-9.\-]{1,253}$`)
 
-// ValidHost 校验提交给 Boce 的 host:只收「域名或 IPv4:端口」。
+// ValidTarget 按测法校验提交给 Boce 的 host:TCPing 是「域名或 IPv4:端口」,Ping 是「域名或 IPv4」。
+func ValidTarget(m Method, host string) error {
+	switch m {
+	case MethodTCPing:
+		return ValidHost(host)
+	case MethodPing:
+		return validAddr(host)
+	}
+	return errors.New("不认识的检测方式")
+}
+
+// validAddr 校验 Ping 的被测地址。两份文档都没有说明支持 IPv6(IPv6 是另一个付费产品),
+// IPv6 字面量一律拒绝;带端口的也拒绝 —— 那说明调用方把 TCPing 的 host 传错了地方。
+func validAddr(host string) error {
+	if !addrPattern.MatchString(host) {
+		return errors.New("Ping 的被测地址必须是「域名或 IPv4」(不带端口)")
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return errors.New("Boce Ping 不提交 IPv6 地址")
+	}
+	return nil
+}
+
+// ValidHost 校验提交给 Boce 的 TCPing host:只收「域名或 IPv4:端口」。
 // TCPing 文档没有说明支持 IPv6,方括号形式一律拒绝 —— 不能让它被悄悄当成别的东西测。
 func ValidHost(host string) error {
 	if !hostPattern.MatchString(host) {

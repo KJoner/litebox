@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/litebox/litebox/internal/boce"
 	"github.com/litebox/litebox/internal/probe"
 	"github.com/litebox/litebox/internal/settings"
 )
@@ -55,7 +56,8 @@ func (s *Server) writeBoceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, probe.ErrNotFound):
 		writeError(w, http.StatusNotFound, "节点不存在")
 	case errors.Is(err, probe.ErrBoceIPv6), errors.Is(err, probe.ErrBoceTargetNotAllowed),
-		errors.Is(err, probe.ErrBoceRefImmutable), errors.Is(err, probe.ErrBoceArchived):
+		errors.Is(err, probe.ErrBoceRefImmutable), errors.Is(err, probe.ErrBoceArchived),
+		errors.Is(err, probe.ErrBoceTestType), errors.Is(err, probe.ErrBoceTestTypeImmutable):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -454,7 +456,7 @@ func (s *Server) handleNodeBoce(w http.ResponseWriter, r *http.Request) {
 }
 
 func boceTaskDesc(t *probe.BoceTask) string {
-	return fmt.Sprintf("「%s」(%d 个拨测点,%s", t.Name, len(t.VantageIDs), t.ScheduleSpec.Describe()) +
+	return fmt.Sprintf("「%s」(%s,%d 个拨测点,%s", t.Name, t.TestType.Label(), len(t.VantageIDs), t.ScheduleSpec.Describe()) +
 		map[bool]string{true: ",自动检测开", false: ",自动检测关"}[t.Enabled] + ")"
 }
 
@@ -684,9 +686,17 @@ func (s *Server) handleBatchBoceTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	sp, _, _ := req.Template.ScheduleSpec.Normalize()
 	s.auditBoce(r, actionBoceBatch, "boce", "tasks",
-		fmt.Sprintf("批量应用 Boce 任务模板到 %d 台节点(成功 %d):%d 个拨测点,%s", len(req.Nodes), okCount,
-			len(req.Template.VantageIDs), sp.Describe()))
+		fmt.Sprintf("批量应用 Boce 任务模板到 %d 台节点(成功 %d):%s,%d 个拨测点,%s", len(req.Nodes), okCount,
+			batchMethod(req.Template.TestType).Label(), len(req.Template.VantageIDs), sp.Describe()))
 	writeJSON(w, http.StatusOK, map[string]any{"results": out})
+}
+
+// batchMethod 是模板的测法,空 = TCPing(与建任务时的默认一致,审计里写的就是真正建出来的那种)。
+func batchMethod(m boce.Method) boce.Method {
+	if m == "" {
+		return boce.MethodTCPing
+	}
+	return m
 }
 
 type bocePauseRequest struct {
