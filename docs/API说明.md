@@ -590,7 +590,10 @@ PUT    /api/nodes/{id}/probe-card        {ingress_mode, ingress_ids, outbound_mo
   `pick` 此刻实际展示哪几项与自动推荐会选哪几项);`targets` 仍然只有主控的入口目标;
 * `GET /api/dashboard/cards` 多了 `boce` 与 `card_picks`(每台节点卡片入站 / 出站各展示哪几项,
   手动选了但已删除的单列在 `invalid_*`,不自动顶上别的);
-* Boce 序列:`source = BOCE`、`metric = BOCE`(TCPing 丢包率,按 Boce 报告的包数),带 `boce_task_id` /
+* 任务与执行记录多 `test_type`(`TCPING` / `PING`,V22.5):新建时可传(空 = TCPING,别的值 400),
+  **修改时传了不同的值 400**(测法创建后不可改,要换请复制任务);Ping 只测入口的地址,`host` 不带端口;
+* Boce 序列:`source = BOCE`、`metric = BOCE`(TCPing 丢包率,按 Boce 报告的包数)或 `BOCE_PING`
+  (Ping 丢包率,V22.5;序列的 `protocol` 是 ICMP、`resolved_port` 是 0),带 `boce_task_id` /
   `vantage_id` 与 `boce`(任务名、拨测点名、运营商、大区、是否已从列表消失、时间表、下次执行);
 * 结果状态多三种,都**不进分母、不改连续失败计数**:`VANTAGE_ERROR`(拨测点异常)、`API_ERROR`(接口异常)、
   `EXPIRED`(任务没取得结果);统计与点阵多 `vantage_errors` / `api_errors` / `expired`;
