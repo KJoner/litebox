@@ -18,8 +18,9 @@ import (
 // ---------- 假的 Boce ----------
 
 type fakeCreate struct {
-	vids []int
-	host string
+	vids   []int
+	host   string
+	method boce.Method
 }
 
 type fakeBoce struct {
@@ -28,18 +29,20 @@ type fakeBoce struct {
 	createErrs []error // 依次消费;空了就成功
 	nextID     int
 	// results 按任务 ID 回答;没有登记的任务回答 done=false、空列表。
-	results   map[string]*boce.TCPingResult
+	results   map[string]*boce.Result
 	resultErr map[string]error
 	polls     int
-	nodes     map[boce.Area][]boce.Node
-	nodesErr  map[boce.Area]error
-	balance   boce.Balance
-	balErr    error
-	calls     int
+	// resultMethods 是每次取结果用的测法(Ping 的任务 ID 必须去问 Ping 的接口)。
+	resultMethods []boce.Method
+	nodes         map[boce.Area][]boce.Node
+	nodesErr      map[boce.Area]error
+	balance       boce.Balance
+	balErr        error
+	calls         int
 }
 
 func newFakeBoce() *fakeBoce {
-	return &fakeBoce{results: map[string]*boce.TCPingResult{}, resultErr: map[string]error{},
+	return &fakeBoce{results: map[string]*boce.Result{}, resultErr: map[string]error{},
 		nodes: map[boce.Area][]boce.Node{}, nodesErr: map[boce.Area]error{}, balance: boce.Balance{Yuan: "10.00", Points: 5000}}
 }
 
@@ -50,11 +53,11 @@ func (f *fakeBoce) Nodes(_ context.Context, _ string, area boce.Area) ([]boce.No
 	return f.nodes[area], f.nodesErr[area]
 }
 
-func (f *fakeBoce) CreateTCPing(_ context.Context, _ string, ids []int, host string) (string, error) {
+func (f *fakeBoce) Create(_ context.Context, _ string, m boce.Method, ids []int, host string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	f.creates = append(f.creates, fakeCreate{vids: append([]int(nil), ids...), host: host})
+	f.creates = append(f.creates, fakeCreate{vids: append([]int(nil), ids...), host: host, method: m})
 	if len(f.createErrs) > 0 {
 		err := f.createErrs[0]
 		f.createErrs = f.createErrs[1:]
@@ -66,18 +69,19 @@ func (f *fakeBoce) CreateTCPing(_ context.Context, _ string, ids []int, host str
 	return fmt.Sprintf("task%04d", f.nextID), nil
 }
 
-func (f *fakeBoce) TCPingResult(_ context.Context, _ string, id string) (*boce.TCPingResult, error) {
+func (f *fakeBoce) Result(_ context.Context, _ string, m boce.Method, id string) (*boce.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	f.polls++
+	f.resultMethods = append(f.resultMethods, m)
 	if err := f.resultErr[id]; err != nil {
 		return nil, err
 	}
 	if r, ok := f.results[id]; ok {
 		return r, nil
 	}
-	return &boce.TCPingResult{ID: id}, nil
+	return &boce.Result{ID: id}, nil
 }
 
 func (f *fakeBoce) Balance(context.Context, string) (boce.Balance, error) {
@@ -93,14 +97,14 @@ func (f *fakeBoce) createCount() int {
 	return len(f.creates)
 }
 
-func (f *fakeBoce) setDone(id string, items ...boce.TCPingItem) {
+func (f *fakeBoce) setDone(id string, items ...boce.Item) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.results[id] = &boce.TCPingResult{Done: true, ID: id, MaxNode: len(items), Items: items}
+	f.results[id] = &boce.Result{Done: true, ID: id, MaxNode: len(items), Items: items}
 }
 
-func okItem(node int, rtt float64) boce.TCPingItem {
-	return boce.TCPingItem{NodeID: node, Sent: 10, Received: 10, RTTAvgMs: rtt, RTTMinMs: rtt - 1, RTTMaxMs: rtt + 1, IP: "203.0.113.7"}
+func okItem(node int, rtt float64) boce.Item {
+	return boce.Item{NodeID: node, Sent: 10, Received: 10, RTTAvgMs: rtt, RTTMinMs: rtt - 1, RTTMaxMs: rtt + 1, IP: "203.0.113.7"}
 }
 
 // ---------- 环境 ----------
@@ -258,7 +262,7 @@ func TestBoceFullChainCreatesPollsAndStores(t *testing.T) {
 	}
 	// 第一次取结果只出来一个拨测点:先落库。
 	b.api.mu.Lock()
-	b.api.results["task0001"] = &boce.TCPingResult{ID: "task0001", Items: []boce.TCPingItem{okItem(31, 20)}}
+	b.api.results["task0001"] = &boce.Result{ID: "task0001", Items: []boce.Item{okItem(31, 20)}}
 	b.api.mu.Unlock()
 	b.clock = b.clock.Add(11 * time.Second)
 	en.Tick(ctx)
@@ -266,7 +270,7 @@ func TestBoceFullChainCreatesPollsAndStores(t *testing.T) {
 		t.Fatalf("拿到一个就应当先落库,得到 %d", n)
 	}
 	// 再取:完成,第二个拨测点部分丢包;第一个重复出现不重复落库。
-	loss := boce.TCPingItem{NodeID: 32, Sent: 10, Received: 8, RTTAvgMs: 40, RTTMinMs: 38, RTTMaxMs: 45}
+	loss := boce.Item{NodeID: 32, Sent: 10, Received: 8, RTTAvgMs: 40, RTTMinMs: 38, RTTMaxMs: 45}
 	b.api.setDone("task0001", okItem(31, 20), loss)
 	b.clock = b.clock.Add(11 * time.Second)
 	en.Tick(ctx)
@@ -315,7 +319,7 @@ func TestBoceOverseaNegativeVantageID(t *testing.T) {
 	if c := b.api.creates[0]; len(c.vids) != 2 || c.vids[1] != -840 {
 		t.Fatalf("负数 ID 应当原样提交:%+v", c)
 	}
-	b.api.setDone("task0001", okItem(31, 20), boce.TCPingItem{NodeID: -840, Sent: 4, Received: 4, RTTAvgMs: 180, RTTMinMs: 178, RTTMaxMs: 185})
+	b.api.setDone("task0001", okItem(31, 20), boce.Item{NodeID: -840, Sent: 4, Received: 4, RTTAvgMs: 180, RTTMinMs: 178, RTTMaxMs: 185})
 	b.clock = b.clock.Add(11 * time.Second)
 	en.Tick(ctx)
 	if r := b.runs(t, task.ID)[0]; r.State != BoceRunDone || r.Results != 2 {
@@ -330,6 +334,77 @@ func TestBoceOverseaNegativeVantageID(t *testing.T) {
 	}
 	if us == nil || us.Label != "美国" || us.LastStatus != string(StatusOK) {
 		t.Fatalf("海外序列 = %+v", us)
+	}
+}
+
+// Ping 任务:提交地址(不带端口)、按 Ping 的接口取结果、序列记 ICMP 与端口 0、口径是「Ping 丢包率(Boce)」;
+// 测法创建后不能改,不认识的测法建不出来。
+func TestBocePingTaskEndToEnd(t *testing.T) {
+	b := newBoceEnv(t)
+	ctx := context.Background()
+	if _, err := b.store.CreateBoceTask(ctx, b.node, BoceTaskInput{Ref: b.ref, TestType: "DNS", VantageIDs: []int{31},
+		ScheduleSpec: DefaultScheduleSpec()}); !errors.Is(err, ErrBoceTestType) {
+		t.Fatalf("不认识的测法应当被拒,得到 %v", err)
+	}
+	task := b.task(t, []int{31, 32}, false, func(in *BoceTaskInput) { in.TestType = boce.MethodPing })
+	if task.TestType != boce.MethodPing {
+		t.Fatalf("任务的测法 = %q", task.TestType)
+	}
+	en := b.engine()
+	run, err := en.RunNow(ctx, task.ID, "ping-req-000001")
+	if err != nil || run.State != BoceRunPolling || run.TestType != boce.MethodPing {
+		t.Fatalf("手动检测 = %+v, %v", run, err)
+	}
+	if c := b.api.creates[0]; c.method != boce.MethodPing || c.host != "hk.example.com" {
+		t.Fatalf("Ping 应当只提交地址:%+v", c)
+	}
+	b.api.setDone("task0001", okItem(31, 20), boce.Item{NodeID: 32, Sent: 10, Received: 0})
+	b.clock = b.clock.Add(11 * time.Second)
+	en.Tick(ctx)
+	for _, m := range b.api.resultMethods {
+		if m != boce.MethodPing {
+			t.Fatalf("Ping 的任务 ID 必须去问 Ping 的接口,用了 %q", m)
+		}
+	}
+	r := b.runs(t, task.ID)[0]
+	if r.State != BoceRunDone || r.Results != 2 {
+		t.Fatalf("执行记录 = %+v", r)
+	}
+	labels := map[int]string{}
+	for _, it := range r.Items {
+		labels[it.VantageID] = it.Label
+	}
+	if labels[31] != "全部收到" || labels[32] != "全部丢包(ping 不通)" {
+		t.Fatalf("结果名应当按 Ping 的口径写:%v", labels)
+	}
+	series, _ := b.store.ListBoce(ctx, b.node)
+	if len(series) != 2 {
+		t.Fatalf("序列 = %+v", series)
+	}
+	for _, s := range series {
+		if s.Protocol != ProtoICMP || s.Metric != MetricBocePing || s.ResolvedPort != 0 || s.ResolvedHost != "hk.example.com" {
+			t.Fatalf("Ping 序列应当记 ICMP、端口 0、口径 BOCE_PING:%+v", s)
+		}
+	}
+	if MetricBocePing.RateName() != "Ping 丢包率(Boce)" {
+		t.Fatalf("口径名 = %q", MetricBocePing.RateName())
+	}
+	// 测法不能改;不给测法的修改照常。
+	if _, err := b.store.UpdateBoceTask(ctx, task.ID, BoceTaskInput{TestType: boce.MethodTCPing, VantageIDs: []int{31},
+		ScheduleSpec: DefaultScheduleSpec()}); !errors.Is(err, ErrBoceTestTypeImmutable) {
+		t.Fatalf("改测法应当被拒,得到 %v", err)
+	}
+	if got, err := b.store.UpdateBoceTask(ctx, task.ID, BoceTaskInput{VantageIDs: []int{31}, ScheduleSpec: DefaultScheduleSpec()}); err != nil ||
+		got.TestType != boce.MethodPing {
+		t.Fatalf("不给测法的修改应当保留 Ping:%+v, %v", got, err)
+	}
+	// 同一台机器上的 TCPing 任务照旧:地址带端口、序列记 TCP。
+	tcp := b.task(t, []int{33}, false, nil)
+	if _, err := en.RunNow(ctx, tcp.ID, "tcping-req-0001"); err != nil {
+		t.Fatal(err)
+	}
+	if c := b.api.creates[len(b.api.creates)-1]; c.method != boce.MethodTCPing || c.host != "hk.example.com:443" {
+		t.Fatalf("TCPing 应当提交地址:端口:%+v", c)
 	}
 }
 
@@ -352,7 +427,7 @@ func TestBoceSixteenRoundsADayAndNoneAtNight(t *testing.T) {
 		for i := 1; i <= b.api.nextID; i++ {
 			id := fmt.Sprintf("task%04d", i)
 			if _, ok := b.api.results[id]; !ok {
-				b.api.results[id] = &boce.TCPingResult{Done: true, ID: id, Items: []boce.TCPingItem{okItem(31, 10)}}
+				b.api.results[id] = &boce.Result{Done: true, ID: id, Items: []boce.Item{okItem(31, 10)}}
 			}
 		}
 		b.api.mu.Unlock()
@@ -565,9 +640,9 @@ func TestBoceVantageErrorIsNotLoss(t *testing.T) {
 	b.at(2026, 10, 19, 9, 3, 30)
 	en.Tick(ctx)
 	b.api.setDone("task0001",
-		boce.TCPingItem{NodeID: 31, ErrorCode: -1, Error: "not found node"},
-		boce.TCPingItem{NodeID: 32, ErrorCode: 1, Error: "timeout"},
-		boce.TCPingItem{NodeID: 33, Sent: 10, Received: 0},
+		boce.Item{NodeID: 31, ErrorCode: -1, Error: "not found node"},
+		boce.Item{NodeID: 32, ErrorCode: 1, Error: "timeout"},
+		boce.Item{NodeID: 33, Sent: 10, Received: 0},
 	)
 	b.clock = b.clock.Add(11 * time.Second)
 	en.Tick(ctx)
@@ -644,7 +719,7 @@ func TestBoceTimeoutAndExpired(t *testing.T) {
 	b.at(2026, 10, 19, 9, 3, 30)
 	en.Tick(ctx)
 	b.api.mu.Lock()
-	b.api.results["task0001"] = &boce.TCPingResult{ID: "task0001", Items: []boce.TCPingItem{okItem(31, 12)}}
+	b.api.results["task0001"] = &boce.Result{ID: "task0001", Items: []boce.Item{okItem(31, 12)}}
 	b.api.mu.Unlock()
 	for i := 0; i < 14; i++ {
 		b.clock = b.clock.Add(10 * time.Second)

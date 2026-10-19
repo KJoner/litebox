@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -259,9 +257,9 @@ func (e *BoceEngine) execute(ctx context.Context, cfg BoceConfig, key string, t 
 	if res.err == "" {
 		res.err = boceHostProblem(res.family, res.host)
 	}
-	host := net.JoinHostPort(res.host, strconv.Itoa(res.port))
+	host := boceSubmitHost(t.TestType, res.host, res.port)
 	if res.err == "" {
-		if err := boce.ValidHost(host); err != nil {
+		if err := boce.ValidTarget(t.TestType, host); err != nil {
 			res.err = err.Error()
 		}
 	}
@@ -271,7 +269,7 @@ func (e *BoceEngine) execute(ctx context.Context, cfg BoceConfig, key string, t 
 		}
 		return nil, &BoceTargetError{Reason: res.err}
 	}
-	gen, err := e.store.refreshBoceTarget(ctx, t, res.host, res.port)
+	gen, err := e.store.refreshBoceTarget(ctx, t, res.host, boceTargetPort(t.TestType, res.port))
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +298,7 @@ func (e *BoceEngine) execute(ctx context.Context, cfg BoceConfig, key string, t 
 	}
 	e.budgetThreshold(ctx, cfg, resv)
 
-	vendorID, attempts, err := e.create(ctx, key, run.VantageIDs, host)
+	vendorID, attempts, err := e.create(ctx, key, run.TestType, run.VantageIDs, host)
 	if err == nil {
 		if err := e.store.markBoceSent(ctx, run.ID, vendorID, attempts); err != nil {
 			return nil, err
@@ -315,7 +313,7 @@ func (e *BoceEngine) execute(ctx context.Context, cfg BoceConfig, key string, t 
 }
 
 // create 发创建请求。只有「确定没发出去」才重试,最多 3 次;发出去了的无论结果如何都不重发。
-func (e *BoceEngine) create(ctx context.Context, key string, vids []int, host string) (string, int, error) {
+func (e *BoceEngine) create(ctx context.Context, key string, m boce.Method, vids []int, host string) (string, int, error) {
 	e.createMu.Lock()
 	defer e.createMu.Unlock()
 	attempts := 0
@@ -324,7 +322,7 @@ func (e *BoceEngine) create(ctx context.Context, key string, vids []int, host st
 			e.sleep(wait)
 		}
 		attempts++
-		id, err := e.api.CreateTCPing(ctx, key, vids, host)
+		id, err := e.api.Create(ctx, key, m, vids, host)
 		e.lastCreate = e.now()
 		var ns *boce.NotSentError
 		if err != nil && errors.As(err, &ns) && attempts < notSentRetries && ctx.Err() == nil {
@@ -397,7 +395,7 @@ func (e *BoceEngine) pollOne(ctx context.Context, key string, r *BoceRun, now ti
 		sent = now
 	}
 	final := now.Sub(sent) >= BoceMaxWait
-	res, err := e.api.TCPingResult(ctx, key, r.VendorTaskID)
+	res, err := e.api.Result(ctx, key, r.TestType, r.VendorTaskID)
 	if err != nil {
 		if boce.IsCode(err, boce.CodeTaskID) {
 			note := "Boce 说任务 ID 已失效(结果只保留 5 分钟):这一轮的结果拿不到了"
@@ -751,9 +749,16 @@ func (e *BoceEngine) emitSeries(ctx context.Context, m boceEmit) {
 	case emitDown:
 		ev.Kind, ev.Level = notify.KindProbeDown, notify.LevelWarning
 		ev.Title = fmt.Sprintf("节点「%s」外部拨测连续失败", name)
-		b.WriteString(fmt.Sprintf("\n连续 %d 轮 TCPing 全部失败", m.u.ConsecutiveFailures))
+		method := "TCPing"
+		if m.t.Metric == MetricBocePing {
+			method = "Ping"
+		}
+		b.WriteString(fmt.Sprintf("\n连续 %d 轮 %s 全部失败", m.u.ConsecutiveFailures, method))
 		b.WriteString("\n说明:这是 Boce 这个拨测点从外部测到的结果 —— 那个地区 / 运营商到这个入口不通(拨测点自身异常、接口异常不计入);" +
 			"不代表所有用户都连不上,面板不会因此自动重启、重新部署或停机。")
+		if method == "Ping" {
+			b.WriteString("\nPing 走 ICMP:很多机器或线路本来就不回 ICMP,ping 不通不等于入口不可用。")
+		}
 	case emitRecovered:
 		ev.Kind, ev.Level = notify.KindProbeRecovered, notify.LevelInfo
 		ev.Title = fmt.Sprintf("节点「%s」外部拨测已恢复", name)

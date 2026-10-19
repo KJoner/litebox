@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/litebox/litebox/internal/boce"
 )
 
 // Kind 是目标的用途。
@@ -88,7 +90,27 @@ const (
 	// MetricBoce Boce 拨测点的 TCPing:TCPing 丢包率 = Σ(发 − 收) ÷ Σ发,按 Boce 报告的包数。
 	// 它是第三方拨测点从外面测的,与 ICMP 丢包率、主控的 TCP 连接失败率名字不同、不相加。
 	MetricBoce Metric = "BOCE"
+	// MetricBocePing Boce 拨测点的 Ping(ICMP):Ping 丢包率 = Σ(发 − 收) ÷ Σ发,按 Boce 报告的包数。
+	// 与节点本机测公共目标的 ICMP 丢包率(LOSS)方向相反、测点不同,与 Boce TCPing 也不是一回事 ——
+	// 很多机器本来就不回 ICMP,ping 不通不等于入口不可用。三者名字不同、不相加。
+	MetricBocePing Metric = "BOCE_PING"
 )
+
+// BoceMetric 是 Boce 测法 → 口径的唯一判据。
+func BoceMetric(m boce.Method) Metric {
+	if m == boce.MethodPing {
+		return MetricBocePing
+	}
+	return MetricBoce
+}
+
+// boceProtocol 是 Boce 序列在 probe_targets 里记的协议:TCPing 是 TCP,Ping 是 ICMP。
+func boceProtocol(m boce.Method) Protocol {
+	if m == boce.MethodPing {
+		return ProtoICMP
+	}
+	return ProtoTCP
+}
 
 // MetricOf 是 协议 + TCP 方式 → 看哪个比例 的唯一判据。
 func MetricOf(p Protocol, m TCPMode) Metric {
@@ -110,6 +132,8 @@ func (m Metric) RateName() string {
 		return "握手超时无应答率"
 	case MetricBoce:
 		return "TCPing 丢包率(Boce)"
+	case MetricBocePing:
+		return "Ping 丢包率(Boce)"
 	}
 	return "连接失败率"
 }
@@ -123,6 +147,8 @@ func (m Metric) MethodLabel() string {
 		return "TCP 握手(近似 SYN)"
 	case MetricBoce:
 		return "Boce TCPing"
+	case MetricBocePing:
+		return "Boce Ping"
 	}
 	return "TCP 建连"
 }
@@ -237,6 +263,15 @@ func (s Status) LabelFor(m Metric) string {
 			return "部分丢包"
 		case StatusTimeout:
 			return "全部丢包(连不上)"
+		}
+	case MetricBocePing:
+		switch s {
+		case StatusOK:
+			return "全部收到"
+		case StatusLoss:
+			return "部分丢包"
+		case StatusTimeout:
+			return "全部丢包(ping 不通)"
 		}
 	}
 	return s.Label()

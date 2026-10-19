@@ -95,6 +95,9 @@ func scanTarget(r scanner) (*Target, error) {
 	t.Metric = MetricOf(t.Protocol, t.TCPMode)
 	if t.Source == SourceBoce {
 		t.Metric = MetricBoce
+		if t.Protocol == ProtoICMP {
+			t.Metric = MetricBocePing
+		}
 	}
 	t.AlertNotified = notified == 1
 	t.RecoveryPending = pending == 1
