@@ -16,6 +16,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { LbCopyField, LbEmptyState, LbInfoTip, LbSectionTitle, lbDangerConfirm } from '@/components/lb'
 import CloudAccountsPanel from '@/components/cloud/CloudAccountsPanel.vue'
+import BoceSettingsCard from '@/components/boce/BoceSettingsCard.vue'
 import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
 
 /**
@@ -49,6 +50,7 @@ const sections = [
   { id: 'expiry', label: '到期与续费提醒' },
   { id: 'probe-public', label: '公共探测目标' },
   { id: 'tcpprobe', label: '网络探测' },
+  { id: 'boce', label: 'Boce 外部拨测' },
   { id: 'cloud', label: '云账号' },
   { id: 'key', label: '面板 SSH 公钥' },
   { id: 'tier', label: '访问等级' },
@@ -895,6 +897,19 @@ const probeTip = computed(
             </a-button>
           </div>
         </div>
+      </section>
+
+      <!-- Boce 外部入站拨测(付费,V21) -->
+      <section id="set-boce">
+        <LbSectionTitle
+          title="Boce 外部拨测"
+          tip="付费的第三方入站拨测:从 Boce 各省各运营商(以及海外)的拨测点对节点的订阅入口做 TCPing,请求由主控发起,节点上什么都不装。默认关、没有预算时不创建任何付费检测;任务在节点详情的「网络监测」里配。"
+        >
+          <template #badge>
+            <span class="lb-effect lb-effect--now">下一拍起生效</span>
+          </template>
+        </LbSectionTitle>
+        <BoceSettingsCard />
       </section>
 
       <!-- 订阅排序方案(V20) -->

@@ -1,5 +1,6 @@
 import type {
   BillingCard,
+  CardPick,
   CostRow,
   DashboardCards,
   ExpiryKind,
@@ -27,7 +28,7 @@ import { formatBytes } from '@/utils/format'
  *     一张卡上可以同时有几种,但绝不合成一个;
  *   - **出站网络质量与入口连通性分开放**:前者是这台机器在本机测公共目标(节点本机),后者是主控连这台
  *     机器(主控探测)。两组数字回答的是不同的问题,合进一个失败率会让人去修错方向;
- *   - **只显示真实存在的探测来源**,不出现电信 / 联通 / 移动三行;
+ *   - **只显示真实存在的探测来源**:地区与运营商只来自 Boce 拨测点接口实际返回的说法,不凭空造「电信 / 联通 / 移动」三行;
  *   - **多币种不相加**。按价格排序时先按币种分组,再在组内比金额。
  */
 
@@ -117,6 +118,18 @@ export interface AssetCard {
   outbound: ProbeSummary[]
   /** 入口连通性(主控 → 这台机器),含暂停的(降灰显示)。 */
   probes: ProbeSummary[]
+  /** Boce 外部入站拨测的序列(每个「任务 × 拨测点」一条)。 */
+  boce: ProbeSummary[]
+  /**
+   * 卡片上实际展示的入站 / 出站项目(各最多 3 项,按节点的展示设置或自动推荐)。
+   * 这是展示数量,不是检测数量:没展示的序列照样在测,在节点详情里看得到。
+   */
+  shownIngress: ProbeSummary[]
+  shownOutbound: ProbeSummary[]
+  /** 手动选了、但那条序列已经删掉的展示项个数(提示去调整,不自动顶上别的)。 */
+  shownInvalid: number
+  /** 在测但没有展示在卡片上的序列个数。 */
+  hiddenCount: number
   monitor: MonitorState
   external: ExternalCheckStatus | null
   billing: BillingCard | null
@@ -162,13 +175,41 @@ function sortProbes(list: ProbeSummary[]): ProbeSummary[] {
   return [...list].sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === 'SERVICE' ? -1 : 1))
 }
 
-function monitorOf(outbound: ProbeSummary[], probes: ProbeSummary[], cards: DashboardCards | null): MonitorState {
+function monitorOf(
+  outbound: ProbeSummary[],
+  probes: ProbeSummary[],
+  boce: ProbeSummary[],
+  cards: DashboardCards | null,
+): MonitorState {
   if (!cards) return 'UNKNOWN'
   if (!cards.probe.available) return 'NA'
-  if (!cards.probe.enabled) return 'GLOBAL_OFF'
-  if (!outbound.length && !probes.length) return 'NONE'
-  if (!outbound.length && probes.every((p) => !p.enabled)) return 'PAUSED'
+  // Boce 有自己的开关:探测的全局开关关着时,Boce 序列照样要能看见。
+  const boceOn = boce.some((p) => p.enabled)
+  if (!cards.probe.enabled && !boceOn) return 'GLOBAL_OFF'
+  if (!outbound.length && !probes.length && !boce.length) return 'NONE'
+  if (!outbound.length && probes.every((p) => !p.enabled) && !boceOn) return 'PAUSED'
   return 'ON'
+}
+
+/** 按 card_picks 取展示项;老数据(没有 card_picks)时退回升级前的规则:出站前 3 条、入口前 2 个。 */
+function pickShown(
+  pick: CardPick | undefined,
+  outboundAll: ProbeSummary[],
+  outboundOn: ProbeSummary[],
+  probes: ProbeSummary[],
+  boce: ProbeSummary[],
+) {
+  if (!pick) {
+    return { ingress: probes.slice(0, 2), outbound: outboundOn.slice(0, 3), invalid: 0 }
+  }
+  const byID = new Map<number, ProbeSummary>()
+  for (const p of [...probes, ...boce, ...outboundAll]) byID.set(p.id, p)
+  const take = (ids: number[]) => ids.map((id) => byID.get(id)).filter((p): p is ProbeSummary => !!p)
+  return {
+    ingress: take(pick.ingress_ids),
+    outbound: take(pick.outbound_ids),
+    invalid: pick.invalid_ingress.length + pick.invalid_outbound.length,
+  }
 }
 
 /** 最近一次可达且没过期的 RTT 里最小的那个;没有就是 null(排序时排最后)。 */
@@ -182,9 +223,9 @@ function minLatency(list: ProbeSummary[]): number | null {
   return best
 }
 
-/** 排序用的延迟:出站优先(机器本身的网络),没有出站数据时才看入口。 */
-function latencyOf(outbound: ProbeSummary[], probes: ProbeSummary[]): number | null {
-  return minLatency(outbound) ?? minLatency(probes)
+/** 排序用的延迟:出站优先(机器本身的网络),没有出站数据时才看入口,再没有才看 Boce。 */
+function latencyOf(outbound: ProbeSummary[], probes: ProbeSummary[], boce: ProbeSummary[]): number | null {
+  return minLatency(outbound) ?? minLatency(probes) ?? minLatency(boce)
 }
 
 const failing = (p: ProbeSummary) => p.state === 'DOWN' || p.state === 'FAILING'
@@ -200,12 +241,24 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     probesBy.set(t.node_id, list)
   }
   const outboundBy = new Map<number, ProbeSummary[]>()
+  const outboundAllBy = new Map<number, ProbeSummary[]>()
   for (const t of inp.cards?.outbound ?? []) {
+    const all = outboundAllBy.get(t.node_id) ?? []
+    all.push(t)
+    outboundAllBy.set(t.node_id, all)
     if (!t.enabled) continue
     const list = outboundBy.get(t.node_id) ?? []
     list.push(t)
     outboundBy.set(t.node_id, list)
   }
+  const boceBy = new Map<number, ProbeSummary[]>()
+  for (const t of inp.cards?.boce ?? []) {
+    const list = boceBy.get(t.node_id) ?? []
+    list.push(t)
+    boceBy.set(t.node_id, list)
+  }
+  const pickBy = new Map<number, CardPick>()
+  for (const p of inp.cards?.card_picks ?? []) pickBy.set(p.node_id, p)
   const externalBy = new Map<number, ExternalCheckStatus>()
   for (const e of inp.cards?.external ?? []) externalBy.set(e.proxy_id, e)
 
@@ -215,6 +268,11 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     const m = inp.metrics[n.id]
     const probes = sortProbes(probesBy.get(n.id) ?? [])
     const outbound = outboundBy.get(n.id) ?? []
+    const boce = boceBy.get(n.id) ?? []
+    const shown = pickShown(pickBy.get(n.id), outboundAllBy.get(n.id) ?? [], outbound, probes, boce)
+    const activeCount =
+      outbound.length + probes.filter((p) => p.enabled).length + boce.filter((p) => p.enabled).length
+    const shownActive = [...shown.ingress, ...shown.outbound].filter((p) => p.enabled).length
     const l = labels.get(key)
     const statuses = new Set<StatusKey>()
     const cloudStopped = !!n.cloud && n.cloud.instance_status !== '' && n.cloud.instance_status !== 'Running'
@@ -225,7 +283,7 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     const stale = !!m && (isMetricsStale(m.collected_at) || isPreChange(n, m.collected_at))
     if (stale || [...outbound, ...probes].some((p) => p.enabled && p.state === 'STALE')) statuses.add('STALE')
     if (outbound.some(failing) || probes.some(failing)) statuses.add('PROBE_FAIL')
-    const monitor = monitorOf(outbound, probes, inp.cards)
+    const monitor = monitorOf(outbound, probes, boce, inp.cards)
     if (monitor === 'NONE' || monitor === 'PAUSED' || monitor === 'GLOBAL_OFF') statuses.add('MONITOR_OFF')
     if (expiringState(n.expiry)) statuses.add('EXPIRING')
     const cyc = inp.cycles[n.id]
@@ -269,13 +327,18 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       trafficNote: n.role === 'RELAY' ? '中转主机,面板不计流量' : '',
       outbound,
       probes,
+      boce,
+      shownIngress: shown.ingress,
+      shownOutbound: shown.outbound,
+      shownInvalid: shown.invalid,
+      hiddenCount: Math.max(activeCount - shownActive, 0),
       monitor,
       external: null,
       billing: billing.get(key) ?? null,
       cardsLoaded: !!inp.cards,
       statuses,
       cloudStopped,
-      latency: latencyOf(outbound, probes),
+      latency: latencyOf(outbound, probes, boce),
     })
   }
 
@@ -308,6 +371,11 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       trafficNote: seen ? '' : '上游没有报告用量',
       outbound: [],
       probes: [],
+      boce: [],
+      shownIngress: [],
+      shownOutbound: [],
+      shownInvalid: 0,
+      hiddenCount: 0,
       monitor: 'MANUAL',
       external: null,
       billing: billing.get(key) ?? null,
@@ -350,6 +418,11 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       trafficNote: '外部线路,没有流量数据',
       outbound: [],
       probes: [],
+      boce: [],
+      shownIngress: [],
+      shownOutbound: [],
+      shownInvalid: 0,
+      hiddenCount: 0,
       monitor: 'MANUAL',
       external: ext,
       billing: billing.get(key) ?? null,
@@ -483,6 +556,9 @@ export interface AssetOverview {
   outboundFailing: number
   probeTargets: number
   probeFailing: number
+  /** Boce 外部入站拨测:在测的序列与其中失败的(单列,不并进上面两个数) */
+  boceTargets: number
+  boceFailing: number
 }
 
 export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): AssetOverview {
@@ -504,6 +580,8 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
     outboundFailing: 0,
     probeTargets: 0,
     probeFailing: 0,
+    boceTargets: 0,
+    boceFailing: 0,
   }
   for (const c of nodes) {
     const r = c.resources
@@ -527,6 +605,11 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
       if (!p.enabled) continue
       ov.probeTargets++
       if (failing(p)) ov.probeFailing++
+    }
+    for (const p of c.boce) {
+      if (!p.enabled) continue
+      ov.boceTargets++
+      if (failing(p)) ov.boceFailing++
     }
   }
   return ov

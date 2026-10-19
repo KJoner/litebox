@@ -16,8 +16,11 @@ import { formatRelative, formatTime } from '@/utils/format'
 import ProbeDots from '@/components/asset/ProbeDots.vue'
 import ProbeChart from '@/components/asset/ProbeChart.vue'
 import NodeTargetPicker from '@/components/probe/NodeTargetPicker.vue'
+import CardDisplayModal from '@/components/probe/CardDisplayModal.vue'
+import NodeBocePanel from '@/components/boce/NodeBocePanel.vue'
 import {
   familyText,
+  ispText,
   originText,
   probeMuted,
   probeValue,
@@ -31,16 +34,18 @@ import {
 } from '@/components/asset/probeView'
 
 /**
- * 节点详情「网络监测」Tab,两块,数据分开存、分开算、分开显示:
+ * 节点详情「网络监测」Tab,三块,数据分开存、分开算、分开显示:
  *
  *   - 出站网络质量:这台机器在本机测目标库里的公共目标(ICMP / TCP 建连 / TCP 握手近似)。
  *     这里有本机的开关(跟随全局 / 启用 / 停用)、从目标库里挑目标、试测,以及本机的覆盖
  *     (暂停本机、改间隔 —— 只能往「少测」那边改:全局关闭与来源暂停对每一台都生效);
  *     目标本身在「探测目标库」里建;
  *   - 入口连通性:主控对这台机器的管理通道与订阅地址做 TCP 建连。目标只能从下拉里选 ——
- *     候选是这台机器已登记的地址与端口,不收自由输入(那会让面板变成一个扫描器)。
+ *     候选是这台机器已登记的地址与端口,不收自由输入(那会让面板变成一个扫描器);
+ *   - 外部入站拨测(Boce,付费):Boce 的拨测点从各地区 / 运营商对订阅入口做 TCPing,按任务的时间表执行。
  *
- * 打开这一页只读库,不触发任何一次探测。
+ * 顶上的筛选按来源(节点本机 / 主控 / Boce)与关键词过滤三块的行;「卡片展示设置」决定仪表盘卡片上
+ * 入站、出站各显示哪 3 项 —— 只改展示,不改检测。打开这一页只读库,不触发任何一次探测、不调 Boce。
  */
 const props = defineProps<{ nodeId: number }>()
 
@@ -48,7 +53,36 @@ const data = ref<NodeProbe | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 
-const allSeries = computed(() => [...(data.value?.outbound ?? []), ...(data.value?.targets ?? [])])
+const allSeries = computed(() => [
+  ...(data.value?.outbound ?? []),
+  ...(data.value?.targets ?? []),
+  ...(data.value?.boce ?? []),
+])
+
+// ---------- 筛选:来源 + 关键词(只过滤显示,不影响检测) ----------
+
+type SourceFilter = 'ALL' | 'NODE' | 'MASTER' | 'BOCE'
+const sourceFilter = ref<SourceFilter>('ALL')
+const keyword = ref('')
+const sourceOptions: { value: SourceFilter; label: string }[] = [
+  { value: 'ALL', label: '全部来源' },
+  { value: 'NODE', label: '节点本机(出站)' },
+  { value: 'MASTER', label: '主控(入站)' },
+  { value: 'BOCE', label: 'Boce(入站)' },
+]
+function showSource(s: SourceFilter): boolean {
+  return sourceFilter.value === 'ALL' || sourceFilter.value === s
+}
+function kwMatch(...parts: (string | undefined)[]): boolean {
+  const k = keyword.value.trim().toLowerCase()
+  return !k || parts.join(' ').toLowerCase().includes(k)
+}
+
+const cardOpen = ref(false)
+async function onCardSaved() {
+  cardOpen.value = false
+  await load()
+}
 
 async function load() {
   loading.value = true
@@ -61,7 +95,8 @@ async function load() {
       // 默认看第一条生效的出站序列;没有就看入口的第一个对外服务。
       const out = data.value.outbound.find((t) => t.enabled)
       const ts = data.value.targets
-      selected.value = (out ?? ts.find((t) => t.kind === 'SERVICE') ?? ts[0])?.id ?? null
+      selected.value =
+        (out ?? ts.find((t) => t.kind === 'SERVICE') ?? ts[0] ?? data.value.boce.find((t) => t.enabled))?.id ?? null
     }
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : '读取探测数据失败'
@@ -92,9 +127,12 @@ function inheritText(p: NodePublicProbe): string {
  */
 const shownPublics = computed(() =>
   (data.value?.public ?? []).filter(
-    (p) => p.effective || p.mode !== 'INHERIT' || seriesByPublic.value.has(p.id) || (p.apply_all && !!p.node_pause_reason),
+    (p) =>
+      (p.effective || p.mode !== 'INHERIT' || seriesByPublic.value.has(p.id) || (p.apply_all && !!p.node_pause_reason)) &&
+      kwMatch(p.name, p.host, p.province, p.city, p.region, p.isp, ispText(p.isp)),
   ),
 )
+const shownTargets = computed(() => (data.value?.targets ?? []).filter((t) => kwMatch(t.label, t.resolved_host)))
 
 function rowNote(p: NodePublicProbe): string {
   if (p.effective) return '已启用,等待第一次探测'
@@ -267,6 +305,14 @@ function stateMeta(t: ProbeSummary): LbStatusMeta {
       return metaOf.warn('工具不可用', 'triangle')
     case 'BLOCKED':
       return metaOf.warn('目标受限', 'triangle')
+    case 'VANTAGE_ERROR':
+      return { text: '拨测点异常', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' }
+    case 'API_ERROR':
+      return { text: '接口异常', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' }
+    case 'EXPIRED':
+      return { text: '未取得结果', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' }
+    case 'SKIPPED':
+      return metaOf.paused('未执行')
     default:
       return metaOf.mute('等待首次探测', 'ring')
   }
@@ -291,10 +337,16 @@ const missingHelpers = computed(() => {
           </template>
         </div>
       </div>
-      <a-button size="small" :loading="loading" @click="load">
-        <template #icon><LbIcon name="refresh" :size="14" /></template>
-        刷新
-      </a-button>
+      <div class="nn__head-ops">
+        <a-button size="small" data-testid="card-display-open" :disabled="!data" @click="cardOpen = true">
+          <template #icon><LbIcon name="layout-grid" :size="14" /></template>
+          卡片展示设置
+        </a-button>
+        <a-button size="small" :loading="loading" @click="load">
+          <template #icon><LbIcon name="refresh" :size="14" /></template>
+          刷新
+        </a-button>
+      </div>
     </div>
 
     <div v-if="loadError" class="nn__pad"><div class="lb-error-strip">{{ loadError }}</div></div>
@@ -310,8 +362,17 @@ const missingHelpers = computed(() => {
         </div>
       </div>
 
+      <div class="lb-filter nn__filter" data-testid="probe-filter">
+        <a-select v-model:value="sourceFilter" class="nn__filter-sel" aria-label="来源" :dropdown-match-select-width="false">
+          <a-select-option v-for="o in sourceOptions" :key="o.value" :value="o.value">{{ o.label }}</a-select-option>
+        </a-select>
+        <a-input v-model:value="keyword" allow-clear size="small" class="nn__filter-q" placeholder="搜索目标 / 地区 / 运营商" aria-label="搜索测量目标">
+          <template #prefix><LbIcon name="search" :size="13" /></template>
+        </a-input>
+      </div>
+
       <!-- ① 出站网络质量 -->
-      <div class="nn__sec" data-testid="probe-outbound">
+      <div v-if="showSource('NODE')" class="nn__sec" data-testid="probe-outbound">
         <div class="nn__sec-head">
           <h3 class="nn__sec-title">
             出站网络质量
@@ -431,7 +492,7 @@ const missingHelpers = computed(() => {
       </div>
 
       <!-- ② 入口连通性 -->
-      <div class="nn__sec" data-testid="probe-ingress">
+      <div v-if="showSource('MASTER')" class="nn__sec" data-testid="probe-ingress">
         <div class="nn__sec-head">
           <h3 class="nn__sec-title">
             入口连通性
@@ -476,7 +537,7 @@ const missingHelpers = computed(() => {
           没有入口监测目标。从上面选一个地址与端口开始;升级不会替任何机器自动建目标。
         </div>
         <ul v-else class="nn__list">
-          <li v-for="t in data.targets" :key="t.id" class="nn__row" :class="{ 'nn__row--on': t.id === selected }">
+          <li v-for="t in shownTargets" :key="t.id" class="nn__row" :class="{ 'nn__row--on': t.id === selected }">
             <button type="button" class="nn__sel" :aria-pressed="t.id === selected" @click="selected = t.id">
               <span class="nn__label lb-ellipsis">{{ t.label }}</span>
               <span class="lb-chip">{{ t.kind === 'MGMT' ? '管理通道' : '对外服务' }}</span>
@@ -499,14 +560,27 @@ const missingHelpers = computed(() => {
         </ul>
       </div>
 
+      <!-- ③ 外部入站拨测(Boce) -->
+      <div v-if="showSource('BOCE')" class="nn__sec">
+        <NodeBocePanel
+          :node-id="nodeId"
+          :series="data.boce"
+          :selected="selected"
+          :keyword="keyword"
+          @select="(id: number) => (selected = id)"
+          @changed="load"
+        />
+      </div>
+
       <!-- 历史 -->
       <div v-if="selectedTarget" class="nn__hist">
         <div class="nn__hist-head">
           <div class="nn__hist-title">
             {{ selectedTarget.label }}
             <span class="nn__muted">
-              · {{ selectedTarget.direction === 'OUTBOUND' ? '出站' : '入口' }} · {{ protoChip(selectedTarget) }} ·
+              · {{ selectedTarget.direction === 'OUTBOUND' ? '出站' : '入站' }} · {{ protoChip(selectedTarget) }} ·
               {{ familyText(selectedTarget.family) }} · {{ selectedTarget.source_label }}
+              <template v-if="selectedTarget.boce"> · 任务「{{ selectedTarget.boce.task_name }}」</template>
             </span>
           </div>
           <div class="lb-seg lb-seg--sm" role="tablist" aria-label="时间范围">
@@ -539,6 +613,11 @@ const missingHelpers = computed(() => {
               <div><span>发出 SYN / 有应答</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
               <div><span>整轮失败(含 RST)</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
             </template>
+            <template v-else-if="selMetric === 'BOCE'">
+              <div><span>{{ rateFullName('BOCE') }}(按包)</span><b>{{ rateText(history.stats.loss_rate) }}</b></div>
+              <div><span>TCPing 发 / 成功</span><b>{{ history.stats.sent }} / {{ history.stats.received }}</b></div>
+              <div><span>整轮连不上</span><b>{{ history.stats.failures }} / {{ history.stats.attempts }} 轮</b></div>
+            </template>
             <template v-else>
               <div><span>{{ rateFullName('CONNECT') }}</span><b>{{ rateText(history.stats.failure_rate) }}</b></div>
               <div><span>TCP 连接次数</span><b>{{ history.stats.attempts }}</b></div>
@@ -546,11 +625,15 @@ const missingHelpers = computed(() => {
             </template>
             <div><span>平均 RTT</span><b>{{ rttText(history.stats.rtt_avg_ms) }}</b></div>
             <div><span>最小 / 最大</span><b>{{ rttText(history.stats.rtt_min_ms) }} / {{ rttText(history.stats.rtt_max_ms) }}</b></div>
-            <div><span>DNS 失败(不计入)</span><b>{{ history.stats.dns_errors }}</b></div>
+            <div v-if="selMetric !== 'BOCE'"><span>DNS 失败(不计入)</span><b>{{ history.stats.dns_errors }}</b></div>
+            <div v-if="selMetric === 'BOCE'">
+              <span>拨测点异常 / 接口异常 / 未取得结果(不计入)</span>
+              <b>{{ history.stats.vantage_errors }} / {{ history.stats.api_errors }} / {{ history.stats.expired }}</b>
+            </div>
             <div v-if="selectedTarget.direction === 'OUTBOUND'">
               <span>采集失败 / 工具不可用(不计入)</span><b>{{ history.stats.ssh_errors }} / {{ history.stats.tool_errors }}</b>
             </div>
-            <div><span>未执行(关机等)</span><b>{{ history.stats.skipped }}</b></div>
+            <div><span>未执行({{ selMetric === 'BOCE' ? '预算保护、关机等' : '关机等' }})</span><b>{{ history.stats.skipped }}</b></div>
             <div>
               <span>上次可达</span>
               <b>{{ selectedTarget.last_success_at ? formatRelative(selectedTarget.last_success_at) : '—' }}</b>
@@ -567,7 +650,8 @@ const missingHelpers = computed(() => {
               <span>{{ formatTime(f.at) }}</span>
               <span
                 :class="
-                  f.status === 'SSH_ERROR' || f.status === 'TOOL_ERROR' || f.status === 'SKIPPED'
+                  f.status === 'SSH_ERROR' || f.status === 'TOOL_ERROR' || f.status === 'SKIPPED' ||
+                  f.status === 'VANTAGE_ERROR' || f.status === 'API_ERROR' || f.status === 'EXPIRED'
                     ? 'nn__muted'
                     : f.status === 'DNS_ERROR' || f.status === 'LOSS' || f.status === 'BLOCKED'
                       ? 'nn__warn'
@@ -578,7 +662,7 @@ const missingHelpers = computed(() => {
               </span>
               <span class="nn__muted">
                 <template v-if="f.status === 'LOSS' || (selMetric !== 'CONNECT' && f.sent)">
-                  {{ f.received }}/{{ f.sent }} {{ selMetric === 'SYN' ? '有应答' : '收到' }} ·
+                  {{ f.received }}/{{ f.sent }} {{ selMetric === 'SYN' ? '有应答' : selMetric === 'BOCE' ? '成功' : '收到' }} ·
                 </template>{{ f.error }}
               </span>
             </div>
@@ -595,12 +679,40 @@ const missingHelpers = computed(() => {
       @close="pickerOpen = false"
       @saved="onPicked"
     />
+    <CardDisplayModal
+      v-if="data"
+      :open="cardOpen"
+      :node-id="nodeId"
+      :prefs="data.card.prefs"
+      :pick="data.card.pick"
+      :ingress="[...data.targets, ...data.boce]"
+      :outbound="data.outbound"
+      @close="cardOpen = false"
+      @saved="onCardSaved"
+    />
   </section>
 </template>
 
 <style scoped>
 .nn__pad {
   padding: var(--sp-4) var(--sp-5);
+}
+.nn__head-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.nn__filter {
+  padding: var(--sp-3) var(--sp-5) 0;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.nn__filter-sel {
+  width: 160px;
+}
+.nn__filter-q {
+  width: 240px;
+  max-width: 100%;
 }
 .nn__sec {
   display: flex;

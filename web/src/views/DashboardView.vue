@@ -502,6 +502,21 @@ const attention = computed<AttentionItem[]>(() => {
       action: '查看探测',
     })
   }
+  // Boce 外部拨测连续失败(达到告警阈值)。预警级:那个地区 / 运营商的拨测点连不上这个入口 ——
+  // 拨测点自身异常、接口异常不会走到 DOWN(不计入),所以这里说的是真实的「从外面连不上」,但只代表一个地区。
+  for (const t of dashCards.value?.boce ?? []) {
+    if (t.state !== 'DOWN') continue
+    out.push({
+      key: `b${t.id}`,
+      level: 'warn',
+      icon: 'activity',
+      title: nodeName(t.node_id),
+      cat: '节点 · Boce 外部拨测',
+      text: `Boce 拨测点「${t.boce?.vantage_name ?? t.label}」连续 ${t.consecutive_failures} 轮 TCPing 全部失败 —— 只说明这个地区 / 运营商到这里不通,不等于机器离线`,
+      to: `/nodes/${t.node_id}/network`,
+      action: '查看探测',
+    })
+  }
   if (failedDeploys.value.length) {
     const names = [...new Set(failedDeploys.value.map((d) => nodeName(d.node_id)))]
     out.push({

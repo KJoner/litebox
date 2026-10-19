@@ -86,7 +86,9 @@ const marks = computed(() =>
         b.failures > 0 ||
         b.lossy > 0 ||
         b.dns_errors > 0 ||
-        (b.attempts === 0 && (b.ssh_errors > 0 || b.tool_errors > 0 || b.blocked > 0 || b.skipped > 0)),
+        (b.attempts === 0 &&
+          (b.ssh_errors > 0 || b.tool_errors > 0 || b.blocked > 0 || b.skipped > 0 ||
+            b.vantage_errors > 0 || b.api_errors > 0 || b.expired > 0)),
     ),
 )
 
@@ -95,6 +97,7 @@ function markClass(b: ProbeBucket) {
   if (b.lossy > 0) return 'pc__mark--loss'
   if (b.dns_errors > 0) return 'pc__mark--dns'
   if (b.ssh_errors > 0 || b.tool_errors > 0 || b.blocked > 0) return 'pc__mark--nosend'
+  if (b.vantage_errors > 0 || b.api_errors > 0 || b.expired > 0) return 'pc__mark--nosend'
   return 'pc__mark--skip'
 }
 
@@ -123,6 +126,8 @@ const hoverText = computed(() => {
     if (props.metric === 'LOSS') parts.push(`发 ${b.sent} 个包 · 收到 ${b.received} · 丢包 ${rateText(b.loss_rate)}`)
     else if (props.metric === 'SYN')
       parts.push(`发出 ${b.sent} 个 SYN · 有应答 ${b.received} · 无应答 ${rateText(b.loss_rate)}`)
+    else if (props.metric === 'BOCE')
+      parts.push(`TCPing 发 ${b.sent} 次 · 成功 ${b.received} · TCPing 丢包 ${rateText(b.loss_rate)}`)
     else parts.push(`连接 ${b.attempts} 次 · 失败 ${b.failures}`)
   }
   if (b.rtt_avg_ms != null) parts.push(`平均 ${rttText(b.rtt_avg_ms)}(${rttText(b.rtt_min_ms)} ~ ${rttText(b.rtt_max_ms)})`)
@@ -130,8 +135,14 @@ const hoverText = computed(() => {
   if (b.ssh_errors) parts.push(`采集失败 ${b.ssh_errors}(不是丢包)`)
   if (b.tool_errors) parts.push(`工具不可用 ${b.tool_errors}`)
   if (b.blocked) parts.push(`目标受限 ${b.blocked}`)
+  if (b.vantage_errors) parts.push(`拨测点异常 ${b.vantage_errors}(不是目标不通)`)
+  if (b.api_errors) parts.push(`接口异常 ${b.api_errors}`)
+  if (b.expired) parts.push(`未取得结果 ${b.expired}`)
   if (b.skipped) parts.push(`未执行 ${b.skipped}`)
-  if (!b.attempts && !b.dns_errors && !b.skipped && !b.ssh_errors && !b.tool_errors && !b.blocked) {
+  if (
+    !b.attempts && !b.dns_errors && !b.skipped && !b.ssh_errors && !b.tool_errors && !b.blocked &&
+    !b.vantage_errors && !b.api_errors && !b.expired
+  ) {
     parts.push('这一段没有样本')
   }
   return parts.join(' · ')
@@ -144,7 +155,9 @@ const hoverText = computed(() => {
       :width="width"
       :height="H"
       role="img"
-      :aria-label="metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : 'TCP 建连时间曲线'"
+      :aria-label="
+        metric === 'LOSS' ? 'ICMP 往返时间曲线' : metric === 'SYN' ? 'TCP 握手时间曲线' : metric === 'BOCE' ? 'Boce TCPing 往返时间曲线' : 'TCP 建连时间曲线'
+      "
       @mousemove="onMove"
       @mouseleave="hover = null"
     >

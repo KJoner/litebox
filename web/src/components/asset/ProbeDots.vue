@@ -11,6 +11,7 @@ import { formatTime } from '@/utils/format'
  * 部分失败是半填、DNS 失败是菱形、未执行(关机)是灰色实心、采集失败是灰色斜纹、
  * 工具不可用 / 目标受限是空心琥珀框,色觉障碍下也分得出。
  * 采集失败与工具不可用**不按失败画**:那几轮根本没有发出去,目标那头是什么样子并不知道。
+ * Boce 的拨测点异常、接口异常、未取得结果同理:第三方那一侧的问题,画成灰色点线框,不算这台 VPS 的丢包。
  */
 const props = defineProps<{
   dots: ProbeBucket[]
@@ -31,7 +32,10 @@ const STATE_TEXT: Record<ProbeBucket['state'], string> = {
   SSH: '采集失败(面板连不上这台机器,不是丢包)',
   TOOL: '探测工具不可用(未发起)',
   BLOCKED: '目标受限(未发起)',
-  SKIP: '未执行(节点关机等)',
+  VANTAGE: 'Boce 拨测点异常(不是目标不通)',
+  API: 'Boce 接口异常(不是目标不通)',
+  EXPIRED: '任务没有取得结果',
+  SKIP: '未执行(节点关机、预算保护等)',
   NONE: '没有样本',
 }
 
@@ -40,6 +44,7 @@ function title(d: ProbeBucket): string {
   if (d.attempts) {
     if (props.metric === 'LOSS') parts.push(`ICMP ${d.attempts} 轮,发 ${d.sent} 个包、收到 ${d.received} 个`)
     else if (props.metric === 'SYN') parts.push(`握手 ${d.attempts} 轮,发出 ${d.sent} 个 SYN、有应答 ${d.received} 个`)
+    else if (props.metric === 'BOCE') parts.push(`TCPing ${d.attempts} 轮,发 ${d.sent} 次、成功 ${d.received} 次`)
     else parts.push(`TCP 连接 ${d.attempts} 次,失败 ${d.failures} 次`)
   }
   if (d.rtt_avg_ms != null) parts.push(`平均 ${d.rtt_avg_ms.toFixed(1)} ms`)
@@ -47,6 +52,9 @@ function title(d: ProbeBucket): string {
   if (d.ssh_errors) parts.push(`采集失败 ${d.ssh_errors} 次`)
   if (d.tool_errors) parts.push(`工具不可用 ${d.tool_errors} 次`)
   if (d.blocked) parts.push(`目标受限 ${d.blocked} 次`)
+  if (d.vantage_errors) parts.push(`拨测点异常 ${d.vantage_errors} 次`)
+  if (d.api_errors) parts.push(`接口异常 ${d.api_errors} 次`)
+  if (d.expired) parts.push(`未取得结果 ${d.expired} 次`)
   if (d.skipped) parts.push(`未执行 ${d.skipped} 次`)
   return parts.join(' · ')
 }
@@ -54,13 +62,14 @@ function title(d: ProbeBucket): string {
 /** 给读屏的一句话:不念 30 个点,只念合计。 */
 const summary = computed(() => {
   const c: Record<ProbeBucket['state'], number> = {
-    OK: 0, PARTIAL: 0, FAIL: 0, DNS: 0, SSH: 0, TOOL: 0, BLOCKED: 0, SKIP: 0, NONE: 0,
+    OK: 0, PARTIAL: 0, FAIL: 0, DNS: 0, SSH: 0, TOOL: 0, BLOCKED: 0, VANTAGE: 0, API: 0, EXPIRED: 0, SKIP: 0, NONE: 0,
   }
   for (const d of props.dots) c[d.state]++
   const minutes = Math.round((props.dots.length * props.seconds) / 60)
   const parts = [`成功 ${c.OK}`, `部分失败 ${c.PARTIAL}`, `失败 ${c.FAIL}`, `DNS 失败 ${c.DNS}`]
   if (c.SSH) parts.push(`采集失败 ${c.SSH}`)
   if (c.TOOL + c.BLOCKED) parts.push(`未发起 ${c.TOOL + c.BLOCKED}`)
+  if (c.VANTAGE + c.API + c.EXPIRED) parts.push(`第三方异常 ${c.VANTAGE + c.API + c.EXPIRED}`)
   parts.push(`未执行 ${c.SKIP}`, `无样本 ${c.NONE}`)
   return `最近 ${minutes} 分钟 ${props.dots.length} 个窗口:${parts.join(',')}`
 })
@@ -116,6 +125,14 @@ const summary = computed(() => {
   background: var(--warn-bg);
   box-shadow: inset 0 0 0 1px var(--warn);
   transform: scaleY(0.6);
+}
+.pd__dot--vantage,
+.pd__dot--api,
+.pd__dot--expired {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--text3);
+  border: 1px dotted var(--text3);
+  transform: scaleY(0.7);
 }
 .pd__dot--skip {
   background: var(--fill2);

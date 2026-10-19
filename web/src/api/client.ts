@@ -1219,7 +1219,7 @@ export type ProbeTCPMode = 'CONNECT' | 'SYN'
  * 一条序列看哪个比例,界面一律按它起名,不按协议自己推:
  * LOSS = ICMP 真实丢包率;CONNECT = TCP 连接失败率;SYN = TCP 握手超时无应答率(不是丢包率)。
  */
-export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN'
+export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN' | 'BOCE'
 /**
  * 一次结果。LOSS = ICMP 部分丢包(可达);SSH_ERROR = 采集失败(面板连不上这台机器,不是丢包);
  * TOOL_ERROR = 辅助程序不可用;BLOCKED = 目标受限;这三种与 DNS_ERROR、SKIPPED 都没有发起,不进分母。
@@ -1227,12 +1227,15 @@ export type ProbeMetric = 'LOSS' | 'CONNECT' | 'SYN'
 export type ProbeStatus =
   | 'OK' | 'LOSS' | 'TIMEOUT' | 'REFUSED' | 'UNREACHABLE' | 'ERROR'
   | 'DNS_ERROR' | 'BLOCKED' | 'SSH_ERROR' | 'TOOL_ERROR' | 'SKIPPED'
+  | 'VANTAGE_ERROR' | 'API_ERROR' | 'EXPIRED'
 /** 卡片上一行的状态。几种「没有新数据」分开说:暂停 / 停用 / 关机 / 失效 / 过期 / 等待首次 / 采集失败 / 工具不可用 */
 export type ProbeState =
   | 'OK' | 'LOSSY' | 'FAILING' | 'DOWN' | 'PAUSED' | 'DISABLED' | 'STOPPED' | 'INVALID' | 'STALE' | 'PENDING'
   | 'COLLECT_FAILED' | 'TOOL_ERROR' | 'BLOCKED'
+  | 'VANTAGE_ERROR' | 'API_ERROR' | 'EXPIRED' | 'SKIPPED'
 /** 点阵颜色。NONE = 这个窗口没有样本,**不按正常画**;SSH / TOOL 也不按失败画 —— 那几轮根本没有发出去 */
-export type ProbeBucketState = 'OK' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SSH' | 'TOOL' | 'BLOCKED' | 'SKIP' | 'NONE'
+export type ProbeBucketState =
+  | 'OK' | 'PARTIAL' | 'FAIL' | 'DNS' | 'SSH' | 'TOOL' | 'BLOCKED' | 'VANTAGE' | 'API' | 'EXPIRED' | 'SKIP' | 'NONE'
 
 export interface ProbeTarget {
   id: number
@@ -1245,6 +1248,9 @@ export interface ProbeTarget {
   ref: string
   /** 出站序列指向的公共目标;入口目标为 0 */
   public_id: number
+  /** Boce 序列所属的任务与拨测点;其余为 0 */
+  boce_task_id: number
+  vantage_id: number
   family: ProbeFamily
   label: string
   source: string
@@ -1280,6 +1286,10 @@ export interface ProbeBucket {
   ssh_errors: number
   tool_errors: number
   blocked: number
+  /** Boce 独有:拨测点异常、接口异常、任务未取得结果(都不进分母) */
+  vantage_errors: number
+  api_errors: number
+  expired: number
   /** 按包计(TCP 建连按建连计,握手近似按 SYN 计);loss_rate = (sent − received) / sent,一次都没发起时为 null */
   sent: number
   received: number
@@ -1302,6 +1312,9 @@ export interface ProbeStats {
   ssh_errors: number
   tool_errors: number
   blocked: number
+  vantage_errors: number
+  api_errors: number
+  expired: number
   sent: number
   received: number
   /** 0~1。TCP 建连的连接失败率;ICMP 与握手近似时是「整轮失败」的比例。一次都没发起过时为 null,不是 0 */
@@ -1335,9 +1348,11 @@ export interface ProbeSummary extends ProbeTarget {
   h24: ProbeStats
   dots: ProbeBucket[]
   dot_seconds: number
-  /** 入口用全局间隔,出站用公共目标自己的 */
+  /** 入口用全局间隔,出站用公共目标自己的,Boce 按任务的时间表 */
   interval_sec: number
   note: string
+  /** Boce 序列的任务与拨测点信息 */
+  boce?: BoceSeriesInfo
 }
 
 export interface ProbeCandidate {
@@ -1631,6 +1646,8 @@ export interface NodeProbeSettings {
   paused: boolean
   /** 0 = 跟随各目标自己的间隔;否则这台机器上全部出站目标按它(仍受来源下限约束) */
   interval_sec: number
+  /** 暂停这台节点的 Boce 自动检测(手动检测不受影响) */
+  boce_paused: boolean
   updated_at: string
 }
 
@@ -1666,6 +1683,9 @@ export interface NodeProbe {
   /** 入口连通性 */
   targets: ProbeSummary[]
   candidates: ProbeCandidate[]
+  /** Boce 外部入站拨测的序列(每个「任务 × 拨测点」一条) */
+  boce: ProbeSummary[]
+  card: { prefs: CardPrefs; pick: CardPick }
 }
 
 export interface ProbeFailurePoint {
@@ -1710,12 +1730,308 @@ export interface DashboardCards {
   targets: ProbeSummary[]
   /** 出站网络质量(节点 → 公共目标) */
   outbound: ProbeSummary[]
+  /** Boce 外部入站拨测的序列 */
+  boce: ProbeSummary[]
+  /** 每台节点卡片上入站 / 出站各展示哪几项 */
+  card_picks: CardPick[]
   cost_summary: CostRow[]
   expiring_7d: number
   overdue: number
   /** 读失败的块,点名;其余照常给 */
   errors: string[]
   external: ExternalCheckStatus[]
+}
+
+
+// ---------- Boce 外部入站拨测(付费)与卡片展示偏好 ----------
+
+/** Boce 时间表:INTERVAL = 固定间隔(从运行窗口起点对齐);TIMES = 固定时间点(窗口不参与) */
+export interface BoceScheduleSpec {
+  schedule_mode: 'INTERVAL' | 'TIMES'
+  interval_min: number
+  times: string[]
+  window_start: string
+  window_end: string
+  /** 星期掩码:bit0 = 周一 … bit6 = 周日,127 = 每天 */
+  weekdays: number
+  timezone: string
+}
+
+export interface BoceSettings {
+  enabled: boolean
+  key_configured: boolean
+  /** 只有「…末 4 位」,Key 本身从不返回 */
+  key_hint: string
+  points_per_check: number
+  point_price: string
+  daily_points: number
+  monthly_points: number
+  run_points: number
+  alert_percent: number
+  low_balance_points: number
+  timezone: string
+  default_schedule: BoceScheduleSpec
+}
+
+export interface BoceSettingsInput extends Omit<BoceSettings, 'key_configured' | 'key_hint'> {
+  /** 不传 = 保持原值;空串 = 清空 */
+  api_key?: string
+}
+
+export interface BoceState {
+  verify_state: 'NEVER' | 'OK' | 'ERROR'
+  verified_at: string
+  verify_error: string
+  balance_yuan: string
+  /** Boce 账户的真实剩余波点(可能受面板以外的调用影响);null = 没查到过 */
+  balance_points: number | null
+  balance_at: string
+  balance_error: string
+  vantages_synced_at: string
+  vantages_error: string
+  auto_paused: boolean
+  auto_pause_reason: string
+  auto_paused_at: string
+  consecutive_api_errors: number
+  last_api_error: string
+  last_api_error_at: string
+}
+
+/** 面板自己的估算消耗(不是账户余额) */
+export interface BoceUsage {
+  day_key: string
+  month_key: string
+  today_points: number
+  month_points: number
+  total_points: number
+  daily_limit: number
+  monthly_limit: number
+  today_yuan: number
+  month_yuan: number
+  total_yuan: number
+  timezone: string
+}
+
+export interface BoceEstimate {
+  points_per_round: number
+  rounds_today: number
+  points_today: number
+  month: string
+  days_in_month: number
+  rounds_month: number
+  points_month: number
+  peak_day_points: number
+  daily_avg_points: number
+  points_30d: number
+  yuan_today: number
+  yuan_month: number
+  others_month_points: number
+  others_daily_avg: number
+  total_month_points: number
+  total_daily_avg: number
+  total_yuan_month: number
+  balance_points: number | null
+  days_runnable: number | null
+  point_price: number
+  daily_limit: number
+  monthly_limit: number
+  run_limit: number
+  over_run_limit: boolean
+  over_daily: boolean
+  over_monthly: boolean
+}
+
+export interface BoceEstimateInput extends BoceScheduleSpec {
+  vantages: number
+  targets?: number
+  exclude_task_id?: number
+}
+
+export interface BoceRangeDTO {
+  key: string
+  label: string
+  min: number
+  max: number
+  default: number
+}
+
+export interface BoceOverview {
+  available: boolean
+  settings: BoceSettings
+  state: BoceState
+  usage: BoceUsage
+  /** 非空 = 此刻不会新建任何付费任务 */
+  blocked: string
+  engine: { running: boolean; last_tick_at: string; last_error: string }
+  vantage_counts: { cn: number; oversea: number; missing: number }
+  plan: BoceEstimate | null
+  ranges: BoceRangeDTO[]
+}
+
+/** 缓存的 Boce 拨测点。地区与运营商只有接口实际返回的值 */
+export interface BoceVantage {
+  id: number
+  area: 'CN' | 'OVERSEA'
+  node_name: string
+  isp_name: string
+  isp_code: number
+  first_seen_at: string
+  last_seen_at: string
+  /** 非空 = 已从 Boce 节点列表里消失(不会被自动换成别的付费拨测点) */
+  missing_since: string
+}
+
+export interface BoceTask extends BoceScheduleSpec {
+  id: number
+  node_id: number
+  name: string
+  check_type: 'TCPING'
+  ref: string
+  family: ProbeFamily
+  vantage_ids: number[]
+  month_points_limit: number
+  enabled: boolean
+  auto_paused_reason: string
+  consecutive_failures: number
+  next_run_at: string
+  last_run_at: string
+  last_state: string
+  last_error: string
+  archived_at: string
+  note: string
+  created_at: string
+  updated_at: string
+}
+
+export type BoceRunState = 'CREATING' | 'UNKNOWN' | 'POLLING' | 'DONE' | 'TIMEOUT' | 'EXPIRED' | 'FAILED' | 'SKIPPED'
+
+export interface BoceResult {
+  vantage_id: number
+  target_id: number
+  at: string
+  status: ProbeStatus
+  label: string
+  node_name: string
+  origin_ip: string
+  ip: string
+  ip_region: string
+  ip_isp: string
+  /** 上游原样(单位文档没写),不参与统计 */
+  packet_loss: number
+  sent: number
+  received: number
+  rtt_avg_ms: number
+  rtt_min_ms: number
+  rtt_max_ms: number
+  error_code: number
+  error: string
+  charged: boolean
+}
+
+export interface BoceRun {
+  id: number
+  /** 0 = 任务已删除(执行记录与估算消耗保留) */
+  task_id: number
+  node_id: number
+  trigger: 'SCHEDULE' | 'MANUAL'
+  slot: string
+  state: BoceRunState
+  state_text: string
+  vendor_task_id: string
+  host: string
+  generation: number
+  vantage_ids: number[]
+  points: number
+  points_reserved: number
+  day_key: string
+  month_key: string
+  attempts: number
+  polls: number
+  next_poll_at: string
+  results: number
+  error_code: number
+  error: string
+  created_at: string
+  sent_at: string
+  finished_at: string
+  items: BoceResult[]
+}
+
+export interface BoceTaskView extends BoceTask {
+  node_name: string
+  target_label: string
+  target_host: string
+  target_port: number
+  /** 非空 = 被测入口此刻解析不出来 */
+  target_error: string
+  month_points: number
+  total_points: number
+  plan_month_points: number
+  plan_daily_avg: number
+  points_per_round: number
+  /** 非空 = 此刻不会自动执行 */
+  auto_reason: string
+  last_run: BoceRun | null
+}
+
+export interface BoceTaskInput extends BoceScheduleSpec {
+  name: string
+  ref?: string
+  family?: ProbeFamily
+  vantage_ids: number[]
+  month_points_limit: number
+  enabled?: boolean
+  note: string
+}
+
+export interface NodeBoce {
+  tasks: BoceTaskView[]
+  /** 只有订阅入口;带 note 的(IPv6、私网地址)选不了 */
+  candidates: ProbeCandidate[]
+  paused: boolean
+  blocked: string
+  default_schedule: BoceScheduleSpec
+  points_per_check: number
+  point_price: number
+}
+
+export interface BoceSeriesInfo {
+  task_id: number
+  task_name: string
+  vantage_id: number
+  vantage_name: string
+  isp_name: string
+  area: string
+  missing: boolean
+  schedule: string
+  next_run_at: string
+  auto_on: boolean
+}
+
+export type CardMode = 'AUTO' | 'MANUAL'
+
+/** 卡片展示偏好:每个方向最多 3 项。这是展示数量,不是检测数量 */
+export interface CardPrefs {
+  node_id: number
+  ingress_mode: CardMode
+  ingress_ids: number[]
+  outbound_mode: CardMode
+  outbound_ids: number[]
+  updated_at: string
+}
+
+/** 一台节点的卡片此刻实际展示哪几项(手动 / 自动已经解析好) */
+export interface CardPick {
+  node_id: number
+  ingress_mode: CardMode
+  ingress_ids: number[]
+  outbound_mode: CardMode
+  outbound_ids: number[]
+  /** 手动选了、但那条序列已经删掉的项:提示,不自动顶上别的 */
+  invalid_ingress: number[]
+  invalid_outbound: number[]
+  auto_ingress: number[]
+  auto_outbound: number[]
 }
 
 export interface ExpiryRenewal {
@@ -2718,6 +3034,8 @@ export type NotifyKind =
   | 'EXPIRY_OVERDUE'
   | 'PROBE_DOWN'
   | 'PROBE_RECOVERED'
+  | 'BOCE_ALERT'
+  | 'BOCE_BUDGET'
 
 /**
  * 推送设置。
@@ -3633,6 +3951,43 @@ export const api = {
     request<NodeProbeSettings>(`/api/nodes/${nodeID}/probe-settings`, { method: 'PUT', body }),
   probeTrial: (nodeID: number, publicIDs: number[]) =>
     request<{ results: ProbeTrialResult[] }>(`/api/nodes/${nodeID}/probe-trial`, { method: 'POST', body: { public_ids: publicIDs } }),
+  // 卡片展示偏好:只写一张表,不触发任何探测、不调 Boce。
+  setCardPrefs: (nodeID: number, body: Pick<CardPrefs, 'ingress_mode' | 'ingress_ids' | 'outbound_mode' | 'outbound_ids'>) =>
+    request<CardPrefs>(`/api/nodes/${nodeID}/probe-card`, { method: 'PUT', body }),
+
+  // Boce 外部入站拨测。页面访问只读库;会调 Boce 的只有校验 / 余额 / 同步(免费)与手动检测(付费,经预算)。
+  boceOverview: () => request<BoceOverview>('/api/boce'),
+  updateBoceSettings: (body: BoceSettingsInput) => request<BoceSettings>('/api/boce/settings', { method: 'PUT', body }),
+  boceVerify: () => request<{ balance: string; point: number }>('/api/boce/verify', { method: 'POST' }),
+  boceBalance: () => request<{ balance: string; point: number }>('/api/boce/balance', { method: 'POST' }),
+  boceSyncVantages: () =>
+    request<{ results: { area: string; total: number; added: number; missing: number; error: string }[] }>(
+      '/api/boce/vantages/sync',
+      { method: 'POST' },
+    ),
+  boceVantages: () => request<{ vantages: BoceVantage[]; state: BoceState }>('/api/boce/vantages'),
+  boceResume: () => request<{ message: string }>('/api/boce/resume', { method: 'POST' }),
+  boceEstimate: (body: BoceEstimateInput) => request<BoceEstimate>('/api/boce/estimate', { method: 'POST', body }),
+  boceTasks: () => request<{ tasks: BoceTaskView[] }>('/api/boce/tasks'),
+  boceBatch: (body: { template: BoceTaskInput; nodes: { node_id: number; ref: string }[] }) =>
+    request<{ results: { node_id: number; task_id: number; error: string }[] }>('/api/boce/tasks/batch', {
+      method: 'POST',
+      body,
+    }),
+  nodeBoce: (nodeID: number) => request<NodeBoce>(`/api/nodes/${nodeID}/boce`),
+  createBoceTask: (nodeID: number, body: BoceTaskInput) =>
+    request<BoceTask>(`/api/nodes/${nodeID}/boce/tasks`, { method: 'POST', body }),
+  updateBoceTask: (id: number, body: BoceTaskInput) => request<BoceTask>(`/api/boce/tasks/${id}`, { method: 'PUT', body }),
+  setBoceTaskEnabled: (id: number, enabled: boolean) =>
+    request<BoceTask>(`/api/boce/tasks/${id}/enabled`, { method: 'PUT', body: { enabled } }),
+  archiveBoceTask: (id: number, archived: boolean) =>
+    request<BoceTask>(`/api/boce/tasks/${id}/archive`, { method: 'POST', body: { archived } }),
+  deleteBoceTask: (id: number) => request<{ message: string }>(`/api/boce/tasks/${id}`, { method: 'DELETE' }),
+  runBoceTask: (id: number, requestID: string) =>
+    request<BoceRun>(`/api/boce/tasks/${id}/run`, { method: 'POST', body: { request_id: requestID } }),
+  boceRuns: (id: number, limit = 30) => request<{ runs: BoceRun[] }>(`/api/boce/tasks/${id}/runs`, { query: { limit } }),
+  setNodeBocePaused: (nodeID: number, paused: boolean) =>
+    request<NodeProbeSettings>(`/api/nodes/${nodeID}/boce/paused`, { method: 'PUT', body: { paused } }),
 
   // 面板设置
   settings: () => request<PanelSettings>('/api/settings'),

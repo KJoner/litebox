@@ -8,8 +8,9 @@ import { assetTypeLabel, money, rttText, type AssetCard } from './assetModel'
 /**
  * 一张资产卡片。五块,顺序固定:身份 → 资源与流量 → 网络质量 → 套餐资产 → 操作。
  *
- * 没有的数据写明「不可用」,不画 0%;几种状态各给各的标记;网络一格先列出站网络质量
- * (这台机器在本机测公共目标),再单列入口连通性(主控连这台机器),两组不混 ——
+ * 没有的数据写明「不可用」,不画 0%;几种状态各给各的标记;网络一格先列出站(这台机器在本机测公共目标),
+ * 再列入站(主控连这台机器、Boce 拨测点从外部连这台机器),两组不混。每组最多 3 项,
+ * 展示哪几项由节点的「卡片展示设置」决定(没设过就自动推荐)—— 那是展示数量,不是检测数量。
  * 规则都在 assetModel.ts / probeView.ts,这里只负责画。
  */
 const props = defineProps<{ card: AssetCard }>()
@@ -35,6 +36,8 @@ const badges = computed<LbStatusMeta[]>(() => {
     } else if (card.outbound.some((p) => p.state === 'TOOL_ERROR')) out.push(metaOf.warn('探测工具不可用'))
     if (card.probes.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('入口检测失败'))
     else if (card.probes.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('入口最近一次失败'))
+    // Boce 拨测点连不上只说明那个地区 / 运营商到这里不通,不等于机器离线:琥珀色,不用红色。
+    if (card.boce.some((p) => p.state === 'DOWN')) out.push(metaOf.warn('外部拨测失败'))
     if (card.monitor === 'NONE' || card.monitor === 'PAUSED' || card.monitor === 'GLOBAL_OFF') {
       out.push(metaOf.paused(card.monitor === 'NONE' ? '未配置监测' : '监测关闭'))
     }
@@ -58,12 +61,14 @@ const days = computed(() => {
 
 const regionTitle = computed(() => (c.value.region ? `地区:${c.value.region}` : '地区未设置(在「编辑套餐」里设置)'))
 
-// 出站最多 3 行、入口最多 2 行,其余进节点详情 —— 卡片网格里一张卡不能比别的高出一截。
-const shownOutbound = computed(() => c.value.outbound.slice(0, 3))
-const shownProbes = computed(() => c.value.probes.slice(0, 2))
-const moreProbes = computed(
-  () => Math.max(c.value.outbound.length - 3, 0) + Math.max(c.value.probes.length - 2, 0),
-)
+// 入站 / 出站各最多 3 行(按展示设置),其余进节点详情 —— 卡片网格里一张卡不能比别的高出一截。
+const ingressSources = computed(() => {
+  const s = new Set(c.value.shownIngress.map((p) => p.source))
+  const parts: string[] = []
+  if (s.has('MASTER')) parts.push('主控 · TCP')
+  if (s.has('BOCE')) parts.push('Boce · TCPing')
+  return parts.join(' / ')
+})
 
 const billing = computed(() => c.value.billing)
 const val = computed(() => billing.value?.valuation ?? null)
@@ -151,24 +156,28 @@ const nextLabel = computed(() => {
         <span v-if="c.monitor === 'ON' && c.outbound.length" class="ac__muted">节点本机 · 出站</span>
         <LbInfoTip
           :width="320"
-          text="出站:这台机器在本机测公共目标 —— ICMP 看真实丢包率与往返时间,TCP 建连看建连时间与连接失败率,TCP 握手近似看握手超时无应答率(不是丢包率),都不含 SSH 的耗时。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入任何比例。入口连通性:主控对这台机器的端口做 TCP 建连,端口能连上不等于代理协议可用。"
+          text="出站:这台机器在本机测公共目标 —— ICMP 看真实丢包率与往返时间,TCP 建连看建连时间与连接失败率,TCP 握手近似看握手超时无应答率(不是丢包率),都不含 SSH 的耗时。采集失败(面板连不上这台机器)、工具不可用、DNS 失败都没有发起,不计入任何比例。入站:主控对这台机器的端口做 TCP 建连(TCP 连接失败率);Boce 拨测点从各地区 / 运营商对订阅入口做 TCPing(TCPing 丢包率,第三方测点,拨测点异常与接口异常不计入)。端口能连上不等于代理协议可用。每组最多展示 3 项,在节点详情的「卡片展示设置」里挑。"
         />
       </div>
       <template v-if="c.monitor === 'ON'">
-        <ProbeRow v-for="p in shownOutbound" :key="p.id" :p="p" />
+        <ProbeRow v-for="p in c.shownOutbound" :key="p.id" :p="p" />
         <div v-if="!c.outbound.length" class="ac__na">
           <span>没有启用出站探测。</span>
           <RouterLink to="/probe-library">去配置公共目标</RouterLink>
         </div>
-        <template v-if="shownProbes.length">
+        <template v-if="c.shownIngress.length">
           <div class="ac__subhead">
-            <span>入口连通性</span>
-            <span class="ac__muted">{{ c.probes[0]?.source_label ?? '主控探测' }} · TCP</span>
+            <span>入站</span>
+            <span class="ac__muted">{{ ingressSources }}</span>
           </div>
-          <ProbeRow v-for="p in shownProbes" :key="p.id" :p="p" />
+          <ProbeRow v-for="p in c.shownIngress" :key="p.id" :p="p" />
         </template>
-        <RouterLink v-if="moreProbes" class="ac__more" :to="`/nodes/${c.id}/network`">
-          还有 {{ moreProbes }} 个目标 <LbIcon name="chevron-right" :size="12" />
+        <div v-if="c.shownInvalid" class="ac__na" data-testid="card-invalid-items">
+          <span>{{ c.shownInvalid }} 个展示项已失效(不会自动换成别的测点)。</span>
+          <RouterLink :to="`/nodes/${c.id}/network`">调整</RouterLink>
+        </div>
+        <RouterLink v-if="c.hiddenCount" class="ac__more" :to="`/nodes/${c.id}/network`">
+          还有 {{ c.hiddenCount }} 个目标 <LbIcon name="chevron-right" :size="12" />
         </RouterLink>
       </template>
       <div v-else-if="c.monitor === 'NONE'" class="ac__na">
