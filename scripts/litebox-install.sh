@@ -4,12 +4,16 @@
 #   bash <(wget -qO- https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #   bash <(curl -fsSL https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #
-# 它做这些事:检查并补齐 make / Node.js / Go → 拉源码 → 构建主控与节点用的
-# sing-box、拉取 Mieru 用的 mita/mieru → 调用 scripts/install.sh 安装或
-# 升级主控 → 打印登录信息。
+# 它做这些事:检查并补齐 make / Node.js / Go → 拉源码 → 构建主控、节点用的
+# sing-box 与出站探测辅助程序 litebox-probe → 拉取 Mieru 用的 mita/mieru 与
+# realm → 调用 scripts/install.sh 安装或升级主控 → 把节点用的二进制放到
+# /opt/litebox/assets/ 下 → 打印登录信息。
 #
 # 全程幂等,重复执行即为升级:已装且版本达标的依赖不会重复安装,
-# 已有的数据库、主密钥、配置文件都不会被覆盖。
+# 已有的数据库、主密钥、配置文件都不会被覆盖。litebox-probe 每次都重建 ——
+# 它与面板之间有协议版本号,面板升级之后还分发旧的那一份,节点会报「版本不符」;
+# 换上去之后不用重启面板,各节点在下一轮出站探测时自动换成新文件。
+# 只用 scripts/upgrade.sh 升级时这一步不会做,要自己执行 bash scripts/build-probe.sh。
 #
 # 环境变量:
 #   LITEBOX_REPO       源码仓库地址
@@ -19,9 +23,9 @@
 #   SKIP_SINGBOX=1     跳过节点用 sing-box 的构建(它要拉 sing-box 源码,最慢)
 #   SKIP_MIERU=1       跳过 Mieru 用的 mita/mieru 下载(不打算用 Mieru 入口时)
 #   SKIP_REALM=1       跳过 realm 下载(不打算用 realm 转发时)
-#   WITH_SNELL=1       额外构建预览版 sing-box(1.14)。**只有要用 Snell 入口
-#                      才需要** —— 它是上游的 rc,而多编译一次要几分钟。
-#                      不构建的话面板只是不提供「安装预览版」那个选项。
+#
+# sing-box 只分发一支(固定 v1.14.0,本身就带 Snell);V14 的 WITH_SNELL 预览版通道已撤掉,
+# 旧面板留在 /opt/litebox/assets/singbox/ 下的预览版文件会被顺手删掉。
 set -euo pipefail
 
 REPO="${LITEBOX_REPO:-https://github.com/KJoner/litebox.git}"
