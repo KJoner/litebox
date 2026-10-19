@@ -374,10 +374,18 @@ GET  /api/nodes/{id}/traffic/series?granularity=hour|day|month
 GET  /api/nodes/{id}/host-traffic/live V15:网卡累计字节的一次即时读数(速率由前端算)
 POST /api/nodes/{id}/host-traffic/install  V15:装 vnStat(以及 iftop、nload)并同步一次
 GET  /api/metrics/nodes-latest
+GET  /api/metrics/net-rates               资产卡片的实时网速(只读主控内存,同时顺延采样租约)
 GET  /api/nodes/{id}/metrics?hours=6      6 / 24 / 72 / 168
 POST /api/nodes/{id}/collect-metrics
 GET  /api/metrics/status
 ```
+
+`GET /api/metrics/net-rates` 返回 `{interval_seconds, items[]}`,每项是
+`{node_id, rx_bps, tx_bps, window_seconds, uptime_seconds, at}`:最近一个窗口(默认 30 秒)的平均网速,
+口径与资源采样的 `net_rx_bps` 相同(除 lo 以外全部网卡),`uptime_seconds` 是读数时的开机秒数。
+这个接口**不连任何节点**,只读内存;连节点的是后台按 `node.net_rate_interval` 跑的采样,
+而它只在这个接口最近两分钟被请求过时才跑(页面关掉之后自己停)。采样关着时 `interval_seconds` 为 0、
+`items` 为空数组,页面据此不轮询;刚开始看的头一个间隔里还没有速率(要两次读数才算得出),卡片退回资源采样里的网速。
 
 `GET /api/nodes/{id}/traffic` 同时返回 `cycle` 与 `daily`。两者口径不同,
 不能互相替代:`daily` 按 UTC 自然日聚合,表达不了"每月 15 日 00:00"
