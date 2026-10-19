@@ -161,12 +161,14 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
           <div
             class="acv__v lb-tabular"
             :class="{ 'acv__v--bad': ov.outboundFailing + ov.probeFailing }"
-            :title="`出站 ${ov.outboundTargets} 条序列失败 ${ov.outboundFailing};入口 ${ov.probeTargets} 个目标失败 ${ov.probeFailing}`"
+            :title="`出站 ${ov.outboundTargets} 条序列失败 ${ov.outboundFailing};入口 ${ov.probeTargets} 个目标失败 ${ov.probeFailing}` + (ov.boceTargets ? `;Boce 外部拨测 ${ov.boceTargets} 条失败 ${ov.boceFailing}(第三方测点,单列)` : '')"
           >
             {{ ov.outboundFailing + ov.probeFailing }}
             <span class="acv__unit">/ {{ ov.outboundTargets + ov.probeTargets }} 失败</span>
           </div>
-          <div class="acv__h">出站 {{ ov.outboundTargets }} · 入口 {{ ov.probeTargets }}</div>
+          <div class="acv__h">
+            出站 {{ ov.outboundTargets }} · 入口 {{ ov.probeTargets }}<span v-if="ov.boceTargets" class="acv__nowrap"> · Boce {{ ov.boceTargets }}</span>
+          </div>
         </template>
         <template v-else>
           <div class="acv__v acv__v--muted">未开启</div>
@@ -307,5 +309,8 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
   .acv__count {
     margin-left: 0;
   }
+}
+.acv__nowrap {
+  white-space: nowrap;
 }
 </style>

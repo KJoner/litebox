@@ -16,17 +16,20 @@ import {
 
 /**
  * 探测的一行:名称 · 协议 · 地址族 · 最近一次的延迟,下面是点阵与 1h / 24h 的丢包率(ICMP)、
- * 连接失败率(TCP 建连)或握手无应答率(TCP 握手近似)。出站与入口共用 —— 规则都在 probeView.ts。
+ * 连接失败率(TCP 建连)、握手无应答率(TCP 握手近似)或 TCPing 丢包率(Boce)。出站与入站共用 ——
+ * 规则都在 probeView.ts。Boce 的一行带「Boce」标记,名字是拨测点(地区 + 运营商,接口原样)。
  */
 defineProps<{ p: ProbeSummary }>()
 </script>
 
 <template>
-  <div class="pr" :data-testid="`probe-row-${p.id}`" :data-direction="p.direction">
+  <div class="pr" :data-testid="`probe-row-${p.id}`" :data-direction="p.direction" :data-source="p.source">
     <div class="pr__line">
       <span class="pr__label lb-ellipsis" :title="targetTitle(p)">{{ p.label }}</span>
+      <span v-if="p.source === 'BOCE'" class="lb-chip lb-chip--purple pr__chip" title="Boce 第三方拨测点">Boce</span>
+      <span v-else-if="p.direction === 'INGRESS'" class="lb-chip pr__chip" title="主控探测">主控</span>
       <span class="lb-chip pr__chip">{{ protoChip(p) }}</span>
-      <span class="lb-chip pr__chip">{{ familyText(p.family) }}</span>
+      <span v-if="p.source !== 'BOCE'" class="lb-chip pr__chip">{{ familyText(p.family) }}</span>
       <span class="pr__rtt lb-tabular" :class="`pr__tone--${probeTone(p.state)}`" :title="p.state_text">
         {{ probeValue(p) }}
       </span>

@@ -157,6 +157,20 @@ const actionNames: Record<string, string> = {
   'probe.bindings_batch': '批量设置节点出站探测开关',
   'probe.node_settings': '节点出站探测覆盖(暂停 / 间隔)',
   'probe.trial': '节点试测公共探测目标',
+  'probe.card_prefs': '探针卡片展示设置',
+  'boce.settings_update': 'Boce 外部拨测设置(开关 / Key / 预算)',
+  'boce.verify': '校验 Boce API Key',
+  'boce.balance': '查询 Boce 余额',
+  'boce.vantages_sync': '同步 Boce 拨测点列表',
+  'boce.resume': '恢复 Boce 外部拨测',
+  'boce.task_create': '新建 Boce 拨测任务',
+  'boce.task_update': '修改 Boce 拨测任务',
+  'boce.task_enable': 'Boce 任务自动检测开关',
+  'boce.task_archive': '归档 / 恢复 Boce 任务',
+  'boce.task_delete': '删除 Boce 任务',
+  'boce.task_run': '手动执行 Boce 检测',
+  'boce.task_batch': '批量应用 Boce 任务模板',
+  'boce.node_pause': '暂停 / 恢复节点的 Boce 自动检测',
 }
 
 type Category =
@@ -205,7 +219,10 @@ function categoryOf(action: string): Category {
     action === 'probe.node_binding' ||
     action === 'probe.bindings_batch' ||
     action === 'probe.node_settings' ||
-    action === 'probe.trial'
+    action === 'probe.trial' ||
+    action === 'probe.card_prefs' ||
+    action.startsWith('boce.task_') ||
+    action === 'boce.node_pause'
   ) {
     return 'node'
   }
@@ -221,7 +238,8 @@ function categoryOf(action: string): Category {
     action.startsWith('notify.') ||
     action.startsWith('probe.public_') ||
     action.startsWith('probe.source_') ||
-    action === 'probe.limits_update'
+    action === 'probe.limits_update' ||
+    action.startsWith('boce.')
   ) {
     return 'settings'
   }

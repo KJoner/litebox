@@ -8,7 +8,10 @@ import type { ProbeISP, ProbeMetric, ProbeOrigin, ProbeState, ProbeStats, ProbeS
  *   - LOSS(ICMP):真实丢包率 = Σ(发 − 收) ÷ Σ发;
  *   - CONNECT(TCP 建连):连接失败率 = 失败的建连 ÷ 发起的建连;
  *   - SYN(TCP 握手近似):握手超时无应答率 = Σ(发出的 SYN − 有应答的) ÷ Σ发出的 SYN。
- *     它基于系统的 TCP 建连,不是原始套接字的 SYN 探测,**不能叫丢包率**;RST 也是应答。
+ *     它基于系统的 TCP 建连,不是原始套接字的 SYN 探测,**不能叫丢包率**;RST 也是应答;
+ *   - BOCE(Boce 拨测点的 TCPing):TCPing 丢包率 = Σ(发 − 收) ÷ Σ发,按 Boce 报告的包数。
+ *     第三方拨测点从外面测的,与 ICMP 丢包率、主控的 TCP 连接失败率名字不同、不相加;
+ *     拨测点异常、接口异常、未取得结果都不进分母,也不按失败画。
  * 采集失败、工具不可用、DNS 失败、目标受限都没有发起,不进分母 —— 分母为 0 时显示「—」,不是 0%。
  */
 
@@ -31,7 +34,10 @@ export function probeTone(state: ProbeState): 'bad' | 'warn' | 'muted' | '' {
 
 /** 整行降灰:暂停、停用、关机、失效、过期时,历史点阵仍然画,但不再暗示「此刻」。 */
 export function probeMuted(state: ProbeState): boolean {
-  return state === 'PAUSED' || state === 'INVALID' || state === 'DISABLED' || state === 'STALE' || state === 'STOPPED'
+  return (
+    state === 'PAUSED' || state === 'INVALID' || state === 'DISABLED' || state === 'STALE' || state === 'STOPPED' ||
+    state === 'SKIPPED'
+  )
 }
 
 /** 一行右侧的数字:最近一次可达时是 RTT,否则是结果名。 */
@@ -54,6 +60,8 @@ export function rateName(metric: ProbeMetric): string {
       return '丢包'
     case 'SYN':
       return '无应答'
+    case 'BOCE':
+      return 'TCPing 丢包'
   }
   return '失败率'
 }
@@ -65,6 +73,8 @@ export function rateFullName(metric: ProbeMetric): string {
       return 'ICMP 丢包率'
     case 'SYN':
       return '握手超时无应答率'
+    case 'BOCE':
+      return 'Boce TCPing 丢包率'
   }
   return 'TCP 连接失败率'
 }
@@ -78,6 +88,9 @@ export function rateTitle(s: ProbeStats, metric: ProbeMetric, span: string): str
     case 'SYN':
       head = `${span}:发出 ${s.sent} 个 SYN,有应答(SYN-ACK 或 RST)${s.received} 个 —— 这是握手超时无应答率,不是丢包率`
       break
+    case 'BOCE':
+      head = `${span}:Boce 拨测点 TCPing ${s.attempts} 轮,发 ${s.sent} 次、成功 ${s.received} 次 —— 这是 Boce 的 TCPing 丢包率,不是 ICMP 丢包率`
+      break
     default:
       head = `${span}:TCP 连接 ${s.attempts} 次,失败 ${s.failures} 次`
   }
@@ -87,6 +100,10 @@ export function rateTitle(s: ProbeStats, metric: ProbeMetric, span: string): str
   if (s.ssh_errors) notSent.push(`采集失败 ${s.ssh_errors}`)
   if (s.tool_errors) notSent.push(`工具不可用 ${s.tool_errors}`)
   if (s.blocked) notSent.push(`目标受限 ${s.blocked}`)
+  if (s.vantage_errors) notSent.push(`拨测点异常 ${s.vantage_errors}`)
+  if (s.api_errors) notSent.push(`接口异常 ${s.api_errors}`)
+  if (s.expired) notSent.push(`未取得结果 ${s.expired}`)
+  if (s.skipped && metric === 'BOCE') notSent.push(`未执行 ${s.skipped}`)
   if (notSent.length) parts.push(`未发起(不计入):${notSent.join('、')}`)
   return parts.join(';')
 }
@@ -98,6 +115,8 @@ export function metricLabel(metric: ProbeMetric): string {
       return 'ICMP'
     case 'SYN':
       return 'TCP 握手(近似 SYN)'
+    case 'BOCE':
+      return 'Boce TCPing'
   }
   return 'TCP 建连'
 }
@@ -106,11 +125,16 @@ export function metricLabel(metric: ProbeMetric): string {
 export function protoChip(p: { metric: ProbeMetric; resolved_port?: number; port?: number; direction?: string }): string {
   if (p.metric === 'LOSS') return 'ICMP'
   const port = p.port ?? (p.direction === 'OUTBOUND' ? p.resolved_port : 0)
+  if (p.metric === 'BOCE') return 'TCPing'
   const head = p.metric === 'SYN' ? 'SYN' : 'TCP'
   return port ? `${head} ${port}` : head
 }
 
 export function targetTitle(p: ProbeSummary): string {
+  if (p.source === 'BOCE') {
+    const peer = p.last?.peer ? `,拨测点解析到 ${p.last.peer}` : ''
+    return `Boce 拨测点「${p.boce?.vantage_name ?? p.label}」→ ${p.resolved_host}:${p.resolved_port}${peer}`
+  }
   const where = p.protocol === 'ICMP' ? p.resolved_host : `${p.resolved_host}:${p.resolved_port}`
   const peer = p.last?.peer && p.last.peer !== p.resolved_host ? `,最近一次连的是 ${p.last.peer}` : ''
   return `${p.label}(${where}${peer})`

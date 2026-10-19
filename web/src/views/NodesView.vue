@@ -16,6 +16,7 @@ import NodeFormModal from '@/components/node/NodeFormModal.vue'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
 import NodesProbeBatchModal from '@/components/probe/NodesProbeBatchModal.vue'
+import BoceBatchModal from '@/components/boce/BoceBatchModal.vue'
 import { useNodeRecheck } from '@/components/node/useNodeRecheck'
 import { summarizeHealth, type HealthSummary } from '@/components/node/healthSummary'
 import { confirmDeployNode } from '@/components/node/nodeOps'
@@ -145,6 +146,8 @@ watch(visible, () => {
 })
 // 批量应用探测目标(只改勾选的这几台机器上的开关)。
 const probeBatchOpen = ref(false)
+const boceBatchOpen = ref(false)
+const selectedNodes = computed(() => nodes.value.filter((n) => selected.value.includes(n.id)))
 
 const rowSelection = computed(() => ({
   selectedRowKeys: selected.value,
@@ -685,7 +688,14 @@ const keyOpen = ref(false)
             同步流量
           </a-button>
           <a-button size="small" data-testid="nodes-probe-batch-open" @click="probeBatchOpen = true">应用探测目标</a-button>
+          <a-button size="small" data-testid="nodes-boce-batch-open" @click="boceBatchOpen = true">Boce 拨测任务</a-button>
         </LbBatchBar>
+        <BoceBatchModal
+          :open="boceBatchOpen"
+          :nodes="selectedNodes"
+          @close="boceBatchOpen = false"
+          @saved="boceBatchOpen = false"
+        />
         <NodesProbeBatchModal
           :open="probeBatchOpen"
           :node-ids="selected"
