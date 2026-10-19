@@ -30,29 +30,39 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   await page.goto('/dashboard')
   const a = card(page, 'NODE-1')
   await expect(a).toContainText('上海-alpha')
-  await expect(a).toContainText('CN')
-  // 出站在前(节点本机测公共目标),一个目标一行;入口连通性单列在后。
-  await expect(a).toContainText('节点本机 · 出站')
+  // 地区是旗帜(读屏读「地区:CN」);内部名称、类型、自建不再占行,收进名称的悬停说明。
+  await expect(a.getByTestId('card-flag')).toHaveAttribute('aria-label', '地区:CN')
+  await expect(a).not.toContainText('sh-node')
+  await expect(a).not.toContainText('落地节点')
+  await expect(a.getByRole('link', { name: '上海-alpha' })).toHaveAttribute('title', /内部名称:sh-node[\s\S]*落地节点 · 自建/)
+  // 网络:入站在左、出站在右,一个目标一格;协议与地址族收进名字的悬停说明。
+  const net = a.getByTestId('card-net')
+  await expect(net.getByText('入站', { exact: true })).toHaveAttribute('title', '入站:主控 · TCP 建连 / Boce · TCPing')
+  await expect(net.getByText('出站', { exact: true })).toBeVisible()
   const icmp = a.getByTestId('probe-row-11')
   await expect(icmp).toHaveAttribute('data-direction', 'OUTBOUND')
   await expect(icmp).toContainText('公共 DNS(演示)')
-  await expect(icmp).toContainText('ICMP')
+  await expect(icmp).not.toContainText('IPv4')
+  await expect(icmp.getByText('公共 DNS(演示)')).toHaveAttribute('title', /节点本机 · ICMP · IPv4/)
   await expect(icmp).toContainText('25 ms')
   await expect(icmp).toContainText('1h 丢包 0.4%')
   await expect(icmp.locator('[data-state="PARTIAL"]')).toHaveCount(1)
   const tcp = a.getByTestId('probe-row-12')
-  await expect(tcp).toContainText('TCP 443')
+  await expect(tcp).not.toContainText('TCP 443')
+  await expect(tcp.locator('[title*="TCP 443"]')).toHaveCount(1)
   await expect(tcp).toContainText('1h 失败率 0%')
   await expect(tcp).not.toContainText('丢包')
   // 入站一组:按这台节点的「卡片展示设置」(手动选了 Boce 上海电信、广东联通与主控对外服务)。
-  await expect(a).toContainText('入站')
-  await expect(a).toContainText('主控 · TCP / Boce · TCPing')
   const boce = a.getByTestId('probe-row-21')
   await expect(boce).toHaveAttribute('data-source', 'BOCE')
   await expect(boce).toContainText('上海 电信')
-  await expect(boce).toContainText('Boce')
+  await expect(boce.getByText('上海 电信')).toHaveAttribute('title', /Boce 第三方拨测点 · TCPing/)
   await expect(boce).toContainText('168 ms')
   await expect(boce).toContainText('TCPing 丢包 0%')
+  // 入站与出站在同一张两列的栅格里:入站那一格在出站左边。
+  const boxIn = await boce.boundingBox()
+  const boxOut = await icmp.boundingBox()
+  expect(boxIn && boxOut && boxIn.x < boxOut.x).toBeTruthy()
   await expect(a.getByTestId('probe-row-22')).toContainText('最近一轮丢包 1/10')
   // 没选上的照样在测:卡片只说「还有几个」,不画出来。拨测点异常的那一条(北京移动)没选上。
   await expect(a.getByTestId('probe-row-23')).toHaveCount(0)
@@ -65,20 +75,23 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   // 没有样本的窗口是空心点,不是绿点。
   await expect(a.getByTestId('probe-row-1').locator('[data-state="NONE"]')).toHaveCount(1)
   await expect(a.getByTestId('probe-row-1').locator('[data-state="FAIL"]')).toHaveCount(1)
-  // 套餐:月付 5.00 USD,剩余未摊销价值按时间估算;不限量节点不给按流量估算。
-  await expect(a).toContainText('月付')
-  await expect(a).toContainText('5.00 USD')
-  await expect(a).toContainText('剩余未摊销价值(估算)')
-  await expect(a).toContainText('3.95 USD')
+  // 套餐两行:「月付 5.00 USD · 下次续费」一行,「剩余 N 天 · 剩余价值(估算)」一行;不限量节点不给按流量估算。
+  await expect(a.getByTestId('card-bill-plan')).toContainText('月付')
+  await expect(a.getByTestId('card-bill-plan')).toContainText('5.00 USD')
+  await expect(a.getByTestId('card-bill-value')).toContainText('剩余 25 天')
+  await expect(a.getByTestId('card-bill-value')).toContainText('剩余价值(估算)')
+  await expect(a.getByTestId('card-bill-value')).toContainText('3.95 USD')
+  await expect(a.getByTestId('card-bill-value')).not.toContainText('按流量')
 
-  // 东京只有出站(公共 DNS 对全部节点启用),没有入站序列:不出现「入站」那一小块。
+  // 东京只有出站(公共 DNS 对全部节点启用),没有入站序列:入站那一列只写「未启用」。
   const b = card(page, 'NODE-2')
   await expect(b.getByTestId('probe-row-13')).toContainText('最近一轮丢包 1/4')
   await expect(b.getByTestId('probe-row-13')).toContainText('88 ms')
   // 采集失败的窗口单独画,不按失败画。
   await expect(b.getByTestId('probe-row-13').locator('[data-state="SSH"]')).toHaveCount(1)
   await expect(b.getByTestId('probe-row-13').locator('[data-state="FAIL"]')).toHaveCount(0)
-  await expect(b).not.toContainText('入站')
+  await expect(b.locator('[data-direction="INGRESS"]')).toHaveCount(0)
+  await expect(b.getByTestId('card-net')).toContainText('未启用')
   await expect(b).toContainText('未设置套餐')
 
   const x = card(page, 'EXTERNAL_PROXY-1')
@@ -104,9 +117,58 @@ test('运营商只来自 Boce 拨测点;ICMP 叫丢包,主控 TCP 叫失败率,B
   }
   for (const row of await page.locator('[data-source="BOCE"]').all()) {
     await expect(row).toContainText('TCPing 丢包')
-    await expect(row).toContainText('Boce')
   }
   await expect(page.getByTestId('probe-row-12')).not.toContainText('丢包')
+})
+
+test('头部两行:第一行状态带开机时长,第二行是异常标记与自定义标签', async ({ page }) => {
+  await page.goto('/dashboard')
+  // 上海有实时读数(开机 13 天),东京退回资源采样(开机 49 天,采样没过期)。
+  await expect(card(page, 'NODE-1').getByTestId('card-state')).toHaveText('在线 13 天')
+  await expect(card(page, 'NODE-2').getByTestId('card-state')).toHaveText('在线 49 天')
+  await expect(card(page, 'NODE-1')).not.toContainText('运行中')
+  // 上海:实时网速(16 秒前);东京:资源采样里的网速。
+  await expect(card(page, 'NODE-1').getByTestId('card-rates')).toContainText('1.23 KB/s')
+  await expect(card(page, 'NODE-1').getByTestId('card-rates')).toContainText('640 B/s')
+  await expect(card(page, 'NODE-1').getByTestId('card-rates')).toHaveAttribute('title', /最近 30 秒的平均网速/)
+  await expect(card(page, 'NODE-2').getByTestId('card-rates')).toHaveAttribute('title', /资源采样里的网速/)
+  // 只有自定义标签,没有「落地节点」「自建」;没有标签也没有异常的卡片不留那一行。
+  await expect(card(page, 'NODE-1').getByTestId('card-chips')).toContainText('CN2')
+  await expect(card(page, 'NODE-1').getByTestId('card-chips')).toContainText('生产')
+  await expect(card(page, 'EXTERNAL_PROXY-1').getByTestId('card-chips')).toHaveCount(0)
+  // 外部线路的状态也在第一行。
+  await expect(card(page, 'EXTERNAL_PROXY-1').getByTestId('card-state')).toHaveText('启用中')
+})
+
+test('标签一行放不下就截掉,悬停浮出全部,卡片不变高', async ({ page, api }) => {
+  api.patch<{ labels: { kind: string; object_id: number; tags: string[] }[] }>('GET /api/dashboard/cards', (v) => {
+    v.labels.find((x) => x.kind === 'NODE' && x.object_id === 1)!.tags = [
+      'CN2 GIA', '三网精品', '电联 CN2', '移动 CMI', '原生 IP', '流媒体解锁', '大带宽', '备用线路',
+    ]
+  })
+  await page.goto('/dashboard')
+  const a = card(page, 'NODE-1')
+  const chips = a.getByTestId('card-chips')
+  await expect(chips).toHaveClass(/ac__chips--clipped/)
+  await expect(chips).toHaveAttribute('title', /备用线路/)
+  const before = await a.boundingBox()
+  const rowBefore = await chips.locator('.ac__chips-row').boundingBox()
+  await chips.hover()
+  const rowAfter = await chips.locator('.ac__chips-row').boundingBox()
+  expect(rowAfter!.height).toBeGreaterThan(rowBefore!.height)
+  await expect(chips.getByText('备用线路')).toBeVisible()
+  const after = await a.boundingBox()
+  expect(Math.round(after!.height)).toBe(Math.round(before!.height))
+})
+
+test('实时网速只读主控内存:打开卡片视图请求一次,切到原有视图不再轮询', async ({ page, api }) => {
+  await page.goto('/dashboard')
+  await expect(card(page, 'NODE-1')).toBeVisible()
+  expect(api.requests('GET', '/api/metrics/net-rates').length).toBeGreaterThanOrEqual(1)
+  await page.getByTestId('dashboard-view-toggle').getByRole('tab', { name: '原有视图' }).click()
+  const n = api.requests('GET', '/api/metrics/net-rates').length
+  await page.waitForTimeout(300)
+  expect(api.requests('GET', '/api/metrics/net-rates')).toHaveLength(n)
 })
 
 test('卡片不按卡片逐个请求:聚合接口一次,不碰任何单节点接口', async ({ page, api }) => {
