@@ -135,6 +135,12 @@ func newBoceEnv(t *testing.T) *boceEnv {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// 真实接口里海外拨测点的 ID 是负数,运营商一律「海外」。
+	if _, err := e.store.ApplyBoceVantages(context.Background(), boce.AreaOversea, []boce.Node{
+		{ID: -840, Name: "美国", ISPName: "海外", ISPCode: 840},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return be
 }
 
@@ -293,6 +299,37 @@ func TestBoceFullChainCreatesPollsAndStores(t *testing.T) {
 	b.env.engine().RunOnce(ctx)
 	if len(b.dialer.calls) != 0 {
 		t.Fatalf("主控引擎不应去连 Boce 序列:%v", b.dialer.calls)
+	}
+}
+
+// 海外拨测点(负数 ID)走完整条链路:建任务、提交、落库、序列名不重复「海外」。
+func TestBoceOverseaNegativeVantageID(t *testing.T) {
+	b := newBoceEnv(t)
+	ctx := context.Background()
+	task := b.task(t, []int{31, -840}, false, nil)
+	en := b.engine()
+	run, err := en.RunNow(ctx, task.ID, "oversea-0000001")
+	if err != nil || run.State != BoceRunPolling {
+		t.Fatalf("手动检测 = %+v, %v", run, err)
+	}
+	if c := b.api.creates[0]; len(c.vids) != 2 || c.vids[1] != -840 {
+		t.Fatalf("负数 ID 应当原样提交:%+v", c)
+	}
+	b.api.setDone("task0001", okItem(31, 20), boce.TCPingItem{NodeID: -840, Sent: 4, Received: 4, RTTAvgMs: 180, RTTMinMs: 178, RTTMaxMs: 185})
+	b.clock = b.clock.Add(11 * time.Second)
+	en.Tick(ctx)
+	if r := b.runs(t, task.ID)[0]; r.State != BoceRunDone || r.Results != 2 {
+		t.Fatalf("执行记录 = %+v", r)
+	}
+	series, _ := b.store.ListBoce(ctx, b.node)
+	var us *Target
+	for i := range series {
+		if series[i].VantageID == -840 {
+			us = &series[i]
+		}
+	}
+	if us == nil || us.Label != "美国" || us.LastStatus != string(StatusOK) {
+		t.Fatalf("海外序列 = %+v", us)
 	}
 }
 
@@ -861,17 +898,18 @@ func TestBoceVantageSyncKeepsCacheOnFailure(t *testing.T) {
 			missing++
 		}
 	}
-	if len(vs) != 4 || missing != 2 {
+	// 大陆 4 个(新增 1、消失 2 个只标记)+ 海外 1 个(那一区拉取失败,原样保留)。
+	if len(vs) != 5 || missing != 2 {
 		t.Fatalf("消失的只标记、不删:%d 个,标记 %d", len(vs), missing)
 	}
-	// 上游给空列表:按抽风处理,缓存一行不动。
+	// 上游给空列表:按抽风处理,缓存一行不动(两区原来都有缓存,两区都报错)。
 	b.api.nodes[boce.AreaCN] = nil
 	b.api.nodesErr[boce.AreaOversea] = nil
-	if _, err := b.engine().SyncVantages(ctx); err != nil {
-		t.Fatalf("海外是空的(原来也没有)不算失败:%v", err)
+	if _, err := b.engine().SyncVantages(ctx); err == nil {
+		t.Fatal("两区都返回空列表应当报错")
 	}
 	vs2, _ := b.store.ListBoceVantages(ctx)
-	if len(vs2) != 4 {
+	if len(vs2) != 5 {
 		t.Fatalf("空列表不应清掉缓存:%d", len(vs2))
 	}
 	st, _ := b.store.GetBoceState(ctx)

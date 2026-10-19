@@ -96,9 +96,15 @@ func TestBoceUpgradeKeepsProbeHistory(t *testing.T) {
 		created_at, updated_at) VALUES (1, 'INGRESS', 'TCP', 'SERVICE', 'X', 'V4', 'BOCE', ?, ?, ?)`, ts, ts, ts); err == nil {
 		t.Error("没挂任务的 Boce 序列应当被 CHECK 拦下")
 	}
+	// 海外拨测点的 ID 是负数(真实接口):CHECK 只要求非 0。
 	mustExec(t, db, `INSERT INTO probe_targets (node_id, direction, protocol, kind, ref, family, source, generation_since,
 		created_at, updated_at, boce_task_id, vantage_id) VALUES (1, 'INGRESS', 'TCP', 'SERVICE', 'ENTRY:SINGBOX:1', 'V4', 'BOCE', ?, ?, ?, 1, 31),
-		(1, 'INGRESS', 'TCP', 'SERVICE', 'ENTRY:SINGBOX:1', 'V4', 'BOCE', ?, ?, ?, 1, 32)`, ts, ts, ts, ts, ts, ts)
+		(1, 'INGRESS', 'TCP', 'SERVICE', 'ENTRY:SINGBOX:1', 'V4', 'BOCE', ?, ?, ?, 1, -840)`, ts, ts, ts, ts, ts, ts)
+	if _, err := db.Exec(`INSERT INTO probe_targets (node_id, direction, protocol, kind, ref, family, source, generation_since,
+		created_at, updated_at, boce_task_id, vantage_id) VALUES (1, 'INGRESS', 'TCP', 'SERVICE', 'ENTRY:SINGBOX:1', 'V4', 'BOCE', ?, ?, ?, 1, 0)`,
+		ts, ts, ts); err == nil {
+		t.Error("拨测点 ID 为 0 的 Boce 序列应当被 CHECK 拦下")
+	}
 	// 同一个任务 × 拨测点只能有一条。
 	if _, err := db.Exec(`INSERT INTO probe_targets (node_id, direction, protocol, kind, ref, family, source, generation_since,
 		created_at, updated_at, boce_task_id, vantage_id) VALUES (1, 'INGRESS', 'TCP', 'SERVICE', 'ENTRY:SINGBOX:1', 'V4', 'BOCE', ?, ?, ?, 1, 31)`,

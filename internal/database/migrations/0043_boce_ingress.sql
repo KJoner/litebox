@@ -21,7 +21,7 @@
 -- 节点列表缓存在库里,打开页面不去请求 Boce。上游列表里消失的只标 missing_since,不删:
 -- 任务里选着它的话,要能看出「这个拨测点已经不在列表里了」,而不是悄悄换成另一个付费拨测点。
 CREATE TABLE boce_vantages (
-    -- Boce 的节点 ID(上游给的,不是自增)
+    -- Boce 的节点 ID(上游给的,不是自增)。海外拨测点是负数(-840 = 美国),判有效只能看非 0
     id            INTEGER PRIMARY KEY,
     area          TEXT    NOT NULL CHECK (area IN ('CN', 'OVERSEA')),
     -- 地区与运营商只存接口实际返回的值,不臆造
@@ -242,7 +242,7 @@ CREATE TABLE probe_targets_new (
         (direction = 'INGRESS' AND source = 'MASTER' AND kind IN ('MGMT', 'SERVICE') AND public_id IS NULL
                                AND protocol = 'TCP' AND boce_task_id IS NULL AND vantage_id = 0) OR
         (direction = 'INGRESS' AND source = 'BOCE' AND kind = 'SERVICE' AND public_id IS NULL
-                               AND protocol = 'TCP' AND boce_task_id IS NOT NULL AND vantage_id > 0) OR
+                               AND protocol = 'TCP' AND boce_task_id IS NOT NULL AND vantage_id != 0) OR
         (direction = 'OUTBOUND' AND kind = 'PUBLIC' AND public_id IS NOT NULL AND source = 'NODE'
                                 AND boce_task_id IS NULL AND vantage_id = 0)
     )

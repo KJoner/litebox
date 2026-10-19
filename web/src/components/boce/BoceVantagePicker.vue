@@ -41,7 +41,20 @@ const keepSet = computed(() => new Set(props.keep))
 const ispOptions = computed(() => {
   const groups = new Set(props.vantages.filter((v) => v.area === area.value).map((v) => ispGroup(v.isp_name)))
   const out = ISP_QUICK.filter((x) => groups.has(x.key)).map((x) => ({ key: x.key as string, label: x.label as string }))
-  if (groups.has('OTHER')) out.push({ key: 'OTHER', label: area.value === 'OVERSEA' ? '未标运营商 / 其他' : '其他' })
+  if (groups.has('OTHER')) {
+    // 「其他」那一档直接用接口给的名字(大陆有「港澳台」,海外全是「海外」),不自己编分类。
+    const names = [
+      ...new Set(
+        props.vantages
+          .filter((v) => v.area === area.value && ispGroup(v.isp_name) === 'OTHER')
+          .map((v) => v.isp_name || '未标运营商'),
+      ),
+    ]
+    // 海外全是同一个「海外」时这一档等于「全部」,不再单列。
+    if (!(area.value === 'OVERSEA' && names.length === 1 && out.length === 0)) {
+      out.push({ key: 'OTHER', label: names.length <= 2 ? names.join(' / ') : '其他' })
+    }
+  }
   return out
 })
 

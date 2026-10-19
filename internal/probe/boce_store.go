@@ -100,8 +100,9 @@ type BoceVantage struct {
 }
 
 // Label 是拨测点给人看的名字:节点名 + 运营商(节点名里已经带了运营商就不重复)。
+// 海外拨测点的运营商一律是「海外」,大区另有标记,名字里不再重复。
 func (v BoceVantage) Label() string {
-	if v.ISPName == "" || strings.Contains(v.Name, v.ISPName) {
+	if v.ISPName == "" || strings.Contains(v.Name, v.ISPName) || (v.Area == "OVERSEA" && v.ISPName == "海外") {
 		return v.Name
 	}
 	return v.Name + " " + v.ISPName
