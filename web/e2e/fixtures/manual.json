@@ -5915,9 +5915,9 @@
           "ref": "EP:1",
           "public_id": 0,
           "boce_task_id": 2,
-          "vantage_id": 901,
+          "vantage_id": -392,
           "family": "V4",
-          "label": "日本东京",
+          "label": "日本",
           "source": "BOCE",
           "enabled": true,
           "resolved_host": "203.0.113.11",
@@ -6654,9 +6654,9 @@
           "boce": {
             "task_id": 2,
             "task_name": "海外拨测(手动)",
-            "vantage_id": 901,
-            "vantage_name": "日本东京",
-            "isp_name": "",
+            "vantage_id": -392,
+            "vantage_name": "日本",
+            "isp_name": "海外",
             "area": "OVERSEA",
             "missing": false,
             "schedule": "每天 09:00、21:00(Asia/Shanghai)",
@@ -12590,9 +12590,9 @@
           "ref": "EP:1",
           "public_id": 0,
           "boce_task_id": 2,
-          "vantage_id": 901,
+          "vantage_id": -392,
           "family": "V4",
-          "label": "日本东京",
+          "label": "日本",
           "source": "BOCE",
           "enabled": true,
           "resolved_host": "203.0.113.11",
@@ -13329,9 +13329,9 @@
           "boce": {
             "task_id": 2,
             "task_name": "海外拨测(手动)",
-            "vantage_id": 901,
-            "vantage_name": "日本东京",
-            "isp_name": "",
+            "vantage_id": -392,
+            "vantage_name": "日本",
+            "isp_name": "海外",
             "area": "OVERSEA",
             "missing": false,
             "schedule": "每天 09:00、21:00(Asia/Shanghai)",
@@ -22446,7 +22446,7 @@
           "ref": "EP:1",
           "family": "V4",
           "vantage_ids": [
-            901
+            -392
           ],
           "schedule_mode": "TIMES",
           "interval_min": 60,
@@ -22552,7 +22552,7 @@
           "area": "CN",
           "node_name": "上海",
           "isp_name": "电信",
-          "isp_code": 1,
+          "isp_code": 100017,
           "first_seen_at": "2026-10-14T03:00:00Z",
           "last_seen_at": "2026-10-17T03:00:00Z",
           "missing_since": ""
@@ -22562,7 +22562,7 @@
           "area": "CN",
           "node_name": "广东",
           "isp_name": "联通",
-          "isp_code": 2,
+          "isp_code": 100018,
           "first_seen_at": "2026-10-14T03:00:00Z",
           "last_seen_at": "2026-10-17T03:00:00Z",
           "missing_since": ""
@@ -22572,7 +22572,7 @@
           "area": "CN",
           "node_name": "北京",
           "isp_name": "移动",
-          "isp_code": 3,
+          "isp_code": 100019,
           "first_seen_at": "2026-10-14T03:00:00Z",
           "last_seen_at": "2026-10-17T03:00:00Z",
           "missing_since": ""
@@ -22582,17 +22582,17 @@
           "area": "CN",
           "node_name": "浙江",
           "isp_name": "电信",
-          "isp_code": 4,
+          "isp_code": 100020,
           "first_seen_at": "2026-10-14T03:00:00Z",
           "last_seen_at": "2026-10-17T03:00:00Z",
           "missing_since": "2026-10-17T03:00:00Z"
         },
         {
-          "id": 901,
+          "id": -392,
           "area": "OVERSEA",
-          "node_name": "日本东京",
-          "isp_name": "",
-          "isp_code": 5,
+          "node_name": "日本",
+          "isp_name": "海外",
+          "isp_code": 392,
           "first_seen_at": "2026-10-14T03:00:00Z",
           "last_seen_at": "2026-10-17T03:00:00Z",
           "missing_since": ""
@@ -22700,7 +22700,7 @@
           "ref": "EP:1",
           "family": "V4",
           "vantage_ids": [
-            901
+            -392
           ],
           "schedule_mode": "TIMES",
           "interval_min": 60,
