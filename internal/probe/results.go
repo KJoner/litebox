@@ -44,6 +44,7 @@ type TargetUpdate struct {
 // hourCounts 是一条结果在小时汇总里占的份额。
 type hourCounts struct {
 	attempts, ok, lossy, dns, skipped, ssh, tool, blocked int
+	vantage, api, expired                                 int
 	sent, received, rttN                                  int
 	rttSum, rttMin, rttMax                                int64
 }
@@ -61,6 +62,12 @@ func countsOf(r Result) hourCounts {
 		c.tool = 1
 	case r.Status == StatusBlocked:
 		c.blocked = 1
+	case r.Status == StatusVantageError:
+		c.vantage = 1
+	case r.Status == StatusAPIError:
+		c.api = 1
+	case r.Status == StatusExpired:
+		c.expired = 1
 	case r.Status.Attempted():
 		c.attempts = 1
 		switch r.Status {
@@ -88,6 +95,14 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.saveRoundTx(ctx, tx, samples, updates); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// saveRoundTx 是 SaveRound 的事务内版本:Boce 的结果要与去重键、执行记录写进同一个事务。
+func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, updates []TargetUpdate) error {
 	for _, sm := range samples {
 		at := sm.At.UTC().Format(time.RFC3339)
 		c := countsOf(sm.Result)
@@ -109,8 +124,8 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probe_hourly (target_id, generation, hour, attempts, ok, lossy, dns_errors, skipped,
 			                          ssh_errors, tool_errors, blocked, sent, received, rtt_n,
-			                          rtt_sum_us, rtt_min_us, rtt_max_us)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			                          rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(target_id, generation, hour) DO UPDATE SET
 			  attempts = attempts + excluded.attempts,
 			  ok = ok + excluded.ok,
@@ -120,6 +135,9 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 			  ssh_errors = ssh_errors + excluded.ssh_errors,
 			  tool_errors = tool_errors + excluded.tool_errors,
 			  blocked = blocked + excluded.blocked,
+			  vantage_errors = vantage_errors + excluded.vantage_errors,
+			  api_errors = api_errors + excluded.api_errors,
+			  expired = expired + excluded.expired,
 			  sent = sent + excluded.sent,
 			  received = received + excluded.received,
 			  rtt_n = rtt_n + excluded.rtt_n,
@@ -129,7 +147,8 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 			                    ELSE MIN(rtt_min_us, excluded.rtt_min_us) END,
 			  rtt_max_us = MAX(rtt_max_us, excluded.rtt_max_us)`,
 			sm.TargetID, sm.Generation, hour, c.attempts, c.ok, c.lossy, c.dns, c.skipped,
-			c.ssh, c.tool, c.blocked, c.sent, c.received, c.rttN, c.rttSum, minUS, maxUS); err != nil {
+			c.ssh, c.tool, c.blocked, c.sent, c.received, c.rttN, c.rttSum, minUS, maxUS,
+			c.vantage, c.api, c.expired); err != nil {
 			return err
 		}
 	}
@@ -149,7 +168,7 @@ func (s *Store) SaveRound(ctx context.Context, samples []Sample, updates []Targe
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // storedRTTN 是明细里记的 RTT 样本数:等于收到数时记 0(与升级前的明细同一个约定)。
@@ -201,6 +220,10 @@ type Bucket struct {
 	SSHErrors  int `json:"ssh_errors"`
 	ToolErrors int `json:"tool_errors"`
 	Blocked    int `json:"blocked"`
+	// Boce 序列独有的三种:拨测点异常、接口异常、任务未取得结果。同样不进分母。
+	VantageErrors int `json:"vantage_errors"`
+	APIErrors     int `json:"api_errors"`
+	Expired       int `json:"expired"`
 	// Sent / Received 按包计(TCP 建连按建连计,TCP 握手近似按 SYN 计)。
 	// LossRate = (Sent − Received) / Sent;一次都没发起时为 nil。它在三种口径下分别是
 	// ICMP 丢包率 / TCP 连接失败率 / TCP 握手超时无应答率,名字由序列的 metric 决定。
@@ -210,7 +233,7 @@ type Bucket struct {
 	RTTAvgMs *float64 `json:"rtt_avg_ms"`
 	RTTMinMs *float64 `json:"rtt_min_ms"`
 	RTTMaxMs *float64 `json:"rtt_max_ms"`
-	// State 是点阵的颜色:OK / PARTIAL / FAIL / DNS / SSH / TOOL / BLOCKED / SKIP / NONE。
+	// State 是点阵的颜色:OK / PARTIAL / FAIL / DNS / SSH / TOOL / BLOCKED / VANTAGE / API / EXPIRED / SKIP / NONE。
 	// NONE = 这个窗口一个样本都没有 —— **不按正常画**。SSH(采集失败)与 TOOL(工具不可用)
 	// 也不按失败画:那几轮根本没有发出去,目标那头是什么样子并不知道。
 	State string `json:"state"`
@@ -233,8 +256,12 @@ type Stats struct {
 	SSHErrors  int `json:"ssh_errors"`
 	ToolErrors int `json:"tool_errors"`
 	Blocked    int `json:"blocked"`
-	Sent       int `json:"sent"`
-	Received   int `json:"received"`
+	// Boce 序列独有的三种,不进分母。
+	VantageErrors int `json:"vantage_errors"`
+	APIErrors     int `json:"api_errors"`
+	Expired       int `json:"expired"`
+	Sent          int `json:"sent"`
+	Received      int `json:"received"`
 	// FailureRate 是 Failures / Attempts(0~1):TCP 建连的连接失败率;ICMP 与 TCP 握手近似时
 	// 是「整轮失败」的比例。LossRate 是 (Sent − Received) / Sent:ICMP 的丢包率、TCP 握手近似的
 	// 握手超时无应答率;TCP 建连时与 FailureRate 相同。一次都没发起过时两者都是 nil,不是 0。
@@ -255,6 +282,9 @@ func (b *Bucket) addCounts(c hourCounts) {
 	b.SSHErrors += c.ssh
 	b.ToolErrors += c.tool
 	b.Blocked += c.blocked
+	b.VantageErrors += c.vantage
+	b.APIErrors += c.api
+	b.Expired += c.expired
 	b.Sent += c.sent
 	b.Received += c.received
 	if c.rttN > 0 {
@@ -308,6 +338,12 @@ func (b *Bucket) finish() {
 		b.State = "TOOL"
 	case b.Blocked > 0:
 		b.State = "BLOCKED"
+	case b.VantageErrors > 0:
+		b.State = "VANTAGE"
+	case b.APIErrors > 0:
+		b.State = "API"
+	case b.Expired > 0:
+		b.State = "EXPIRED"
 	case b.Skipped > 0:
 		b.State = "SKIP"
 	default:
@@ -329,6 +365,9 @@ func Sum(buckets []Bucket, from, to time.Time) Stats {
 		st.SSHErrors += b.SSHErrors
 		st.ToolErrors += b.ToolErrors
 		st.Blocked += b.Blocked
+		st.VantageErrors += b.VantageErrors
+		st.APIErrors += b.APIErrors
+		st.Expired += b.Expired
 		st.Sent += b.Sent
 		st.Received += b.Received
 		if b.rttN > 0 {
@@ -429,7 +468,7 @@ func (s *Store) HourlyBuckets(ctx context.Context, t Target, from, to time.Time)
 	from = from.UTC().Truncate(time.Hour)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT hour, attempts, ok, lossy, dns_errors, skipped, ssh_errors, tool_errors, blocked,
-		       sent, received, rtt_n, rtt_sum_us, rtt_min_us, rtt_max_us
+		       sent, received, rtt_n, rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired
 		  FROM probe_hourly
 		 WHERE target_id = ? AND generation = ? AND hour >= ? AND hour < ?`,
 		t.ID, t.Generation, from.Format(time.RFC3339), to.UTC().Format(time.RFC3339))
@@ -442,7 +481,7 @@ func (s *Store) HourlyBuckets(ctx context.Context, t Target, from, to time.Time)
 		var b Bucket
 		var c hourCounts
 		if err := rows.Scan(&b.At, &c.attempts, &c.ok, &c.lossy, &c.dns, &c.skipped, &c.ssh, &c.tool, &c.blocked,
-			&c.sent, &c.received, &c.rttN, &c.rttSum, &c.rttMin, &c.rttMax); err != nil {
+			&c.sent, &c.received, &c.rttN, &c.rttSum, &c.rttMin, &c.rttMax, &c.vantage, &c.api, &c.expired); err != nil {
 			return nil, err
 		}
 		b.addCounts(c)

@@ -33,6 +33,7 @@ import (
 	"github.com/litebox/litebox/internal/asset"
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/auth"
+	"github.com/litebox/litebox/internal/boce"
 	"github.com/litebox/litebox/internal/cloud"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
@@ -703,6 +704,34 @@ func cmdServe(args []string) error {
 	})
 	go outbound.Run(ctx)
 
+	// Boce 外部入站拨测(付费,V21):从 Boce 各省各运营商的拨测点对节点入口做 TCPing。
+	// **默认关、没有预算**:全局开关、API Key、日 / 月上限三样都齐了才会创建付费任务;
+	// 请求全部由主控发起,节点上什么都不装。结果写进探测的统一历史(source = BOCE)。
+	boceEngine := probe.NewBoce(probe.BoceOptions{
+		Store:    probeStore,
+		API:      boce.New(),
+		Config:   settingsStore.BoceConfig,
+		Probe:    settingsStore.ProbeConfig,
+		Key:      settingsStore.BoceKey,
+		Skip:     cloudSkip,
+		Notifier: notifier,
+		Logger:   logger,
+		NodeName: func(ctx context.Context, id int64) string {
+			n, err := nodeStore.Get(ctx, id)
+			if err != nil {
+				return fmt.Sprintf("节点 #%d", id)
+			}
+			if n.DisplayName != "" {
+				return n.DisplayName
+			}
+			return n.Name
+		},
+		BaseURL: func(ctx context.Context) string {
+			return settingsStore.BaseURL(ctx, cfg.HTTP.BaseURL)
+		},
+	})
+	go boceEngine.Run(ctx)
+
 	// 外部代理源的自动同步。每个源自己的间隔决定何时拉,
 	// 这里的巡检只是「多久看一眼有没有到点的」。
 	// 默认所有源都关着自动同步 —— 打开之前管理员应该先手工同步一次看结果。
@@ -731,6 +760,7 @@ func cmdServe(args []string) error {
 		Prober:       prober,
 		Outbound:     outbound,
 		ProbeHelpers: probeHelpers,
+		Boce:         boceEngine,
 		Profiles:     profileStore,
 		Subs: subscription.NewService(
 			db, userStore, cipher, cfg.Subscription.ClientMixedPort,

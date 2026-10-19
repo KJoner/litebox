@@ -85,8 +85,12 @@ type dashboardCards struct {
 	Labels      []asset.Labels `json:"labels"`
 	Billing     []billingCard  `json:"billing"`
 	// Targets 是入口连通性(主控 → 节点),Outbound 是出站网络质量(节点 → 公共目标),分开给。
-	Targets     []probe.Summary  `json:"targets"`
-	Outbound    []probe.Summary  `json:"outbound"`
+	Targets  []probe.Summary `json:"targets"`
+	Outbound []probe.Summary `json:"outbound"`
+	// Boce 是 Boce 外部入站拨测的序列;CardPicks 是每台节点卡片上入站 / 出站各展示哪几项(最多 3 项,
+	// 手动选的或自动推荐的)。展示数量不是检测数量:没展示的序列照样在测、照样进节点详情。
+	Boce        []probe.Summary  `json:"boce"`
+	CardPicks   []probe.CardPick `json:"card_picks"`
 	CostSummary []costRow        `json:"cost_summary"`
 	Expiring7d  int              `json:"expiring_7d"`
 	Overdue     int              `json:"overdue"`
@@ -110,6 +114,7 @@ func (s *Server) handleDashboardCards(w http.ResponseWriter, r *http.Request) {
 	out := dashboardCards{
 		GeneratedAt: now.Format(time.RFC3339),
 		Labels:      []asset.Labels{}, Billing: []billingCard{}, Targets: []probe.Summary{}, Outbound: []probe.Summary{},
+		Boce: []probe.Summary{}, CardPicks: []probe.CardPick{},
 		CostSummary: []costRow{}, Errors: []string{}, External: []externalStatus{},
 	}
 	// 各块独立降级:哪一块读失败就在 errors 里点名,其余照常给 —— 与仪表盘的 failedSources 同一条规矩。
@@ -343,8 +348,25 @@ func (s *Server) summaryContext(ctx context.Context) probe.SummaryContext {
 		if g, err := s.probes.LoadGate(ctx); err == nil {
 			sc.Gate = g
 		}
+		if v, err := s.probes.LoadBoceView(ctx, s.boceConfig(ctx)); err == nil {
+			sc.Boce = v
+		}
 	}
 	return sc
+}
+
+// outboundCoverage 给卡片的自动推荐用:出站序列覆盖的运营商 / 地区取自公共目标库。
+func (s *Server) outboundCoverage(sc probe.SummaryContext) probe.CoverageKey {
+	if sc.Gate == nil {
+		return nil
+	}
+	return func(sm probe.Summary) string {
+		p, ok := sc.Gate.Publics[sm.PublicID]
+		if !ok || p.ISP == "" {
+			return ""
+		}
+		return p.ISP + ":" + p.Province + p.Region
+	}
 }
 
 func (s *Server) fillProbeCards(ctx context.Context, now time.Time, out *dashboardCards) error {
@@ -366,6 +388,30 @@ func (s *Server) fillProbeCards(ctx context.Context, now time.Time, out *dashboa
 			return err
 		}
 		*part.dst = sums
+	}
+	boceSeries, err := s.probes.ListAllBoce(ctx)
+	if err != nil {
+		return err
+	}
+	if out.Boce, err = s.probes.Summaries(ctx, boceSeries, sc, now); err != nil {
+		return err
+	}
+	prefs, err := s.probes.CardPrefsMap(ctx)
+	if err != nil {
+		return err
+	}
+	var nodeIDs []int64
+	if s.nodes != nil {
+		if list, err := s.nodes.Store().List(ctx); err == nil {
+			for _, n := range list {
+				nodeIDs = append(nodeIDs, n.ID)
+			}
+		}
+	}
+	ingress := append(append([]probe.Summary{}, out.Targets...), out.Boce...)
+	picks := probe.PickCards(prefs, nodeIDs, ingress, out.Outbound, s.outboundCoverage(sc))
+	for _, id := range nodeIDs {
+		out.CardPicks = append(out.CardPicks, picks[id])
 	}
 	return nil
 }
@@ -410,6 +456,11 @@ func (s *Server) dropAssetMeta(ctx context.Context, kind expiry.Kind, id int64) 
 		}
 	}
 	if kind == expiry.KindNode && s.probes != nil {
+		// 先删 Boce 任务:节点是软删除,任务不删的话引擎还会按时间表去花钱测一台不存在的机器
+		// (执行记录与估算消耗保留,预算不会因此凭空多出来)。
+		if err := s.probes.DeleteBoceTasksByNode(ctx, id); err != nil {
+			s.logger.Warn("清理 Boce 任务失败", "node_id", id, "error", err)
+		}
 		if err := s.probes.DeleteByNode(ctx, id); err != nil {
 			s.logger.Warn("清理探测目标失败", "node_id", id, "error", err)
 		}

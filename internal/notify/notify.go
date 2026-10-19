@@ -67,6 +67,12 @@ const (
 	KindProbeDown Kind = "PROBE_DOWN"
 	// KindProbeRecovered 上面那条之后恢复了。与巡检同理:只报警不报恢复的人,下次就不会再看了。
 	KindProbeRecovered Kind = "PROBE_RECOVERED"
+	// KindBoceAlert Boce 外部拨测的接口异常、自动暂停与恢复。
+	//
+	// 它说的是「第三方服务出了问题」,不是节点出了问题 —— 与 PROBE_DOWN 分开,收到时要做的事完全不同。
+	KindBoceAlert Kind = "BOCE_ALERT"
+	// KindBoceBudget Boce 的预算达到提醒线 / 已用完、账户余额低于门槛。
+	KindBoceBudget Kind = "BOCE_BUDGET"
 	// KindTest 设置页上的「发送测试」。它永远不受事件开关与冷却影响 ——
 	// 测试的意义就是"现在立刻发一条",被冷却拦下会让人以为配置错了。
 	KindTest Kind = "TEST"
@@ -80,6 +86,7 @@ func AllKinds() []Kind {
 		KindCloudThreshold, KindCloudPower, KindCloudQueryFailed,
 		KindExpirySoon, KindExpiryAutoRenew, KindExpiryOverdue,
 		KindProbeDown, KindProbeRecovered,
+		KindBoceAlert, KindBoceBudget,
 	}
 }
 
@@ -112,6 +119,10 @@ func (k Kind) Label() string {
 		return "TCP 探测连续失败"
 	case KindProbeRecovered:
 		return "TCP 探测恢复"
+	case KindBoceAlert:
+		return "Boce 外部拨测异常与恢复"
+	case KindBoceBudget:
+		return "Boce 预算与余额提醒"
 	case KindTest:
 		return "测试推送"
 	}

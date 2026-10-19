@@ -85,6 +85,9 @@ const (
 	// MetricSyn TCP 握手近似:握手超时无应答率 = Σ(发出的 SYN − 有应答的) ÷ Σ发出的 SYN。
 	// RST 也是应答:端口拒绝说明 SYN 到了、回程也通,只是那个端口没人听(状态单独记 REFUSED)。
 	MetricSyn Metric = "SYN"
+	// MetricBoce Boce 拨测点的 TCPing:TCPing 丢包率 = Σ(发 − 收) ÷ Σ发,按 Boce 报告的包数。
+	// 它是第三方拨测点从外面测的,与 ICMP 丢包率、主控的 TCP 连接失败率名字不同、不相加。
+	MetricBoce Metric = "BOCE"
 )
 
 // MetricOf 是 协议 + TCP 方式 → 看哪个比例 的唯一判据。
@@ -105,6 +108,8 @@ func (m Metric) RateName() string {
 		return "丢包率"
 	case MetricSyn:
 		return "握手超时无应答率"
+	case MetricBoce:
+		return "TCPing 丢包率(Boce)"
 	}
 	return "连接失败率"
 }
@@ -116,19 +121,23 @@ func (m Metric) MethodLabel() string {
 		return "ICMP"
 	case MetricSyn:
 		return "TCP 握手(近似 SYN)"
+	case MetricBoce:
+		return "Boce TCPing"
 	}
 	return "TCP 建连"
 }
 
 // 探测来源。
 //
-// 模型里预留了 source 维度,但 P2 的多地区 / 三网测点接入之前不会产生别的值 ——
-// 不能把同一个测量值复制三份冒充「电信 / 联通 / 移动」。
+// 每个来源都是真实存在的测点:不能把同一个测量值复制三份冒充「电信 / 联通 / 移动」。
+// 地区与运营商只有 Boce 的拨测点有,而且只用它接口实际返回的说法。
 const (
 	// SourceMaster 主控本机(入口连通性)。
 	SourceMaster = "MASTER"
 	// SourceNode 被测的这台 VPS 本机(出站网络质量)。
 	SourceNode = "NODE"
+	// SourceBoce Boce 的拨测点(外部入站拨测,付费)。与主控同属入站方向,但不是同一个测点。
+	SourceBoce = "BOCE"
 )
 
 // SourceLabel 是来源给人看的名字。
@@ -138,6 +147,8 @@ func SourceLabel(source string) string {
 		return "主控探测"
 	case SourceNode:
 		return "节点本机"
+	case SourceBoce:
+		return "Boce 拨测点"
 	}
 	return source
 }
@@ -164,6 +175,15 @@ const (
 	StatusToolError Status = "TOOL_ERROR"
 	// StatusSkipped 没有执行,Error 里是原因码。
 	StatusSkipped Status = "SKIPPED"
+	// 下面三种只有 Boce 序列会有,都**没有发起**、不进比例、不改连续失败计数 ——
+	// 第三方的故障不能被记成这台 VPS 的丢包。
+	//
+	// StatusVantageError Boce 拨测点自身异常:上游 error_code 非 0「视为拨测节点未响应」(含节点下线)。
+	StatusVantageError Status = "VANTAGE_ERROR"
+	// StatusAPIError Boce 接口异常:创建被拒、创建结果不确定、取不到结果。
+	StatusAPIError Status = "API_ERROR"
+	// StatusExpired 任务建了,但这个拨测点没出结果(2 分钟没完成、任务 ID 失效、结果过了保留期)。
+	StatusExpired Status = "EXPIRED"
 )
 
 // Attempted 表示这次真的发起了探测(进丢包率 / 失败率的分母)。
@@ -209,6 +229,15 @@ func (s Status) LabelFor(m Metric) string {
 		case StatusRefused:
 			return "端口拒绝(RST)"
 		}
+	case MetricBoce:
+		switch s {
+		case StatusOK:
+			return "全部收到"
+		case StatusLoss:
+			return "部分丢包"
+		case StatusTimeout:
+			return "全部丢包(连不上)"
+		}
 	}
 	return s.Label()
 }
@@ -238,12 +267,21 @@ func (s Status) Label() string {
 		return "工具不可用"
 	case StatusSkipped:
 		return "未执行"
+	case StatusVantageError:
+		return "拨测点异常"
+	case StatusAPIError:
+		return "接口异常"
+	case StatusExpired:
+		return "未取得结果"
 	}
 	return string(s)
 }
 
 // SkipCloudStopped 是 SKIPPED 的原因码:云实例停着(面板停的或别人停的都算)。
 const SkipCloudStopped = "CLOUD_STOPPED"
+
+// SkipBudget 是 SKIPPED 的原因码前缀:Boce 预算保护拦下了这一轮(后面跟着说明)。
+const SkipBudget = "BUDGET"
 
 // Result 是一次尝试(出站 ICMP 是一轮:同一个目标连发几个包)。
 type Result struct {

@@ -236,9 +236,9 @@ func (e *Engine) RunOnce(ctx context.Context) RoundStatus {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
-	// 只取入口目标:出站序列由 OutboundEngine 在节点本机测,这里一条都不能碰 ——
-	// 否则主控会自己去 ping 那些公共目标,而结果被记成「节点出站」。
-	targets, err := e.store.list(ctx, `WHERE enabled = 1 AND direction = 'INGRESS'
+	// 只取主控自己的入口目标:出站序列由 OutboundEngine 在节点本机测,Boce 序列由 Boce 的拨测点测,
+	// 这里一条都不能碰 —— 否则主控会自己去连那些目标,而结果被记成「节点出站」或「Boce 拨测点」。
+	targets, err := e.store.list(ctx, `WHERE enabled = 1 AND direction = 'INGRESS' AND source = 'MASTER'
 		AND node_id IN (SELECT id FROM nodes WHERE deleted_at IS NULL) ORDER BY id`)
 	if err != nil {
 		st.LastError = err.Error()

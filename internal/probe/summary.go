@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,11 @@ const (
 	StateCollectFailed = "COLLECT_FAILED" // SSH 连不上这台机器
 	StateToolError     = "TOOL_ERROR"     // 辅助程序缺失 / 跑不起来 / 没有 ICMP 权限
 	StateBlocked       = "BLOCKED"        // 目标解析到受限地址或端口受限
+	// 下面四种只有 Boce 序列会有:第三方那一侧的问题,或者预算保护没让它测 —— 同样不按失败画。
+	StateVantageError = "VANTAGE_ERROR" // Boce 拨测点自身异常
+	StateAPIError     = "API_ERROR"     // Boce 接口异常
+	StateExpired      = "EXPIRED"       // 任务建了但没取到结果
+	StateSkipped      = "SKIPPED"       // 未执行(预算保护等)
 )
 
 // LastSample 是最近一次结果。
@@ -55,6 +61,8 @@ type Summary struct {
 	// IntervalSec 是这条序列的探测间隔:入口用全局设置,出站用公共目标自己的。
 	IntervalSec int    `json:"interval_sec"`
 	Note        string `json:"note"`
+	// Boce 是 Boce 序列的任务与拨测点信息;别的序列没有。
+	Boce *BoceSeriesInfo `json:"boce,omitempty"`
 }
 
 // DotCount 是点阵的点数。
@@ -69,9 +77,14 @@ type SummaryContext struct {
 	// Gate 回答出站序列的实际间隔与「为什么不测」(目标 / 来源暂停、未确认授权、本机暂停);
 	// 为 nil 时出站序列按全局间隔算、停用原因写成笼统的一句。
 	Gate *OutboundGate
+	// Boce 回答 Boce 序列的间隔(按任务的时间表)、过期判据与「为什么不测」;为 nil 时按通用规则。
+	Boce *BoceView
 }
 
 func (sc SummaryContext) interval(t Target) time.Duration {
+	if t.Source == SourceBoce && sc.Boce != nil {
+		return sc.Boce.interval(t)
+	}
 	if t.Direction == DirOutbound && sc.Gate != nil {
 		if _, ok := sc.Gate.Publics[t.PublicID]; ok {
 			return time.Duration(sc.Gate.IntervalSec(t.NodeID, t.PublicID)) * time.Second
@@ -132,6 +145,11 @@ func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryConte
 			lastAt = v
 		}
 		sm.Stale = !lastAt.IsZero() && now.Sub(lastAt) > 3*interval
+		if t.Source == SourceBoce && sc.Boce != nil {
+			// Boce 按时间表判过期:夜里关闭时段本来就不测,不能按「3 个间隔没数据」算过期。
+			sm.Stale, _ = sc.Boce.stale(t, lastAt, now)
+			sm.Boce = sc.Boce.info(t)
+		}
 		sm.State, sm.StateText = targetState(t, sm, sc, lastAt, now)
 		out = append(out, sm)
 	}
@@ -145,6 +163,18 @@ func sumRows(rows []rawRow, from, now time.Time) Stats {
 }
 
 func targetState(t Target, sm Summary, sc SummaryContext, lastAt, now time.Time) (string, string) {
+	if t.Source == SourceBoce && sc.Boce != nil {
+		// Boce 有自己的开关与暂停原因,不看探测的全局开关(那是另外两类的)。
+		if st, txt, ok := sc.Boce.state(t, sm, sc, lastAt, now); ok {
+			return st, txt
+		}
+		if sc.NodeStopped != nil {
+			if reason := sc.NodeStopped(t.NodeID); reason != "" {
+				return StateStopped, reason + ",不发起付费检测"
+			}
+		}
+		return lastState(t, sm, lastAt, now)
+	}
 	switch {
 	case !sc.Config.Enabled:
 		return StatePaused, "探测已在设置里全局关闭"
@@ -167,6 +197,11 @@ func targetState(t Target, sm Summary, sc SummaryContext, lastAt, now time.Time)
 			return StateStopped, reason + ",暂停探测"
 		}
 	}
+	return lastState(t, sm, lastAt, now)
+}
+
+// lastState 是按最近一次结果判的那一半,三类序列共用。
+func lastState(t Target, sm Summary, lastAt, now time.Time) (string, string) {
 	last := Status(t.LastStatus)
 	switch {
 	case lastAt.IsZero():
@@ -180,6 +215,14 @@ func targetState(t Target, sm Summary, sc SummaryContext, lastAt, now time.Time)
 		return StateToolError, "工具不可用:" + lastError(sm)
 	case last == StatusBlocked:
 		return StateBlocked, "目标受限:" + lastError(sm)
+	case last == StatusVantageError:
+		return StateVantageError, "拨测点异常(不代表入口不可达):" + lastError(sm)
+	case last == StatusAPIError:
+		return StateAPIError, "Boce 接口异常(不代表入口不可达):" + lastError(sm)
+	case last == StatusExpired:
+		return StateExpired, "未取得结果:" + lastError(sm)
+	case last == StatusSkipped && t.Source == SourceBoce:
+		return StateSkipped, "未执行:" + strings.TrimPrefix(lastError(sm), SkipBudget+":")
 	case t.AlertState == "DOWN":
 		return StateDown, fmt.Sprintf("连续 %d 次失败", t.ConsecutiveFailures)
 	case last.Failed():

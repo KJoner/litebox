@@ -15,12 +15,14 @@ type NodeSettings struct {
 	Paused bool  `json:"paused"`
 	// IntervalSec 为 0 表示跟随各目标自己的间隔;否则这台机器上全部出站目标都按它,
 	// 但仍不能低于各自来源的下限(第三方来源默认 300 秒)。
-	IntervalSec int    `json:"interval_sec"`
-	UpdatedAt   string `json:"updated_at"`
+	IntervalSec int `json:"interval_sec"`
+	// BocePaused 暂停这台机器上全部 Boce 任务的自动检测(手动检测不受影响)。
+	BocePaused bool   `json:"boce_paused"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 func (s *Store) nodeSettingsMap(ctx context.Context) (map[int64]NodeSettings, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT node_id, paused, interval_sec, updated_at FROM probe_node_settings`)
+	rows, err := s.db.QueryContext(ctx, `SELECT node_id, paused, interval_sec, boce_paused, updated_at FROM probe_node_settings`)
 	if err != nil {
 		return nil, err
 	}
@@ -28,11 +30,12 @@ func (s *Store) nodeSettingsMap(ctx context.Context) (map[int64]NodeSettings, er
 	out := map[int64]NodeSettings{}
 	for rows.Next() {
 		var ns NodeSettings
-		var paused int
-		if err := rows.Scan(&ns.NodeID, &paused, &ns.IntervalSec, &ns.UpdatedAt); err != nil {
+		var paused, bocePaused int
+		if err := rows.Scan(&ns.NodeID, &paused, &ns.IntervalSec, &bocePaused, &ns.UpdatedAt); err != nil {
 			return nil, err
 		}
 		ns.Paused = paused == 1
+		ns.BocePaused = bocePaused == 1
 		out[ns.NodeID] = ns
 	}
 	return out, rows.Err()
@@ -64,18 +67,43 @@ func (s *Store) SetNodeSettings(ctx context.Context, nodeID int64, paused bool, 
 		return NodeSettings{}, ErrNotFound
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	var err error
-	if !paused && intervalSec == 0 {
-		_, err = s.db.ExecContext(ctx, `DELETE FROM probe_node_settings WHERE node_id = ?`, nodeID)
-	} else {
-		_, err = s.db.ExecContext(ctx, `INSERT INTO probe_node_settings (node_id, paused, interval_sec, updated_at)
-			VALUES (?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET paused = excluded.paused,
-			interval_sec = excluded.interval_sec, updated_at = excluded.updated_at`, nodeID, b2i(paused), intervalSec, now)
+	// 一行里还有 Boce 的暂停,所以先写再删「全部回到默认」的行,不按这两项直接删。
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO probe_node_settings (node_id, paused, interval_sec, updated_at)
+		VALUES (?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET paused = excluded.paused,
+		interval_sec = excluded.interval_sec, updated_at = excluded.updated_at`, nodeID, b2i(paused), intervalSec, now); err != nil {
+		return NodeSettings{}, err
 	}
-	if err != nil {
+	if err := s.dropDefaultNodeSettings(ctx, nodeID); err != nil {
 		return NodeSettings{}, err
 	}
 	if err := s.SyncOutbound(ctx); err != nil {
+		return NodeSettings{}, err
+	}
+	return s.GetNodeSettings(ctx, nodeID)
+}
+
+func (s *Store) dropDefaultNodeSettings(ctx context.Context, nodeID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM probe_node_settings
+		WHERE node_id = ? AND paused = 0 AND interval_sec = 0 AND boce_paused = 0`, nodeID)
+	return err
+}
+
+// SetBocePaused 暂停 / 恢复一台机器上全部 Boce 任务的自动检测。只改这一项,出站探测的覆盖不动。
+func (s *Store) SetBocePaused(ctx context.Context, nodeID int64, paused bool) (NodeSettings, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes WHERE id = ? AND deleted_at IS NULL`, nodeID).Scan(&exists); err != nil {
+		return NodeSettings{}, err
+	}
+	if exists == 0 {
+		return NodeSettings{}, ErrNotFound
+	}
+	now := s.now().UTC().Format(time.RFC3339)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO probe_node_settings (node_id, boce_paused, updated_at) VALUES (?,?,?)
+		ON CONFLICT(node_id) DO UPDATE SET boce_paused = excluded.boce_paused, updated_at = excluded.updated_at`,
+		nodeID, b2i(paused), now); err != nil {
+		return NodeSettings{}, err
+	}
+	if err := s.dropDefaultNodeSettings(ctx, nodeID); err != nil {
 		return NodeSettings{}, err
 	}
 	return s.GetNodeSettings(ctx, nodeID)
