@@ -48,7 +48,9 @@ const byID = computed(() => {
 })
 
 function itemText(s: ProbeSummary): string {
-  if (s.source === 'BOCE') return `Boce · ${s.boce?.vantage_name ?? s.label} · ${s.boce?.task_name ?? ''}`
+  if (s.source === 'BOCE') {
+    return `Boce ${s.metric === 'BOCE_PING' ? 'Ping' : 'TCPing'} · ${s.boce?.vantage_name ?? s.label} · ${s.boce?.task_name ?? ''}`
+  }
   if (s.direction === 'INGRESS') return `主控 · ${s.label} · ${protoChip(s)}`
   return `${s.label} · ${protoChip(s)}`
 }

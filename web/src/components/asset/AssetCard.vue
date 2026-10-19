@@ -184,7 +184,9 @@ const ingressTitle = computed(() => {
   const s = new Set(c.value.shownIngress.map((p) => p.source))
   const parts: string[] = []
   if (s.has('MASTER')) parts.push('主控 · TCP 建连')
-  if (s.has('BOCE')) parts.push('Boce · TCPing')
+  const boce = new Set(c.value.shownIngress.filter((p) => p.source === 'BOCE').map((p) => p.metric))
+  if (boce.has('BOCE')) parts.push('Boce · TCPing')
+  if (boce.has('BOCE_PING')) parts.push('Boce · Ping')
   return parts.length ? `入站:${parts.join(' / ')}` : '入站:主控连这台机器、Boce 拨测点从外部连这台机器'
 })
 const ingressAny = computed(() => c.value.probes.length + c.value.boce.length > 0)
@@ -319,7 +321,7 @@ const remain = computed(() => {
         <span class="ac__sec-title">网络</span>
         <LbInfoTip
           :width="320"
-          text="入站(左):主控对这台机器的端口做 TCP 建连(TCP 连接失败率);Boce 拨测点从各地区 / 运营商对订阅入口做 TCPing(TCPing 丢包率,第三方测点,拨测点异常与接口异常不计入)。出站(右):这台机器在本机测公共目标 —— ICMP 看真实丢包率与往返时间,TCP 建连看建连时间与连接失败率,TCP 握手近似看握手超时无应答率(不是丢包率),都不含 SSH 的耗时。采集失败、工具不可用、DNS 失败都没有发起,不计入任何比例。端口能连上不等于代理协议可用。协议与端口在名字的悬停说明里;每组最多展示 3 项,在节点详情的「卡片展示设置」里挑。"
+          text="入站(左):主控对这台机器的端口做 TCP 建连(TCP 连接失败率);Boce 拨测点从各地区 / 运营商对订阅入口做 TCPing(TCPing 丢包率)或 Ping(Ping 丢包率;很多机器不回 ICMP,ping 不通不等于入口不可用),都是第三方测点,拨测点异常与接口异常不计入。出站(右):这台机器在本机测公共目标 —— ICMP 看真实丢包率与往返时间,TCP 建连看建连时间与连接失败率,TCP 握手近似看握手超时无应答率(不是丢包率),都不含 SSH 的耗时。采集失败、工具不可用、DNS 失败都没有发起,不计入任何比例。端口能连上不等于代理协议可用。协议与端口在名字的悬停说明里;每组最多展示 3 项,在节点详情的「卡片展示设置」里挑。"
         />
         <RouterLink v-if="c.monitor === 'ON' && c.hiddenCount" class="ac__more" :to="`/nodes/${c.id}/network`">
           还有 {{ c.hiddenCount }} 个目标 <LbIcon name="chevron-right" :size="12" />

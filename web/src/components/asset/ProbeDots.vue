@@ -47,6 +47,7 @@ function title(d: ProbeBucket): string {
     if (props.metric === 'LOSS') parts.push(`ICMP ${d.attempts} 轮,发 ${d.sent} 个包、收到 ${d.received} 个`)
     else if (props.metric === 'SYN') parts.push(`握手 ${d.attempts} 轮,发出 ${d.sent} 个 SYN、有应答 ${d.received} 个`)
     else if (props.metric === 'BOCE') parts.push(`TCPing ${d.attempts} 轮,发 ${d.sent} 次、成功 ${d.received} 次`)
+    else if (props.metric === 'BOCE_PING') parts.push(`Ping ${d.attempts} 轮,发 ${d.sent} 个包、收到 ${d.received} 个`)
     else parts.push(`TCP 连接 ${d.attempts} 次,失败 ${d.failures} 次`)
   }
   if (d.rtt_avg_ms != null) parts.push(`平均 ${d.rtt_avg_ms.toFixed(1)} ms`)

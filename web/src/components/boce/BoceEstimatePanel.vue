@@ -19,7 +19,7 @@ defineProps<{ estimate: BoceEstimate | null; loading?: boolean; error?: string; 
         预计费用
         <LbInfoTip
           :width="340"
-          text="按当前 TCPing 定价估算:每个拨测点每次约 1 波点、1 波点约 ¥0.002(两个数在系统设置里改)。按真实日历月计算,不固定为 30 天。这只是估算,实际扣费、套餐与优惠以 Boce 的记录为准;网页版每日免费次数不计入 API。"
+          text="TCPing 与 Ping 都按这个估算:每个拨测点每次约 1 波点、1 波点约 ¥0.002(两个数在系统设置里改)。按真实日历月计算,不固定为 30 天。这只是估算,实际扣费、套餐与优惠以 Boce 的记录为准;网页版每日免费次数不计入 API。"
         />
       </span>
       <span v-if="loading" class="bep__muted">计算中…</span>

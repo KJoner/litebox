@@ -386,7 +386,7 @@ function taskMeta(t: BoceTaskView): LbStatusMeta {
           <div class="lb-group__row bsc__row">
             <span class="lb-group__label">
               估算单价
-              <LbInfoTip :width="300" text="按当前 TCPing 定价:每个拨测点每次约 1 波点,1 波点约 ¥0.002。只用于估算与预算,实际以 Boce 账单为准。" />
+              <LbInfoTip :width="300" text="TCPing 与 Ping 都按:每个拨测点每次约 1 波点,1 波点约 ¥0.002。只用于估算与预算,实际以 Boce 账单为准。" />
             </span>
             <div class="bsc__inline">
               <a-input-number v-model:value="form.points_per_check" :min="1" :max="100" :precision="0" addon-after="波点 / 拨测点 / 次" aria-label="每拨测点每次波点" />

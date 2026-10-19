@@ -1,4 +1,4 @@
-import type { BoceRunState, BoceScheduleSpec, BoceTaskInput, BoceVantage } from '@/api/client'
+import type { BoceRunState, BoceScheduleSpec, BoceTaskInput, BoceTestType, BoceVantage } from '@/api/client'
 import { metaOf, type LbStatusMeta } from '@/components/lb'
 
 /**
@@ -9,6 +9,29 @@ import { metaOf, type LbStatusMeta } from '@/components/lb'
  */
 
 const WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日']
+
+/** 两种测法的名字与一句话说明(任务表单、批量应用共用)。 */
+export const TEST_TYPES: { value: BoceTestType; label: string; hint: string }[] = [
+  {
+    value: 'TCPING',
+    label: 'TCPing',
+    hint: '对入口的「地址:端口」做 TCP 建连,看这个端口从外面连不连得上(每轮每个拨测点 5 次)。',
+  },
+  {
+    value: 'PING',
+    label: 'Ping',
+    hint: '对入口的地址做 ICMP ping,只看地址、与端口无关(每轮每个拨测点 5 个包)。很多机器或线路本来就不回 ICMP:ping 不通不等于入口不可用。',
+  },
+]
+
+export function testTypeLabel(t: BoceTestType | string | undefined): string {
+  return t === 'PING' ? 'Ping' : 'TCPing'
+}
+
+/** 被测地址的写法:TCPing 带端口,Ping 只有地址(端口不参与)。 */
+export function targetText(t: BoceTestType | string | undefined, host: string, port: number): string {
+  return t === 'PING' ? host : `${host}:${port}`
+}
 
 export function weekdaysText(mask: number): string {
   if (!mask || mask === 127) return '每天'
@@ -85,6 +108,7 @@ export function newRequestID(): string {
 export function emptyTaskInput(spec: BoceScheduleSpec): BoceTaskInput {
   return {
     name: '',
+    test_type: 'TCPING',
     ref: undefined,
     vantage_ids: [],
     month_points_limit: 0,
