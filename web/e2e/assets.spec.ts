@@ -44,8 +44,20 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   await expect(tcp).toContainText('TCP 443')
   await expect(tcp).toContainText('1h 失败率 0%')
   await expect(tcp).not.toContainText('丢包')
-  await expect(a).toContainText('入口连通性')
-  await expect(a).toContainText('主控探测 · TCP')
+  // 入站一组:按这台节点的「卡片展示设置」(手动选了 Boce 上海电信、广东联通与主控对外服务)。
+  await expect(a).toContainText('入站')
+  await expect(a).toContainText('主控 · TCP / Boce · TCPing')
+  const boce = a.getByTestId('probe-row-21')
+  await expect(boce).toHaveAttribute('data-source', 'BOCE')
+  await expect(boce).toContainText('上海 电信')
+  await expect(boce).toContainText('Boce')
+  await expect(boce).toContainText('168 ms')
+  await expect(boce).toContainText('TCPing 丢包 0%')
+  await expect(a.getByTestId('probe-row-22')).toContainText('最近一轮丢包 1/10')
+  // 没选上的照样在测:卡片只说「还有几个」,不画出来。拨测点异常的那一条(北京移动)没选上。
+  await expect(a.getByTestId('probe-row-23')).toHaveCount(0)
+  await expect(a.getByTestId('probe-row-14')).toHaveCount(0)
+  await expect(a).toContainText('还有 3 个目标')
   await expect(a.getByTestId('probe-row-1')).toHaveAttribute('data-direction', 'INGRESS')
   await expect(a.getByTestId('probe-row-1')).toContainText('上海-alpha · VLESS')
   // 10 ms 以上取整显示。
@@ -59,14 +71,14 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   await expect(a).toContainText('剩余未摊销价值(估算)')
   await expect(a).toContainText('3.95 USD')
 
-  // 东京只有出站(公共 DNS 对全部节点启用),没有入口目标:不出现「入口连通性」那一小块。
+  // 东京只有出站(公共 DNS 对全部节点启用),没有入站序列:不出现「入站」那一小块。
   const b = card(page, 'NODE-2')
   await expect(b.getByTestId('probe-row-13')).toContainText('最近一轮丢包 1/4')
   await expect(b.getByTestId('probe-row-13')).toContainText('88 ms')
   // 采集失败的窗口单独画,不按失败画。
   await expect(b.getByTestId('probe-row-13').locator('[data-state="SSH"]')).toHaveCount(1)
   await expect(b.getByTestId('probe-row-13').locator('[data-state="FAIL"]')).toHaveCount(0)
-  await expect(b).not.toContainText('入口连通性')
+  await expect(b).not.toContainText('入站')
   await expect(b).toContainText('未设置套餐')
 
   const x = card(page, 'EXTERNAL_PROXY-1')
@@ -77,14 +89,22 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   await expect(x).toContainText('120.00 CNY')
 })
 
-test('不冒充三网测点;只有 ICMP 叫丢包,TCP 一律叫失败率', async ({ page }) => {
+test('运营商只来自 Boce 拨测点;ICMP 叫丢包,主控 TCP 叫失败率,Boce 叫 TCPing 丢包', async ({ page }) => {
   await page.goto('/dashboard')
   await expect(page.getByTestId('asset-overview')).toBeVisible()
+  // 主控与节点本机的行、概览都不冒充三网:运营商只出现在 Boce 拨测点那几行(接口原样给的地区与运营商)。
   for (const isp of ['电信', '联通', '移动']) {
-    await expect(page.locator('.acv')).not.toContainText(isp)
+    await expect(page.getByTestId('asset-overview')).not.toContainText(isp)
+    for (const row of await page.locator('[data-source="MASTER"], [data-source="NODE"]').all()) {
+      await expect(row).not.toContainText(isp)
+    }
   }
-  for (const row of await page.locator('[data-direction="INGRESS"]').all()) {
+  for (const row of await page.locator('[data-direction="INGRESS"][data-source="MASTER"]').all()) {
     await expect(row).not.toContainText('丢包')
+  }
+  for (const row of await page.locator('[data-source="BOCE"]').all()) {
+    await expect(row).toContainText('TCPing 丢包')
+    await expect(row).toContainText('Boce')
   }
   await expect(page.getByTestId('probe-row-12')).not.toContainText('丢包')
 })
