@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS = -s -w -X 'main.Version=$(VERSION)'
 GOFLAGS = -trimpath
 
-.PHONY: realm probe all build build-linux web test lint clean run dev tidy singbox mieru
+.PHONY: realm probe all build build-linux web test lint clean run dev tidy vulncheck singbox mieru
 
 all: web build
 
@@ -31,6 +31,10 @@ test-race:
 lint:
 	go vet ./...
 	gofmt -l -d .
+
+## vulncheck: 用 govulncheck 查代码实际调用到的已知漏洞(标准库按当前 Go,要联网取漏洞库)
+vulncheck:
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 ## tidy: 整理依赖
 tidy:
