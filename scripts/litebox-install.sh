@@ -4,14 +4,17 @@
 #   bash <(wget -qO- https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #   bash <(curl -fsSL https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #
-# 它做这些事:检查并补齐 make / Node.js / Go → 拉源码 → 构建主控、节点用的
-# sing-box 与出站探测辅助程序 litebox-probe → 拉取 Mieru 用的 mita/mieru 与
-# realm → 调用 scripts/install.sh 安装或升级主控 → 把节点用的二进制放到
-# /opt/litebox/assets/ 下 → 打印登录信息。
+# 它做这些事:检查并补齐 git / curl / make → 拉源码 → 把 Go 与 Node.js 升到各自那条线上
+# 的最新补丁 → 构建主控、节点用的 sing-box 与出站探测辅助程序 litebox-probe → 拉取
+# Mieru 用的 mita/mieru 与 realm → 调用 scripts/install.sh 安装或升级主控 → 把节点用的
+# 二进制放到 /opt/litebox/assets/ 下 → 打印登录信息。
 #
-# 全程幂等,重复执行即为升级:已装且版本达标的依赖不会重复安装,
-# 已有的数据库、主密钥、配置文件都不会被覆盖。litebox-probe 每次都重建 ——
-# 它与面板之间有协议版本号,面板升级之后还分发旧的那一份,节点会报「版本不符」;
+# 全程幂等,重复执行即为升级:已是最新补丁的 Go / Node.js 不会重复安装,
+# 已有的数据库、主密钥、配置文件都不会被覆盖。Go 或 Node.js 出了安全补丁,重跑一次即可:
+# 面板与 litebox-probe 每次都用新的 Go 重新构建;节点用的 sing-box 在构建它的 Go 换过时
+# 也会重建,但已经装在节点上的那一份要到各节点卡片上「重新安装」才换(会断开在线连接)。
+#
+# litebox-probe 每次都重建 —— 它与面板之间有协议版本号,面板升级之后还分发旧的那一份,节点会报「版本不符」;
 # 换上去之后不用重启面板,各节点在下一轮出站探测时自动换成新文件。
 # 只用 scripts/upgrade.sh 升级时这一步不会做,要自己执行 bash scripts/build-probe.sh。
 #
@@ -19,7 +22,8 @@
 #   LITEBOX_REPO       源码仓库地址
 #   LITEBOX_BRANCH     分支,默认 master
 #   LITEBOX_SRC        源码目录,默认 /usr/local/src/litebox
-#   GO_MIN / NODE_MIN  依赖的最低主版本
+#   GO_MIN             Go 的最低版本,默认取 go.mod 的 go 指令(如 1.26.10)
+#   NODE_MIN           Node.js 的最低版本,默认 22.23.4
 #   SKIP_SINGBOX=1     跳过节点用 sing-box 的构建(它要拉 sing-box 源码,最慢)
 #   SKIP_MIERU=1       跳过 Mieru 用的 mita/mieru 下载(不打算用 Mieru 入口时)
 #   SKIP_REALM=1       跳过 realm 下载(不打算用 realm 转发时)
@@ -31,9 +35,6 @@ set -euo pipefail
 REPO="${LITEBOX_REPO:-https://github.com/KJoner/litebox.git}"
 BRANCH="${LITEBOX_BRANCH:-master}"
 SRC_DIR="${LITEBOX_SRC:-/usr/local/src/litebox}"
-GO_MIN="${GO_MIN:-1.26}"
-NODE_MIN="${NODE_MIN:-22}"
-NODE_VERSION="${NODE_VERSION:-v22.20.0}"
 
 INSTALL_DIR=/opt/litebox
 CONFIG_FILE=/etc/litebox/litebox.yaml
@@ -88,75 +89,6 @@ log "检查基础工具"
 ensure_pkgs git curl tar make
 ok "git / curl / tar / make 就绪"
 
-# ---------------------------------------------------------------- Go
-
-install_go() {
-    local version
-    version="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
-    [ -n "$version" ] || die "无法获取 Go 最新版本号,请检查网络"
-
-    log "安装 $version"
-    local tarball="/tmp/${version}.linux-${GO_ARCH}.tar.gz"
-    curl -fL --progress-bar -o "$tarball" "https://go.dev/dl/${version}.linux-${GO_ARCH}.tar.gz"
-    # 必须先删干净再解包:tar 是覆盖式的,旧版本残留的文件会留在 /usr/local/go 里。
-    rm -rf /usr/local/go
-    tar -C /usr/local -xzf "$tarball"
-    rm -f "$tarball"
-    ln -sf /usr/local/go/bin/go /usr/local/bin/go
-    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-}
-
-log "检查 Go(需要 >= $GO_MIN)"
-if command -v go >/dev/null; then
-    GO_CURRENT="$(go version | awk '{print $3}' | sed 's/^go//')"
-    if version_ge "$GO_CURRENT" "$GO_MIN"; then
-        ok "已安装 go$GO_CURRENT"
-    else
-        warn "已安装 go$GO_CURRENT,低于要求的 $GO_MIN,将升级"
-        install_go
-        ok "已升级到 $(go version | awk '{print $3}')"
-    fi
-else
-    install_go
-    ok "已安装 $(go version | awk '{print $3}')"
-fi
-
-# ---------------------------------------------------------------- Node.js
-
-install_node() {
-    # 用官方二进制包而不是发行版仓库:Debian 12 的 nodejs 是 18,
-    # 而前端构建需要 22+,装了发行版包只会在 npm run build 时才失败。
-    log "安装 Node.js $NODE_VERSION"
-    local name="node-${NODE_VERSION}-linux-${NODE_ARCH}"
-    local tarball="/tmp/${name}.tar.xz"
-    curl -fL --progress-bar -o "$tarball" \
-        "https://nodejs.org/dist/${NODE_VERSION}/${name}.tar.xz"
-    rm -rf "/usr/local/lib/nodejs/${name}"
-    mkdir -p /usr/local/lib/nodejs
-    tar -C /usr/local/lib/nodejs -xJf "$tarball"
-    rm -f "$tarball"
-    ln -sf "/usr/local/lib/nodejs/${name}/bin/node" /usr/local/bin/node
-    ln -sf "/usr/local/lib/nodejs/${name}/bin/npm"  /usr/local/bin/npm
-    ln -sf "/usr/local/lib/nodejs/${name}/bin/npx"  /usr/local/bin/npx
-}
-
-log "检查 Node.js(需要 >= $NODE_MIN)"
-ensure_pkgs xz-utils >/dev/null 2>&1 || true
-if command -v node >/dev/null; then
-    NODE_CURRENT="$(node --version | sed 's/^v//')"
-    if version_ge "$NODE_CURRENT" "$NODE_MIN"; then
-        ok "已安装 node v$NODE_CURRENT"
-    else
-        warn "已安装 node v$NODE_CURRENT,低于要求的 $NODE_MIN,将升级"
-        install_node
-        ok "已升级到 $(node --version)"
-    fi
-else
-    install_node
-    ok "已安装 $(node --version)"
-fi
-command -v npm >/dev/null || die "npm 不可用,请检查 Node.js 安装"
-
 # ---------------------------------------------------------------- 源码
 
 if [ -d "$SRC_DIR/.git" ]; then
@@ -172,6 +104,161 @@ fi
 cd "$SRC_DIR"
 ok "源码版本 $(git rev-parse --short HEAD)"
 
+# ---------------------------------------------------------------- 工具链(Go / Node.js)
+#
+# 两者都不只看主版本,还要跟到【同一条线上的最新补丁】,补丁一出来重跑这个脚本就能换上。
+# 原来只判「>= 1.26 / >= 22」,一台装过一次的机器重跑多少次都还是最初那一版 ——
+# Go 与 Node.js 的安全修复全在补丁版本里,一个都进不来。
+# Go 这一侧更要紧:标准库是静态编进二进制的,面板、litebox-probe、节点用的 sing-box
+# 都带着【构建时】那一版标准库的漏洞,光装新 Go 不够,要用它重新构建才算修好(见下面「构建」)。
+# 查不到最新补丁(go.dev / nodejs.org 连不上)时只按下限检查并警告,不中止。
+
+# 两个版本号里较高的那个,空串当作没有。
+max_version() {
+    printf '%s\n%s\n' "$1" "$2" | sed '/^$/d' | sort -V | tail -1
+}
+
+# 下载并核对 sha256。校验值与安装包出自同一个站点,挡不住站点本身出事;
+# 挡得住的是下到一半、被截断或被缓存坏的文件 —— 解包到一半失败会把 /usr/local/go 留成空目录。
+fetch_checked() {  # $1 URL,$2 期望的 sha256,$3 存到哪里
+    [ -n "$2" ] || die "取不到 $1 的 sha256,不安装没有校验过的文件"
+    curl -fL --progress-bar -o "$3" "$1" || die "下载失败:$1"
+    if ! echo "$2  $3" | sha256sum -c --status -; then
+        rm -f "$3"
+        die "sha256 不符,已删除下载的文件:$1"
+    fi
+}
+
+# Go 的下限取自 go.mod 的 go 指令(带补丁号)—— CI 的 setup-go 读的也是这一行,不在这里再写一遍。
+# 要更新下限就改 go.mod,改完之后 GOTOOLCHAIN=auto 的开发机也会自动换到那一版。
+GO_FLOOR="${GO_MIN:-$(sed -n 's/^go \([0-9][0-9.]*\)$/\1/p' go.mod)}"
+[ -n "$GO_FLOOR" ] || die "读不到 go.mod 里的 Go 版本"
+
+# 只问本机装的那一份。在源码目录里直接跑 go version,go.mod 要求更高时 go 命令会
+# 自动下载新工具链、报的是那一个的版本号 —— 检查会被它骗过去,而 sing-box 的构建
+# (GOTOOLCHAIN=local)用的仍是本机那个旧的。
+local_go_version() {
+    command -v go >/dev/null || return 0
+    (cd / && GOTOOLCHAIN=local go env GOVERSION 2>/dev/null) | sed -n 's/^go\([0-9][0-9.]*\).*/\1/p' || true
+}
+
+# 同一条线(如 1.26)上最新的补丁号,查不到时输出空。
+latest_go_patch() {
+    local line_re
+    line_re="$(printf '%s' "$1" | sed 's/\./\\./g')"
+    curl -fsSL --max-time 30 'https://go.dev/dl/?mode=json' 2>/dev/null |
+        grep -o "\"version\": *\"go${line_re}\.[0-9][0-9]*\"" |
+        sed 's/.*"go\([0-9.]*\)"$/\1/' | sort -V | tail -1 || true
+}
+
+install_go() {  # $1 版本号,如 1.26.10
+    local file="go$1.linux-${GO_ARCH}.tar.gz" sum
+    log "安装 go$1"
+    sum="$(curl -fsSL --max-time 30 "https://dl.google.com/go/${file}.sha256" 2>/dev/null |
+        grep -oE '^[0-9a-f]{64}' | head -1 || true)"
+    fetch_checked "https://go.dev/dl/${file}" "$sum" "/tmp/${file}"
+    # 必须先删干净再解包:tar 是覆盖式的,旧版本残留的文件会留在 /usr/local/go 里。
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf "/tmp/${file}"
+    rm -f "/tmp/${file}"
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+    hash -r
+}
+
+GO_CURRENT="$(local_go_version)"
+# 已经装了更新的一条线(比如 1.27)就跟那一条的补丁,不降回去。
+GO_LINE="$(max_version "$GO_CURRENT" "$GO_FLOOR" | cut -d. -f1,2)"
+GO_LATEST="$(latest_go_patch "$GO_LINE")"
+GO_WANT="$(max_version "$GO_FLOOR" "$GO_LATEST")"
+
+log "检查 Go(不低于 $GO_FLOOR,并跟到 $GO_LINE 线的最新补丁)"
+[ -n "$GO_LATEST" ] || warn "查不到 Go $GO_LINE 线的最新补丁(go.dev 连不上?),只按下限 $GO_FLOOR 检查"
+if [ -n "$GO_CURRENT" ] && version_ge "$GO_CURRENT" "$GO_WANT"; then
+    ok "已安装 go$GO_CURRENT"
+else
+    [ -z "$GO_CURRENT" ] || warn "已安装 go$GO_CURRENT,换成 go$GO_WANT(安全补丁要重新构建才会进二进制,下面会重新构建)"
+    install_go "$GO_WANT"
+    GO_CURRENT="$(local_go_version)"
+    [ "$GO_CURRENT" = "$GO_WANT" ] ||
+        die "PATH 里的 go 是 ${GO_CURRENT:-(找不到)},不是刚装到 /usr/local/bin/go 的 go$GO_WANT,请调整 PATH 后重跑"
+    ok "已安装 go$GO_CURRENT"
+fi
+# 后面的构建一律用这一份,不让 go 命令按 go.mod 自己去下载另一版工具链 ——
+# 那样编进二进制的与 build-metadata.json 里记的、与上面检查过的,三者都可能对不上。
+export GOTOOLCHAIN=local
+GO_BUILD_VERSION="go$GO_CURRENT"
+
+# Node.js 只用来构建前端(产物 embed 进面板二进制),面板运行时不跑它;
+# 但它装在这台机器上、每次升级都要跑 npm ci,所以同样跟到最新补丁。
+# 下限是已知修过安全问题的版本(2026-10-21 的安全发布),要更新就改这里。
+NODE_FLOOR="${NODE_MIN:-22.23.4}"
+NODE_FLOOR_MAJOR="${NODE_FLOOR%%.*}"
+
+local_node_version() {
+    command -v node >/dev/null || return 0
+    node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9.]*\)$/\1/p' || true
+}
+
+# 同一条线(主版本,如 22)上最新的补丁号,查不到时输出空。
+latest_node_patch() {
+    curl -fsSL --max-time 30 "https://nodejs.org/dist/latest-v$1.x/SHASUMS256.txt" 2>/dev/null |
+        sed -n "s/^[0-9a-f]\{64\}  node-v\($1\.[0-9][0-9]*\.[0-9][0-9]*\)-linux-${NODE_ARCH}\.tar\.xz\$/\1/p" |
+        head -1 || true
+}
+
+install_node() {  # $1 版本号,如 22.23.4
+    # 用官方二进制包而不是发行版仓库:Debian 12 的 nodejs 是 18,
+    # 而前端构建需要 22+,装了发行版包只会在 npm run build 时才失败。
+    local name="node-v$1-linux-${NODE_ARCH}" sum
+    log "安装 Node.js v$1"
+    sum="$(curl -fsSL --max-time 30 "https://nodejs.org/dist/v$1/SHASUMS256.txt" 2>/dev/null |
+        sed -n "s/^\([0-9a-f]\{64\}\)  ${name}\.tar\.xz\$/\1/p" | head -1 || true)"
+    fetch_checked "https://nodejs.org/dist/v$1/${name}.tar.xz" "$sum" "/tmp/${name}.tar.xz"
+    mkdir -p /usr/local/lib/nodejs
+    rm -rf "/usr/local/lib/nodejs/${name}"
+    tar -C /usr/local/lib/nodejs -xJf "/tmp/${name}.tar.xz"
+    rm -f "/tmp/${name}.tar.xz"
+    ln -sf "/usr/local/lib/nodejs/${name}/bin/node" /usr/local/bin/node
+    ln -sf "/usr/local/lib/nodejs/${name}/bin/npm"  /usr/local/bin/npm
+    ln -sf "/usr/local/lib/nodejs/${name}/bin/npx"  /usr/local/bin/npx
+    # 这个目录只放本脚本装的 Node.js。旧版本留着不会被执行,
+    # 但漏洞扫描会一直报它们,看的人会以为那是正在用的那一份。
+    find /usr/local/lib/nodejs -mindepth 1 -maxdepth 1 -type d -name 'node-v*-linux-*' \
+        ! -name "$name" -exec rm -rf {} +
+    hash -r
+}
+
+ensure_pkgs xz-utils >/dev/null 2>&1 || true
+NODE_CURRENT="$(local_node_version)"
+NODE_LINE="$NODE_FLOOR_MAJOR"
+# 已经装了更新的 LTS 线(偶数主版本)就跟那一条;奇数线只维护半年,不跟,换回下限那一条。
+if [ -n "$NODE_CURRENT" ] && [ "${NODE_CURRENT%%.*}" -gt "$NODE_FLOOR_MAJOR" ] &&
+    [ $(( ${NODE_CURRENT%%.*} % 2 )) -eq 0 ]; then
+    NODE_LINE="${NODE_CURRENT%%.*}"
+fi
+NODE_LATEST="$(latest_node_patch "$NODE_LINE")"
+if [ "$NODE_LINE" = "$NODE_FLOOR_MAJOR" ]; then
+    NODE_WANT="$(max_version "$NODE_FLOOR" "$NODE_LATEST")"
+else
+    NODE_WANT="$NODE_LATEST"
+fi
+
+log "检查 Node.js(不低于 $NODE_FLOOR,并跟到 v$NODE_LINE 线的最新补丁)"
+[ -n "$NODE_LATEST" ] || warn "查不到 Node.js v$NODE_LINE 线的最新补丁(nodejs.org 连不上?),只按下限检查"
+if [ -n "$NODE_CURRENT" ] && [ "${NODE_CURRENT%%.*}" = "$NODE_LINE" ] &&
+    { [ -z "$NODE_WANT" ] || version_ge "$NODE_CURRENT" "$NODE_WANT"; }; then
+    ok "已安装 node v$NODE_CURRENT"
+else
+    [ -z "$NODE_CURRENT" ] || warn "已安装 node v$NODE_CURRENT,换成 v$NODE_WANT"
+    install_node "$NODE_WANT"
+    NODE_CURRENT="$(local_node_version)"
+    [ "$NODE_CURRENT" = "$NODE_WANT" ] ||
+        die "PATH 里的 node 是 ${NODE_CURRENT:-(找不到)},不是刚装到 /usr/local/bin/node 的 v$NODE_WANT,请调整 PATH 后重跑"
+    ok "已安装 node v$NODE_CURRENT"
+fi
+command -v npm >/dev/null || die "npm 不可用,请检查 Node.js 安装"
+
 # ---------------------------------------------------------------- 构建
 
 # build-linux 依赖 web,前端会被一并构建并 embed 进二进制,不必单独跑一遍。
@@ -179,22 +266,32 @@ log "构建主控(含前端,首次约 2~5 分钟)"
 make build-linux
 BIN="bin/litebox-linux-$ARCH"
 [ -f "$BIN" ] || die "未生成 $BIN"
-ok "$BIN($(du -h "$BIN" | cut -f1))"
+ok "$BIN($(du -h "$BIN" | cut -f1),$GO_BUILD_VERSION 构建)"
 
-# 已有的构建只在【版本对得上】时才跳过。只看文件在不在的话,升级面板的人会
-# 一直分发上一次构建的那一版 —— 节点上装的仍是旧版,而 Snell 这类要新版本的
-# 入站在那些机器上建不了。版本号从 build-singbox.sh 里那一行读,不在这里再写一遍。
+# 已有的构建只在【sing-box 版本与构建它的 Go 都对得上】时才跳过。只看文件在不在的话,
+# 升级面板的人会一直分发上一次构建的那一版 —— 节点上装的仍是旧版,而 Snell 这类要新版本的
+# 入站在那些机器上建不了。只看 sing-box 版本也不够:上面已经换了打过补丁的 Go,
+# 而节点用的 sing-box 仍带着旧标准库的漏洞 —— 它是节点上直接对着公网的那个进程。
+# 版本号从 build-singbox.sh 里那一行读,不在这里再写一遍;构建它的 Go 记在 build-metadata.json。
 WANT_SINGBOX="$(sed -n 's/^SINGBOX_VERSION="\${SINGBOX_VERSION:-\([^}]*\)}"$/\1/p' scripts/build-singbox.sh)"
 HAVE_SINGBOX="$(sed -n 's/.*"singbox_version": *"\([^"]*\)".*/\1/p' assets/singbox/build-metadata.json 2>/dev/null || true)"
+HAVE_SINGBOX_GO="$(sed -n 's/.*"go_version": *"\([^"]*\)".*/\1/p' assets/singbox/build-metadata.json 2>/dev/null || true)"
 SINGBOX_UPGRADED=0
+SINGBOX_REBUILD_REASON=""
 if [ "${SKIP_SINGBOX:-0}" = "1" ]; then
     warn "已跳过 sing-box 构建。节点安装前需要自行执行 bash scripts/build-singbox.sh"
 elif ls assets/singbox/sing-box-linux-* >/dev/null 2>&1 &&
-    [ -n "$WANT_SINGBOX" ] && [ "$HAVE_SINGBOX" = "$WANT_SINGBOX" ]; then
-    ok "已有节点用 sing-box $HAVE_SINGBOX,跳过构建(要重建请删掉 assets/singbox/ 后重跑)"
+    [ -n "$WANT_SINGBOX" ] && [ "$HAVE_SINGBOX" = "$WANT_SINGBOX" ] &&
+    [ "$HAVE_SINGBOX_GO" = "$GO_BUILD_VERSION" ]; then
+    ok "已有节点用 sing-box $HAVE_SINGBOX($HAVE_SINGBOX_GO 构建),跳过构建(要重建请删掉 assets/singbox/ 后重跑)"
 else
     if ls assets/singbox/sing-box-linux-* >/dev/null 2>&1; then
-        log "已有的 sing-box 是 ${HAVE_SINGBOX:-旧版本},重新构建 ${WANT_SINGBOX}(较慢)"
+        if [ "$HAVE_SINGBOX" != "$WANT_SINGBOX" ]; then
+            SINGBOX_REBUILD_REASON="版本 ${HAVE_SINGBOX:-未知} → ${WANT_SINGBOX}"
+        else
+            SINGBOX_REBUILD_REASON="构建它的 Go ${HAVE_SINGBOX_GO:-未知} → ${GO_BUILD_VERSION}"
+        fi
+        log "重新构建节点用的 sing-box(${SINGBOX_REBUILD_REASON},较慢)"
         SINGBOX_UPGRADED=1
     else
         log "构建节点用的 sing-box ${WANT_SINGBOX}(带 with_v2ray_api 标签,较慢)"
@@ -346,7 +443,7 @@ EOF
 if [ "$SINGBOX_UPGRADED" = "1" ]; then
     cat <<EOF
 
-  节点用的 sing-box 换成了 ${WANT_SINGBOX},但已经装在节点上的仍是之前那一版。
+  节点用的 sing-box 重新构建了(${SINGBOX_REBUILD_REASON}),但已经装在节点上的仍是之前那一份。
   在每台机器的「入口」Tab 里,sing-box 卡片「重启」旁的下拉 →「重新安装」,
   再下发一次配置(会断开那台机器上全部入口的在线连接)。
   卡片上写着「可升级」的就是还没换的。
