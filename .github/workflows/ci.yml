@@ -43,6 +43,21 @@ jobs:
       - name: go test
         run: go test ./... -count=1
 
+  # 代码实际调用到的已知漏洞(标准库 + 依赖)。go.mod 的 go 指令就是 Go 的安全下限,
+  # 这一步报红说明该提下限或升依赖了 —— 改完之后线上重跑一键脚本即可换上。
+  # govulncheck 固定版本,不用 latest。
+  vulncheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 前端占位产物
+        run: mkdir -p web/dist && echo '<!doctype html><title>LiteBox</title>' > web/dist/index.html
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
   web:
     runs-on: ubuntu-24.04
     defaults:
@@ -53,6 +68,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          # 不加的话会用 runner 镜像里预装的那个 22.x,可能落后好几个安全补丁。
+          check-latest: true
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
