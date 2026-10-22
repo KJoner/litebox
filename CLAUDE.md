@@ -3440,6 +3440,16 @@ Modern SaaS Dashboard + Infrastructure Console:中性灰阶、细边框、轻阴
   别的任何改动照样拒绝;库里已有的记录不改写(回滚到旧二进制之后它还要认得自己那一份)。
   `migrate_eol_test.go` 钉着这三条,外加「嵌入的迁移文件里没有 CR」—— 那一条在 Windows
   上失败,通常是工作区在加 `.gitattributes` 之前检出的,删掉文件重新 checkout 即可;
+* **一键脚本里的 Go 与 Node.js 要跟到同一条线的最新补丁,不能只看「主版本够了」**(`scripts/litebox-install.sh`)。
+  Go 的标准库是静态编进二进制的:面板、`litebox-probe`、节点用的 sing-box 都带着**构建时**那一版标准库。
+  原来只判 ≥ 1.26 / ≥ 22,一台 5 月装的机器重跑多少次都用 1.26.3 构建 —— 2026-10 那一批 Go 安全补丁
+  (`govulncheck` 报面板代码实际调用到 25 个)一个都进不来。Go 的下限**只写在 `go.mod` 的 go 指令里**
+  (CI 的 setup-go 读同一行,脚本也读它);查本机装的版本要用 `GOTOOLCHAIN=local go env GOVERSION` ——
+  在源码目录里直接 `go version`,go.mod 要求更高时报的是自动下载的那一版,而 sing-box 的构建
+  (`GOTOOLCHAIN=local`)用的仍是本机那个旧的,检查就被骗过去了。之后的构建一律 `GOTOOLCHAIN=local`。
+  节点用的 sing-box 在「构建它的 Go」(`build-metadata.json` 的 `go_version`)换过时重建,但已装在节点上的那一份
+  仍要人去卡片上「重新安装」—— 会断开那台机器上全部在线连接,不自动做。下载一律核对 sha256;
+  查不到最新补丁(断网)时只按下限检查、不中止。mita / mieru 与 realm 是上游原样二进制,不在这条线上;
 * 每个阶段完成后必须运行测试并更新文档。
 
 ## 代码约定
@@ -3634,6 +3644,7 @@ UI 2.0 的验收截图从 scratch 面板直接截,带出了测试机的公网地
 ```bash
 make test          # 运行 Go 测试
 make lint          # go vet + gofmt
+make vulncheck     # govulncheck:代码实际调用到的已知漏洞(要联网取漏洞库)
 make web           # 构建前端到 web/dist
 make build         # 构建二进制(需先 make web)
 make build-linux   # 交叉编译 linux amd64/arm64
@@ -4170,5 +4181,13 @@ V22.6 探针系统增强三项(约束见上面「自建节点互测入站、出�
 
 全部用 httptest、假执行器与临时库测;没有在真实节点上跑过 PEER 与 HTTP 测法。master 二进制打开 0045 的库照常(实测)。
 Playwright 功能用例 133 个(+4),截图基线 43 张(+1,更新 14 张)。
+
+Go / Node.js 安全补丁(2026-10,无迁移,约束见「工程约束」里一键脚本那一条,说明见 `docs/升级说明.md`):
+
+* Go 1.26.3 → 1.26.10,升 `x/net` / `x/crypto` / `x/text` / `grpc`;`govulncheck` 实际调用到的漏洞 25 → 0,
+  CI 加 `vulncheck` 一步、`make vulncheck`;前端 `npm audit fix`(0 个);
+* 一键脚本:Go / Node.js 跟到同一条线的最新补丁、核对 sha256、构建用 `GOTOOLCHAIN=local`、
+  sing-box 在构建它的 Go 换过时重建。节点上的 sing-box 仍要逐台「重新安装」;mita v3.36.0(Go 1.24 构建)
+  与 sing-box 自己锁定的依赖要等上游版本 + 真机验证,不在这一轮。
 
 未完成当前阶段前,不要提前开发后续阶段的功能。
