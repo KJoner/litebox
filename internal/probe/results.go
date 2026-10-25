@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -440,52 +441,73 @@ type rawRow struct {
 
 func (r rawRow) status() Status { return r.res.Status }
 
+const rawColumns = `target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer, rtt_n,
+		       http_status`
+
+// scanRaw 读一行明细;时间解析不了的行 ok 为假(跳过,与原来一样)。
+func scanRaw(rows *sql.Rows) (r rawRow, ok bool, err error) {
+	var at string
+	var rtt, minUS, maxUS int64
+	if err := rows.Scan(&r.targetID, &r.gen, &at, &r.res.Status, &rtt, &r.res.Error,
+		&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer, &r.res.RTTN, &r.res.HTTPStatus); err != nil {
+		return r, false, err
+	}
+	t, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return r, false, nil
+	}
+	r.at = t
+	r.res.RTT = time.Duration(rtt) * time.Microsecond
+	r.res.RTTMin = time.Duration(minUS) * time.Microsecond
+	r.res.RTTMax = time.Duration(maxUS) * time.Microsecond
+	return r, true, nil
+}
+
 // rawSince 读一批目标从 since 起的明细,只取各自当前口径(generation)的行。
 func (s *Store) rawSince(ctx context.Context, targets []Target, since time.Time) (map[int64][]rawRow, error) {
 	out := map[int64][]rawRow{}
+	return out, s.rawInto(ctx, out, targets, since, time.Time{})
+}
+
+// rawInto 把 [from, to) 的明细追加进 out(to 为零值表示不设上限),行按 (at, id) 排好。
+// 分两段读同一批目标时,先读早的那一段,每个目标的行仍然按时间排。
+func (s *Store) rawInto(ctx context.Context, out map[int64][]rawRow, targets []Target, from, to time.Time) error {
 	if len(targets) == 0 {
-		return out, nil
+		return nil
 	}
 	gen := map[int64]int{}
 	ph := make([]string, len(targets))
-	args := []any{since.UTC().Format(time.RFC3339)}
+	args := []any{from.UTC().Format(time.RFC3339)}
+	upper := ""
+	if !to.IsZero() {
+		upper = " AND at < ?"
+		args = append(args, to.UTC().Format(time.RFC3339))
+	}
 	for i, t := range targets {
 		gen[t.ID] = t.Generation
 		ph[i] = "?"
 		args = append(args, t.ID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, generation, at, status, rtt_us, error, sent, received, rtt_min_us, rtt_max_us, peer, rtt_n,
-		       http_status
+		SELECT `+rawColumns+`
 		  FROM probe_results
-		 WHERE at >= ? AND target_id IN (`+strings.Join(ph, ",")+`)
+		 WHERE at >= ?`+upper+` AND target_id IN (`+strings.Join(ph, ",")+`)
 		 ORDER BY target_id, at, id`, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var r rawRow
-		var at string
-		var rtt, minUS, maxUS int64
-		if err := rows.Scan(&r.targetID, &r.gen, &at, &r.res.Status, &rtt, &r.res.Error,
-			&r.res.Sent, &r.res.Received, &minUS, &maxUS, &r.res.Peer, &r.res.RTTN, &r.res.HTTPStatus); err != nil {
-			return nil, err
-		}
-		if r.gen != gen[r.targetID] {
-			continue
-		}
-		t, err := time.Parse(time.RFC3339, at)
+		r, ok, err := scanRaw(rows)
 		if err != nil {
+			return err
+		}
+		if !ok || r.gen != gen[r.targetID] {
 			continue
 		}
-		r.at = t
-		r.res.RTT = time.Duration(rtt) * time.Microsecond
-		r.res.RTTMin = time.Duration(minUS) * time.Microsecond
-		r.res.RTTMax = time.Duration(maxUS) * time.Microsecond
 		out[r.targetID] = append(out[r.targetID], r)
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // bucketize 把 [from, to) 切成 size 宽的窗口并填入明细。最后一个窗口可以不满。
