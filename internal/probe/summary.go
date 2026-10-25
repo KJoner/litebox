@@ -124,17 +124,142 @@ func dotWidth(interval time.Duration) time.Duration {
 	return dot
 }
 
-// Summaries 一次算出一批目标的卡片数据:一条 SQL 读 24 小时明细,在内存里切窗。
+// summaryCut 算一批目标要从明细表读到多早:点阵窗口与近 1 小时里最早的那个起点,向下取整到整点。
+// 24 小时合计里比它早的整点直接读小时汇总,只有 24 小时窗口开头那不满一小时的一截还要读明细。
+//
+// 返回的 edge 是 24 小时窗口起点向上取整到整点;cut <= edge 时(点阵窗口本身就快一天了,
+// 比如间隔一小时的 Boce 序列)没有可以用小时汇总的整点,cut 与 edge 都退回 since,全部读明细。
+func summaryCut(targets []Target, sc SummaryContext, since, now time.Time) (edge, cut time.Time) {
+	edge = since.Truncate(time.Hour)
+	if edge.Before(since) {
+		edge = edge.Add(time.Hour)
+	}
+	need := now.Add(-time.Hour)
+	for _, t := range targets {
+		dot := dotWidth(sc.interval(t))
+		if from := now.Truncate(dot).Add(dot).Add(-DotCount * dot); from.Before(need) {
+			need = from
+		}
+	}
+	cut = need.Truncate(time.Hour)
+	if !cut.After(edge) {
+		return since, since
+	}
+	return edge, cut
+}
+
+// hourlyTotals 把一批目标在 [from, to) 的小时汇总各自加成一个窗口(只算当前口径;未 finish)。
+func (s *Store) hourlyTotals(ctx context.Context, targets []Target, from, to time.Time) (map[int64]*Bucket, error) {
+	out := map[int64]*Bucket{}
+	if len(targets) == 0 || !to.After(from) {
+		return out, nil
+	}
+	gen := map[int64]int{}
+	ph := make([]string, len(targets))
+	args := []any{from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339)}
+	for i, t := range targets {
+		gen[t.ID] = t.Generation
+		ph[i] = "(?,?)"
+		args = append(args, t.ID, t.Generation)
+	}
+	// 按 (target_id, generation) 成对筛:主键是 (target_id, generation, hour),只给 target_id 的话
+	// SQLite 只用得上主键的第一列,每个目标要把 90 天的小时汇总从头扫一遍;成对给就能直接定位到那几个整点。
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT target_id, generation, attempts, ok, lossy, dns_errors, skipped, ssh_errors, tool_errors, blocked,
+		       sent, received, rtt_n, rtt_sum_us, rtt_min_us, rtt_max_us, vantage_errors, api_errors, expired,
+		       http_2xx, http_3xx, http_4xx, http_5xx
+		  FROM probe_hourly
+		 WHERE hour >= ? AND hour < ? AND (target_id, generation) IN (VALUES `+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var g int
+		var c hourCounts
+		if err := rows.Scan(&id, &g, &c.attempts, &c.ok, &c.lossy, &c.dns, &c.skipped, &c.ssh, &c.tool, &c.blocked,
+			&c.sent, &c.received, &c.rttN, &c.rttSum, &c.rttMin, &c.rttMax, &c.vantage, &c.api, &c.expired,
+			&c.h2xx, &c.h3xx, &c.h4xx, &c.h5xx); err != nil {
+			return nil, err
+		}
+		if g != gen[id] {
+			continue
+		}
+		b := out[id]
+		if b == nil {
+			b = &Bucket{}
+			out[id] = b
+		}
+		b.addCounts(c)
+	}
+	return out, rows.Err()
+}
+
+// lastBefore 取一个目标在 [from, to) 里当前口径的最后一条明细(按 at、id),没有就是 nil。
+func (s *Store) lastBefore(ctx context.Context, t Target, from, to time.Time) (*rawRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+rawColumns+`
+		  FROM probe_results
+		 WHERE target_id = ? AND generation = ? AND at >= ? AND at < ?
+		 ORDER BY at DESC, id DESC LIMIT 1`,
+		t.ID, t.Generation, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		r, ok, err := scanRaw(rows)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return &r, nil
+		}
+	}
+	return nil, rows.Err()
+}
+
+// Summaries 一次算出一批目标的卡片数据,在内存里切窗。
 // 卡片不按目标逐个请求 —— 10~20 台机器就是几十个目标,逐个请求就是几十次往返。
+//
+// 原来一条 SQL 读 24 小时明细:间隔一分钟的目标一天 1440 行,两百个目标就是近三十万行,
+// 而数据库只有一条连接,仪表盘的其余请求全排在它后面 —— 首屏「串行」地慢。现在明细只读
+// 点阵窗口与近 1 小时(加上 24 小时窗口开头不满一小时的那一截),中间的整点读小时汇总。
+// 小时汇总与明细在同一个事务里由同一个 countsOf 写入,两条路加出来的数字一字不差
+// (TestSummariesMatchFullScan 钉着)。
 func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryContext, now time.Time) ([]Summary, error) {
 	now = now.UTC()
-	raw, err := s.rawSince(ctx, targets, now.Add(-24*time.Hour))
+	since := now.Add(-24 * time.Hour)
+	edge, cut := summaryCut(targets, sc, since, now)
+	raw := map[int64][]rawRow{}
+	if edge.After(since) {
+		if err := s.rawInto(ctx, raw, targets, since, edge); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.rawInto(ctx, raw, targets, cut, time.Time{}); err != nil {
+		return nil, err
+	}
+	hourly, err := s.hourlyTotals(ctx, targets, edge, cut)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Summary, 0, len(targets))
 	for _, t := range targets {
 		rows := raw[t.ID]
+		var last *rawRow
+		if n := len(rows); n > 0 && !rows[n-1].at.Before(cut) {
+			last = &rows[n-1]
+		} else if hourly[t.ID] != nil {
+			// 最近一小段没有样本(停用、关机、探测没跑),最后一条落在用小时汇总代替的那几个整点里。
+			if last, err = s.lastBefore(ctx, t, edge, cut); err != nil {
+				return nil, err
+			}
+		}
+		if last == nil && len(rows) > 0 {
+			last = &rows[len(rows)-1]
+		}
 		interval := sc.interval(t)
 		dot := dotWidth(interval)
 		sm := Summary{Target: t, SourceLabel: SourceLabel(t.Source), DotSeconds: int(dot.Seconds()),
@@ -149,9 +274,9 @@ func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryConte
 		dotTo := now.Truncate(dot).Add(dot)
 		sm.Dots = bucketize(rows, dotTo.Add(-DotCount*dot), dotTo, dot)
 		sm.H1 = sumRows(rows, now.Add(-time.Hour), now)
-		sm.H24 = sumRows(rows, now.Add(-24*time.Hour), now)
-		if n := len(rows); n > 0 {
-			r := rows[n-1]
+		sm.H24 = sumWithHourly(rows, hourly[t.ID], since, now)
+		if last != nil {
+			r := *last
 			ls := &LastSample{At: r.at.Format(time.RFC3339), Status: r.status(), Label: r.status().LabelFor(t.Metric),
 				Error: r.res.Error, Peer: r.res.Peer, HTTPStatus: r.res.HTTPStatus}
 			ls.Sent, ls.Received = r.res.counts()
@@ -174,6 +299,24 @@ func (s *Store) Summaries(ctx context.Context, targets []Target, sc SummaryConte
 		out = append(out, sm)
 	}
 	return out, nil
+}
+
+// sumWithHourly 是 24 小时合计:明细(窗口开头的零头与 cut 之后)加上中间整点的小时汇总。
+// 两部分的时间不重叠(rows 里没有 [edge, cut) 的行),等价于 sumRows 读满 24 小时明细。
+func sumWithHourly(rows []rawRow, hourly *Bucket, from, now time.Time) Stats {
+	to := now.Add(time.Second)
+	var b Bucket
+	if hourly != nil {
+		b = *hourly
+	}
+	for _, r := range rows {
+		if r.at.Before(from) || !r.at.Before(to) {
+			continue
+		}
+		b.addCounts(countsOf(r.res))
+	}
+	b.finish()
+	return Sum([]Bucket{b}, from, now)
 }
 
 // sumRows 合计 [from, now] 的明细(含恰好落在 now 的那一条)。
