@@ -45,10 +45,53 @@ test.describe('门户流量口径', () => {
   })
 })
 
+test.describe('门户探针', () => {
+  test('栏目里有「探针」;卡片只给名字、标签、资源百分比与那几个检测项', async ({ page, api }) => {
+    portalOnly(api)
+    await page.goto('/user/dashboard')
+    await page.getByRole('navigation', { name: '栏目' }).getByRole('button', { name: /探针/ }).click()
+    await expect(page).toHaveURL(/\/user\/probe$/)
+    const cards = page.getByTestId('portal-probe-card')
+    await expect(cards).toHaveCount(2)
+    const a = cards.nth(0)
+    await expect(a).toContainText('上海-alpha')
+    await expect(a).toContainText('CN2')
+    await expect(a).toContainText('在线 13 天')
+    // 资源只有百分比:没有绝对用量,悬停也没有(进度条上没有 title)。
+    await expect(a.locator('.lb-usage__value')).toHaveText(['12%', '49%', '31%'])
+    await expect(a.locator('.lb-usage[title]')).toHaveCount(0)
+    await expect(a).not.toContainText(/\d\s?(KB|MB|GB|TB)\b/)
+    // 网络:入站、出站各自那几项;口径名照旧按 metric 起名。
+    const items = a.getByTestId('portal-probe-item')
+    await expect(items).toHaveCount(2)
+    await expect(items.nth(0)).toContainText('上海 电信')
+    await expect(items.nth(0)).toContainText('168 ms')
+    await expect(items.nth(0)).toContainText('1h TCPing 丢包 0%')
+    await expect(items.nth(1)).toContainText('超时')
+    await expect(items.nth(1)).toContainText('连续失败')
+    // 没有套餐、价格、到期,也没有网速与流量。
+    for (const word of ['套餐', '到期', 'USD', 'CNY', '流量', 'KB/s']) await expect(a).not.toContainText(word)
+    const b = cards.nth(1)
+    await expect(b).toContainText('离线')
+    await expect(b).toContainText('还没有资源数据')
+    await expect(b).toContainText('这台机器暂时没有展示网络检测')
+    expect(api.requests('GET', '/api/portal/probe')).toHaveLength(1)
+    expect(api.requests('GET', /^\/api\/(?!portal\/)/)).toHaveLength(0)
+  })
+
+  test('读失败:说明原因并可重试,不画一张空卡片', async ({ page, api }) => {
+    portalOnly(api).fail('GET', '/api/portal/probe', 500, '暂时读不到探针数据')
+    await page.goto('/user/probe')
+    await expect(page.getByText('暂时读不到探针数据')).toBeVisible()
+    await expect(page.getByTestId('portal-probe-card')).toHaveCount(0)
+  })
+})
+
 test.describe('门户页面', () => {
   for (const [path, heading] of [
     ['/user/subscription', '我的订阅'],
     ['/user/nodes', '我的节点'],
+    ['/user/probe', '探针'],
     ['/user/traffic', '我的流量'],
     ['/user/security', '安全设置'],
   ] as const) {

@@ -690,6 +690,23 @@ button {
 /* ---------- 登录页(管理员 / 门户共用) ----------
    两个登录页原来各写一份逐行相同的 scoped 样式(只差类名前缀),这里收成一份。
    居中 400 宽卡片:Logo + 名称 / 标题与适用范围 / 错误条 / 表单(标签在上) / 底部导流。 */
+/* 会话失效被送回登录页时的提示:不是错误,琥珀色浅底。 */
+.lb-auth__notice {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  padding: var(--sp-3) 14px;
+  border-radius: var(--r-group);
+  background: var(--warn-bg);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+.lb-auth__notice-icon {
+  flex: none;
+  padding-top: 2px;
+  color: var(--warn);
+}
 .lb-auth {
   min-height: 100vh;
   display: flex;

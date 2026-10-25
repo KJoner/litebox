@@ -38,6 +38,35 @@ interface RequestOptions {
   query?: Record<string, string | number | undefined>
 }
 
+/**
+ * 会话失效时的处理(清登录状态、送回对应的登录页、登录完回到原来的页面),由路由那一侧注册。
+ *
+ * 判据是后端认证中间件给的 code = UNAUTHENTICATED,不是光看 401:改密码时原密码输错、登录时凭据不对
+ * 同样是 401,按状态码一刀切的话,输错一次原密码就被踢回登录页。
+ */
+export type SessionScope = 'admin' | 'portal'
+let sessionExpiredHandler: ((scope: SessionScope) => void) | null = null
+export function setSessionExpiredHandler(fn: ((scope: SessionScope) => void) | null): void {
+  sessionExpiredHandler = fn
+}
+
+/** 这几个接口本身就是在问「登没登录」或在登入登出:401 是它们的正常结果,由路由守卫与登录页自己处理。 */
+const SESSION_PROBES = new Set([
+  '/api/auth/me',
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/portal/auth/me',
+  '/api/portal/auth/login',
+  '/api/portal/auth/logout',
+])
+
+export const SESSION_EXPIRED_TEXT = '登录已失效,请重新登录'
+
+/** 这个错误是不是「会话没了」(而不是别的 401)。 */
+export function isSessionExpired(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401 && err.code === 'UNAUTHENTICATED'
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, query } = options
 
@@ -88,7 +117,15 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       payload && typeof payload === 'object' && 'error' in payload
         ? String((payload as { error: unknown }).error)
         : `请求失败(HTTP ${response.status})`
-    throw new ApiError(response.status, message, payload)
+    const err = new ApiError(response.status, message, payload)
+    if (isSessionExpired(err)) {
+      // 页面上各处拿到这个错误多半会弹一条吐司:说法统一成「登录已失效」,
+      // 与随后的登录页提示是一回事,而不是一句让人以为出了故障的「会话无效」。
+      const expired = new ApiError(401, SESSION_EXPIRED_TEXT, payload)
+      if (!SESSION_PROBES.has(path)) sessionExpiredHandler?.(path.startsWith('/api/portal/') ? 'portal' : 'admin')
+      throw expired
+    }
+    throw err
   }
   return payload as T
 }
@@ -1826,6 +1863,10 @@ export interface DashboardCards {
   cost_summary: CostRow[]
   expiring_7d: number
   overdue: number
+  /** 只算自建节点的成本与到期数:卡片视图只画自建节点,概览要与卡片对得上(上面三项含外部线路) */
+  node_cost_summary: CostRow[]
+  node_expiring_7d: number
+  node_overdue: number
   /** 读失败的块,点名;其余照常给 */
   errors: string[]
   external: ExternalCheckStatus[]
@@ -2967,6 +3008,46 @@ export interface PortalRelayNode {
   in_subscription: boolean
 }
 
+// ---------- 门户探针 ----------
+
+/** 点阵的一个点:只有时间与粗粒度结果。没发起的几种对用户都是「没有数据」(NONE),不按失败画。 */
+export interface PortalProbeDot {
+  at: string
+  state: 'OK' | 'PARTIAL' | 'FAIL' | 'HTTP5XX' | 'NONE'
+}
+
+/** 门户卡片上的一个探测项。白名单:没有地址、端口、来源机器与内部原因。 */
+export interface PortalProbeItem {
+  name: string
+  metric: ProbeMetric
+  state: 'OK' | 'LOSSY' | 'FAILING' | 'DOWN' | 'HTTP_5XX' | 'PAUSED' | 'NO_DATA'
+  rtt_ms: number | null
+  last_label: string
+  h1_rate: number | null
+  h24_rate: number | null
+  dots: PortalProbeDot[]
+  dot_seconds: number
+}
+
+/** 门户探针的一台机器。只有百分比,没有内存 / 磁盘的绝对用量,也没有流量、网速与套餐。 */
+export interface PortalProbeCard {
+  name: string
+  region: string
+  tags: string[]
+  status: 'online' | 'offline' | 'disabled'
+  uptime_seconds: number | null
+  uptime_at: string
+  resources: {
+    cpu: number | null
+    mem: number | null
+    disk: number | null
+    stale: boolean
+    collected_at: string
+  } | null
+  ingress: PortalProbeItem[]
+  outbound: PortalProbeItem[]
+}
+
 export const portalApi = {
   login: (username: string, password: string) =>
     request<PortalIdentity>('/api/portal/auth/login', {
@@ -2994,6 +3075,7 @@ export const portalApi = {
       relays: PortalRelayNode[]
     }>('/api/portal/nodes'),
   traffic: (days = 30) => request<PortalTraffic>('/api/portal/traffic', { query: { days } }),
+  probe: () => request<{ generated_at: string; items: PortalProbeCard[] }>('/api/portal/probe'),
   subscription: () => request<PortalSubscription>('/api/portal/subscription'),
   regenerateSubscription: () =>
     request<PortalSubscription>('/api/portal/subscription/regenerate', { method: 'POST' }),

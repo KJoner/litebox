@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError } from '@/api/client'
 import { usePortalStore } from '@/stores/portal'
+import { safeRedirect } from '@/router'
 import { LbIcon } from '@/components/lb'
 
 /**
@@ -24,6 +25,8 @@ const error = ref('')
 /** login_enabled=false 与整个账号被停用是两回事,文案必须不同。 */
 const loginClosed = ref(false)
 const showPassword = ref(false)
+/** 会话失效被送回来的(地址里带 expired=1):说清楚为什么在这里、登录完会回到哪。 */
+const expired = computed(() => route.query.expired === '1' && !error.value)
 
 async function onSubmit() {
   if (loading.value) return
@@ -37,9 +40,7 @@ async function onSubmit() {
       await router.replace({ name: 'portal-security' })
       return
     }
-    const redirect =
-      typeof route.query.redirect === 'string' ? route.query.redirect : '/user/dashboard'
-    await router.replace(redirect)
+    await router.replace(safeRedirect(route.query.redirect, '/user/dashboard'))
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : '登录失败,请稍后重试'
     loginClosed.value = /登录已关闭|已关闭|已停用|禁用/.test(error.value)
@@ -62,6 +63,11 @@ async function onSubmit() {
         <div>
           <h1 class="lb-auth__title">登录 LiteBox</h1>
           <div class="lb-auth__scope">用户中心</div>
+        </div>
+
+        <div v-if="expired" class="lb-auth__notice" role="status" data-testid="login-expired">
+          <span class="lb-auth__notice-icon"><LbIcon name="clock" :size="15" /></span>
+          <span>登录已失效,请重新登录。登录后回到刚才的页面。</span>
         </div>
 
         <div v-if="error" class="lb-error-strip">

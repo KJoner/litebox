@@ -28,6 +28,7 @@ const ADMIN_PAGES: [string, string][] = [
 const PORTAL_PAGES: [string, string][] = [
   ['portal-dashboard', '/user/dashboard'],
   ['portal-nodes', '/user/nodes'],
+  ['portal-probe', '/user/probe'],
 ]
 
 async function settle(page: Page) {

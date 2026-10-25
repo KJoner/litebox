@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   api,
   ApiError,
+  isSessionExpired,
   type AccessTier,
   type Node,
   type NotifyKind,
@@ -34,7 +35,6 @@ import OrderMigrationModal from '@/components/node/OrderMigrationModal.vue'
  * 行线贴满卡片,保存按钮在带底色的卡片底栏;帮助文案全部收进标题旁或字段旁的 ⓘ。
  */
 const auth = useAuthStore()
-const router = useRouter()
 const route = useRoute()
 
 const settings = ref<PanelSettings | null>(null)
@@ -258,14 +258,11 @@ async function changePassword() {
     pwd.next = ''
     pwd.confirm = ''
   } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      // 401 可能是原密码错误,也可能是会话已失效,两者要区分处理。
-      if (err.message.includes('原密码')) {
-        message.error(err.message)
-      } else {
-        auth.clear()
-        await router.replace({ name: 'login' })
-      }
+    if (isSessionExpired(err)) {
+      // 会话已失效:全局那一层已经送回登录页(带着回来的地址),这里不再跳一次。
+    } else if (err instanceof ApiError && err.status === 401) {
+      // 原密码错误也是 401,但不是登录失效。
+      message.error(err.message)
     } else {
       message.error(err instanceof ApiError ? err.message : '修改密码失败')
     }

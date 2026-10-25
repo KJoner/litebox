@@ -225,6 +225,7 @@ func TestPortalEndpointsRequireAuth(t *testing.T) {
 		{http.MethodPost, "/api/portal/auth/logout-all"},
 		{http.MethodGet, "/api/portal/dashboard"},
 		{http.MethodGet, "/api/portal/nodes"},
+		{http.MethodGet, "/api/portal/probe"},
 		{http.MethodGet, "/api/portal/traffic"},
 		{http.MethodGet, "/api/portal/subscription"},
 		{http.MethodPost, "/api/portal/subscription/regenerate"},

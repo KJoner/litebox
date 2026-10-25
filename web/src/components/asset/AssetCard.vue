@@ -7,7 +7,6 @@ import {
   assetTypeLabel,
   money,
   regionFlag,
-  rttText,
   shortBytes,
   uptimeNow,
   uptimeText,
@@ -24,12 +23,26 @@ import {
  * 没有的数据写明「不可用」,不画 0%;几种状态各给各的标记;网络一格入站在左、出站在右,两组不混。
  * 每组最多 3 项,展示哪几项由节点的「卡片展示设置」决定(没设过就自动推荐)—— 那是展示数量,
  * 不是检测数量。规则都在 assetModel.ts / probeView.ts,这里只负责画。
+ *
+ * sortable 时标题行左侧多一个拖动把手:按住拖动排顺序(鼠标与触屏都行),聚焦后用方向键也能挪。
+ * 拖动的逻辑在卡片网格(AssetCardsView)里,这里只把把手上的事件交出去。
  */
-const props = defineProps<{ card: AssetCard }>()
+const props = defineProps<{ card: AssetCard; sortable?: boolean }>()
 const emit = defineEmits<{
   /** 打开「套餐与续费」弹窗;focus 决定先看哪一块。 */
   (e: 'asset', card: AssetCard, focus: 'billing' | 'renew' | 'history'): void
+  /** 在拖动把手上按下(开始拖)。 */
+  (e: 'grab', ev: PointerEvent): void
+  /** 拖动把手上的方向键:-1 往前挪一位,+1 往后挪一位。 */
+  (e: 'nudge', step: -1 | 1): void
 }>()
+
+function onGripKey(ev: KeyboardEvent) {
+  if (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') emit('nudge', -1)
+  else if (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') emit('nudge', 1)
+  else return
+  ev.preventDefault()
+}
 
 const c = computed(() => props.card)
 const titleId = computed(() => `asset-card-${c.value.key}`)
@@ -39,36 +52,27 @@ const titleId = computed(() => `asset-card-${c.value.key}`)
 const flag = computed(() => regionFlag(c.value.region))
 const regionTitle = computed(() => (c.value.region ? `地区:${c.value.region}` : '地区未设置(在「编辑套餐」里设置)'))
 
-/** 名称的悬停说明:类型与内部名称 / 来源都在这里,卡片上不再单占一行。 */
+/** 名称的悬停说明:类型与内部名称都在这里,卡片上不再单占一行。 */
 const nameTitle = computed(() => {
   const card = c.value
-  const lines = [card.name]
-  if (card.kind === 'NODE') lines.push(`内部名称:${card.subtitle}`)
-  else if (card.subtitle) lines.push(card.subtitle)
-  lines.push(`${assetTypeLabel[card.type]} · ${card.selfHosted ? '自建' : '外部'}`)
-  return lines.join('\n')
+  return [card.name, `内部名称:${card.subtitle}`, `${assetTypeLabel[card.type]} · 自建`].join('\n')
 })
 
 const uptimeSeconds = computed(() => (c.value.uptime ? uptimeNow(c.value.uptime) : null))
 
 /** 第一行右侧的状态。已关机压过在线:节点状态是上一次探测的结论,实例此刻停着就不会在线。 */
-const headStatus = computed<LbStatusMeta | null>(() => {
+const headStatus = computed<LbStatusMeta>(() => {
   const card = c.value
-  if (card.kind === 'NODE' && card.node) {
-    if (card.cloudStopped) return metaOf.mute('已关机', 'square')
-    if (card.node.status === 'ONLINE') {
-      return metaOf.ok(uptimeSeconds.value != null ? `在线 ${uptimeText(uptimeSeconds.value)}` : '在线')
-    }
-    return nodeStatusMeta[card.node.status] ?? metaOf.mute(card.node.status)
+  if (card.cloudStopped) return metaOf.mute('已关机', 'square')
+  if (card.node.status === 'ONLINE') {
+    return metaOf.ok(uptimeSeconds.value != null ? `在线 ${uptimeText(uptimeSeconds.value)}` : '在线')
   }
-  if (card.proxy) return card.proxy.status === 'DISABLED' ? metaOf.mute('已停用', 'square') : metaOf.ok('启用中')
-  if (card.source) return card.source.enabled ? metaOf.ok('启用中') : metaOf.mute('已停用', 'square')
-  return null
+  return nodeStatusMeta[card.node.status] ?? metaOf.mute(card.node.status)
 })
 
 const headTitle = computed(() => {
   const card = c.value
-  if (card.kind !== 'NODE' || !card.node || card.cloudStopped || card.node.status !== 'ONLINE') return undefined
+  if (card.cloudStopped || card.node.status !== 'ONLINE') return undefined
   if (uptimeSeconds.value == null || !card.uptime) return '在线(还没有开机时长的读数)'
   const s = uptimeSeconds.value
   const d = Math.floor(s / 86400)
@@ -83,22 +87,18 @@ const headTitle = computed(() => {
 const badges = computed<LbStatusMeta[]>(() => {
   const out: LbStatusMeta[] = []
   const card = c.value
-  if (card.kind === 'NODE') {
-    if (card.resources?.stale) out.push({ text: '资源数据过期', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' })
-    if (card.outbound.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('出站探测失败'))
-    else if (card.outbound.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('出站最近一次失败'))
-    if (card.outbound.some((p) => p.state === 'COLLECT_FAILED')) {
-      out.push({ text: '出站采集失败', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' })
-    } else if (card.outbound.some((p) => p.state === 'TOOL_ERROR')) out.push(metaOf.warn('探测工具不可用'))
-    if (card.probes.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('入口检测失败'))
-    else if (card.probes.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('入口最近一次失败'))
-    // Boce 拨测点连不上只说明那个地区 / 运营商到这里不通,不等于机器离线:琥珀色,不用红色。
-    if (card.boce.some((p) => p.state === 'DOWN')) out.push(metaOf.warn('外部拨测失败'))
-    if (card.monitor === 'NONE' || card.monitor === 'PAUSED' || card.monitor === 'GLOBAL_OFF') {
-      out.push(metaOf.paused(card.monitor === 'NONE' ? '未配置监测' : '监测关闭'))
-    }
-  } else if (card.source?.last_sync_status === 'FAILED') {
-    out.push(metaOf.warn('同步失败'))
+  if (card.resources.stale) out.push({ text: '资源数据过期', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' })
+  if (card.outbound.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('出站探测失败'))
+  else if (card.outbound.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('出站最近一次失败'))
+  if (card.outbound.some((p) => p.state === 'COLLECT_FAILED')) {
+    out.push({ text: '出站采集失败', shape: 'dashRing', fg: 'var(--text3)', bg: 'var(--fill)' })
+  } else if (card.outbound.some((p) => p.state === 'TOOL_ERROR')) out.push(metaOf.warn('探测工具不可用'))
+  if (card.probes.some((p) => p.state === 'DOWN')) out.push(metaOf.bad('入口检测失败'))
+  else if (card.probes.some((p) => p.state === 'FAILING')) out.push(metaOf.warn('入口最近一次失败'))
+  // Boce 拨测点连不上只说明那个地区 / 运营商到这里不通,不等于机器离线:琥珀色,不用红色。
+  if (card.boce.some((p) => p.state === 'DOWN')) out.push(metaOf.warn('外部拨测失败'))
+  if (card.monitor === 'NONE' || card.monitor === 'PAUSED' || card.monitor === 'GLOBAL_OFF') {
+    out.push(metaOf.paused(card.monitor === 'NONE' ? '未配置监测' : '监测关闭'))
   }
   return out
 })
@@ -170,7 +170,6 @@ const trafficTitle = computed(() => {
 
 const rateTitle = computed(() => {
   const r = res.value
-  if (!r) return undefined
   if (r.rateLive) {
     return `最近 ${Math.round(r.rateWindow ?? 0)} 秒的平均网速(仪表盘开着时定时读网卡计数,除 lo 以外全部网卡)`
   }
@@ -224,6 +223,22 @@ const remain = computed(() => {
     <!-- 1. 身份:两行 -->
     <header class="ac__head">
       <div class="ac__title-row">
+        <button
+          v-if="sortable"
+          type="button"
+          class="ac__grip"
+          :aria-label="`拖动排序:${c.name}(也可以用方向键前后挪)`"
+          title="按住拖动排序;聚焦后用方向键前后挪"
+          data-testid="card-grip"
+          @pointerdown="(ev) => emit('grab', ev)"
+          @keydown="onGripKey"
+        >
+          <svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true">
+            <circle cx="2.5" cy="3" r="1.4" /><circle cx="7.5" cy="3" r="1.4" />
+            <circle cx="2.5" cy="8" r="1.4" /><circle cx="7.5" cy="8" r="1.4" />
+            <circle cx="2.5" cy="13" r="1.4" /><circle cx="7.5" cy="13" r="1.4" />
+          </svg>
+        </button>
         <span v-if="flag" class="ac__flag lb-flag" role="img" :aria-label="regionTitle" :title="regionTitle" data-testid="card-flag">
           {{ flag }}
         </span>
@@ -231,7 +246,7 @@ const remain = computed(() => {
           <LbIcon name="globe" :size="14" />
         </span>
         <RouterLink :id="titleId" class="ac__name lb-ellipsis" :to="c.to" :title="nameTitle">{{ c.name }}</RouterLink>
-        <LbStatusTag v-if="headStatus" class="ac__state" :meta="headStatus" :title="headTitle" data-testid="card-state" />
+        <LbStatusTag class="ac__state" :meta="headStatus" :title="headTitle" data-testid="card-state" />
       </div>
       <div
         v-if="badges.length || c.tags.length"
@@ -252,7 +267,7 @@ const remain = computed(() => {
 
     <!-- 2. 资源与流量:一行两项,网速单独一行 -->
     <section class="ac__sec" aria-label="资源与流量">
-      <div v-if="res" class="ac__res">
+      <div class="ac__res">
         <div class="ac__cell">
           <span class="ac__k">CPU</span>
           <LbUsageBar :percent="res.cpu" :stale="res.stale" :min-width="20" />
@@ -280,28 +295,7 @@ const remain = computed(() => {
           <span v-else class="ac__muted lb-ellipsis">{{ c.trafficNote }}</span>
         </div>
       </div>
-      <template v-else>
-        <div class="ac__na">
-          <LbIcon name="info" :size="13" />
-          <span>{{ c.resourcesNote }}:CPU / 内存 / 磁盘不可用</span>
-        </div>
-        <div class="ac__cell ac__cell--wide" :title="trafficTitle" data-testid="card-traffic">
-          <span class="ac__k">流量</span>
-          <template v-if="c.traffic">
-            <span class="ac__tbar" :class="`ac__tbar--${trafficTone}`">
-              <span v-if="trafficPct != null" class="ac__tbar-fill" :style="{ width: `${trafficPct}%` }" />
-            </span>
-            <span class="ac__tval lb-tabular">
-              <b>{{ c.traffic.used == null ? '—' : shortBytes(c.traffic.used) }}</b>/{{
-                c.traffic.quota > 0 ? shortBytes(c.traffic.quota) : '不限'
-              }}
-            </span>
-          </template>
-          <span v-else class="ac__muted">{{ c.trafficNote }}</span>
-        </div>
-      </template>
       <div
-        v-if="res"
         class="ac__rates lb-tabular"
         :class="{ 'ac__rates--stale': res.rateStale }"
         :title="rateTitle"
@@ -363,17 +357,7 @@ const remain = computed(() => {
       <div v-else-if="c.monitor === 'PAUSED'" class="ac__na">监测已暂停,点阵与延迟不再更新</div>
       <div v-else-if="c.monitor === 'GLOBAL_OFF'" class="ac__na">网络探测已在系统设置里关闭</div>
       <div v-else-if="c.monitor === 'NA'" class="ac__na">这个面板没有接入网络探测</div>
-      <div v-else-if="c.monitor === 'UNKNOWN'" class="ac__na">网络探测数据没有读到(不是没有配置)</div>
-      <div v-else class="ac__na ac__na--col">
-        <span>外部线路不做定时探测,只看手动检查的结果。</span>
-        <span v-if="c.external?.last_check_at" class="lb-tabular">
-          上次检查 {{ formatRelative(c.external.last_check_at) }}:
-          <b :class="c.external.last_check_ok ? 'ac__tone--ok' : 'ac__tone--bad'">
-            {{ c.external.last_check_ok ? `可达 ${rttText(c.external.latency_ms)}` : '不可达' }}
-          </b>
-        </span>
-        <span v-else-if="c.kind === 'EXTERNAL_PROXY'" class="ac__muted">还没有手动检查过</span>
-      </div>
+      <div v-else class="ac__na">网络探测数据没有读到(不是没有配置)</div>
     </section>
 
     <!-- 4. 套餐资产:两行 -->
@@ -424,8 +408,7 @@ const remain = computed(() => {
       <RouterLink :to="c.to">详情</RouterLink>
       <button type="button" class="lb-linkbtn" @click="emit('asset', c, 'billing')">编辑套餐</button>
       <button type="button" class="lb-linkbtn" @click="emit('asset', c, 'renew')">续费</button>
-      <RouterLink v-if="c.kind === 'NODE'" :to="`/nodes/${c.id}/network`">探测历史</RouterLink>
-      <button v-else type="button" class="lb-linkbtn" @click="emit('asset', c, 'history')">续费历史</button>
+      <RouterLink :to="`/nodes/${c.id}/network`">探测历史</RouterLink>
     </footer>
   </article>
 </template>
@@ -457,6 +440,37 @@ const remain = computed(() => {
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
+}
+/* 拖动把手:按住拖。touch-action: none 让触屏上的按住拖不被页面滚动抢走。 */
+.ac__grip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 24px;
+  margin-left: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text3);
+  cursor: grab;
+  touch-action: none;
+}
+.ac__grip svg {
+  fill: currentColor;
+}
+.ac__grip:hover {
+  color: var(--text2);
+  background: var(--fill);
+}
+.ac__grip:active {
+  cursor: grabbing;
+}
+.ac__grip:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
 }
 .ac__flag {
   flex: none;

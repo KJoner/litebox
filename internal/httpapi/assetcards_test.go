@@ -50,7 +50,12 @@ type cardsResp struct {
 		MonthlyCost    string `json:"monthly_cost"`
 		RecurringCount int    `json:"recurring_count"`
 	} `json:"cost_summary"`
-	Targets []struct {
+	NodeCostSummary []struct {
+		Currency    string `json:"currency"`
+		MonthlyCost string `json:"monthly_cost"`
+	} `json:"node_cost_summary"`
+	NodeExpiring7d int `json:"node_expiring_7d"`
+	Targets        []struct {
 		ID     int64  `json:"id"`
 		NodeID int64  `json:"node_id"`
 		State  string `json:"state"`
@@ -129,6 +134,11 @@ func TestDashboardCardsAggregates(t *testing.T) {
 	}
 	if cards.Expiring7d != 1 {
 		t.Errorf("7 天内到期 = %d", cards.Expiring7d)
+	}
+	// 卡片视图只画自建节点,概览用只算节点的那一份;这里全是节点,两份应当相同。
+	if len(cards.NodeCostSummary) != 2 || cards.NodeCostSummary[0].MonthlyCost != "10.00" ||
+		cards.NodeCostSummary[1].MonthlyCost != "8.50" || cards.NodeExpiring7d != 1 {
+		t.Errorf("只算节点的汇总 = %+v,7 天内到期 %d", cards.NodeCostSummary, cards.NodeExpiring7d)
 	}
 	if !cards.Probe.Available || cards.Probe.IntervalSec != 60 || len(cards.Probe.Sources) != 3 ||
 		cards.Probe.Sources[0].Code != "NODE" || cards.Probe.Sources[1].Code != "MASTER" || cards.Probe.Sources[2].Code != "PEER" {

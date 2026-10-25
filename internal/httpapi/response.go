@@ -31,6 +31,18 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorResponse{Error: message})
 }
 
+// codeUnauthenticated 标出「这个请求没有有效会话」的 401。
+const codeUnauthenticated = "UNAUTHENTICATED"
+
+// writeUnauthenticated 只给两个认证中间件用:没带会话、会话过期或被撤销。
+//
+// 带 code 是为了让前端分得清这一种与另外几种 401 —— 「原密码错误」「当前密码不正确」
+// 「用户名或密码错误」同样是 401,却不是登录失效。前端只在这一种时把人送回登录页
+// (登录完再回到原来的页面);按状态码一刀切的话,改密码时输错原密码会被踢出去。
+func writeUnauthenticated(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"code": codeUnauthenticated, "error": message})
+}
+
 // decodeJSON 解析请求体。拒绝未知字段,避免前端拼错字段名却静默生效。
 func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))

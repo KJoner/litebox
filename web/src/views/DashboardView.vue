@@ -10,13 +10,11 @@ import {
   type DeploymentRecord,
   type ExpiryKind,
   type ExpiryView,
-  type ExternalProxy,
   type Node,
   type NodeCycleUsage,
   type NodeHealth,
   type NodeMetrics,
   type NetRate,
-  type ProxySource,
 } from '@/api/client'
 import { formatBytes, formatRate, formatUTCDay } from '@/utils/format'
 import {
@@ -65,9 +63,10 @@ import { useNarrow } from '@/composables/useNarrow'
  *
  * **只读库里已有的采样与巡检结果,不触发任何 SSH**(CLAUDE.md「仪表盘节点卡片只读数据库」)。
  *
- * 资产卡片(UI 2.0 之后):页面有两种视图,「卡片」与「原有视图」,偏好存在本机。卡片视图把
- * 节点、外部代理、代理源各画成一张卡(资源、流量、TCP 探测、套餐资产),要的数据与原有视图
- * 是同一批批量接口,外加一次 /api/dashboard/cards —— 不按卡片逐个请求,也不触发探测。
+ * 资产卡片(UI 2.0 之后):页面有两种视图,「卡片」与「原有视图」,偏好存在本机。卡片视图给
+ * 每台自建节点画一张卡(资源、流量、网络探测、套餐资产;外部代理与代理源不在这里),要的数据与
+ * 原有视图是同一批批量接口,外加一次 /api/dashboard/cards —— 不按卡片逐个请求,也不触发探测。
+ * 卡片可以拖动排序(顺序只存在本机);页面开着时按设定的间隔自动重读(见「自动刷新」)。
  */
 const router = useRouter()
 const narrow = useNarrow()
@@ -113,9 +112,6 @@ const deployError = ref(false)
 
 /** 外部代理与代理源的商家到期。它们不在 dashboardAlerts 里(那边只管可用截止时间)。 */
 const vendorExpiry = ref<{ key: string; name: string; cat: string; to: string; v: ExpiryView }[]>([])
-/** 原始列表,卡片视图要用(外部代理、代理源各一张卡)。读失败时保留上一次的。 */
-const proxyList = ref<ExternalProxy[]>([])
-const sourceList = ref<ProxySource[]>([])
 
 /** 资产卡片聚合接口:计费估值、地区标签、TCP 探测汇总、成本汇总。 */
 const dashCards = ref<DashboardCards | null>(null)
@@ -152,19 +148,22 @@ async function loadAlerts() {
 
 async function loadNodes() {
   nodesError.value = false
-  columnErrors.value = []
-  try {
-    nodes.value = (await api.nodes()).items
-  } catch {
-    nodesError.value = true
-    return
-  }
+  const errs: string[] = []
   // 周期流量、资源采样、巡检、同步状态都是列级信息:读不到只让那一列显示「—」,
   // 不能把整张节点健康表判成失败。
   const miss = (label: string) => {
-    if (!columnErrors.value.includes(label)) columnErrors.value = [...columnErrors.value, label]
+    if (!errs.includes(label)) errs.push(label)
   }
+  // 五个请求一起发。原来先等节点列表回来再发后面四个:那四个都是按节点 id 取的批量接口,
+  // 根本不依赖列表 —— 串起来只是让首屏多等一轮,而且第二轮正好排在卡片聚合接口后面
+  // (数据库只有一条连接,请求在后端排队),资源与流量要等探测汇总算完才出来。
   await Promise.all([
+    api
+      .nodes()
+      .then((r) => (nodes.value = r.items))
+      .catch(() => {
+        nodesError.value = true
+      }),
     api
       .nodesCycleTraffic()
       .then((r) => (cycles.value = Object.fromEntries(r.items.map((c) => [c.node_id, c]))))
@@ -195,6 +194,7 @@ async function loadNodes() {
         miss('流量同步状态')
       }),
   ])
+  columnErrors.value = errs
 }
 
 async function loadVendorExpiry() {
@@ -206,7 +206,6 @@ async function loadVendorExpiry() {
   const keep = (prefix: string) => vendorExpiry.value.filter((x) => x.key.startsWith(prefix))
   const out: typeof vendorExpiry.value = []
   if (s.status === 'fulfilled') {
-    sourceList.value = s.value.items
     for (const src of s.value.items) {
       if (src.expiry) out.push({ key: `src-${src.id}`, name: src.name, cat: '代理源', to: '/external-proxies', v: src.expiry })
     }
@@ -215,7 +214,6 @@ async function loadVendorExpiry() {
     out.push(...keep('src-'))
   }
   if (p.status === 'fulfilled') {
-    proxyList.value = p.value.items
     // 跟随来源的条目不单独列:来源那一条已经代表了它们(与提醒的去重规则一致)。
     for (const x of p.value.items) {
       if (x.expiry && x.expiry.has_profile && !x.expiry.inherited) {
@@ -260,6 +258,7 @@ async function loadCards() {
 
 async function load() {
   loading.value = true
+  stopAuto()
   await Promise.all([
     loadSummary(),
     loadAlerts(),
@@ -271,6 +270,7 @@ async function load() {
   ])
   loading.value = false
   loadedAt.value = new Date().toISOString()
+  scheduleAuto()
 }
 
 // 切换时间范围只重取曲线,不刷整页 —— 指标卡与节点表跟这个范围无关。
@@ -313,8 +313,16 @@ async function pollNetRates() {
 }
 
 function onVisibility() {
-  if (document.hidden) stopNetRates()
-  else void pollNetRates()
+  if (document.hidden) {
+    stopNetRates()
+    stopAuto()
+    return
+  }
+  void pollNetRates()
+  // 藏起来超过一个刷新间隔再切回来:先补一次,再接着按间隔刷。
+  const since = loadedAt.value ? Date.now() - new Date(loadedAt.value).getTime() : Infinity
+  if (autoRefresh.value && since >= autoRefresh.value * 1000) void refreshLive().then(scheduleAuto)
+  else scheduleAuto()
 }
 
 onMounted(() => {
@@ -322,10 +330,74 @@ onMounted(() => {
   void pollNetRates()
 })
 onBeforeUnmount(() => {
+  disposed = true
   document.removeEventListener('visibilitychange', onVisibility)
   stopNetRates()
+  stopAuto()
 })
 watch(view, () => void pollNetRates())
+
+// ---------- 自动刷新 ----------
+//
+// 只重读库里已有的数据:节点、资源采样、周期流量、巡检与同步状态、探测汇总与套餐估值、预警。
+// 不连节点、不触发探测 ——「仪表盘只读库里已有的采样」那条规矩不变,自动刷新只是把手动点
+// 「刷新」的那一下按时做了。资源采样每 5 分钟一次、入口探测默认每分钟一轮,所以默认 1 分钟;
+// 实时网速另有自己的轮询。部署记录与流量趋势不跟着刷(它们只在点「刷新」时重读)。
+// 页面藏起来时停,切回来先补一次。偏好存本机;读写失败(隐私模式)就用默认。
+
+const AUTO_KEY = 'lb.dashboard.autoRefresh'
+const autoOptions = [
+  { value: 0, label: '不自动刷新' },
+  { value: 30, label: '每 30 秒刷新' },
+  { value: 60, label: '每 1 分钟刷新' },
+  { value: 300, label: '每 5 分钟刷新' },
+]
+function readAuto(): number {
+  try {
+    const raw = localStorage.getItem(AUTO_KEY)
+    const v = Number(raw)
+    return raw !== null && autoOptions.some((o) => o.value === v) ? v : 60
+  } catch {
+    return 60
+  }
+}
+const autoRefresh = ref(readAuto())
+const refreshing = ref(false)
+let autoTimer: ReturnType<typeof setTimeout> | null = null
+/** 离开页面之后,还在路上的那一次刷新回来时不能再排下一次 —— 否则离开了还在后台一直读。 */
+let disposed = false
+
+function stopAuto() {
+  if (autoTimer) clearTimeout(autoTimer)
+  autoTimer = null
+}
+
+function scheduleAuto() {
+  stopAuto()
+  if (disposed || !autoRefresh.value || document.hidden) return
+  autoTimer = setTimeout(() => void refreshLive().then(scheduleAuto), autoRefresh.value * 1000)
+}
+
+/** 静默重读:不抬 loading(不切骨架、按钮不转),读失败的照常进「部分数据读取失败」。 */
+async function refreshLive() {
+  if (refreshing.value || loading.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([loadNodes(), loadCards(), loadAlerts(), loadSummary()])
+    loadedAt.value = new Date().toISOString()
+  } finally {
+    refreshing.value = false
+  }
+}
+
+watch(autoRefresh, (v) => {
+  try {
+    localStorage.setItem(AUTO_KEY, String(v))
+  } catch {
+    // 存不下就只在这一次会话里生效。
+  }
+  scheduleAuto()
+})
 
 // ---------- 部分失败 ----------
 
@@ -702,37 +774,27 @@ const assetCards = computed<AssetCard[]>(() =>
     nodes: nodes.value,
     metrics: metrics.value,
     cycles: cycles.value,
-    sources: sourceList.value,
-    proxies: proxyList.value,
     cards: dashCards.value,
     netRates: netRates.value,
     netRateInterval: netRateInterval.value,
   }),
 )
 
-/** 「套餐与续费」弹窗。卡片上的编辑套餐、续费、续费历史都开它。 */
+/** 「套餐与续费」弹窗。卡片上的编辑套餐、续费都开它(卡片只有自建节点)。 */
 const assetModal = ref<{
   kind: ExpiryKind
   id: number
   name: string
-  sourceName?: string
   focus: 'billing' | 'renew' | 'history'
 } | null>(null)
 
 function openAsset(c: AssetCard, focus: 'billing' | 'renew' | 'history') {
-  assetModal.value = {
-    kind: c.kind,
-    id: c.id,
-    name: c.name,
-    sourceName: c.proxy?.source_name || undefined,
-    focus,
-  }
+  assetModal.value = { kind: c.kind, id: c.id, name: c.name, focus }
 }
 
 /** 改了套餐 / 续了费 / 改了标签:重读卡片要的那几份。不刷整页。 */
 async function onAssetChanged() {
-  const kind = assetModal.value?.kind
-  await Promise.all([loadCards(), kind === 'NODE' ? loadNodes() : loadVendorExpiry()])
+  await Promise.all([loadCards(), loadNodes()])
 }
 
 /** 运行状态的小圆点颜色。只是扫读用的记号,文字标签仍在旁边。 */
@@ -801,6 +863,15 @@ function conclusion(d: DeploymentRecord): string {
           </button>
         </div>
         <span v-if="loadedAt && !narrow" class="dv__updated">更新于 <LbTimeText :value="loadedAt" /></span>
+        <a-select
+          v-model:value="autoRefresh"
+          class="dv__auto"
+          :options="autoOptions"
+          :dropdown-match-select-width="false"
+          aria-label="自动刷新"
+          title="自动刷新只重读面板库里已有的数据(资源采样、流量、探测结果),不连节点、不触发探测"
+          data-testid="dashboard-auto-refresh"
+        />
         <a-button :loading="loading" @click="load">
           <template #icon><LbIcon name="refresh" :size="15" /></template>
           刷新
@@ -1175,7 +1246,6 @@ function conclusion(d: DeploymentRecord): string {
       :kind="assetModal.kind"
       :object-id="assetModal.id"
       :name="assetModal.name"
-      :source-name="assetModal.sourceName"
       :focus="assetModal.focus"
       @update:open="(v: boolean) => !v && (assetModal = null)"
       @changed="onAssetChanged"
@@ -1223,6 +1293,9 @@ function conclusion(d: DeploymentRecord): string {
   font-size: var(--fs-xs);
   color: var(--text3);
   white-space: nowrap;
+}
+.dv__auto {
+  min-width: 132px;
 }
 
 .dv__count {
