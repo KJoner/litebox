@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { DashboardCards } from '@/api/client'
 import { LbEmptyState, LbIcon, LbInfoTip } from '@/components/lb'
 import { formatBytes, formatRate } from '@/utils/format'
@@ -11,7 +11,9 @@ import {
   buildOverview,
   filterCards,
   filterOptions,
+  mergeOrder,
   money,
+  moveKey,
   sortCards,
   sortOptions,
   statusKeyLabel,
@@ -21,10 +23,14 @@ import {
 } from './assetModel'
 
 /**
- * 卡片视图:筛选栏 → 全局概览 → 响应式卡片网格。
+ * 卡片视图:筛选栏 → 全局概览 → 响应式卡片网格。只画自建节点。
  *
- * 数据全部由仪表盘传进来(它已经批量读过节点、采样、周期流量、外部代理,另加一次卡片聚合接口),
+ * 数据全部由仪表盘传进来(它已经批量读过节点、采样、周期流量,另加一次卡片聚合接口),
  * 这里**不发任何请求** —— 卡片多少张都是同样那几次请求,不会按卡片逐个去取。
+ *
+ * 「自定义顺序」可以拖:按住卡片左上角的把手拖到别的卡片前后(鼠标与触屏都行),或者聚焦把手后
+ * 用方向键前后挪。顺序只存在这台浏览器里(localStorage),不进数据库、不影响订阅里的先后 ——
+ * 那一个由节点排序号决定。没拖过的机器按节点排序号排在后面。
  */
 const props = defineProps<{
   cards: AssetCardModel[]
@@ -40,11 +46,123 @@ const emit = defineEmits<{
 
 const f = reactive(blankFilters())
 const opts = computed(() => filterOptions(props.cards))
-const shown = computed(() => sortCards(filterCards(props.cards, f), f.sort))
-const filtered = computed(
-  () => !!(f.q || f.region || f.group || f.tag || f.status || f.type),
-)
+
+// ---------- 自定义顺序 ----------
+
+const ORDER_KEY = 'lb.dashboard.cardOrder'
+function readOrder(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(ORDER_KEY) ?? '[]')
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : []
+  } catch {
+    return []
+  }
+}
+const order = ref<string[]>(readOrder())
+function saveOrder(next: string[]) {
+  order.value = next
+  try {
+    if (next.length) localStorage.setItem(ORDER_KEY, JSON.stringify(next))
+    else localStorage.removeItem(ORDER_KEY)
+  } catch {
+    // 存不下(隐私模式)就只在这一次会话里生效。
+  }
+}
+
+/** 拖动中的顺序(只含看得见的卡片);松手时并回完整顺序再存。 */
+const live = ref<string[] | null>(null)
+const dragKey = ref<string | null>(null)
+
+const sorted = computed(() => sortCards(filterCards(props.cards, f), f.sort, order.value))
+const shown = computed(() => {
+  if (!live.value) return sorted.value
+  const by = new Map(sorted.value.map((c) => [c.key, c]))
+  return live.value.map((k) => by.get(k)).filter((c): c is AssetCardModel => !!c)
+})
+const sortable = computed(() => f.sort === 'DEFAULT' && shown.value.length > 1)
+const filtered = computed(() => !!(f.q || f.region || f.tag || f.status || f.type))
 const ov = computed(() => buildOverview(props.cards, props.dash))
+
+/** 完整的自定义顺序(全部卡片,不管筛没筛掉)。 */
+function fullOrder(): string[] {
+  return sortCards(props.cards, 'DEFAULT', order.value).map((c) => c.key)
+}
+
+function commit(shownKeys: string[]) {
+  saveOrder(mergeOrder(fullOrder(), shownKeys))
+}
+
+function resetOrder() {
+  saveOrder([])
+}
+
+let scrollTimer: ReturnType<typeof setInterval> | null = null
+let scrollDir = 0
+
+function stopDrag(save: boolean) {
+  if (save && live.value) commit(live.value)
+  live.value = null
+  dragKey.value = null
+  window.removeEventListener('pointermove', onMove)
+  window.removeEventListener('pointerup', onUp)
+  window.removeEventListener('pointercancel', onCancel)
+  if (scrollTimer) clearInterval(scrollTimer)
+  scrollTimer = null
+  scrollDir = 0
+}
+
+function onGrab(card: AssetCardModel, ev: PointerEvent) {
+  if (!sortable.value || ev.button > 0) return
+  ev.preventDefault()
+  live.value = shown.value.map((c) => c.key)
+  dragKey.value = card.key
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onCancel)
+  scrollTimer = setInterval(() => {
+    if (scrollDir) window.scrollBy(0, scrollDir * 14)
+  }, 16)
+}
+
+function onMove(ev: PointerEvent) {
+  const key = dragKey.value
+  if (!key || !live.value) return
+  // 靠近视口上下边缘时自动滚动,长列表里也拖得到底。
+  scrollDir = ev.clientY < 72 ? -1 : ev.clientY > window.innerHeight - 72 ? 1 : 0
+  const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>('[data-card-key]')
+  const target = el?.dataset.cardKey
+  if (!el || !target || target === key) return
+  const r = el.getBoundingClientRect()
+  // 指针在目标卡片的左半边就放到它前面,右半边放到后面(网格是按行排的)。
+  const before = ev.clientX < r.left + r.width / 2
+  const next = moveKey(live.value, key, target, before)
+  if (next.join() !== live.value.join()) live.value = next
+}
+
+function onUp() {
+  stopDrag(true)
+}
+function onCancel() {
+  stopDrag(false)
+}
+
+function onNudge(card: AssetCardModel, step: -1 | 1) {
+  if (!sortable.value) return
+  const keys = shown.value.map((c) => c.key)
+  const i = keys.indexOf(card.key)
+  const j = i + step
+  if (i < 0 || j < 0 || j >= keys.length) return
+  commit(moveKey(keys, card.key, keys[j], step < 0))
+}
+
+// 拖动中途换了排序方式或筛选条件(键盘焦点还在别处时可能发生):丢掉这一次拖动。
+watch(
+  () => [f.sort, f.q, f.region, f.tag, f.status, f.type],
+  () => {
+    if (live.value) stopDrag(false)
+  },
+)
+onBeforeUnmount(() => stopDrag(false))
 
 function reset() {
   Object.assign(f, blankFilters())
@@ -67,10 +185,6 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
           <a-select-option v-for="r in opts.regions" :key="r" :value="r">{{ r }}</a-select-option>
           <a-select-option v-if="opts.hasUnsetRegion" :value="REGION_UNSET">未设置地区</a-select-option>
         </a-select>
-        <a-select v-model:value="f.group" class="acv__sel" aria-label="分组" :dropdown-match-select-width="false">
-          <a-select-option value="">全部分组</a-select-option>
-          <a-select-option v-for="g in opts.groups" :key="g" :value="g">{{ g }}</a-select-option>
-        </a-select>
         <a-select v-if="opts.tags.length" v-model:value="f.tag" class="acv__sel" aria-label="标签" :dropdown-match-select-width="false">
           <a-select-option value="">全部标签</a-select-option>
           <a-select-option v-for="t in opts.tags" :key="t" :value="t">{{ t }}</a-select-option>
@@ -87,6 +201,16 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
           <a-select-option v-for="s in sortOptions" :key="s.value" :value="s.value">{{ s.label }}</a-select-option>
         </a-select>
         <a-button v-if="filtered" size="small" type="link" @click="reset">清除筛选</a-button>
+        <a-button
+          v-if="f.sort === 'DEFAULT' && order.length"
+          size="small"
+          type="link"
+          title="清掉在这台浏览器里拖出来的顺序,回到按节点排序号排"
+          data-testid="card-order-reset"
+          @click="resetOrder"
+        >
+          恢复默认顺序
+        </a-button>
         <span class="acv__count lb-tabular">{{ shown.length }} / {{ cards.length }}</span>
       </div>
     </div>
@@ -184,8 +308,8 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
     <LbEmptyState
       v-else-if="!cards.length"
       variant="empty"
-      title="还没有任何资产"
-      description="添加自建节点、外部代理或代理源后,这里会为每一项生成一张卡片。"
+      title="还没有自建节点"
+      description="添加自建节点后,这里会为每台机器生成一张卡片。外部代理不在这里展示。"
     />
     <LbEmptyState
       v-else-if="!shown.length"
@@ -193,9 +317,23 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
       title="没有符合筛选条件的卡片"
       description="换一个条件,或清除筛选。"
     />
-    <div v-else class="acv__grid">
-      <AssetCard v-for="c in shown" :key="c.key" :card="c" @asset="(card, focus) => emit('asset', card, focus)" />
-    </div>
+    <TransitionGroup v-else tag="div" name="acv-move" class="acv__grid" :class="{ 'acv__grid--dragging': dragKey }">
+      <div
+        v-for="c in shown"
+        :key="c.key"
+        class="acv__cell"
+        :class="{ 'acv__cell--drag': dragKey === c.key }"
+        :data-card-key="c.key"
+      >
+        <AssetCard
+          :card="c"
+          :sortable="sortable"
+          @asset="(card, focus) => emit('asset', card, focus)"
+          @grab="(ev) => onGrab(c, ev)"
+          @nudge="(step) => onNudge(c, step)"
+        />
+      </div>
+    </TransitionGroup>
   </section>
 </template>
 
@@ -294,6 +432,32 @@ const typeOptions = Object.entries(assetTypeLabel).map(([value, label]) => ({ va
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--sp-4);
   align-items: stretch;
+}
+.acv__cell {
+  display: flex;
+  min-width: 0;
+}
+.acv__cell > * {
+  flex: 1;
+}
+/* 拖动中:被拖的那张半透明加虚线描边,别的卡片换位时有一段位移动画;整页不选中文字。 */
+.acv__grid--dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+.acv__cell--drag {
+  opacity: 0.55;
+  outline: 2px dashed var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-card);
+}
+.acv-move-move {
+  transition: transform var(--dur) var(--ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  .acv-move-move {
+    transition: none;
+  }
 }
 @media (max-width: 767px) {
   .acv__grid {

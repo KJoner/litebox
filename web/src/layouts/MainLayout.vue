@@ -211,13 +211,17 @@ async function refreshSync() {
 }
 
 let syncTimer: number | undefined
+let metaTimer: number | undefined
 onMounted(() => {
   window.addEventListener('resize', onResize)
-  loadMeta()
+  // 侧栏计数晚一点再读:它要五个列表接口(含 50 条部署记录),而面板的数据库只有一条连接,
+  // 首屏时它们与页面自己的请求在后端排同一个队 —— 装饰性的数字不该让仪表盘的卡片晚出来。
+  metaTimer = window.setTimeout(loadMeta, 1200)
   syncTimer = window.setInterval(refreshSync, 60_000)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
+  window.clearTimeout(metaTimer)
   window.clearInterval(syncTimer)
 })
 

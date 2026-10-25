@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { Modal, message } from 'ant-design-vue'
+import { api, isSessionExpired, portalApi, setSessionExpiredHandler, type SessionScope } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { usePortalStore } from '@/stores/portal'
 
@@ -144,6 +146,13 @@ const routes: RouteRecordRaw[] = [
         meta: { portal: true, title: '我的流量' },
       },
       {
+        // 探针:用户能用的那几台机器的资源百分比与网络探测(只读库里已有的数据)。
+        path: 'probe',
+        name: 'portal-probe',
+        component: () => import('@/views/portal/PortalProbeView.vue'),
+        meta: { portal: true, title: '探针' },
+      },
+      {
         path: 'security',
         name: 'portal-security',
         component: () => import('@/views/portal/PortalSecurityView.vue'),
@@ -212,3 +221,62 @@ router.beforeEach(async (to) => {
   }
   return true
 })
+
+/**
+ * 登录页上的 redirect 只收站内路径:以 / 开头、不是 //(那是另一个主机)。
+ * 会话失效时会带着它跳转,登录完照着它回去 —— 收外部地址就成了一个开放跳转。
+ */
+export function safeRedirect(raw: unknown, fallback: string): string {
+  return typeof raw === 'string' && raw.startsWith('/') && !raw.startsWith('//') ? raw : fallback
+}
+
+// ---------- 会话失效 ----------
+//
+// 会话在后端失效之后(过期、改密码踢掉、管理员撤销门户会话),原来页面上只会一个接口接一个接口地
+// 报错。现在任何一个接口拿到「会话没了」的 401,就清掉这一边的登录状态、送回对应的登录页,
+// 地址里带着原来的页面,登录完回到那里。判据只认 code = UNAUTHENTICATED(见 api/client.ts)。
+
+let expiring = false
+
+function sessionExpired(scope: SessionScope): void {
+  const current = router.currentRoute.value
+  // 已经在登录页(或别的公开页)上:那里的请求本来就可能 401,不再跳一次。
+  if (expiring || current.meta.public) return
+  // 只管当前所在的那一边:后台页面上不会有门户请求,反过来也一样;对不上就不动。
+  const portal = !!current.meta.portal
+  if ((scope === 'portal') !== portal) return
+  expiring = true
+  if (portal) usePortalStore().clear()
+  else useAuthStore().clear()
+  void router
+    .replace({ name: portal ? 'portal-login' : 'login', query: { redirect: current.fullPath, expired: '1' } })
+    .finally(() => {
+      expiring = false
+      // 跳走之前那几秒里,页面上各处可能已经弹了「登录已失效」的吐司或错误框:登录页自己会说明,收掉它们。
+      Modal.destroyAll()
+      message.destroy()
+    })
+}
+
+setSessionExpiredHandler(sessionExpired)
+
+// 标签页藏起来一段时间再切回来时问一次「还登着吗」:不等用户点了什么才发现会话早就没了。
+// 只问 /auth/me(不在会话检查的名单里自动处理,这里显式走同一条路)。
+let hiddenAt = 0
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      hiddenAt = Date.now()
+      return
+    }
+    if (!hiddenAt || Date.now() - hiddenAt < 60_000) return
+    hiddenAt = 0
+    const current = router.currentRoute.value
+    if (current.meta.public) return
+    const scope: SessionScope = current.meta.portal ? 'portal' : 'admin'
+    const check = scope === 'portal' ? portalApi.me() : api.me()
+    check.catch((err) => {
+      if (isSessionExpired(err)) sessionExpired(scope)
+    })
+  })
+}

@@ -3,8 +3,8 @@ import { test, expect, adminOnly, type ApiMock } from './support/mock'
 /**
  * 资产卡片:仪表盘卡片视图、套餐与续费弹窗、节点详情「网络监测」Tab。
  *
- * 守住需求书里那几条不可妥协的:不为美观伪造数据(外部线路的资源写「不可用」、没有样本的窗口
- * 画成空心)、不冒充三网测点、多币种不相加、卡片不按卡片逐个请求、TCP 失败率不叫丢包;
+ * 守住需求书里那几条不可妥协的:不为美观伪造数据(没有样本的窗口画成空心)、卡片视图只画自建节点、
+ * 不冒充三网测点、多币种不相加、卡片不按卡片逐个请求、TCP 失败率不叫丢包;
  * 出站网络质量(节点本机测公共目标)与入口连通性(主控测节点)分开显示,采集失败不算丢包。
  */
 
@@ -26,7 +26,7 @@ test('默认是卡片视图;切到原有视图后刷新仍是原有视图', asyn
   await expect(page.getByTestId('asset-overview')).toHaveCount(0)
 })
 
-test('三类卡片:自建节点有真实资源与探测,外部线路明确标「不可用」', async ({ page }) => {
+test('只画自建节点:真实资源与探测;外部代理与代理源不在卡片视图', async ({ page }) => {
   await page.goto('/dashboard')
   const a = card(page, 'NODE-1')
   await expect(a).toContainText('上海-alpha')
@@ -103,12 +103,10 @@ test('三类卡片:自建节点有真实资源与探测,外部线路明确标「
   await expect(b.getByTestId('card-net')).toContainText('未启用')
   await expect(b).toContainText('未设置套餐')
 
-  const x = card(page, 'EXTERNAL_PROXY-1')
-  await expect(x).toContainText('机场 HK01')
-  await expect(x).toContainText('CPU / 内存 / 磁盘不可用')
-  await expect(x).toContainText('外部线路不做定时探测')
-  await expect(x).not.toContainText('0%')
-  await expect(x).toContainText('120.00 CNY')
+  // 外部代理(机场 HK01)与代理源不画卡片:它们没有资源数据、不做定时探测,到期照样进「需要处理」。
+  await expect(card(page, 'EXTERNAL_PROXY-1')).toHaveCount(0)
+  await expect(page.locator('[data-testid^="asset-card-PROXY_SOURCE-"]')).toHaveCount(0)
+  await expect(page.locator('.ac')).toHaveCount(2)
 })
 
 test('运营商只来自 Boce 拨测点;ICMP 叫丢包,主控 TCP 叫失败率,Boce 叫 TCPing 丢包', async ({ page }) => {
@@ -144,9 +142,6 @@ test('头部两行:第一行状态带开机时长,第二行是异常标记与自
   // 只有自定义标签,没有「落地节点」「自建」;没有标签也没有异常的卡片不留那一行。
   await expect(card(page, 'NODE-1').getByTestId('card-chips')).toContainText('CN2')
   await expect(card(page, 'NODE-1').getByTestId('card-chips')).toContainText('生产')
-  await expect(card(page, 'EXTERNAL_PROXY-1').getByTestId('card-chips')).toHaveCount(0)
-  // 外部线路的状态也在第一行。
-  await expect(card(page, 'EXTERNAL_PROXY-1').getByTestId('card-state')).toHaveText('启用中')
 })
 
 test('标签一行放不下就截掉,悬停浮出全部,卡片不变高', async ({ page, api }) => {
@@ -189,28 +184,94 @@ test('卡片不按卡片逐个请求:聚合接口一次,不碰任何单节点接
   expect(api.mutations()).toHaveLength(0)
 })
 
-test('概览:成本按币种分列,不相加;7 天内到期', async ({ page }) => {
+test('概览:成本只算自建节点、按币种分列,不相加;7 天内到期', async ({ page, api }) => {
+  // 外部代理那 10.00 CNY 只在 cost_summary 里(留给别处用);概览读只算节点的 node_cost_summary。
+  api.patch('GET /api/dashboard/cards', (d: { node_cost_summary: unknown[] }) => {
+    d.node_cost_summary.push({
+      currency: 'CNY', monthly_cost_minor: 2000, monthly_cost: '20.00', recurring_count: 1,
+      unamortized_minor: 0, unamortized: '0.00', unamortized_count: 0, other_count: 0,
+    })
+  })
   await page.goto('/dashboard')
   const ov = page.getByTestId('asset-overview')
   await expect(ov).toContainText('5.00 USD')
-  await expect(ov).toContainText('10.00 CNY')
-  await expect(ov).not.toContainText('15.00')
+  await expect(ov).toContainText('20.00 CNY')
+  await expect(ov).not.toContainText('10.00 CNY')
+  await expect(ov).not.toContainText('25.00')
   await expect(ov).toContainText('0 / 5 失败')
   await expect(ov).toContainText('出站 3 · 入口 2')
 })
 
 test('筛选与排序:地区、状态、搜索', async ({ page }) => {
   await page.goto('/dashboard')
-  await expect(page.locator('.ac')).toHaveCount(3)
+  await expect(page.locator('.ac')).toHaveCount(2)
   await page.getByLabel('按名称搜索').fill('东京')
   await expect(page.locator('.ac')).toHaveCount(1)
   await expect(card(page, 'NODE-2')).toBeVisible()
   await page.getByRole('button', { name: '清除筛选' }).click()
-  await expect(page.locator('.ac')).toHaveCount(3)
+  await expect(page.locator('.ac')).toHaveCount(2)
   // 状态:网络检测失败 —— 固定数据里没有,显示「没有符合筛选条件的卡片」,不是「还没有任何资产」。
   await page.getByLabel('状态').click()
   await page.locator('.ant-select-item-option', { hasText: '网络检测失败' }).click()
   await expect(page.getByText('没有符合筛选条件的卡片')).toBeVisible()
+})
+
+const cardOrder = (page: import('@playwright/test').Page) =>
+  page.locator('[data-testid^="asset-card-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+
+test('拖动排序:按住把手拖到别的卡片前面,顺序存在本机,刷新后还在;可以恢复默认', async ({ page, api }) => {
+  await page.goto('/dashboard')
+  await expect(card(page, 'NODE-2')).toBeVisible()
+  expect(await cardOrder(page)).toEqual(['asset-card-NODE-1', 'asset-card-NODE-2'])
+  const grip = card(page, 'NODE-2').getByTestId('card-grip')
+  const from = (await grip.boundingBox())!
+  const to = (await card(page, 'NODE-1').boundingBox())!
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+  await page.mouse.down()
+  // 拖到上海那张的左半边:放到它前面。
+  await page.mouse.move(to.x + 30, to.y + 60, { steps: 8 })
+  await page.mouse.up()
+  await expect.poll(() => cardOrder(page)).toEqual(['asset-card-NODE-2', 'asset-card-NODE-1'])
+  // 只存在本机:没有任何写请求。
+  expect(api.mutations()).toHaveLength(0)
+  expect(await page.evaluate(() => localStorage.getItem('lb.dashboard.cardOrder'))).toBe('["NODE-2","NODE-1"]')
+  await page.reload()
+  await expect.poll(() => cardOrder(page)).toEqual(['asset-card-NODE-2', 'asset-card-NODE-1'])
+  await page.getByTestId('card-order-reset').click()
+  await expect.poll(() => cardOrder(page)).toEqual(['asset-card-NODE-1', 'asset-card-NODE-2'])
+})
+
+test('拖动排序也能用键盘:聚焦把手,方向键前后挪;换成别的排序方式时没有把手', async ({ page }) => {
+  await page.goto('/dashboard')
+  await card(page, 'NODE-1').getByTestId('card-grip').focus()
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(() => cardOrder(page)).toEqual(['asset-card-NODE-2', 'asset-card-NODE-1'])
+  await expect(card(page, 'NODE-1').getByTestId('card-grip')).toBeFocused()
+  await page.getByLabel('排序', { exact: true }).click()
+  await page.locator('.ant-select-item-option', { hasText: '按到期时间' }).click()
+  await expect(page.getByTestId('card-grip')).toHaveCount(0)
+})
+
+test('自动刷新:默认每分钟只重读库里的数据(节点、采样、探测汇总),不碰单节点接口;选项存在本机', async ({ page, api }) => {
+  await page.clock.install({ time: new Date('2026-10-17T11:46:21.737Z') })
+  await page.goto('/dashboard')
+  await expect(card(page, 'NODE-1')).toBeVisible()
+  await expect(page.getByTestId('dashboard-auto-refresh')).toContainText('每 1 分钟刷新')
+  expect(api.requests('GET', '/api/dashboard/cards')).toHaveLength(1)
+  await page.clock.runFor(61_000)
+  await expect.poll(() => api.requests('GET', '/api/dashboard/cards').length).toBe(2)
+  expect(api.requests('GET', '/api/metrics/nodes-latest').length).toBeGreaterThanOrEqual(2)
+  // 部署记录与流量趋势不跟着刷;也不碰任何单节点接口,不触发任何写操作(探测、采集)。
+  // 仪表盘读 100 条(侧栏另读 50 条做计数,与这里无关)。
+  expect(api.requests('GET', /^\/api\/deployments\?limit=100$/)).toHaveLength(1)
+  expect(api.requests('GET', /^\/api\/nodes\/\d+/)).toHaveLength(0)
+  expect(api.mutations()).toHaveLength(0)
+
+  await page.getByTestId('dashboard-auto-refresh').click()
+  await page.locator('.ant-select-item-option', { hasText: '不自动刷新' }).click()
+  expect(await page.evaluate(() => localStorage.getItem('lb.dashboard.autoRefresh'))).toBe('0')
+  await page.clock.runFor(120_000)
+  expect(api.requests('GET', '/api/dashboard/cards')).toHaveLength(2)
 })
 
 test('出站探测连续失败:卡片标红、进「需要处理」,说法是「本机测的」', async ({ page, api }) => {

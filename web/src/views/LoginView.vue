@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { safeRedirect } from '@/router'
 import { LbIcon } from '@/components/lb'
 
 /**
@@ -25,6 +26,8 @@ const error = ref('')
 /** 凭据错误时才提示「你可能走错门了」;锁定、网络错误提这个只会误导。 */
 const wrongDoor = ref(false)
 const showPassword = ref(false)
+/** 会话失效被送回来的(地址里带 expired=1):说清楚为什么在这里、登录完会回到哪。 */
+const expired = computed(() => route.query.expired === '1' && !error.value)
 
 async function onSubmit() {
   if (loading.value) return
@@ -33,8 +36,7 @@ async function onSubmit() {
   wrongDoor.value = false
   try {
     await auth.login(form.username, form.password)
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
-    await router.replace(redirect)
+    await router.replace(safeRedirect(route.query.redirect, '/dashboard'))
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : '登录失败,请稍后重试'
     wrongDoor.value = err instanceof ApiError && err.status === 401
@@ -57,6 +59,11 @@ async function onSubmit() {
         <div>
           <h1 class="lb-auth__title">登录 LiteBox</h1>
           <div class="lb-auth__scope">管理后台 · 管理员专用</div>
+        </div>
+
+        <div v-if="expired" class="lb-auth__notice" role="status" data-testid="login-expired">
+          <span class="lb-auth__notice-icon"><LbIcon name="clock" :size="15" /></span>
+          <span>登录已失效,请重新登录。登录后回到刚才的页面。</span>
         </div>
 
         <div v-if="error" class="lb-error-strip">

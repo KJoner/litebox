@@ -117,6 +117,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		// Scheduler 留 nil:同步要连真节点,由 traffic 包自己测。
 		// Querier 只读数据库,可以直接给上。
 		Traffic: traffic.NewQuerier(db),
+		// 资源采样只读数据库(采集要连真节点,由 node 包自己测)。
+		Metrics: node.NewMetricsStore(db),
 		Logger:  logger,
 	})
 
@@ -342,6 +344,37 @@ func TestChangePasswordFlow(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("改密后当前会话失效,状态码 %d", resp.StatusCode)
+	}
+}
+
+// 前端只在 code = UNAUTHENTICATED 的 401 上把人送回登录页。另外几种 401(登录时凭据不对、
+// 改密时原密码不对)不能带它 —— 不然输错一次原密码就被踢出去,刚填的新密码也没了。
+func TestOnlySessionFailuresCarryUnauthenticatedCode(t *testing.T) {
+	env := newTestEnv(t)
+	code := func(resp *http.Response) string {
+		t.Helper()
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("状态码 %d,期望 401", resp.StatusCode)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		c, _ := body["code"].(string)
+		return c
+	}
+	if c := code(env.do(t, http.MethodGet, "/api/dashboard/summary", nil)); c != codeUnauthenticated {
+		t.Errorf("没有会话时 code = %q", c)
+	}
+	if c := code(env.do(t, http.MethodPost, "/api/auth/login",
+		map[string]string{"username": "admin", "password": "wrong-password"})); c != "" {
+		t.Errorf("登录凭据错误不该带 code,得到 %q", c)
+	}
+	env.login(t)
+	if c := code(env.do(t, http.MethodPost, "/api/auth/password",
+		map[string]string{"old_password": "wrong-password", "new_password": "a-brand-new-password"})); c != "" {
+		t.Errorf("原密码错误不该带 code,得到 %q", c)
 	}
 }
 

@@ -49,7 +49,7 @@ test.describe('390 宽', () => {
     })
   }
 
-  for (const path of ['/user/dashboard', '/user/subscription', '/user/nodes', '/user/traffic', '/user/security']) {
+  for (const path of ['/user/dashboard', '/user/subscription', '/user/nodes', '/user/probe', '/user/traffic', '/user/security']) {
     test(`门户 ${path} 页面不横向溢出`, async ({ page, api }) => {
       portalOnly(api)
       await page.goto(path)

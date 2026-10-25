@@ -96,8 +96,13 @@ type dashboardCards struct {
 	CostSummary []costRow        `json:"cost_summary"`
 	Expiring7d  int              `json:"expiring_7d"`
 	Overdue     int              `json:"overdue"`
-	Errors      []string         `json:"errors"`
-	External    []externalStatus `json:"external"`
+	// Node* 是只算自建节点的那一份:卡片视图只画自建节点,概览上的成本与到期数要与卡片对得上
+	// (上面三项含外部代理与代理源,留给别处用)。
+	NodeCostSummary []costRow        `json:"node_cost_summary"`
+	NodeExpiring7d  int              `json:"node_expiring_7d"`
+	NodeOverdue     int              `json:"node_overdue"`
+	Errors          []string         `json:"errors"`
+	External        []externalStatus `json:"external"`
 }
 
 // externalStatus 是外部代理 / 代理源卡片的「网络」一格:它们**不做定时探测**
@@ -117,7 +122,7 @@ func (s *Server) handleDashboardCards(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt: now.Format(time.RFC3339),
 		Labels:      []asset.Labels{}, Billing: []billingCard{}, Targets: []probe.Summary{}, Outbound: []probe.Summary{},
 		Boce: []probe.Summary{}, Peer: []probe.Summary{}, CardPicks: []probe.CardPick{},
-		CostSummary: []costRow{}, Errors: []string{}, External: []externalStatus{},
+		CostSummary: []costRow{}, NodeCostSummary: []costRow{}, Errors: []string{}, External: []externalStatus{},
 	}
 	// 各块独立降级:哪一块读失败就在 errors 里点名,其余照常给 —— 与仪表盘的 failedSources 同一条规矩。
 	if s.labels != nil {
@@ -205,6 +210,7 @@ func (s *Server) fillBillingCards(ctx context.Context, now time.Time, out *dashb
 	}
 	tl := s.loadTrafficFacts(ctx, nodes, sources)
 	costs := map[string]*costRow{}
+	nodeCosts := map[string]*costRow{}
 
 	add := func(kind expiry.Kind, id int64, name string, sourceID *int64, tf expiry.TrafficFacts) {
 		p, inherited := res.Profile(kind, id, sourceID)
@@ -220,30 +226,22 @@ func (s *Server) fillBillingCards(ctx context.Context, now time.Time, out *dashb
 			HasBilling: p.Billing.HasAny(),
 		}
 		out.Billing = append(out.Billing, card)
+		isNode := kind == expiry.KindNode
 		switch {
 		case v.State == expiry.StateOverdue:
 			out.Overdue++
+			if isNode {
+				out.NodeOverdue++
+			}
 		case v.DaysLeft != nil && *v.DaysLeft <= 7 && *v.DaysLeft >= 0:
 			out.Expiring7d++
+			if isNode {
+				out.NodeExpiring7d++
+			}
 		}
-		cur := card.Valuation.Currency
-		if !card.HasBilling || cur == "" {
-			return
-		}
-		row := costs[cur]
-		if row == nil {
-			row = &costRow{Currency: cur}
-			costs[cur] = row
-		}
-		if m := card.Valuation.MonthlyCostMinor; m != nil {
-			row.MonthlyCostMinor += *m
-			row.RecurringCount++
-		} else if card.Valuation.AmountMinor > 0 {
-			row.OtherCount++
-		}
-		if card.Valuation.Time.Available {
-			row.UnamortizedMinor += card.Valuation.Time.ValueMinor
-			row.UnamortizedCount++
+		addCost(costs, card)
+		if isNode {
+			addCost(nodeCosts, card)
 		}
 	}
 	for _, n := range nodes {
@@ -268,18 +266,49 @@ func (s *Server) fillBillingCards(ctx context.Context, now time.Time, out *dashb
 			LatencyMs: latency, Message: p.LastCheckMessage,
 		})
 	}
+	out.CostSummary = append(out.CostSummary, costRows(costs)...)
+	out.NodeCostSummary = append(out.NodeCostSummary, costRows(nodeCosts)...)
+	return nil
+}
+
+// addCost 把一张计费卡加进按币种的汇总。没填金额或币种的不进。
+func addCost(costs map[string]*costRow, card billingCard) {
+	cur := card.Valuation.Currency
+	if !card.HasBilling || cur == "" {
+		return
+	}
+	row := costs[cur]
+	if row == nil {
+		row = &costRow{Currency: cur}
+		costs[cur] = row
+	}
+	if m := card.Valuation.MonthlyCostMinor; m != nil {
+		row.MonthlyCostMinor += *m
+		row.RecurringCount++
+	} else if card.Valuation.AmountMinor > 0 {
+		row.OtherCount++
+	}
+	if card.Valuation.Time.Available {
+		row.UnamortizedMinor += card.Valuation.Time.ValueMinor
+		row.UnamortizedCount++
+	}
+}
+
+// costRows 按币种排好并格式化金额。
+func costRows(costs map[string]*costRow) []costRow {
 	keys := make([]string, 0, len(costs))
 	for k := range costs {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	out := make([]costRow, 0, len(keys))
 	for _, k := range keys {
 		row := costs[k]
 		row.MonthlyCost = expiry.FormatAmount(row.MonthlyCostMinor, k)
 		row.Unamortized = expiry.FormatAmount(row.UnamortizedMinor, k)
-		out.CostSummary = append(out.CostSummary, *row)
+		out = append(out, *row)
 	}
-	return nil
+	return out
 }
 
 func (s *Server) probeConfig(ctx context.Context) probe.Config {

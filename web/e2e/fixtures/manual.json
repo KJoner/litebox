@@ -1859,6 +1859,20 @@
       ],
       "expiring_7d": 0,
       "overdue": 0,
+      "node_cost_summary": [
+        {
+          "currency": "USD",
+          "monthly_cost_minor": 500,
+          "monthly_cost": "5.00",
+          "recurring_count": 1,
+          "unamortized_minor": 395,
+          "unamortized": "3.95",
+          "unamortized_count": 1,
+          "other_count": 0
+        }
+      ],
+      "node_expiring_7d": 0,
+      "node_overdue": 0,
       "errors": [],
       "external": [
         {
@@ -35053,6 +35067,64 @@
           "window_seconds": 30.02,
           "uptime_seconds": 1123200,
           "at": "2026-10-17T11:46:05Z"
+        }
+      ]
+    },
+    "GET /api/portal/probe": {
+      "generated_at": "2026-10-17T11:46:20Z",
+      "items": [
+        {
+          "name": "上海-alpha",
+          "region": "CN",
+          "tags": ["CN2"],
+          "status": "online",
+          "uptime_seconds": 1123200,
+          "uptime_at": "2026-10-17T11:45:00Z",
+          "resources": { "cpu": 12.3, "mem": 48.6, "disk": 31, "stale": false, "collected_at": "2026-10-17T11:45:00Z" },
+          "ingress": [
+            {
+              "name": "上海 电信",
+              "metric": "BOCE",
+              "state": "OK",
+              "rtt_ms": 168,
+              "last_label": "成功",
+              "h1_rate": 0,
+              "h24_rate": 0.004,
+              "dots": [
+                { "at": "2026-10-17T11:40:00Z", "state": "OK" },
+                { "at": "2026-10-17T11:42:00Z", "state": "PARTIAL" },
+                { "at": "2026-10-17T11:44:00Z", "state": "NONE" }
+              ],
+              "dot_seconds": 120
+            }
+          ],
+          "outbound": [
+            {
+              "name": "公共 DNS(演示)",
+              "metric": "LOSS",
+              "state": "DOWN",
+              "rtt_ms": null,
+              "last_label": "超时",
+              "h1_rate": 1,
+              "h24_rate": 0.5,
+              "dots": [
+                { "at": "2026-10-17T11:40:00Z", "state": "FAIL" },
+                { "at": "2026-10-17T11:42:00Z", "state": "FAIL" }
+              ],
+              "dot_seconds": 120
+            }
+          ]
+        },
+        {
+          "name": "东京-beta",
+          "region": "",
+          "tags": [],
+          "status": "offline",
+          "uptime_seconds": null,
+          "uptime_at": "",
+          "resources": null,
+          "ingress": [],
+          "outbound": []
         }
       ]
     }

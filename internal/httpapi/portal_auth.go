@@ -45,14 +45,14 @@ func (s *Server) requirePortalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(PortalSessionCookieName)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "未登录")
+			writeUnauthenticated(w, "未登录")
 			return
 		}
 		identity, err := s.portal.Authenticate(r.Context(), cookie.Value)
 		if err != nil {
 			if errors.Is(err, portal.ErrSessionInvalid) {
 				s.clearPortalCookie(w)
-				writeError(w, http.StatusUnauthorized, "会话无效或已过期")
+				writeUnauthenticated(w, "会话无效或已过期")
 				return
 			}
 			s.logger.Error("门户会话校验失败", "error", err)

@@ -5,26 +5,26 @@ import type {
   DashboardCards,
   ExpiryKind,
   ExpiryView,
-  ExternalCheckStatus,
-  ExternalProxy,
   Node,
   NetRate,
   NodeCycleUsage,
   NodeMetrics,
   ProbeSummary,
-  ProxySource,
 } from '@/api/client'
 import { isMetricsStale, isPreChange } from '@/components/lb/derive'
 import { formatBytes } from '@/utils/format'
 
 /**
- * 资产卡片的数据模型。**只有这一处**把仪表盘已经读到的几份数据(节点、资源采样、周期流量、
- * 外部代理、代理源)与卡片聚合接口(估值、标签、探测)拼成一张张卡片;筛选、排序、概览也在这里。
+ * 资产卡片的数据模型。**只有这一处**把仪表盘已经读到的几份数据(节点、资源采样、周期流量)
+ * 与卡片聚合接口(估值、标签、探测)拼成一张张卡片;筛选、排序(含拖动排的自定义顺序)、概览也在这里。
  * 全是纯函数,组件只渲染结果。
+ *
+ * **卡片视图只画自建节点。** 外部代理与代理源原来也各有一张卡,但它们没有资源数据、不做定时探测,
+ * 卡片上大半是「不可用」;它们的商家到期照样进仪表盘的「需要处理」,套餐在外部代理页里管。
  *
  * 几条载重的规矩:
  *
- *   - **没有的数据显示「不可用」,不显示 0。** 外部代理没有 CPU / 内存,画一条 0% 的条是在伪造监控;
+ *   - **没有的数据显示「不可用」,不显示 0。** 还没采到的资源画空槽,不画 0%;
  *   - **在线 / 离线、资源数据过期、网络检测失败、已关机、监测关闭是五种不同的状态**,各给各的标记,
  *     一张卡上可以同时有几种,但绝不合成一个;
  *   - **出站网络质量与入口连通性分开放**:前者是这台机器在本机测公共目标(节点本机),后者是主控连这台
@@ -33,13 +33,11 @@ import { formatBytes } from '@/utils/format'
  *   - **多币种不相加**。按价格排序时先按币种分组,再在组内比金额。
  */
 
-export type AssetType = 'LANDING' | 'RELAY' | 'EXTERNAL' | 'SOURCE'
+export type AssetType = 'LANDING' | 'RELAY'
 
 export const assetTypeLabel: Record<AssetType, string> = {
   LANDING: '落地节点',
   RELAY: '中转主机',
-  EXTERNAL: '外部代理',
-  SOURCE: '代理源',
 }
 
 /** 状态筛选的取值。一张卡可以同时属于几种(在线 + 资源数据过期 + 网络检测失败)。 */
@@ -52,7 +50,6 @@ export type StatusKey =
   | 'MONITOR_OFF'
   | 'DISABLED'
   | 'EXPIRING'
-  | 'EXTERNAL'
 
 export const statusKeyLabel: Record<StatusKey, string> = {
   ONLINE: '在线',
@@ -63,14 +60,13 @@ export const statusKeyLabel: Record<StatusKey, string> = {
   MONITOR_OFF: '监测关闭 / 未配置',
   DISABLED: '已停用',
   EXPIRING: '即将到期 / 已到期',
-  EXTERNAL: '外部线路(无资源数据)',
 }
 
 /**
  * 「网络」一格的监测状态。UNKNOWN 是聚合接口没读到 —— 与「没接入」「没配置」是三件事,
  * 读失败说成「未配置」会让人去配一个本来就配好了的东西。
  */
-export type MonitorState = 'ON' | 'NONE' | 'PAUSED' | 'GLOBAL_OFF' | 'NA' | 'MANUAL' | 'UNKNOWN'
+export type MonitorState = 'ON' | 'NONE' | 'PAUSED' | 'GLOBAL_OFF' | 'NA' | 'UNKNOWN'
 
 export interface CardResources {
   cpu: number | null
@@ -113,20 +109,16 @@ export interface AssetCard {
   kind: ExpiryKind
   id: number
   name: string
-  /** 第二行的小字:内部名称 / 来源 / 协议。 */
+  /** 内部名称:收进名称的悬停说明,搜索照样搜得到。 */
   subtitle: string
   type: AssetType
-  selfHosted: boolean
   region: string
   tags: string[]
-  group: string
   to: string
-  node: Node | null
-  proxy: ExternalProxy | null
-  source: ProxySource | null
+  node: Node
   expiry: ExpiryView | null
-  /** null = 没有资源数据这回事(外部线路);resources.cpu 为 null = 应该有但还没采到。 */
-  resources: CardResources | null
+  /** resources.cpu 为 null = 应该有但还没采到(画空槽,不画 0%)。 */
+  resources: CardResources
   /** 资源一格不可用时的说明。 */
   resourcesNote: string
   traffic: CardTraffic | null
@@ -153,7 +145,6 @@ export interface AssetCard {
   /** 在测但没有展示在卡片上的序列个数。 */
   hiddenCount: number
   monitor: MonitorState
-  external: ExternalCheckStatus | null
   billing: BillingCard | null
   /** 聚合接口读到了没有。没读到时套餐那一格写「没有读到」,不写「未设置套餐」。 */
   cardsLoaded: boolean
@@ -169,8 +160,6 @@ export interface AssetInputs {
   nodes: Node[]
   metrics: Record<number, NodeMetrics>
   cycles: Record<number, NodeCycleUsage>
-  sources: ProxySource[]
-  proxies: ExternalProxy[]
   cards: DashboardCards | null
   /** 卡片实时网速(只在仪表盘开着时有),按节点 ID。没有就退回资源采样里的网速。 */
   netRates?: Record<number, NetRate>
@@ -302,8 +291,6 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
   }
   const pickBy = new Map<number, CardPick>()
   for (const p of inp.cards?.card_picks ?? []) pickBy.set(p.node_id, p)
-  const externalBy = new Map<number, ExternalCheckStatus>()
-  for (const e of inp.cards?.external ?? []) externalBy.set(e.proxy_id, e)
 
   const out: AssetCard[] = []
   for (const n of inp.nodes) {
@@ -344,14 +331,10 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       name: n.display_name,
       subtitle: n.name,
       type: n.role === 'RELAY' ? 'RELAY' : 'LANDING',
-      selfHosted: true,
       region: l?.region ?? '',
       tags: l?.tags ?? [],
-      group: '自建节点',
       to: `/nodes/${n.id}`,
       node: n,
-      proxy: null,
-      source: null,
       expiry: n.expiry ?? null,
       resources: {
         cpu: m ? m.cpu_percent : null,
@@ -390,7 +373,6 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
       shownInvalid: shown.invalid,
       hiddenCount: Math.max(activeCount - shownActive, 0),
       monitor,
-      external: null,
       billing: billing.get(key) ?? null,
       cardsLoaded: !!inp.cards,
       statuses,
@@ -404,104 +386,6 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
     })
   }
 
-  for (const s of inp.sources) {
-    const key = `PROXY_SOURCE-${s.id}`
-    const l = labels.get(key)
-    const statuses = new Set<StatusKey>(['EXTERNAL'])
-    if (!s.enabled) statuses.add('DISABLED')
-    if (expiringState(s.expiry)) statuses.add('EXPIRING')
-    const seen = !!s.upstream_seen_at
-    out.push({
-      key,
-      kind: 'PROXY_SOURCE',
-      id: s.id,
-      name: s.name,
-      subtitle: `${s.proxy_count} 条线路`,
-      type: 'SOURCE',
-      selfHosted: false,
-      region: l?.region ?? '',
-      tags: l?.tags ?? [],
-      group: s.name,
-      to: '/external-proxies',
-      node: null,
-      proxy: null,
-      source: s,
-      expiry: s.expiry ?? null,
-      resources: null,
-      resourcesNote: '购买的外部订阅,没有资源数据',
-      traffic: seen ? { used: s.upstream_used_bytes, quota: s.upstream_total_bytes, source: '上游订阅报告的用量' } : null,
-      trafficNote: seen ? '' : '上游没有报告用量',
-      outbound: [],
-      probes: [],
-      boce: [],
-      peer: [],
-      ingressAliases: {},
-      outboundAliases: {},
-      shownIngress: [],
-      shownOutbound: [],
-      shownInvalid: 0,
-      hiddenCount: 0,
-      monitor: 'MANUAL',
-      external: null,
-      billing: billing.get(key) ?? null,
-      cardsLoaded: !!inp.cards,
-      statuses,
-      cloudStopped: false,
-      latency: null,
-      uptime: null,
-    })
-  }
-
-  for (const p of inp.proxies) {
-    // 跟随来源的条目不单列:来源那一张卡已经代表了它们(与提醒、计费的去重规则一致)。
-    const own = !!p.expiry && p.expiry.has_profile && !p.expiry.inherited
-    if (p.source_id != null && !own) continue
-    const key = `EXTERNAL_PROXY-${p.id}`
-    const l = labels.get(key)
-    const statuses = new Set<StatusKey>(['EXTERNAL'])
-    if (p.status === 'DISABLED') statuses.add('DISABLED')
-    if (expiringState(p.expiry)) statuses.add('EXPIRING')
-    const ext = externalBy.get(p.id) ?? null
-    out.push({
-      key,
-      kind: 'EXTERNAL_PROXY',
-      id: p.id,
-      name: p.final_display_name || p.display_name,
-      subtitle: p.source_name ? `来自 ${p.source_name} · ${p.protocol}` : `手工添加 · ${p.protocol}`,
-      type: 'EXTERNAL',
-      selfHosted: false,
-      region: l?.region ?? '',
-      tags: l?.tags ?? [],
-      group: p.source_name || '手工外部代理',
-      to: '/external-proxies',
-      node: null,
-      proxy: p,
-      source: null,
-      expiry: p.expiry ?? null,
-      resources: null,
-      resourcesNote: '外部线路,没有资源数据',
-      traffic: null,
-      trafficNote: '外部线路,没有流量数据',
-      outbound: [],
-      probes: [],
-      boce: [],
-      peer: [],
-      ingressAliases: {},
-      outboundAliases: {},
-      shownIngress: [],
-      shownOutbound: [],
-      shownInvalid: 0,
-      hiddenCount: 0,
-      monitor: 'MANUAL',
-      external: ext,
-      billing: billing.get(key) ?? null,
-      cardsLoaded: !!inp.cards,
-      statuses,
-      cloudStopped: false,
-      latency: ext?.last_check_ok && ext.latency_ms != null ? ext.latency_ms : null,
-      uptime: null,
-    })
-  }
   return out
 }
 
@@ -509,8 +393,12 @@ export function buildAssetCards(inp: AssetInputs): AssetCard[] {
 
 export type SortKey = 'DEFAULT' | 'LATENCY' | 'EXPIRY' | 'TRAFFIC' | 'PRICE'
 
+/**
+ * DEFAULT 是「自定义顺序」:拖动排出来的顺序(只存在这台浏览器里),没拖过的机器按节点排序号排在后面。
+ * 只有这一档能拖 —— 按延迟、到期这类排序是现算的,拖了也会被下一次刷新排回去。
+ */
 export const sortOptions: { value: SortKey; label: string }[] = [
-  { value: 'DEFAULT', label: '默认顺序' },
+  { value: 'DEFAULT', label: '自定义顺序(可拖动)' },
   { value: 'LATENCY', label: '按延迟(出站优先)' },
   { value: 'EXPIRY', label: '按到期时间' },
   { value: 'TRAFFIC', label: '按流量使用率' },
@@ -520,7 +408,6 @@ export const sortOptions: { value: SortKey; label: string }[] = [
 export interface AssetFilters {
   q: string
   region: string
-  group: string
   tag: string
   status: StatusKey | ''
   type: AssetType | ''
@@ -530,7 +417,6 @@ export interface AssetFilters {
 export const blankFilters = (): AssetFilters => ({
   q: '',
   region: '',
-  group: '',
   tag: '',
   status: '',
   type: '',
@@ -545,7 +431,6 @@ export function filterCards(cards: AssetCard[], f: AssetFilters): AssetCard[] {
   return cards.filter((c) => {
     if (q && !`${c.name} ${c.subtitle}`.toLowerCase().includes(q)) return false
     if (f.region === REGION_UNSET ? c.region !== '' : f.region && c.region !== f.region) return false
-    if (f.group && c.group !== f.group) return false
     if (f.tag && !c.tags.includes(f.tag)) return false
     if (f.status && !c.statuses.has(f.status)) return false
     if (f.type && c.type !== f.type) return false
@@ -573,7 +458,50 @@ function cmpNullable(a: number | null, b: number | null, desc = false): number {
   return desc ? b - a : a - b
 }
 
-export function sortCards(cards: AssetCard[], sort: SortKey): AssetCard[] {
+/**
+ * 自定义顺序:order 里有的按 order 排,没有的(新加的机器、从没拖过)保持原来的相对顺序排在后面。
+ * order 里已经不存在的键(删掉的机器)直接忽略 —— 存在本机的那份顺序不需要跟着清理。
+ */
+export function applyOrder(cards: AssetCard[], order: string[]): AssetCard[] {
+  if (!order.length) return [...cards]
+  const rank = new Map(order.map((k, i) => [k, i]))
+  return cards
+    .map((c, i) => ({ c, i, r: rank.get(c.key) }))
+    .sort((a, b) => {
+      if (a.r !== undefined && b.r !== undefined) return a.r - b.r
+      if (a.r !== undefined) return -1
+      if (b.r !== undefined) return 1
+      return a.i - b.i
+    })
+    .map((x) => x.c)
+}
+
+/**
+ * 筛选状态下拖动:只重排了看得见的那几张。把它们按新顺序填回它们在完整顺序里原来占的那些位置,
+ * 看不见的卡片一张都不挪 —— 清掉筛选之后,别的机器还在原处。
+ */
+export function mergeOrder(full: string[], shownNew: string[]): string[] {
+  const shown = new Set(shownNew)
+  const out = [...full]
+  let k = 0
+  for (let i = 0; i < out.length && k < shownNew.length; i++) {
+    if (shown.has(out[i])) out[i] = shownNew[k++]
+  }
+  return out
+}
+
+/** 把 key 挪到 target 之前(before 为真)或之后。 */
+export function moveKey(keys: string[], key: string, target: string, before: boolean): string[] {
+  if (key === target) return keys
+  const out = keys.filter((k) => k !== key)
+  const at = out.indexOf(target)
+  if (at < 0) return keys
+  out.splice(before ? at : at + 1, 0, key)
+  return out
+}
+
+/** order 只对 DEFAULT(自定义顺序)生效;其余几档是现算的排序。 */
+export function sortCards(cards: AssetCard[], sort: SortKey, order: string[] = []): AssetCard[] {
   const list = [...cards]
   switch (sort) {
     case 'LATENCY':
@@ -593,15 +521,14 @@ export function sortCards(cards: AssetCard[], sort: SortKey): AssetCard[] {
         return cmpNullable(ma < 0 ? null : ma, mb < 0 ? null : mb, true)
       })
   }
-  return list
+  return applyOrder(list, order)
 }
 
 export function filterOptions(cards: AssetCard[]) {
   const regions = [...new Set(cards.map((c) => c.region).filter(Boolean))].sort()
-  const groups = [...new Set(cards.map((c) => c.group))]
   const tags = [...new Set(cards.flatMap((c) => c.tags))].sort((a, b) => a.localeCompare(b))
   const hasUnsetRegion = cards.some((c) => !c.region)
-  return { regions, groups, tags, hasUnsetRegion }
+  return { regions, tags, hasUnsetRegion }
 }
 
 // ---------- 概览 ----------
@@ -618,6 +545,7 @@ export interface AssetOverview {
   /** 本周期流量合计(计费口径);读到的台数另给。 */
   cycleUsed: number
   cycleNodes: number
+  /** 到期与成本只算自建节点(与卡片对得上);聚合接口没读到时 expiring7d / overdue 为 null。 */
   expiring7d: number | null
   overdue: number | null
   costs: CostRow[]
@@ -635,20 +563,20 @@ export interface AssetOverview {
 }
 
 export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): AssetOverview {
-  const nodes = cards.filter((c) => c.kind === 'NODE')
+  const nodes = cards
   const ov: AssetOverview = {
     nodeTotal: nodes.length,
-    online: nodes.filter((c) => c.node?.status === 'ONLINE').length,
-    offline: nodes.filter((c) => c.node?.status === 'OFFLINE' || c.node?.status === 'DEPLOY_FAILED').length,
+    online: nodes.filter((c) => c.node.status === 'ONLINE').length,
+    offline: nodes.filter((c) => c.node.status === 'OFFLINE' || c.node.status === 'DEPLOY_FAILED').length,
     rx: 0,
     tx: 0,
     rateSamples: 0,
     rateStale: 0,
     cycleUsed: 0,
     cycleNodes: 0,
-    expiring7d: dash ? dash.expiring_7d : null,
-    overdue: dash ? dash.overdue : null,
-    costs: dash?.cost_summary ?? [],
+    expiring7d: dash ? dash.node_expiring_7d : null,
+    overdue: dash ? dash.node_overdue : null,
+    costs: dash?.node_cost_summary ?? [],
     outboundTargets: 0,
     outboundFailing: 0,
     probeTargets: 0,
@@ -660,7 +588,7 @@ export function buildOverview(cards: AssetCard[], dash: DashboardCards | null): 
   }
   for (const c of nodes) {
     const r = c.resources
-    if (r && r.rx != null && r.tx != null) {
+    if (r.rx != null && r.tx != null) {
       if (r.rateStale) ov.rateStale++
       else {
         ov.rx += r.rx

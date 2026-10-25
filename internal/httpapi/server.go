@@ -553,6 +553,7 @@ func (s *Server) Handler() http.Handler {
 		portalMux.HandleFunc("POST /api/portal/auth/logout-all", s.handlePortalLogoutAll)
 		portalMux.HandleFunc("GET /api/portal/dashboard", s.handlePortalDashboard)
 		portalMux.HandleFunc("GET /api/portal/nodes", s.handlePortalNodes)
+		portalMux.HandleFunc("GET /api/portal/probe", s.handlePortalProbe)
 		portalMux.HandleFunc("GET /api/portal/traffic", s.handlePortalTraffic)
 		portalMux.HandleFunc("GET /api/portal/subscription", s.handlePortalSubscription)
 		if s.users != nil {

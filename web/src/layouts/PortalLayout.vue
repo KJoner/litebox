@@ -8,7 +8,7 @@ import { LbIcon, type LbIconName } from '@/components/lb'
 
 /**
  * 用户门户布局(UI 2.0)。实底顶栏 + 横向栏目导航,内容区居中 960 宽 ——
- * 栏目只有五个,而且用户多半在手机上打开,侧边栏会吃掉一半宽度。
+ * 栏目只有六个,而且用户多半在手机上打开,侧边栏会吃掉一半宽度。
  *
  * 门户与后台是两套界面语言:后台是高密度表格、给一个人一天看十次;
  * 门户是低密度单栏、给十个人一个月看两次。同一套令牌,不同的密度与词汇。
@@ -28,6 +28,7 @@ const menuItems: { key: string; label: string; icon: LbIconName }[] = [
   { key: 'portal-dashboard', label: '概览', icon: 'layout-grid' },
   { key: 'portal-subscription', label: '我的订阅', icon: 'link' },
   { key: 'portal-nodes', label: '我的节点', icon: 'server' },
+  { key: 'portal-probe', label: '探针', icon: 'gauge' },
   { key: 'portal-traffic', label: '我的流量', icon: 'activity' },
   { key: 'portal-security', label: '安全设置', icon: 'shield' },
 ]
