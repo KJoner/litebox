@@ -711,6 +711,26 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 	case ProtocolShadowsocks:
 		base.Type = "shadowsocks"
 		base.Method = string(params.SSMethod)
+		if params.SSMethod.IsLegacy() {
+			// 传统 AEAD:顶层 password 只在 users 为空、sing-box 退回单用户时才被读,
+			// 必须是谁都没拿到过的一串,见 SSLegacyIdlePassword。
+			idle, err := SSLegacyIdlePassword(params.SSPassword)
+			if err != nil {
+				return Inbound{}, fmt.Errorf("入站 %s 的密钥: %w", params.Tag, err)
+			}
+			base.Password = idle
+			base.Users = make([]InboundUser, 0, len(users))
+			for _, u := range users {
+				// 写进 users[].password 的就是客户端拿到的那一串 —— 取自同一个函数,
+				// 而不是在这里认定"传统 AEAD 的 password 就是用户密钥"再写一遍。
+				password, err := SSClientPassword(params.SSPassword, u.SSPassword, params.SSMethod)
+				if err != nil {
+					return Inbound{}, fmt.Errorf("用户 %s 的%w", u.Code, err)
+				}
+				base.Users = append(base.Users, InboundUser{Name: params.userName(u), Password: password})
+			}
+			break
+		}
 		serverKey, err := SSKeyFor(params.SSPassword, params.SSMethod)
 		if err != nil {
 			return Inbound{}, fmt.Errorf("入站 %s 的密钥: %w", params.Tag, err)

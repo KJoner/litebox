@@ -172,7 +172,7 @@ func (d *Deployer) Layout() Layout { return d.layout }
 //
 //	强制同步流量(失败即中止)
 //	→ 渲染配置并自校验
-//	→ 检查节点时钟(Shadowsocks 偏差超限即中止,此时节点上什么都还没动)
+//	→ 检查节点时钟(Shadowsocks 2022 偏差超限即中止,此时节点上什么都还没动)
 //	→ 上传临时文件
 //	→ sing-box check
 //	→ 备份当前配置
@@ -307,9 +307,9 @@ func (d *Deployer) runTransaction(
 	}
 
 	// 步骤 0:节点时钟。放在最前面 —— 到这里为止节点上什么都还没动过,
-	// 中止的代价只是一次白跑,而 Shadowsocks 节点带着 30 秒以上的偏差跑起来,
+	// 中止的代价只是一次白跑,而 Shadowsocks 2022 节点带着 30 秒以上的偏差跑起来,
 	// 表现是全部用户连不上而后面三步检查全绿。
-	skewDetail, skewSkipped, skewErr := checkClockSkew(ctx, client, strictestProtocol(req.Params))
+	skewDetail, skewSkipped, skewErr := checkClockSkew(ctx, client, clockSubjectOf(req.Params))
 	switch {
 	case skewErr != nil:
 		rec.steps = append(rec.steps, Step{
@@ -546,20 +546,6 @@ func (d *Deployer) restoredListenPorts(
 		}
 	}
 	return ports
-}
-
-// strictestProtocol 给出这台机器上"最挑剔"的那个协议。
-//
-// 时钟检查对 Shadowsocks 是硬闸门、对 VLESS 只记录。一台机器上两种入站
-// 都有时必须按 Shadowsocks 处理 —— 反过来的话,SS 那个入口的全部用户
-// 连不上,而三步健康检查全绿(拨测客户端与服务端共用同一个时钟)。
-func strictestProtocol(params singbox.NodeParams) singbox.Protocol {
-	for _, in := range params.Inbounds {
-		if in.Protocol == singbox.ProtocolShadowsocks {
-			return singbox.ProtocolShadowsocks
-		}
-	}
-	return singbox.ProtocolVLESSReality
 }
 
 // pruneBackups 只保留最近 keepLast 个配置备份。

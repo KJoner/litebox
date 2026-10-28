@@ -96,8 +96,9 @@ type Inbound struct {
 	// TLS 块会让人在排查时先怀疑配置串了。
 	TLS *InboundTLS `json:"tls,omitempty"`
 
-	// 以下只有 Shadowsocks 用。Method 与 Password 的长度必须匹配,
-	// 校验在 validateParams 里完成。
+	// 以下只有 Shadowsocks 用。2022 系列的 Method 与 Password 的长度必须匹配,
+	// 校验在 validateParams 里完成;传统 AEAD 的 Password 是一串谁都没拿到过的
+	// 派生值,只在 users 为空、退回单用户时才被读(SSLegacyIdlePassword)。
 	Method   string `json:"method,omitempty"`
 	Password string `json:"password,omitempty"`
 
@@ -138,7 +139,8 @@ type InboundUser struct {
 	UUID string `json:"uuid,omitempty"`
 	Flow string `json:"flow,omitempty"`
 
-	// Shadowsocks 专有:该用户的 PSK,已按 method 截取并 base64。
+	// Shadowsocks 专有:2022 系列是该用户的 PSK(已按 method 截取并 base64),
+	// 传统 AEAD 是客户端拿到的整串 password(SSClientPassword)。
 	Password string `json:"password,omitempty"`
 
 	// Snell 专有:该用户的 userkey。

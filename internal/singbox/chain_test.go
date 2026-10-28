@@ -439,22 +439,27 @@ func TestChainAcceptsEveryOutboundSSMethod(t *testing.T) {
 	}
 }
 
-// 出站放宽了,入站那张表一个字都不能跟着松:传统 AEAD 的多用户没有 EIH,
-// 服务端要逐个用户试解密,也没有 replay 防护。
+// 入站能跑的每一种一定也拨得出去 —— 链式落地常常就是我们自己的另一台机器,
+// 在这里被拒的话,自建节点之间根本串不起来。反过来出站那张表更宽(aes-192-gcm、
+// xchacha20、none),那几种不能跟着漏进入站。
 func TestOutboundMethodsDoNotLeakIntoInbound(t *testing.T) {
+	inbound := []SSMethod{
+		SSMethodAES128GCM, SSMethodAES256GCM, SSMethodChaCha20,
+		SSMethodLegacyAES128GCM, SSMethodLegacyAES256GCM, SSMethodLegacyChaCha20,
+	}
+	accepted := map[string]bool{}
+	for _, m := range inbound {
+		accepted[string(m)] = true
+		if _, err := ParseOutboundSSMethod(string(m)); err != nil {
+			t.Errorf("出站拒绝了自建节点在跑的 %q: %v", m, err)
+		}
+	}
 	for _, method := range OutboundSSMethods() {
-		if strings.HasPrefix(method, "2022-blake3-") {
+		if accepted[method] {
 			continue
 		}
 		if _, err := ParseSSMethod(method); err == nil {
-			t.Errorf("入站接受了 %q —— 自建节点不该跑传统 AEAD", method)
-		}
-	}
-	// 反过来,入站能跑的三种一定也拨得出去 —— 链式落地常常就是我们自己的
-	// 另一台机器,那三种在这里被拒的话,自建节点之间根本串不起来。
-	for _, m := range []SSMethod{SSMethodAES128GCM, SSMethodAES256GCM, SSMethodChaCha20} {
-		if _, err := ParseOutboundSSMethod(string(m)); err != nil {
-			t.Errorf("出站拒绝了自建节点在跑的 %q: %v", m, err)
+			t.Errorf("入站接受了 %q —— 它不在自建节点的方法表里", method)
 		}
 	}
 }

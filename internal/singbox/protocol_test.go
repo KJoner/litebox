@@ -57,16 +57,44 @@ func TestParseProtocol(t *testing.T) {
 	}
 }
 
-func TestParseSSMethodRejectsLegacyAEAD(t *testing.T) {
-	// 传统 AEAD 的多用户没有 EIH,服务端要逐个用户试解密,也没有 replay 防护。
-	// 自建节点不收 —— 但错误必须发生在保存节点时,不是十几秒后的部署失败。
-	for _, m := range []string{"aes-128-gcm", "chacha20-ietf-poly1305", "rc4-md5", "none"} {
+// 入站收 2022 三种与传统 AEAD 三种(V22.8),别的一律拒 ——
+// 错误必须发生在保存节点时,不是十几秒后的部署失败。
+func TestParseSSMethodInboundRange(t *testing.T) {
+	for _, m := range []string{
+		"2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305",
+		"aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "  AES-128-GCM ",
+	} {
+		if _, err := ParseSSMethod(m); err != nil {
+			t.Errorf("ParseSSMethod(%q) 被拒绝了: %v", m, err)
+		}
+	}
+	// aes-192-gcm / xchacha20 sing-box 也认,但客户端覆盖面参差;rc4-md5 是流加密,none 不加密。
+	for _, m := range []string{"aes-192-gcm", "xchacha20-ietf-poly1305", "rc4-md5", "none"} {
 		if _, err := ParseSSMethod(m); err == nil {
 			t.Errorf("ParseSSMethod(%q) 应当被拒绝", m)
 		}
 	}
 	if got, err := ParseSSMethod(""); err != nil || got != DefaultSSMethod {
 		t.Errorf("空串应回落到默认方法,得到 %q / %v", got, err)
+	}
+	// 默认值仍是 2022:传统 AEAD 是给校不了时的机器的退路,不是首选。
+	if DefaultSSMethod.IsLegacy() {
+		t.Error("默认方法不该是传统 AEAD")
+	}
+}
+
+// IsLegacy 对空串与认不出的方法答否 —— 它们走 2022 那条路,渲染期照旧报错、
+// 时钟检查照旧当硬闸门,而不是被当成"不需要校时"悄悄放过。
+func TestIsLegacyOnlyForKnownLegacyMethods(t *testing.T) {
+	for _, m := range []SSMethod{SSMethodLegacyAES128GCM, SSMethodLegacyAES256GCM, SSMethodLegacyChaCha20} {
+		if !m.IsLegacy() {
+			t.Errorf("%s 应当是传统 AEAD", m)
+		}
+	}
+	for _, m := range []SSMethod{"", "aes-192-gcm", "none", SSMethodAES128GCM, SSMethodAES256GCM, SSMethodChaCha20} {
+		if m.IsLegacy() {
+			t.Errorf("%q 不该被当成入站的传统 AEAD", m)
+		}
 	}
 }
 
@@ -179,6 +207,23 @@ func TestSSClientPasswordRejectsBadKeys(t *testing.T) {
 	}
 }
 
+// 传统 AEAD 的客户端 password 只有用户自己那一把,就是库里存的那串 base64 原样:
+// 多用户的传统 AEAD 没有入站级的密钥这一层。节点密钥坏了也不影响它。
+func TestSSClientPasswordLegacyIsUserKeyOnly(t *testing.T) {
+	for _, m := range []SSMethod{SSMethodLegacyAES128GCM, SSMethodLegacyAES256GCM, SSMethodLegacyChaCha20} {
+		got, err := SSClientPassword("", testUserKey, m)
+		if err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		if got != testUserKey {
+			t.Errorf("%s 的 password = %q,期望用户密钥原样 %q", m, got, testUserKey)
+		}
+		if _, err := SSClientPassword(testServerKey, "not-base64!", m); err == nil {
+			t.Errorf("%s:用户密钥非法时应当报错", m)
+		}
+	}
+}
+
 // stats 白名单必须与入站用户完全一致 —— 两种协议同一条断言。
 func TestShadowsocksStatsWhitelistMatchesUsers(t *testing.T) {
 	cfg, err := Render(ssParams())
@@ -198,6 +243,122 @@ func TestShadowsocksStatsWhitelistMatchesUsers(t *testing.T) {
 		if u.UUID != "" || u.Flow != "" {
 			t.Errorf("用户 %s 上出现了 VLESS 字段", u.Name)
 		}
+	}
+}
+
+func legacySSParams(m SSMethod) NodeParams {
+	p := ssParams()
+	p.Inbounds[0].SSMethod = m
+	return p
+}
+
+// 传统 AEAD 入站:users[].password 就是客户端拿到的那一串(两边取自同一个函数),
+// 顶层 password 是谁都没拿到过的派生值 —— 不是入站密钥,也不是它的任何一段。
+func TestLegacyShadowsocksRender(t *testing.T) {
+	for _, m := range []SSMethod{SSMethodLegacyAES128GCM, SSMethodLegacyAES256GCM, SSMethodLegacyChaCha20} {
+		t.Run(string(m), func(t *testing.T) {
+			p := legacySSParams(m)
+			cfg, err := Render(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := AssertStatsConsistent(cfg); err != nil {
+				t.Fatal(err)
+			}
+			in := cfg.Inbounds[0]
+			if in.Type != "shadowsocks" || in.Method != string(m) {
+				t.Fatalf("type/method = %s/%s", in.Type, in.Method)
+			}
+			for i, u := range in.Users {
+				want, err := SSClientPassword(testServerKey, p.Inbounds[0].Users[i].SSPassword, m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if u.Password != want {
+					t.Errorf("用户 %s 的服务端 password = %q,与客户端拿到的 %q 不一致", u.Name, u.Password, want)
+				}
+				if strings.Contains(u.Password, ":") {
+					t.Errorf("传统 AEAD 的 password 不该是 serverPSK:userPSK 的形状:%q", u.Password)
+				}
+			}
+			idle, err := SSLegacyIdlePassword(testServerKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if in.Password != idle {
+				t.Errorf("顶层 password = %q,期望派生值 %q", in.Password, idle)
+			}
+			// 入站密钥在 2022 下就是 serverPSK,用过那个入口的人手上都有。
+			for _, exposed := range []SSMethod{SSMethodAES128GCM, SSMethodAES256GCM} {
+				k, _ := SSKeyFor(testServerKey, exposed)
+				if in.Password == k {
+					t.Errorf("顶层 password 等于 %s 下的 serverPSK —— 那是发出去过的东西", exposed)
+				}
+			}
+		})
+	}
+}
+
+// **users 为空时 sing-box 退回单用户,顶层 password 是唯一的凭据。**
+// 留空的话 sing-box 报 missing password 起不来,整台机器的入口一起断。
+func TestLegacyShadowsocksWithoutUsersStillHasSecretPassword(t *testing.T) {
+	p := legacySSParams(SSMethodLegacyAES128GCM)
+	p.Inbounds[0].Users = nil
+	cfg, err := Render(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := cfg.Inbounds[0]
+	if in.Password == "" {
+		t.Fatal("没有用户时顶层 password 为空 —— sing-box 会因 missing password 起不来")
+	}
+	if len(in.Users) != 0 {
+		t.Fatalf("users = %+v", in.Users)
+	}
+	// 确定性:同一份参数渲染两次哈希一样,否则节点永远显示「待部署」。
+	again, _ := Render(p)
+	if again.Inbounds[0].Password != in.Password {
+		t.Error("顶层 password 不是确定性的")
+	}
+}
+
+// 配置比对里 Shadowsocks 要分清 2022 与传统:两者对时钟的要求完全不同,
+// 混成一个「Shadowsocks」的话,管理员读不出这次部署之后那台机器还要不要校时。
+func TestDiffNamesLegacyShadowsocks(t *testing.T) {
+	vless, err := Render(v3Params())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp := legacySSParams(SSMethodLegacyAES128GCM)
+	lp.Inbounds[0].Tag = v3Params().Inbounds[0].Tag
+	legacy, err := Render(lp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Compare(vless, legacy)
+	if len(d.NodeAttr) == 0 || !strings.Contains(d.NodeAttr[0], "Shadowsocks(aes-128-gcm)") {
+		t.Fatalf("协议变更没写出传统 AEAD 的方法名:%v", d.NodeAttr)
+	}
+
+	// 2022 → 传统:加密方法那一行必须出现(用户的密码形状跟着变了)。
+	ss2022, err := Render(ssParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySameTag := legacySSParams(SSMethodLegacyAES128GCM)
+	legacy2, _ := Render(legacySameTag)
+	joined := strings.Join(Compare(ss2022, legacy2).NodeAttr, ";")
+	if !strings.Contains(joined, "加密方法 2022-blake3-aes-128-gcm → aes-128-gcm") {
+		t.Errorf("2022 → 传统没有出现在比对里:%s", joined)
+	}
+}
+
+// 两个用户共用同一把密钥:试解密只会认第一个,另一个人的流量全记在别人头上。
+func TestLegacyShadowsocksDuplicateKeysStillRejected(t *testing.T) {
+	p := legacySSParams(SSMethodLegacyChaCha20)
+	p.Inbounds[0].Users[1].SSPassword = p.Inbounds[0].Users[0].SSPassword
+	if _, err := Render(p); err == nil {
+		t.Error("传统 AEAD 下两个用户共用同一密钥时也应当拒绝渲染 —— 试解密只会认第一个")
 	}
 }
 

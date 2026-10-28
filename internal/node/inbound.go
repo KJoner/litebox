@@ -622,7 +622,8 @@ func (s *Store) UpdateInbound(
 	}
 	track("入口名称", p.DisplayName != cur.DisplayName, cur.DisplayName, p.DisplayName)
 	track("落地协议", p.Protocol != string(cur.Protocol),
-		cur.Protocol.Label(), singbox.Protocol(p.Protocol).Label())
+		protocolAuditLabel(cur.Protocol, cur.SSMethod),
+		protocolAuditLabel(singbox.Protocol(p.Protocol), p.SSMethod))
 	// 加密方法只在 Shadowsocks 下有意义。协议切走时它被清空,
 	// 那不是"管理员改了方法",写进审计只会让人以为动了两处。
 	track("加密方法", singbox.Protocol(p.Protocol) == singbox.ProtocolShadowsocks &&

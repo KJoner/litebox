@@ -252,15 +252,22 @@ export type SnellVersion = 5 | 6
 export type SnellObfsMode = '' | 'none' | 'http' | 'tls'
 export type SnellV6Mode = '' | 'default' | 'unshaped' | 'unsafe-raw'
 
-/** Shadowsocks 2022 的加密方法。只有这三种,不收传统 AEAD。 */
+/**
+ * 自建 Shadowsocks 入站的加密方法:2022 系列三种,加上传统 AEAD 三种(V22.8)。
+ * 取值与后端 singbox.ParseSSMethod、迁移 0046 的 CHECK 一字不差。
+ */
 export type NodeSSMethod =
   | '2022-blake3-aes-128-gcm'
   | '2022-blake3-aes-256-gcm'
   | '2022-blake3-chacha20-poly1305'
+  | 'aes-128-gcm'
+  | 'aes-256-gcm'
+  | 'chacha20-ietf-poly1305'
 
 export const PROTOCOL_LABEL: Record<NodeProtocol, string> = {
   VLESS_REALITY: 'VLESS + REALITY',
-  SHADOWSOCKS: 'Shadowsocks 2022',
+  // 不写「2022」:同一个协议下现在还有传统 AEAD,具体是哪一种看加密方法。
+  SHADOWSOCKS: 'Shadowsocks',
   SNELL: 'Snell',
 }
 
@@ -286,13 +293,24 @@ export const SNELL_V6_MODE_LABEL: Record<string, string> = {
  * 加密方法的说明。**只在这里写一遍** —— 建节点表单与入口表单各抄一份的话,
  * 某天改了措辞只改到一处,而两处说的是同一件事。
  *
- * 只提供 2022 系列:传统的 aes-128-gcm 那几种没有 replay 防护,
- * 多用户也要逐个试解密。
+ * 顺序就是下拉里的顺序:2022 系列在前(默认值在第一个),传统 AEAD 在后 ——
+ * 它是给校不了时的机器准备的退路,不是首选。
  */
 export const SS_METHOD_LABEL: Record<NodeSSMethod, string> = {
-  '2022-blake3-aes-128-gcm': 'AES-128-GCM —— 默认,低配机器上更快',
-  '2022-blake3-aes-256-gcm': 'AES-256-GCM',
-  '2022-blake3-chacha20-poly1305': 'ChaCha20-Poly1305 —— 无 AES 硬件加速的老 ARM',
+  '2022-blake3-aes-128-gcm': 'SS2022 · AES-128-GCM —— 默认,低配机器上更快',
+  '2022-blake3-aes-256-gcm': 'SS2022 · AES-256-GCM',
+  '2022-blake3-chacha20-poly1305': 'SS2022 · ChaCha20-Poly1305 —— 无 AES 硬件加速的老 ARM',
+  'aes-128-gcm': '传统 · aes-128-gcm —— 不需要校时',
+  'aes-256-gcm': '传统 · aes-256-gcm —— 不需要校时',
+  'chacha20-ietf-poly1305': '传统 · chacha20-ietf-poly1305 —— 不需要校时',
+}
+
+/**
+ * 是不是传统 AEAD。判据与后端 singbox.SSMethod.IsLegacy 一致:
+ * 只认那三种,空串与认不出的值一律当 2022 看(要校时的那一边)。
+ */
+export function isLegacySSMethod(m: string | null | undefined): boolean {
+  return m === 'aes-128-gcm' || m === 'aes-256-gcm' || m === 'chacha20-ietf-poly1305'
 }
 
 /** 列表里的短标记。全称太长,会把展示名挤到换行。 */
@@ -300,6 +318,15 @@ export const PROTOCOL_SHORT: Record<NodeProtocol, string> = {
   VLESS_REALITY: 'VLESS',
   SHADOWSOCKS: 'SS2022',
   SNELL: 'Snell',
+}
+
+/**
+ * 带上加密方法的短标记:Shadowsocks 的 2022 与传统 AEAD 分开写(SS2022 / SS)。
+ * 两者对时钟的要求完全不同,列表里混成一个名字的话,管理员读不出哪台机器要校时。
+ */
+export function protocolShort(protocol: NodeProtocol, ssMethod?: string | null): string {
+  if (protocol === 'SHADOWSOCKS' && isLegacySSMethod(ssMethod)) return 'SS'
+  return PROTOCOL_SHORT[protocol]
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   SNELL_V6_MODE_LABEL,
   SNELL_VERSION_LABEL,
   SS_METHOD_LABEL,
+  isLegacySSMethod,
   type AccessTier,
   type DestCheckResult,
   type Node,
@@ -560,8 +561,27 @@ async function doSave() {
       <a-form-item v-if="form.protocol === 'SHADOWSOCKS'" label="加密方法">
         <a-select
           v-model:value="form.ss_method"
+          placeholder="SS2022 · AES-128-GCM(默认)"
           :options="Object.entries(SS_METHOD_LABEL).map(([v, l]) => ({ value: v, label: l }))"
         />
+        <!-- 两类方法的代价方向相反,选哪一种都要把自己那一侧的代价摆出来:
+             2022 怕时钟、传统 AEAD 怕重放。只写一句「多一个选项」的话,
+             管理员不会知道为什么默认值不是那个"不用校时"的。 -->
+        <div v-if="isLegacySSMethod(form.ss_method)" class="ifm__hint">
+          <b>传统 AEAD 不看时钟</b>,给校不了时的机器(LXC / OpenVZ 容器常见)用。代价:
+          没有 replay 防护,重放探测能确认这是一个 Shadowsocks 服务;
+          多用户要逐个试解密(十个人以内感觉不到)。机器能校时的话仍建议选 SS2022。
+          <br />
+          用户密码就是他已有的那把 Shadowsocks 密钥,不新签发;客户端里的方法名要与这里一致。
+        </div>
+        <div v-else class="ifm__hint">
+          <b>SS2022 要求节点时间准确</b>:与真实时间相差超过约 30 秒时全部用户都连不上,
+          而服务状态、端口监听与拨测仍然全绿。部署前面板会实测一次,超限直接中止。
+          机器上校不了时就选下面的「传统」那三种。
+        </div>
+        <div class="ifm__hint">
+          <b>改加密方法会改掉所有人的密码</b>(长度或形状),需要重新部署,用户需要重新拉订阅。
+        </div>
       </a-form-item>
       <a-form-item label="主机监听端口(sing-box 真正 bind 的号码)">
         <a-input-number v-model:value="form.listen_port" :min="1" :max="65535" />

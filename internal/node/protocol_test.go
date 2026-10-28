@@ -227,6 +227,56 @@ func TestUpdateSSMethodNeedsDeploy(t *testing.T) {
 	}
 }
 
+// 传统 AEAD(V22.8)从新建到改回 2022 一路都要走得通 —— 迁移 0046 放宽的那条
+// CHECK 与 singbox.ParseSSMethod 必须收同一批方法,少一边就是"保存时报约束失败"。
+// 入站密钥不因换方法而变:订阅按 deployed_ss_method 渲染,换了密钥的话,
+// 部署之前那段时间所有人拿到的都是一串连不上的 password。
+func TestLegacySSMethodRoundTrip(t *testing.T) {
+	store, _ := newTestStore(t)
+	p := defaultCreateParams()
+	p.Protocol = "SHADOWSOCKS"
+	p.SSMethod = "AES-128-GCM"
+	n, err := store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatalf("传统 AEAD 建节点失败: %v", err)
+	}
+	in := only(t, n)
+	if in.SSMethod != string(singbox.SSMethodLegacyAES128GCM) {
+		t.Fatalf("加密方法 = %q,期望归一化成 aes-128-gcm", in.SSMethod)
+	}
+	keyBefore := in.SSPassword
+
+	for _, m := range []singbox.SSMethod{
+		singbox.SSMethodLegacyChaCha20, singbox.SSMethodAES256GCM, singbox.SSMethodLegacyAES256GCM,
+	} {
+		cur, err := store.GetInbound(t.Context(), in.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, effect, err := store.UpdateInbound(t.Context(), in.ID, inboundEdit(cur, func(u *InboundParams) {
+			u.SSMethod = string(m)
+		}))
+		if err != nil {
+			t.Fatalf("改成 %s 失败: %v", m, err)
+		}
+		if updated.SSMethod != string(m) || !effect.NeedsDeploy {
+			t.Errorf("改成 %s:方法 = %q,NeedsDeploy = %v", m, updated.SSMethod, effect.NeedsDeploy)
+		}
+		if updated.SSPassword != keyBefore {
+			t.Errorf("改成 %s 时入站密钥变了 —— 部署之前订阅会下发一串连不上的 password", m)
+		}
+	}
+
+	// 入站不收的方法在 Go 侧就拦下,不靠数据库的 CHECK 报一句约束失败。
+	cur, _ := store.GetInbound(t.Context(), in.ID)
+	_, _, err = store.UpdateInbound(t.Context(), in.ID, inboundEdit(cur, func(u *InboundParams) {
+		u.SSMethod = "aes-192-gcm"
+	}))
+	if err == nil || strings.Contains(err.Error(), "CHECK") {
+		t.Errorf("aes-192-gcm 应当被 Go 侧拒绝,得到 %v", err)
+	}
+}
+
 // 协议切走时不该把"加密方法被清空"也写进审计 ——
 // 那不是管理员的动作,列出来会让人以为他动了两处设置。
 func TestProtocolSwitchAuditDoesNotMentionMethodClear(t *testing.T) {
