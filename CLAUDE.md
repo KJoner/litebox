@@ -9,7 +9,7 @@ V2 计划见 `docs/开发计划/v1_1/v2阶段开发计划.md`。
 
 面向个人使用的轻量级 sing-box 管理面板。最多 10 个用户,多台 Linux VPS,
 节点可低至 128MB 内存。节点落地协议支持 VLESS + REALITY + XTLS Vision
-与 Shadowsocks 2022(V4 起)。
+与 Shadowsocks 2022(V4 起;V22.8 起 Shadowsocks 入站也收不看时钟的传统 AEAD)。
 V2 增加了普通用户门户与三档节点访问等级,V4 增加了外部代理(机场订阅并入同一条
 订阅),V5 增加了配置文件订阅(管理员上传整份客户端配置,面板按用户替换占位符),
 V6 增加了一键 TCP 调优(按节点实测到的资源现算内核参数),
@@ -32,7 +32,7 @@ V17 增加了阿里云 CDT 主机:按账号轮询 CDT 用量、超阈值自动�
 V18 把管理后台与用户门户的**视觉层**换成 iOS 风格(纯白圆角卡片、胶囊、毛玻璃顶栏、
 浅 / 深两套主题),布局、路由、接口与文案一个字没动。
 **自建节点的落地协议到 V13 才第一次变长** —— 在此之前 V4~V12 一个字没加。
-现在是 VLESS + REALITY、Shadowsocks 2022、Mieru 与 Snell 四种,
+现在是 VLESS + REALITY、Shadowsocks(2022 与 V22.8 起的传统 AEAD)、Mieru 与 Snell 四种,
 仍然只有这四种:那是我们自己要运维的东西,与登记别人配好的线路是两件事。
 
 ## 架构约束
@@ -328,9 +328,11 @@ V4 起节点可以跑 `VLESS + REALITY` 或 `Shadowsocks 2022`。
 
 * **`serverPSK:userPSK` 的拼接只有 `singbox.SSClientPassword` 一处实现**,
   拨测与订阅都调它。两处各拼一遍的话,某天改了编码方式只改到一处,
-  表现是「拨测通过但用户连不上」,或者反过来 —— 两条路径各自看起来都完全正确;
+  表现是「拨测通过但用户连不上」,或者反过来 —— 两条路径各自看起来都完全正确。
+  V22.8 起它也回答传统 AEAD(只返回用户密钥本身),渲染入站 `users[].password` 时同样调它;
 
-* **Shadowsocks 节点部署前必须检查节点时钟(部署事务第零步)。**
+* **Shadowsocks 2022 入站部署前必须检查节点时钟(部署事务第零步)。**
+  (V22.8 起只对 2022 系列是硬闸门,传统 AEAD 只记录,判据 `deployment.clockSubjectOf`。)
   SS2022 的 AEAD 头带时间戳,偏差超过约 30 秒时全部用户连不上,而
   `check` 通过、服务 active、端口监听、**本机拨测也通过**。
   拨测测不出来的原因是结构性的:探测客户端跑在节点自己身上,与服务端
@@ -374,8 +376,11 @@ V4 起节点可以跑 `VLESS + REALITY` 或 `Shadowsocks 2022`。
   (主密钥在 Go 侧)、也不在配置渲染路径上懒补(`desiredConfig` 也被只读的
   `ConfigDiff` 调用,在「看一眼差异」里写库会把纯查询变成数据变更);
 
-* **自建节点只支持 SS2022 三种方法,不支持传统 AEAD**(`aes-128-gcm` 等):
-  后者的多用户没有 EIH,服务端要逐个用户试解密,也没有 replay 防护;
+* ~~**自建节点只支持 SS2022 三种方法,不支持传统 AEAD**(`aes-128-gcm` 等):
+  后者的多用户没有 EIH,服务端要逐个用户试解密,也没有 replay 防护;~~
+  **这一条已被 V22.8 推翻**,见下面的「自建 Shadowsocks 传统 AEAD 约束(V22.8)」。
+  那几条代价一条都没消失,只是被拿去换了另一件事:SS2022 要求节点时钟准确,
+  而有些机器(LXC / OpenVZ 容器)根本校不了时;
 
 * **`UsersForNode` 一并带出两套凭据,不按节点协议分叉,也不校验 SS 密钥。**
   VLESS 节点上用户的 SS 密钥可以是空的(存量用户等着 backfill),
@@ -438,7 +443,8 @@ V4 起节点可以跑 `VLESS + REALITY` 或 `Shadowsocks 2022`。
   按类型报数只留给**压根不收**的种类(`ssr://` 之类);
 
 * **`ss://` 的加密方法有两张表,而客户端那张只能有一份。**
-  `singbox.ParseSSMethod` 答的是「我们愿意在自己的机器上跑哪几种」(只有 SS2022),
+  `singbox.ParseSSMethod` 答的是「我们愿意在自己的机器上跑哪几种」
+  (SS2022 三种,V22.8 起加上 aes-128-gcm / aes-256-gcm / chacha20-ietf-poly1305),
   `singbox.ParseOutboundSSMethod` 答的是「sing-box 能连别人的哪几种」
   (连传统 AEAD 一起)。曾经 externalproxy 自己抄了一份客户端的表,比渲染器那张宽:
   于是 `chacha20-ietf-poly1305` 的机场线路登记得进来、连通性检查是绿的、
@@ -3433,6 +3439,53 @@ Modern SaaS Dashboard + Infrastructure Console:中性灰阶、细边框、轻阴
 持续写文件,与「不在节点运行常驻自研 Agent / 面板一行代码都不在节点上常驻」直接冲突,在 128MB 的机器上还要占
 内存与磁盘写入。现行做法(`node.NetRateSampler`)只在有人看卡片时每 30 秒读两个累计值,不看就不连。
 
+## 自建 Shadowsocks 传统 AEAD 约束(V22.8)
+
+自建 Shadowsocks 入站的加密方法在 SS2022 三种之外,多了 `aes-128-gcm`、`aes-256-gcm`、
+`chacha20-ietf-poly1305`(迁移 0046)。**加它的理由只有一条:SS2022 的 AEAD 头带时间戳**,
+节点时钟偏差超过约 30 秒时全部用户连不上,而不少小鸡(尤其 LXC / OpenVZ 容器)里根本校不了时;
+传统 AEAD 与时钟无关。V4 那条「不支持传统 AEAD」的代价一条都没消失(没有 replay 防护、
+多用户逐个试解密),所以**默认值仍是 SS2022 · AES-128-GCM**,两种表单上都把各自的代价写出来。
+sing-box 1.14 的多用户传统 AEAD 走 sing-shadowsocks 的 `shadowaead.NewMultiService`
+(逐个用户试解密、顶层 password 被忽略),源码核对过;**没有在真实节点上跑过**。
+
+* **「是不是传统」的判据只有 `singbox.SSMethod.IsLegacy` 一处**,三件事都问它:入站怎么渲染、
+  客户端 password 怎么拼、时钟检查拦不拦。**刻意问「是不是传统」而不是「是不是 2022」**:
+  空串与认不出的方法答否,于是走 2022 那条路 —— 渲染期照旧报「未知的加密方法」,时钟检查照旧是
+  硬闸门。反过来问的话,一个漏了归一化的空方法会悄悄绕过时钟检查。前端 `isLegacySSMethod` 同一判据;
+
+* **只收这三种**:aes-192-gcm 与 xchacha20-ietf-poly1305 sing-box 也认,但客户端覆盖面参差,
+  它们给不了这三种之外的任何好处。迁移 0046 的 CHECK 与 `ParseSSMethod` 必须收同一批 ——
+  少一边是「保存时报约束失败」,多一边是绕过 Go 侧校验写进库、渲染不出来的方法;
+
+* **用户凭据不新增:客户端 password 就是用户已有的那把 SS 密钥原样**(32 字节标准 base64),
+  `SSClientPassword` 对传统 AEAD 只返回它;**入站 `users[].password` 也调 `SSClientPassword` 取值**,
+  而不是在渲染器里再认定一次"传统的 password 就是用户密钥" —— 服务端与客户端那一串取自同一个函数。
+  同一个人在每个传统 AEAD 入口上用的是同一串(与 VLESS 的 UUID 一样);重置 SS 凭据连带换掉它,
+  而那正好由 `NodesForUserWithProtocol` 标脏(协议仍是 SHADOWSOCKS);
+
+* **⚠️ 顶层 password 不能留空,也不能是入站密钥本身**(`singbox.SSLegacyIdlePassword`)。
+  多用户模式下 sing-box 不读它;但 **users 渲染成空列表时 sing-box 退回单用户模式**,顶层 password
+  是唯一的凭据 —— 留空则 `missing password`,sing-box 起不来,整台机器的入口一起断
+  (一个 VIP 入口上暂时没有够格的人就是这种情形)。而入站密钥在这个入口以前是 2022-256 / chacha 时
+  就是 serverPSK 原样,用过它的人手上都有。所以用 HMAC-SHA256(入站密钥, 固定标签) 派生一串谁都没拿到过的值,
+  确定性派生(随机的话配置哈希每次都变,节点永远「待部署」)。前 2022-256 的老用户算得出它 ——
+  与 SS2022 自己退回单用户时的暴露面相同,不更坏;
+
+* **换方法不换入站密钥**,哪怕是 2022 ↔ 传统。订阅按 `deployed_ss_method` 渲染、拿的却是库里**当前**的密钥:
+  保存时换了密钥的话,部署之前那段时间所有人拉到的都是一串连不上的 password。`TestLegacySSMethodRoundTrip` 钉着;
+
+* **时钟检查按方法判**(`deployment.clockSubjectOf`):机器上只要有一个 SS2022 入站就是硬闸门;
+  只有传统 AEAD / VLESS / Snell 时只记录,提示里写出这台机器上实际跑着什么
+  (「Shadowsocks(aes-128-gcm) 不受影响」,不再写死 VLESS);
+
+* **给人看的名字分 2022 与传统**:`singbox.ShadowsocksLabel`(配置比对、时钟提示、审计「落地协议」那一栏)、
+  前端 `protocolShort`(列表里 SS2022 / SS)。两者对时钟的要求完全不同,混成一个名字的话管理员读不出
+  哪台机器要校时。入口列表的「A → B 待部署」把 2022 ↔ 传统也算作换协议 —— 两边的 password 形状不同;
+
+* **回滚到这一版之前先把用了传统 AEAD 的入口改回 SS2022 并下发**。旧二进制能打开 0046 的库,
+  但渲染那台机器时会报「未知的 Shadowsocks 加密方法」(配置状态「未知」),订阅里那几条也会被跳过。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -4266,5 +4319,14 @@ V22.7 探针页增强(无迁移,约束见上面「探针页增强约束(V22.7)�
 
 Go 全部测试通过;Playwright 功能用例 144 个(+11),截图基线 47 张(+4 门户探针,更新 17 张);
 构建 JS 2440.1 KB(+0.4%)、CSS 495.8 KB(+0.8%),没有新增依赖。没有在真实节点上验证。
+
+V22.8 自建 Shadowsocks 支持传统 AEAD(迁移 0046,约束见上面「自建 Shadowsocks 传统 AEAD 约束(V22.8)」):
+
+* 后端 —— 已完成(`ParseSSMethod` 收三种传统 AEAD、`IsLegacy` 单一判据、`SSClientPassword` 分叉、
+  `SSLegacyIdlePassword`、`clockSubjectOf`、`ShadowsocksLabel`;迁移 0046 重建 `node_inbounds` 放宽 CHECK,
+  升级测试逐列逐行比对);
+* 前端 —— 已完成(两个表单的方法下拉与各自代价、时钟警告只对 SS2022、列表短标记 SS2022 / SS)。
+
+Go 全部测试通过;没有在真实节点上验证(sing-box 侧按源码核对)。
 
 未完成当前阶段前,不要提前开发后续阶段的功能。
