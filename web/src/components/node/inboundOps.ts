@@ -1,7 +1,7 @@
 import { message } from 'ant-design-vue'
 import {
   ApiError,
-  PROTOCOL_SHORT,
+  protocolShort,
   api,
   type MieruInbound,
   type Node,
@@ -74,9 +74,13 @@ export function inboundProtocolMeta(i: NodeInbound): LbStatusMeta {
       bg: color.neutralBg,
     }
   }
-  const pending = p !== i.protocol
+  // 2022 ↔ 传统 AEAD 也算「换了协议」:两边的客户端 password 形状不同,
+  // 部署之前订阅下发的仍是节点上那一种。
+  const from = protocolShort(p, i.deployed_ss_method)
+  const to = protocolShort(i.protocol, i.ss_method)
+  const pending = p !== i.protocol || from !== to
   return {
-    text: pending ? `${PROTOCOL_SHORT[p]} → ${PROTOCOL_SHORT[i.protocol]} 待部署` : PROTOCOL_SHORT[p],
+    text: pending ? `${from} → ${to} 待部署` : from,
     shape: pending ? 'triangle' : 'check',
     fg: pending ? color.warning : color.success,
     bg: pending ? color.warningBg : color.successBg,

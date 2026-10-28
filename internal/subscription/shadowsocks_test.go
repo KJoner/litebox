@@ -104,6 +104,41 @@ func TestShadowsocksURIPasswordMatchesSingboxHelper(t *testing.T) {
 	}
 }
 
+// 传统 AEAD 入站(V22.8):三种输出拿到的都是用户自己那一把 —— 没有 serverPSK 那一段,
+// 方法名原样写进去。服务端 users[].password 取自同一个 SSClientPassword,
+// 所以这里与它一致就等于与节点上那份一致。
+func TestLegacyShadowsocksEntryUsesUserKeyOnly(t *testing.T) {
+	n := ssNode()
+	n.SSMethod = singbox.SSMethodLegacyAES128GCM
+	entry, err := EntryFor(ssCred(), n)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := url.Parse(entry.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(parsed.User.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	method, password, _ := strings.Cut(string(decoded), ":")
+	if method != "aes-128-gcm" || password != ssUserKey {
+		t.Errorf("URI 里是 %q / %q,期望 aes-128-gcm / 用户密钥原样", method, password)
+	}
+
+	out := entry.Outbound(OutboundOptions{Tag: "t"}).(clientSSOutbound)
+	if out.Method != "aes-128-gcm" || out.Password != ssUserKey {
+		t.Errorf("sing-box 出站是 %q / %q", out.Method, out.Password)
+	}
+
+	proxy := entry.Proxy("东京 SS").(*clashSSProxy)
+	if proxy.Cipher != "aes-128-gcm" || proxy.Password != ssUserKey {
+		t.Errorf("Clash proxy 是 %q / %q", proxy.Cipher, proxy.Password)
+	}
+}
+
 // 节点名要 URL 编码,否则中文与空格会截断链接。
 func TestShadowsocksURIEscapesNodeName(t *testing.T) {
 	n := ssNode()

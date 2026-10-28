@@ -1,7 +1,9 @@
 package singbox
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -46,7 +48,8 @@ func ParseProtocol(raw string) (Protocol, error) {
 func (p Protocol) Label() string {
 	switch p {
 	case ProtocolShadowsocks:
-		return "Shadowsocks 2022"
+		// 不写「2022」:同一个协议下现在还有传统 AEAD,具体是哪一种看加密方法。
+		return "Shadowsocks"
 	case ProtocolSnell:
 		return "Snell"
 	default:
@@ -88,55 +91,101 @@ func (p Protocol) LegacyInboundTag() string {
 // UsesReality 表示该协议需要 REALITY 的握手目标、私钥与 short_id。
 func (p Protocol) UsesReality() bool { return p == ProtocolVLESSReality }
 
-// SSMethod 是 Shadowsocks 2022 的加密方法。
+// SSMethod 是 Shadowsocks 的加密方法。
 //
 // 这个类型同时用于两件事,但两件事的取值范围不同:
-// 【入站】只提供 2022 系列三种,不提供传统 AEAD(aes-128-gcm 等)——
-// 后者的多用户没有 EIH,服务端要对每个用户试解密,而且没有 replay 防护,
-// 自建节点没有理由用它;【出站】(链式落地、外部代理、订阅里的客户端配置)
-// 必须连传统方法一起支持,那是别人配好的线路,我们只负责登记与转发。
-// 两个范围分别由 ParseSSMethod 与 ParseOutboundSSMethod 把关。
+// 【入站】提供 2022 系列三种与传统 AEAD 三种(aes-128-gcm / aes-256-gcm /
+// chacha20-ietf-poly1305);【出站】(链式落地、外部代理、订阅里的客户端配置)
+// 再宽一些,连 aes-192-gcm、xchacha20 与 none 一起收 —— 那是别人配好的线路,
+// 我们只负责登记与转发。两个范围分别由 ParseSSMethod 与 ParseOutboundSSMethod 把关。
+//
+// 入站为什么又收了传统 AEAD(V22.8):SS2022 的 AEAD 头带时间戳,节点时钟偏差超过
+// 约 30 秒时全部用户连不上,而不少小鸡(尤其 LXC / OpenVZ 容器)里根本校不了时。
+// 传统 AEAD 与时钟无关。**代价要在表单上说清,不能只当成"多一个选项"**:
+// 多用户没有 EIH,服务端对每个连接逐个用户试解密(十个人以内无所谓);
+// 没有 replay 防护,重放探测能确认这是一个 Shadowsocks 服务;握手没有时间戳,
+// 也就没有"过期的连接"这一说。默认值仍是 2022 系列。
 type SSMethod string
 
 const (
 	SSMethodAES128GCM SSMethod = "2022-blake3-aes-128-gcm"
 	SSMethodAES256GCM SSMethod = "2022-blake3-aes-256-gcm"
 	SSMethodChaCha20  SSMethod = "2022-blake3-chacha20-poly1305"
+
+	// 传统 AEAD。只收这三种:aes-192-gcm 与 xchacha20-ietf-poly1305 sing-box 也认,
+	// 但客户端覆盖面参差(不少客户端的下拉里没有它们),而它们没有任何一点
+	// 这三种给不了的好处 —— 多一个选项只是多一种让部分用户连不上的配法。
+	SSMethodLegacyAES128GCM SSMethod = "aes-128-gcm"
+	SSMethodLegacyAES256GCM SSMethod = "aes-256-gcm"
+	SSMethodLegacyChaCha20  SSMethod = "chacha20-ietf-poly1305"
 )
 
 // DefaultSSMethod 是新建 Shadowsocks 节点的默认方法。
 //
 // 选 128 位而不是 256:本项目瞄准 128MB 的小机器,而 AES-128 在没有
 // 硬件加速的老 ARM 上比 AES-256 明显快。需要 ChaCha20 的机器由管理员自己选。
+// 默认仍是 2022 系列:传统 AEAD 是给校不了时的机器准备的退路,不是首选。
 const DefaultSSMethod = SSMethodAES128GCM
 
-// ssKeyLen 是各方法要求的密钥字节数。长度不对时 sing-box check 会报错
+// ssKeyLen 是 SS2022 各方法要求的密钥字节数。长度不对时 sing-box check 会报错
 // (这一条是响亮的失败,不是静默的),但仍要在 Go 侧拦住 ——
 // 让错误发生在保存节点时,而不是十几秒后的部署失败回滚里。
+//
+// 传统 AEAD 不在这张表里:它的 password 是任意字符串,由 sing-box 自己按
+// EVP_BytesToKey 派生密钥,没有"长度"可言。KeyLen 为 0 是"这不是 2022"的判据。
 var ssKeyLen = map[SSMethod]int{
 	SSMethodAES128GCM: 16,
 	SSMethodAES256GCM: 32,
 	SSMethodChaCha20:  32,
 }
 
+// legacyInboundSSMethods 是入站收的传统 AEAD。与 ssKeyLen 合起来就是入站的全集。
+var legacyInboundSSMethods = map[SSMethod]bool{
+	SSMethodLegacyAES128GCM: true,
+	SSMethodLegacyAES256GCM: true,
+	SSMethodLegacyChaCha20:  true,
+}
+
 // SSKeyBytes 是库里存的密钥长度。
 //
 // 固定 32 字节,不按 method 生成:改节点的 method 不该导致重新签发用户凭据。
 // 截取是确定性的 —— 同一个用户在 128 位与 256 位的节点上拿到两串不同的
-// password,而库里只有一份密钥。
+// password,而库里只有一份密钥。传统 AEAD 直接拿这串 base64 当 password。
 const SSKeyBytes = 32
 
-// ParseSSMethod 解析加密方法。空串回落到默认值。
+// ParseSSMethod 解析【入站】的加密方法。空串回落到默认值。
 func ParseSSMethod(raw string) (SSMethod, error) {
 	trimmed := strings.ToLower(strings.TrimSpace(raw))
 	if trimmed == "" {
 		return DefaultSSMethod, nil
 	}
 	m := SSMethod(trimmed)
-	if _, ok := ssKeyLen[m]; !ok {
+	if _, ok := ssKeyLen[m]; !ok && !legacyInboundSSMethods[m] {
 		return "", fmt.Errorf("未知的 Shadowsocks 加密方法 %q", raw)
 	}
 	return m, nil
+}
+
+// IsLegacy 表示这是入站收的传统 AEAD(不带 2022 前缀的那三种)。
+//
+// 判据只有这一处,三件事都问它:入站怎么渲染、客户端 password 怎么拼
+// (serverPSK:userPSK 还是只有一把),以及部署前要不要把节点时钟当硬闸门。
+// 各判一遍的话,某天加一种方法只改到一处,表现是"拨测通过但用户连不上"或者
+// "校不了时的机器被时钟检查拦住、而它跑的根本不是 2022"。
+//
+// 刻意问"是不是传统"而不是"是不是 2022":空串与认不出的方法答否,于是它们
+// 走 2022 那条路 —— 渲染期照旧报"未知的加密方法",时钟检查照旧当硬闸门。
+// 反过来问的话,一个漏了归一化的空方法会悄悄绕过时钟检查。
+func (m SSMethod) IsLegacy() bool { return legacyInboundSSMethods[m] }
+
+// ShadowsocksLabel 是给人看的 Shadowsocks 入站名:2022 系列写「Shadowsocks 2022」,
+// 传统 AEAD 带上方法名。两者对时钟的要求完全不同,混成一个名字的话,
+// 管理员在配置比对或时钟提示里读不出这台机器到底要不要校时。
+func ShadowsocksLabel(m SSMethod) string {
+	if m.IsLegacy() {
+		return "Shadowsocks(" + string(m) + ")"
+	}
+	return "Shadowsocks 2022"
 }
 
 // KeyLen 返回该方法要求的密钥字节数。
@@ -146,9 +195,8 @@ func (m SSMethod) KeyLen() int { return ssKeyLen[m] }
 //
 // 它与 ssKeyLen 回答的是两个不同的问题,不能互相代替:
 //
-//   - ssKeyLen 是「我们愿意在自己的机器上跑哪几种」—— 只有 SS2022 三种,
-//     理由见 SSMethod 的注释(传统 AEAD 的多用户没有 EIH,服务端要逐个用户
-//     试解密,也没有 replay 防护);
+//   - ssKeyLen + legacyInboundSSMethods 是「我们愿意在自己的机器上跑哪几种」——
+//     SS2022 三种加传统 AEAD 三种,理由见 SSMethod 的注释;
 //   - 这一张是「sing-box 能连别人的哪几种」。别人的线路是别人配的,
 //     传统 AEAD 在机场里至今是主流(chacha20-ietf-poly1305 尤其常见),
 //     拦住它不会让任何人更安全,只会让一半机场没法当出口用。
@@ -164,10 +212,10 @@ var outboundSSMethods = []SSMethod{
 	SSMethodChaCha20,
 	// 传统 AEAD。顺序照抄客户端里的习惯顺序,不按字母排 ——
 	// 这个列表会原样出现在表单下拉里。
-	"aes-128-gcm",
+	SSMethodLegacyAES128GCM,
 	"aes-192-gcm",
-	"aes-256-gcm",
-	"chacha20-ietf-poly1305",
+	SSMethodLegacyAES256GCM,
+	SSMethodLegacyChaCha20,
 	"xchacha20-ietf-poly1305",
 	// none 是「不加密,只做代理」,sing-box 认它。极少用,排在最后。
 	"none",
@@ -209,7 +257,7 @@ func ParseOutboundSSMethod(raw string) (SSMethod, error) {
 
 var errSSKeyFormat = errors.New("Shadowsocks 密钥非法,应为 32 字节的标准 base64")
 
-// GenerateSSKey 生成一把 Shadowsocks 2022 的 PSK。
+// GenerateSSKey 生成一把 Shadowsocks 的密钥(2022 的 PSK,或传统 AEAD 的 password)。
 //
 // 生成器与校验器放在同一个文件里,理由与 GenerateUUID/ValidateUUID 相同:
 // 两者必须来自同一套约定。这里的约定是【标准 base64】而不是 base64url ——
@@ -256,15 +304,25 @@ func SSKeyFor(stored string, method SSMethod) (string, error) {
 	return base64.StdEncoding.EncodeToString(raw[:want]), nil
 }
 
-// SSClientPassword 拼出 Shadowsocks 2022 多用户模式下客户端使用的 password。
+// SSClientPassword 给出自建 Shadowsocks 入站上客户端使用的 password。
 //
-// 这是 "serverPSK:userPSK" 的【唯一】实现,拨测与订阅都必须调它。
+// 这是它的【唯一】实现,拨测、订阅、链式出站与中转拨测都必须调它。
 // 两处各拼一遍的话,某天改了编码方式或分隔符只改到一处,表现是
 // "拨测通过但用户连不上",或者反过来 —— 两种都排查不出来,
 // 因为两条路径各自看起来都完全正确。
 //
+//   - 2022 系列:"serverPSK:userPSK",两段都按方法截取;
+//   - 传统 AEAD:只有用户自己那一把,就是库里存的那串 base64 原样 ——
+//     多用户的传统 AEAD 没有入站级的密钥这一层,服务端逐个用户试解密。
+//
 // 传入的是库里存的 32 字节密钥,截取在这里一并完成。
 func SSClientPassword(serverKey, userKey string, method SSMethod) (string, error) {
+	if method.IsLegacy() {
+		if err := ValidateSSKey(userKey); err != nil {
+			return "", fmt.Errorf("用户密钥: %w", err)
+		}
+		return userKey, nil
+	}
 	server, err := SSKeyFor(serverKey, method)
 	if err != nil {
 		return "", fmt.Errorf("节点密钥: %w", err)
@@ -274,6 +332,30 @@ func SSClientPassword(serverKey, userKey string, method SSMethod) (string, error
 		return "", fmt.Errorf("用户密钥: %w", err)
 	}
 	return server + ":" + user, nil
+}
+
+// SSLegacyIdlePassword 是传统 AEAD 入站顶层的 password。
+//
+// 多用户模式下 sing-box 根本不读它(逐个用户试解密)。它存在只为一种情形:
+// **users 渲染成空列表时 sing-box 退回单用户模式**,而那时顶层 password 是唯一的凭据 ——
+// 留空的话 sing-box 直接报 missing password 起不来,整台机器的入口一起断
+// (一个 VIP 入口上暂时没有够格的人就是这种情形)。
+//
+// 所以它必须是一串**谁都没拿到过**的东西。不能是入站密钥本身:这个入口以前若是
+// 2022-blake3-aes-256-gcm,serverPSK 就是那 32 字节原样,每个用过它的人手上都有。
+// 用 HMAC 派生而不是截取,截取出来的仍是 serverPSK 的一段。
+// (前 2022-256 / chacha 的老用户知道全部 32 字节、也就算得出它 —— 与 SS2022 自己
+// 退回单用户时的暴露面相同,不更坏。)
+//
+// 确定性派生,不每次随机:随机的话配置哈希每次都变,节点永远显示「待部署」。
+func SSLegacyIdlePassword(serverKey string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(serverKey)
+	if err != nil || len(raw) != SSKeyBytes {
+		return "", fmt.Errorf("%w", errSSKeyFormat)
+	}
+	mac := hmac.New(sha256.New, raw)
+	mac.Write([]byte("litebox shadowsocks legacy idle password"))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
 // CheckOutboundSSPassword 按 method 校验一条【别人的】Shadowsocks 线路的 password。

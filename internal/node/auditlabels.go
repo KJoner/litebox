@@ -13,6 +13,15 @@ func sharedPSKLabel(shared bool) string {
 	return "逐用户凭据(每人一把 userkey)"
 }
 
+// protocolAuditLabel 是审计里「落地协议」那一栏的写法:Shadowsocks 带上 2022 / 传统之分 ——
+// 两者对时钟的要求完全不同,几个月后翻审计的人要看得出那天切到的是哪一种。
+func protocolAuditLabel(p singbox.Protocol, method string) string {
+	if p == singbox.ProtocolShadowsocks {
+		return singbox.ShadowsocksLabel(singbox.SSMethod(method))
+	}
+	return p.Label()
+}
+
 // snellVersionLabel 是审计里那一栏的写法。0 表示"这不是 Snell 入站"。
 func snellVersionLabel(v int) string {
 	if v == 0 {

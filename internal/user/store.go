@@ -55,9 +55,11 @@ type User struct {
 	Remark      string `json:"remark"`
 	// UUID 只在需要下发配置或展示订阅时使用,不随列表接口返回。
 	UUID string `json:"-"`
-	// SSPassword 是该用户的 Shadowsocks 2022 PSK(32 字节 base64),
+	// SSPassword 是该用户的 Shadowsocks 密钥(32 字节 base64),
 	// 与 UUID 平级:一份凭据对应一种协议,互不替代。
-	// 全站共用一把 —— 不同节点的 server PSK 不同,拼出来的 password 本来就不同。
+	// 全站共用一把 —— 2022 入站上不同节点的 server PSK 不同,拼出来的 password 本来就不同;
+	// 传统 AEAD 入站(V22.8)上它原样就是 password,于是同一个人在每个传统 AEAD 入口上
+	// 用的是同一串,与 VLESS 的 UUID 一样。重置它会连带换掉两种方法下的密码。
 	SSPassword string `json:"-"`
 	// MieruPassword 是该用户在 mita 上的口令,与上面两份平级。
 	//

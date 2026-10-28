@@ -4,6 +4,8 @@ import { message, Modal } from 'ant-design-vue'
 import {
   api,
   ApiError,
+  SS_METHOD_LABEL,
+  isLegacySSMethod,
   type AccessTier,
   type CloudAccount,
   type CloudInstance,
@@ -344,6 +346,8 @@ const cycleDirty = computed(
 // 建好之后改它们走节点详情的「入口」面板 —— 一台机器上可以有好几个入口,
 // 而这个表单描述的是机器本身。
 const isSS = computed(() => form.protocol === 'SHADOWSOCKS')
+// 时钟警告只对 SS2022 成立:传统 AEAD 不看时钟,正是给校不了时的机器准备的。
+const isSS2022 = computed(() => isSS.value && !isLegacySSMethod(form.ss_method))
 
 function close() {
   emit('update:open', false)
@@ -1034,7 +1038,7 @@ async function doSubmit() {
       <a-form-item v-if="!isEdit" label="落地协议">
         <a-select v-model:value="form.protocol">
           <a-select-option value="VLESS_REALITY">VLESS + REALITY —— 需要握手目标</a-select-option>
-          <a-select-option value="SHADOWSOCKS">Shadowsocks 2022 —— 不需要握手目标</a-select-option>
+          <a-select-option value="SHADOWSOCKS">Shadowsocks —— 不需要握手目标</a-select-option>
         </a-select>
         <div class="nf__help">
           这是这台机器【第一个入口】的协议。建好之后可以在「入口」里再加,
@@ -1062,33 +1066,35 @@ async function doSubmit() {
       </a-form-item>
 
       <a-form-item v-if="!isEdit && isSS" label="加密方法">
-        <a-select v-model:value="form.ss_method">
-          <a-select-option value="2022-blake3-aes-128-gcm">
-            AES-128-GCM —— 默认,低配机器上更快
-          </a-select-option>
-          <a-select-option value="2022-blake3-aes-256-gcm">AES-256-GCM</a-select-option>
-          <a-select-option value="2022-blake3-chacha20-poly1305">
-            ChaCha20-Poly1305 —— 无 AES 硬件加速的老 ARM
-          </a-select-option>
-        </a-select>
+        <a-select
+          v-model:value="form.ss_method"
+          :options="Object.entries(SS_METHOD_LABEL).map(([v, l]) => ({ value: v, label: l }))"
+        />
         <div class="nf__help">
-          只提供 2022 系列。传统的 aes-128-gcm 那几种没有 replay 防护,多用户也要逐个试解密。
+          <template v-if="isLegacySSMethod(form.ss_method)">
+            <strong>传统 AEAD 不看时钟</strong>,给校不了时的机器(LXC / OpenVZ 容器常见)用。
+            代价:没有 replay 防护,重放探测能确认这是一个 Shadowsocks 服务;多用户要逐个试解密
+            (十个人以内感觉不到)。机器能校时的话仍建议选 SS2022。
+          </template>
+          <template v-else>
+            SS2022 握手带时间戳,要求节点时间准确;校不了时的机器选「传统」那三种。
+          </template>
           <br />
-          <strong>改加密方法会让所有人的密码变长或变短</strong>,与改协议一样需要重新部署、
+          <strong>改加密方法会改掉所有人的密码</strong>(长度或形状),与改协议一样需要重新部署、
           用户需要重新拉订阅。
         </div>
       </a-form-item>
 
       <!-- Shadowsocks 2022 对时钟敏感,而部署的三步健康检查全都测不出这个问题:
            拨测客户端跑在节点自己身上,与服务端共用同一个时钟。所以这里要先说,
-           部署事务开头也会实测一次并在超限时中止。 -->
+           部署事务开头也会实测一次并在超限时中止。传统 AEAD 不看时钟,不显示。 -->
       <a-alert
-        v-if="!isEdit && isSS"
+        v-if="!isEdit && isSS2022"
         type="warning"
         show-icon
         class="nf__alert-gap"
         message="Shadowsocks 2022 要求节点时间准确"
-        description="握手带时间戳,节点与真实时间相差超过约 30 秒时全部用户都连不上,而服务状态、端口监听与拨测仍然全绿。部署前面板会实测一次,超限直接中止。请确认节点上开着 NTP(ntpd / chronyd / systemd-timesyncd)。"
+        description="握手带时间戳,节点与真实时间相差超过约 30 秒时全部用户都连不上,而服务状态、端口监听与拨测仍然全绿。部署前面板会实测一次,超限直接中止。请确认节点上开着 NTP(ntpd / chronyd / systemd-timesyncd);校不了时就把加密方法换成「传统」那三种。"
       />
 
       <!-- 这条 Alert 必须自带下外边距。它下面那行说明用的是 .nf__help--row

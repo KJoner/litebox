@@ -99,8 +99,9 @@ func shadowsocksOutbound(o OutboundOptions, password string, node Node) clientSS
 
 // shadowsocksProxy 生成 mihomo 配置里的 ss proxy。
 //
-// password 是已经拼好的 serverPSK:userPSK(singbox.SSClientPassword),
-// 与 URI 和 sing-box 出站用的是同一串 —— 在这里再拼一遍就是第二处实现。
+// password 是 singbox.SSClientPassword 给出的那一串(2022 是 serverPSK:userPSK,
+// 传统 AEAD 是用户密钥本身),与 URI 和 sing-box 出站用的是同一串 ——
+// 在这里再拼一遍就是第二处实现。
 func shadowsocksProxy(name, password string, node Node) *clashSSProxy {
 	return &clashSSProxy{
 		Name:     name,

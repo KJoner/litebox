@@ -439,7 +439,7 @@ func compareRealityAttrs(oldIn, newIn Inbound) []string {
 func protocolLabelOf(in Inbound) string {
 	switch in.Type {
 	case "shadowsocks":
-		return ProtocolShadowsocks.Label()
+		return ShadowsocksLabel(SSMethod(in.Method))
 	case "snell":
 		return ProtocolSnell.Label()
 	case "vless":
