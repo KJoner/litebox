@@ -84,8 +84,10 @@ type Server struct {
 	httpServer *http.Server
 	startedAt  time.Time
 	// tasks 是后台任务(VNext PERF06);asyncWG 让优雅关闭等后台任务跑完。
-	tasks   *task.Store
-	asyncWG sync.WaitGroup
+	tasks    *task.Store
+	asyncWG  sync.WaitGroup
+	manifest *node.Manifest
+	version  string
 }
 
 // Options 是构造 Server 所需的依赖。
@@ -148,6 +150,10 @@ type Options struct {
 	Assets fs.FS
 	// Tasks 是后台任务表;nil 时用 DB 现造一个。长操作带 ?async=1 时立即返回 task_id。
 	Tasks *task.Store
+	// Manifest 是发布清单(VNext CORE01);nil 表示开发环境自己构建、没有清单。
+	Manifest *node.Manifest
+	// Version 是主控自己的版本号(main.Version)。
+	Version string
 }
 
 func NewServer(opts Options) *Server {
@@ -198,9 +204,11 @@ func NewServer(opts Options) *Server {
 		logger:       opts.Logger,
 		assets:       opts.Assets,
 		secureCookie: opts.Config.HTTP.SecureCookie,
-		trustProxy:   strings.HasPrefix(opts.Config.HTTP.Listen, "127.0.0.1:") || strings.HasPrefix(opts.Config.HTTP.Listen, "localhost:"),
+		trustProxy:   decideTrustProxy(opts.Config.HTTP),
 		startedAt:    time.Now(),
 		tasks:        opts.Tasks,
+		manifest:     opts.Manifest,
+		version:      opts.Version,
 	}
 }
 
@@ -230,6 +238,7 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	authed.HandleFunc("GET /api/dashboard/summary", s.handleDashboardSummary)
 	authed.HandleFunc("GET /api/sidebar-counts", s.handleSidebarCounts)
+	authed.HandleFunc("GET /api/release-manifest", s.handleReleaseManifest)
 	if s.tasks != nil {
 		authed.HandleFunc("GET /api/tasks", s.handleListTasks)
 		authed.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
@@ -653,4 +662,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.logger.Warn("关闭时仍有后台任务没跑完,下次启动会标成「待核对」")
 	}
 	return err
+}
+
+// decideTrustProxy:auto 时只监听回环才采信 X-Forwarded-For(前面必有反代);true / false 显式指定 ——
+// 容器里监听 0.0.0.0、前面又有反代,auto 判不出来。
+func decideTrustProxy(h config.HTTPConfig) bool {
+	switch strings.ToLower(h.TrustProxy) {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return strings.HasPrefix(h.Listen, "127.0.0.1:") || strings.HasPrefix(h.Listen, "localhost:")
 }

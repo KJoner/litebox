@@ -3572,6 +3572,26 @@ SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/desig
 * SQLite ↔ PG 的离线迁移只「原样搬」:保留 id、密文、关联关系,不重新加密;主密钥跟着部署走。
   `database.CopyAll` 只往空库里导(只有迁移带进来的初始数据),**绝不清一个有数据的库**;`Verify` 逐表逐行哈希 + 有效权限视图。
 
+## VNext 构建与部署约束(S3)
+
+镜像、Compose 三种模式、一键脚本与原生安装见 `docs/vnext/deploy.md`。
+
+* **生产机上不现场构建**:镜像与发布包里带着主控与节点要用的全部产物。原生安装(`litebox-install.sh`)
+  默认下载预编译发布包并核对 `SHA256SUMS`,`--build-from-source` 才走老的构建路径;
+* **发布清单是分发前的最后一道核对**(`node.Manifest`,`assets/release-manifest.json`):`DirBinaryProvider.Artifact`
+  发现文件哈希与清单不符就拒绝分发 ——「文件存在且非空」证明不了它是这次发布的那一份。没有清单(开发环境)时不核对;
+  原生安装从源码构建时会删掉上一次留下的旧清单,否则新构建的文件全被拒;
+* **只有 `v*` tag 发布镜像**,预发布(带 `-`)不动 `latest`;推送之后用 digest 起一个主控做冒烟,并核对两种架构都在;
+* 容器以 uid 10001 运行,不用 privileged / host 网络 / Docker socket;主密钥用 `LITEBOX_MASTER_KEY_FILE`(只读 secret 文件)。
+  读不到那个文件时报错,**不能悄悄当成「没配主密钥」** —— 那会把人引向生成一把新的;
+* 容器里监听 0.0.0.0,「只监听回环 ⇒ 前面有反代」的推断不成立:`http.trust_proxy`(`LITEBOX_HTTP_TRUST_PROXY`)显式指定;
+* **SQLite 模式只有主控一个服务**:PG 的一切(服务、口令、健康检查依赖)只在叠加文件里;
+* 快捷 PG 的应用账号不是超级用户、没有 CREATEDB;已有 PG 模式不创建、不修改、不删除共享实例上的任何东西;
+  PG 大版本升级是独立的迁移任务,PG 18 的数据目录布局不同;
+* 部署脚本:重复执行沿用 `.env` / `secrets/` / `compose.override.yaml`,**绝不重新生成主密钥、不覆盖数据**;
+  备份验证通过之前不删任何旧备份;`verify-backup` 在断网容器里做,并用备份里的主密钥抽查解密(`litebox check` 的密文抽查);
+  `update` 先在数据副本上演练迁移,失败回滚应用与应用库 —— **恢复主控库不会回滚节点**,恢复之后先核对再恢复调度。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -4427,5 +4447,8 @@ VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 
 * S2 双数据库 —— 已完成(PG 驱动包装层、可移植 SQL、PG 基线迁移、库比程序新拒绝启动、单活动主控锁、
   `litebox db inspect/import/verify/export`、dbtest 两种引擎跑同一批测试、CI 的 PG 任务、节点列表批量预取;
   本地 PG 17 验证,PG 16 / 18 与跨主机 TLS 未验证)
+* S3 构建与部署 —— 已完成(Dockerfile 多架构、三份 Compose、一键脚本 install/status/backup/verify-backup/restore/update/logs、
+  发布清单与分发前核对、release.yml、原生安装默认下载预编译包;本机 Docker Desktop 验证了三种模式,
+  多架构推送与 GitHub Release 要等第一次真实 tag)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

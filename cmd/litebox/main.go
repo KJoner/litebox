@@ -26,6 +26,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // 云实例定时、到期提醒按 Asia/Shanghai 等时区算:时区库编进二进制,容器里不用另装 tzdata
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/adjustment"
@@ -98,8 +99,10 @@ func run() error {
 		return cmdServe(args)
 	case "db":
 		return cmdDB(args)
+	case "manifest":
+		return cmdManifest(args)
 	default:
-		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check db genkey ssh-key reset-password version)", command)
+		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check db manifest genkey ssh-key reset-password version)", command)
 	}
 }
 
@@ -295,7 +298,7 @@ func cmdBackup(args []string) error {
 
 func cmdCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
-	_, _, db, err := setup(fs, args)
+	cfg, _, db, err := setup(fs, args)
 	if err != nil {
 		return err
 	}
@@ -304,6 +307,16 @@ func cmdCheck(args []string) error {
 	result, err := database.Check(context.Background(), db)
 	if err != nil {
 		return err
+	}
+	// 密文抽查(VNext DEPLOY07):备份里的主密钥必须解得开库里的密文 —— 只验证「库能打开」不够,
+	// 主密钥对不上的备份恢复出来,用户凭据与节点私钥全都用不了。
+	if cipher, cerr := crypto.NewCipher(cfg.Security.MasterKey); cerr == nil {
+		ok, bad := decryptSample(context.Background(), db, cipher)
+		fmt.Printf("密文抽查    : 解开 %d 个,失败 %d 个\n", ok, bad)
+		if bad > 0 {
+			result.IntegrityOK = false
+			result.Problems = append(result.Problems, fmt.Sprintf("有 %d 个密文用当前主密钥解不开:主密钥与这个库不配套", bad))
+		}
 	}
 
 	fmt.Printf("架构版本    : %d\n", result.SchemaVersion)
@@ -496,10 +509,24 @@ func cmdServe(args []string) error {
 	// mita 与 mieru 客户端都要:前者是服务端,后者只在部署的健康检查里跑
 	// 那几秒 —— 而少了它,Mieru 入口的真实拨测就做不了,那是本项目
 	// 第一条铁律,Mieru 不给它开口子。
+	// 发布清单(VNext CORE01/03):镜像与发布包里带着,分发每一个节点二进制之前都拿它核对哈希。
+	// 开发环境自己构建、没有清单时不核对。
+	manifest, err := node.LoadManifest(filepath.Join(filepath.Dir(cfg.Node.BinaryDir), "release-manifest.json"))
+	if err != nil {
+		return err
+	}
+	if manifest != nil {
+		logger.Info("已载入发布清单", "version", manifest.Version, "commit", manifest.Commit, "files", len(manifest.Files))
+	}
+	withManifest := func(p *node.DirBinaryProvider) *node.DirBinaryProvider { p.SetManifest(manifest); return p }
+	singBoxBinaries := withManifest(node.NewDirBinaryProvider(cfg.Node.BinaryDir))
+
 	mieruBinaries := node.NewNamedBinaryProvider(cfg.Node.MieruBinaryDir, "mita",
 		"请先执行 scripts/fetch-mieru.sh 拉取")
 	mieruClients := node.NewNamedBinaryProvider(cfg.Node.MieruBinaryDir, "mieru",
 		"请先执行 scripts/fetch-mieru.sh 拉取")
+	mieruBinaries.SetManifest(manifest)
+	mieruClients.SetManifest(manifest)
 
 	nodeService := node.NewService(node.ServiceOptions{
 		Store:         nodeStore,
@@ -507,11 +534,11 @@ func cmdServe(args []string) error {
 		Deployer:      deployer,
 		DeployStore:   deployment.NewStore(db),
 		Users:         userStore,
-		Binaries:      node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		Binaries:      singBoxBinaries,
 		MieruBinaries: mieruBinaries,
 		MieruClients:  mieruClients,
-		RealmBinaries: node.NewNamedBinaryProvider(cfg.Node.RealmBinaryDir, "realm",
-			"请先执行 scripts/fetch-realm.sh 拉取"),
+		RealmBinaries: withManifest(node.NewNamedBinaryProvider(cfg.Node.RealmBinaryDir, "realm",
+			"请先执行 scripts/fetch-realm.sh 拉取")),
 		// 引导成功后顺带装 vnStat:失败只记进引导结果,不让创建节点失败。
 		HostTraffic:      hostTraffic,
 		MieruSync:        syncer,
@@ -714,8 +741,8 @@ func cmdServe(args []string) error {
 	// 出站网络质量:每台自建 VPS 在本机测管理员配置的公共目标。经已有的 SSH 长连接临时启动
 	// 非驻留辅助程序(跑完就退出,不常驻、不监听端口),用非阻塞取锁 —— 节点正在部署、
 	// 同步或巡检时本拍让路,不排在它们前面。迁移不创建任何公共目标,升级后不会自动开始测。
-	probeHelpers := node.NewNamedBinaryProvider(cfg.Node.ProbeBinaryDir, "litebox-probe",
-		"请先执行 scripts/build-probe.sh 构建")
+	probeHelpers := withManifest(node.NewNamedBinaryProvider(cfg.Node.ProbeBinaryDir, "litebox-probe",
+		"请先执行 scripts/build-probe.sh 构建"))
 	outbound := probe.NewOutbound(probe.OutboundOptions{
 		Store:    probeStore,
 		Logger:   logger,
@@ -805,6 +832,8 @@ func cmdServe(args []string) error {
 
 	server := httpapi.NewServer(httpapi.Options{
 		Tasks:        taskStore,
+		Manifest:     manifest,
+		Version:      Version,
 		Config:       cfg,
 		DB:           db,
 		Auth:         authService,
@@ -843,7 +872,7 @@ func cmdServe(args []string) error {
 		Adjustments: adjustment.NewStore(db),
 
 		Pool:     pool,
-		Binaries: node.NewDirBinaryProvider(cfg.Node.BinaryDir),
+		Binaries: singBoxBinaries,
 		Logger:   logger,
 		Assets:   assets,
 	})
@@ -893,4 +922,38 @@ func cleanupLoop(ctx context.Context, authService *auth.Service,
 		case <-ticker.C:
 		}
 	}
+}
+
+// cmdManifest 扫描 assets 目录,生成发布清单(VNext CORE01)。构建镜像 / 发布包时调用:
+//
+//	litebox manifest --dir assets --version v1.2.3 --commit <sha> --singbox v1.14.0 --mieru v3.36.0 --realm v2.9.4
+func cmdManifest(args []string) error {
+	fs := flag.NewFlagSet("manifest", flag.ExitOnError)
+	dir := fs.String("dir", "assets", "产物根目录")
+	version := fs.String("version", Version, "这次发布的版本")
+	commit := fs.String("commit", "", "源码提交")
+	singbox := fs.String("singbox", "", "sing-box 版本")
+	mieru := fs.String("mieru", "", "mita / mieru 版本")
+	realm := fs.String("realm", "", "realm 版本")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	comps := []node.ManifestComponent{
+		{Dir: "singbox", Prefix: "sing-box", Component: "sing-box", Version: *singbox,
+			Capabilities: node.SingBoxCapabilities(filepath.Join(*dir, "singbox", "build-metadata.json"))},
+		{Dir: "mieru", Prefix: "mita", Component: "mita", Version: *mieru, Capabilities: []string{"mieru-server"}},
+		{Dir: "mieru", Prefix: "mieru", Component: "mieru", Version: *mieru, Capabilities: []string{"mieru-client"}},
+		{Dir: "realm", Prefix: "realm", Component: "realm", Version: *realm, Capabilities: []string{"tcp", "udp"}},
+		{Dir: "probe", Prefix: "litebox-probe", Component: "litebox-probe", Version: *version, Capabilities: []string{"netprobe-v3"}},
+	}
+	m, err := node.BuildManifest(*dir, *version, *commit, comps)
+	if err != nil {
+		return err
+	}
+	out := filepath.Join(*dir, "release-manifest.json")
+	if err := node.WriteManifest(m, out); err != nil {
+		return err
+	}
+	fmt.Printf("已写入 %s(%d 个文件)\n", out, len(m.Files))
+	return nil
 }

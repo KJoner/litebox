@@ -46,3 +46,9 @@ func (s *Server) handleSidebarCounts(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+// handleReleaseManifest 回答「主控、辅助程序与各核心是哪个版本、哪个哈希」(VNext CORE01 / PROTO03 的可查询要求)。
+// 开发环境没有清单时 manifest 为 null,而不是一份空清单 —— 后者读起来像「这个版本什么都没带」。
+func (s *Server) handleReleaseManifest(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"panel_version": s.version, "manifest": s.manifest})
+}

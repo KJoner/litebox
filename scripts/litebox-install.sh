@@ -4,7 +4,10 @@
 #   bash <(wget -qO- https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #   bash <(curl -fsSL https://raw.githubusercontent.com/KJoner/litebox/master/scripts/litebox-install.sh)
 #
-# 它做这些事:检查并补齐 git / curl / make → 拉源码 → 把 Go 与 Node.js 升到各自那条线上
+# 默认(VNext)下载 GitHub Release 的预编译发布包、核对 sha256 后安装,不在生产机上构建;
+# 加 --build-from-source 走下面描述的老路径。
+#
+# 从源码构建时它做这些事:检查并补齐 git / curl / make → 拉源码 → 把 Go 与 Node.js 升到各自那条线上
 # 的最新补丁 → 构建主控、节点用的 sing-box 与出站探测辅助程序 litebox-probe → 拉取
 # Mieru 用的 mita/mieru 与 realm → 调用 scripts/install.sh 安装或升级主控 → 把节点用的
 # 二进制放到 /opt/litebox/assets/ 下 → 打印登录信息。
@@ -86,8 +89,56 @@ ensure_pkgs() {
 }
 
 log "检查基础工具"
-ensure_pkgs git curl tar make
+ensure_pkgs curl tar
 ok "git / curl / tar / make 就绪"
+
+# ---------------------------------------------------------------- 预编译发布包(VNext DEPLOY09,默认)
+#
+# 默认直接下载 GitHub Release 里预编译好的发布包(主控二进制 + 节点用的全部产物 + 发布清单),
+# 核对 SHA256SUMS 之后安装 —— 生产机上不再装 Go / Node.js / git、不再现场构建。
+# 要像以前那样从源码构建:加 --build-from-source(或 LITEBOX_FROM_SOURCE=1)。
+#   LITEBOX_VERSION=v1.2.3   指定版本;不给时取最新的正式版(预发布不算)
+FROM_SOURCE="${LITEBOX_FROM_SOURCE:-0}"
+for arg in "$@"; do
+    [ "$arg" = "--build-from-source" ] && FROM_SOURCE=1
+done
+SINGBOX_UPGRADED=0
+SINGBOX_REBUILD_REASON=""
+RELEASE_API="${LITEBOX_RELEASE_API:-https://api.github.com/repos/KJoner/litebox/releases}"
+RELEASE_DL="${LITEBOX_RELEASE_DL:-https://github.com/KJoner/litebox/releases/download}"
+
+if [ "$FROM_SOURCE" != "1" ]; then
+    ensure_pkgs curl tar
+    VER="${LITEBOX_VERSION:-}"
+    if [ -z "$VER" ]; then
+        VER="$(curl -fsSL "$RELEASE_API/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+        [ -n "$VER" ] || die "查不到最新的正式版(GitHub 连不上?)。可以用 LITEBOX_VERSION=vX.Y.Z 指定,或加 --build-from-source"
+    fi
+    PKG="litebox_${VER}_linux_${ARCH}.tar.gz"
+    STAGE="/usr/local/src/litebox-release/$VER"
+    log "下载预编译发布包 $PKG"
+    rm -rf "$STAGE.tmp" && mkdir -p "$STAGE.tmp"
+    curl -fsSL -o "$STAGE.tmp/$PKG" "$RELEASE_DL/$VER/$PKG" || die "下载 $PKG 失败"
+    curl -fsSL -o "$STAGE.tmp/SHA256SUMS" "$RELEASE_DL/$VER/SHA256SUMS" || die "下载 SHA256SUMS 失败"
+    ( cd "$STAGE.tmp" && grep " $PKG\$" SHA256SUMS | sha256sum -c - >/dev/null )         || die "$PKG 的 sha256 与 SHA256SUMS 不符,拒绝安装(下载不完整或被篡改)"
+    ok "已校验 $PKG"
+    tar -xzf "$STAGE.tmp/$PKG" -C "$STAGE.tmp"
+    rm -rf "$STAGE" && mv "$STAGE.tmp/litebox_${VER}_linux_${ARCH}" "$STAGE" && rm -rf "$STAGE.tmp"
+    SRC_DIR="$STAGE"
+    cd "$SRC_DIR"
+    [ -x bin/litebox ] || die "发布包里没有 bin/litebox"
+    ok "发布包版本 $("bin/litebox" version 2>/dev/null || echo "$VER")"
+    # 节点用的 sing-box 换了版本时提醒去各节点「重新安装」(已在节点上的那一份不会自己换)。
+    if [ -f "$INSTALL_DIR/assets/singbox/sing-box-linux-$ARCH" ] &&
+        ! cmp -s "$INSTALL_DIR/assets/singbox/sing-box-linux-$ARCH" "assets/singbox/sing-box-linux-$ARCH"; then
+        SINGBOX_UPGRADED=1
+        SINGBOX_REBUILD_REASON="发布包里换了一份"
+    fi
+fi
+
+if [ "$FROM_SOURCE" = "1" ]; then
+# 以下到「安装主控」之前是从源码构建的老路径(--build-from-source),逻辑一字未改。
+ensure_pkgs git make
 
 # ---------------------------------------------------------------- 源码
 
@@ -342,6 +393,8 @@ else
     warn "litebox-probe 构建失败,已跳过。要用出站探测时重跑 bash scripts/build-probe.sh"
 fi
 
+fi  # FROM_SOURCE
+
 # ---------------------------------------------------------------- 安装主控
 
 FIRST_INSTALL=0
@@ -383,6 +436,14 @@ if ls assets/probe/litebox-probe-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/probe"
     cp -f assets/probe/litebox-probe-linux-* "$INSTALL_DIR/assets/probe/"
     ok "出站探测辅助程序已就位"
+fi
+# 发布清单(VNext CORE01):主控分发前拿它核对每个文件的哈希。从源码构建时没有清单 ——
+# 那时要把上一次预编译安装留下的旧清单删掉,否则它会与新构建的文件对不上,主控拒绝分发。
+if [ -f assets/release-manifest.json ]; then
+    cp -f assets/release-manifest.json "$INSTALL_DIR/assets/release-manifest.json"
+    ok "发布清单已就位"
+else
+    rm -f "$INSTALL_DIR/assets/release-manifest.json"
 fi
 chown -R litebox:litebox "$INSTALL_DIR/assets" 2>/dev/null || true
 

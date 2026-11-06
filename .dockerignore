@@ -1,0 +1,23 @@
+# 构建上下文只要源码:本机构建出来的产物、依赖目录、测试截图与私有开发计划一律不进镜像。
+.git
+.build
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+web/e2e/__screenshots__
+assets/singbox/sing-box-*
+assets/singbox/build-metadata*.json
+assets/mieru/mita-linux-*
+assets/mieru/mieru-linux-*
+assets/realm/realm-linux-*
+assets/probe/litebox-probe-linux-*
+assets/release-manifest.json
+bin
+data
+docs/开发计划
+phase0
+*.db
+*.db-wal
+*.db-shm
+*.jar

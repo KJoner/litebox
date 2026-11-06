@@ -1,0 +1,46 @@
+# LiteBox 主控 —— 默认 SQLite 模式(VNext DEPLOY02)。只有这一个服务,没有数据库容器。
+#
+# 由 litebox.sh 生成 .env 与 secrets/ 之后使用:
+#   docker compose up -d
+# 快捷 PG:   docker compose -f compose.yaml -f compose.postgres.yaml up -d
+# 已有 PG:   docker compose -f compose.yaml -f compose.external-postgres.yaml up -d
+#            (PG 在同一台宿主的另一个 Compose 项目里时,再叠加 compose.pg-network.yaml)
+#
+# 本文件不要手改:升级时 litebox.sh 会从新镜像里取出同版本的这份覆盖它。要改的放进 compose.override.yaml。
+name: litebox
+
+services:
+  litebox:
+    image: ${LITEBOX_IMAGE:-kjoner/litebox}:${LITEBOX_VERSION:?请在 .env 里设置 LITEBOX_VERSION}
+    restart: unless-stopped
+    environment:
+      LITEBOX_HTTP_BASE_URL: ${LITEBOX_BASE_URL:?请在 .env 里设置 LITEBOX_BASE_URL(订阅地址的站点根)}
+      LITEBOX_HTTP_SECURE_COOKIE: ${LITEBOX_SECURE_COOKIE:-true}
+      # 前面有反代(nginx / Caddy / 云负载均衡)时为 true,客户端地址才记得对。
+      LITEBOX_HTTP_TRUST_PROXY: ${LITEBOX_TRUST_PROXY:-true}
+      LITEBOX_MASTER_KEY_FILE: /run/secrets/litebox_master_key
+      LITEBOX_LOG_LEVEL: ${LITEBOX_LOG_LEVEL:-info}
+    secrets:
+      - litebox_master_key
+    volumes:
+      # 库、备份、节点访问私钥都在这里。目录属主必须是 10001(镜像里的非 root 用户)。
+      - ${LITEBOX_DATA_DIR:-./data}:/data
+    ports:
+      # 默认只绑回环,由宿主上的反代对外;要直接对外改成 0.0.0.0(不推荐,没有 TLS)。
+      - "${LITEBOX_BIND:-127.0.0.1}:${LITEBOX_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  litebox_master_key:
+    file: ./secrets/master_key
