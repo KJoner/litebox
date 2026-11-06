@@ -2,8 +2,11 @@
 package deployment
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"github.com/litebox/litebox/internal/task"
 )
 
 // Layout 描述节点上 LiteBox 相关文件的位置与服务名。
@@ -227,9 +230,14 @@ type Result struct {
 // stepRecorder 累积步骤记录。
 type stepRecorder struct {
 	steps []Step
+	// ctx 只用来报告进度(后台任务的「正在做什么」,VNext PERF06);同步调用时它不带回调,报告什么都不做。
+	ctx context.Context
 }
 
 func (r *stepRecorder) run(name string, fn func() (string, error)) error {
+	if r.ctx != nil {
+		task.Report(r.ctx, "%s", name)
+	}
 	start := time.Now()
 	detail, err := fn()
 	step := Step{

@@ -75,7 +75,7 @@ func (d *Deployer) DeployMieru(ctx context.Context, req MieruRequest) (Result, e
 		Revision:  req.Revision,
 		StartedAt: time.Now().UTC(),
 	}
-	rec := &stepRecorder{}
+	rec := &stepRecorder{ctx: ctx}
 
 	deployErr := d.pool.Do(ctx, req.NodeID, func(client *sshx.Client) error {
 		return d.runMieruTransaction(ctx, client, req, rec, &result)

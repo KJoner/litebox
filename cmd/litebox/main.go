@@ -51,6 +51,7 @@ import (
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
+	"github.com/litebox/litebox/internal/task"
 	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 	"github.com/litebox/litebox/internal/v2rayapi"
@@ -758,7 +759,19 @@ func cmdServe(args []string) error {
 
 	profileStore := subscription.NewProfileStore(db)
 
+	// 后台任务(VNext PERF06):上一次运行时没跑完的标成「待核对」,绝不重放;只留 14 天。
+	taskStore := task.NewStore(db)
+	if n, err := taskStore.MarkInterrupted(ctx); err != nil {
+		logger.Error("标记中断的后台任务失败", "error", err)
+	} else if n > 0 {
+		logger.Warn("有后台任务在上次运行时没跑完,已标成待核对", "count", n)
+	}
+	if err := taskStore.Prune(ctx, 14*24*time.Hour); err != nil {
+		logger.Warn("清理旧的后台任务失败", "error", err)
+	}
+
 	server := httpapi.NewServer(httpapi.Options{
+		Tasks:        taskStore,
 		Config:       cfg,
 		DB:           db,
 		Auth:         authService,

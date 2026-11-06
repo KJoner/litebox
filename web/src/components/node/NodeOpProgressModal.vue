@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { longOpProgress } from '@/api/client'
 import { computed } from 'vue'
 import type { DeployResult } from '@/api/client'
 import { LbShapeIcon, LbStatusTag } from '@/components/lb'
@@ -76,6 +77,7 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
         <span class="nop__spinner" aria-hidden="true" />
         <div>
           <div class="nop__running-title">{{ running }}…</div>
+          <div v-if="longOpProgress" class="nop__phase">当前阶段:{{ longOpProgress }}</div>
           <div class="nop__hint">
             正在这台机器上执行,请不要关闭 —— 一次已经开始的操作不会因为关掉窗口而停下。
           </div>
@@ -181,6 +183,11 @@ const verdictOK = computed(() => !props.error && props.deploy?.status !== 'FAILE
   border: 3px solid var(--fill2);
   border-top-color: var(--brand);
   animation: lb-spin 0.9s linear infinite;
+}
+.nop__phase {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text2);
 }
 .nop__running-title {
   font-size: var(--fs-md);

@@ -202,7 +202,7 @@ func (d *Deployer) Deploy(ctx context.Context, req Request) (Result, error) {
 		Revision:  req.Revision,
 		StartedAt: time.Now().UTC(),
 	}
-	rec := &stepRecorder{}
+	rec := &stepRecorder{ctx: ctx}
 
 	// 配置渲染不需要连接节点,先做,渲染失败就不用去占用节点锁。
 	rendered, err := singbox.RenderJSON(req.Params)

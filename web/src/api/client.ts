@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 // API 客户端。会话通过 HttpOnly Cookie 传递,因此所有请求都要带 credentials。
 
 export class ApiError extends Error {
@@ -67,8 +68,100 @@ export function isSessionExpired(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401 && err.code === 'UNAUTHENTICATED'
 }
 
+/**
+ * 走后台任务的长操作(VNext PERF06):与后端挂 longOperation 的写接口一一对应。
+ * 命中的请求自动带 `?async=1` 与幂等键,拿到 202 + task_id 之后轮询 `/api/tasks/{id}`,
+ * 结果按同步调用的样子交回调用方 —— 调用方一行不用改。后端不认 async(旧版本)时照样拿到同步响应。
+ *
+ * 这样一来,反代的 60 秒超时、移动网络切换都不会再把一次成功的部署显示成失败:
+ * 断开的只是轮询,轮询接上就能拿到结果。
+ */
+const ASYNC_LONG_OPS: RegExp[] = [
+  /^\/api\/nodes$/,
+  /^\/api\/nodes\/\d+\/(recheck|dest-check|dest-scan|bootstrap|install|uninstall|deploy|restart|config-in-ram|sync-traffic|collect-metrics)$/,
+  /^\/api\/nodes\/\d+\/tcp-tuning\/(preview|apply|restore)$/,
+  /^\/api\/nodes\/\d+\/(relays|realm)\/deploy$/,
+  /^\/api\/nodes\/\d+\/(realm-(install|uninstall|restart|stop)|singbox-(start|stop)|nginx-(start|stop|restart)|mieru-(start|stop|restart))$/,
+  /^\/api\/nodes\/\d+\/host-traffic\/install$/,
+  /^\/api\/nodes\/\d+\/(mieru|singbox|nginx)-(install|uninstall)$/,
+  /^\/api\/mieru-inbounds\/\d+\/deploy$/,
+  /^\/api\/inbounds\/\d+\/dest-check$/,
+  /^\/api\/external-proxies\/\d+\/check$/,
+  /^\/api\/proxy-sources\/\d+\/preview$/,
+  /^\/api\/nodes\/health\/run$/,
+  /^\/api\/inbounds\/\d+\/chain$/,
+  /^\/api\/proxy-sources\/(preview|import|\d+\/sync)$/,
+  /^\/api\/boce\/(verify|balance|vantages\/sync|tasks\/\d+\/run)$/,
+  /^\/api\/settings\/notify\/test$/,
+]
+
+/** 当前后台任务的阶段说明(进度弹窗显示它);没有长操作在跑时是空串。 */
+export const longOpProgress = ref('')
+
+export interface TaskView {
+  id: number
+  kind: string
+  target: string
+  status: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'INTERRUPTED'
+  progress: string
+  http_status: number
+  result: unknown
+  created_at: string
+  finished_at: string | null
+}
+
+function newIdemKey(): string {
+  const bytes = new Uint8Array(12)
+  crypto.getRandomValues(bytes)
+  return 't-' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** 轮询一个后台任务直到结束,按同步调用的样子返回结果或抛错。 */
+async function awaitTask<T>(id: number): Promise<T> {
+  // 后端的长操作上限是 10 分钟,再多留一分钟给最后一次轮询。
+  const deadline = Date.now() + 11 * 60 * 1000
+  let failures = 0
+  let interval = 800
+  try {
+    while (Date.now() < deadline) {
+      await sleep(interval)
+      interval = Math.min(interval + 200, 2000)
+      let t: TaskView
+      try {
+        t = await request<TaskView>(`/api/tasks/${id}`)
+        failures = 0
+      } catch (e) {
+        // 轮询断了不等于操作失败:操作在后台照常跑,接上之后还能拿到结果。
+        if (e instanceof ApiError && e.status !== 0 && e.status < 500) throw e
+        if (++failures > 30) throw e
+        continue
+      }
+      longOpProgress.value = t.progress
+      if (t.status === 'RUNNING') continue
+      if (t.status === 'INTERRUPTED') {
+        throw new ApiError(0, '主控在这次操作进行中重启了,结果未知 —— 请看部署记录或在节点上核对,不要直接重试')
+      }
+      if (t.http_status >= 200 && t.http_status < 300) return t.result as T
+      const body = t.result
+      const message =
+        body && typeof body === 'object' && 'error' in body
+          ? String((body as { error: unknown }).error)
+          : `请求失败(HTTP ${t.http_status})`
+      throw new ApiError(t.http_status, message, body)
+    }
+    throw new ApiError(0, '操作超过 11 分钟仍在运行,请稍后到部署记录里查看结果')
+  } finally {
+    longOpProgress.value = ''
+  }
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, query } = options
+  const { method = 'GET', body } = options
+  let { query } = options
+  const asyncOp = method !== 'GET' && ASYNC_LONG_OPS.some((re) => re.test(path))
+  if (asyncOp) query = { ...(query ?? {}), async: 1 }
 
   let url = path
   if (query) {
@@ -80,9 +173,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (qs) url += `?${qs}`
   }
 
-  const init: RequestInit = { method, credentials: 'same-origin', headers: {} }
+  const headers: Record<string, string> = {}
+  if (asyncOp) headers['Idempotency-Key'] = newIdemKey()
+  const init: RequestInit = { method, credentials: 'same-origin', headers }
   if (body !== undefined) {
-    init.headers = { 'Content-Type': 'application/json' }
+    headers['Content-Type'] = 'application/json'
     init.body = JSON.stringify(body)
   }
 
@@ -126,6 +221,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       throw expired
     }
     throw err
+  }
+  if (asyncOp && response.status === 202 && payload && typeof payload === 'object' && 'task_id' in payload) {
+    return awaitTask<T>(Number((payload as { task_id: unknown }).task_id))
   }
   return payload as T
 }
