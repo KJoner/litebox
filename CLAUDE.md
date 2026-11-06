@@ -37,12 +37,19 @@ V18 把管理后台与用户门户的**视觉层**换成 iOS 风格(纯白圆角
 
 ## 架构约束
 
-* 不引入 MySQL、PostgreSQL、Redis 或消息队列,只用 SQLite;
+* **SQLite 默认,并支持 PostgreSQL**(VNext,依据 `docs/vnext/requirements.md` §01.2 / §12,用户明确要求)。
+  不引入 MySQL、Redis 或消息队列;PG 只是第二种存储引擎,**不意味着支持多个主控实例或高可用** ——
+  运行期有单活动主控锁,第二个实例拿不到锁就拒绝启动。同一份 SQL 两种引擎都认(占位符在驱动层改写,
+  不可移植的写法在调用处改成两边都认的写法),见 `docs/vnext/design.md` §1;
 * 不引入微服务,保持 Go 单体;
-* 不在节点运行常驻自研 Agent。节点上跑的都是上游软件:sing-box、
+* **低资源节点默认走 SSH,不装任何常驻自研程序;Agent 是可选项**(VNext,同上依据 §10)。
+  默认情况下节点上跑的都是上游软件:sing-box、
   nginx(V7 起,只在中转机上)、mita(V13 起,只在有 Mieru 入口的机器上)、
   realm(V15 起,只在有 realm 转发规则的机器上)、vnstatd(V15 起,主机流量统计),
-  加一个 init 系统(systemd 或 OpenRC)。**面板自己一行代码都不在节点上常驻**;
+  加一个 init 系统(systemd 或 OpenRC)。**没有显式启用 Agent 的机器上,面板自己一行代码都不在节点上常驻**;
+  Agent 只在管理员对某台机器显式启用、且安装前检测资源足够时才装,随时可以迁回 SSH;
+  64/128 MB 的机器上不推荐、也不自动装。这一条只放开「可选 Agent」一处,
+  其余低资源、权限与部署安全约束一条都不放宽;
 * **一台机器只装一支 sing-box**(V14)。`deployment.Layout` 的二进制路径、服务名、
   配置路径与 V2Ray API 端口全是全局固定的一份,装第二个只会覆盖第一个。
   面板也只分发一支(1.14.0 起撤掉了 V14 的预览版通道),见「Snell 与 sing-box
@@ -4328,5 +4335,11 @@ V22.8 自建 Shadowsocks 支持传统 AEAD(迁移 0046,约束见上面「自建 
 * 前端 —— 已完成(两个表单的方法下拉与各自代价、时钟警告只对 SS2022、列表短标记 SS2022 / SS)。
 
 Go 全部测试通过;没有在真实节点上验证(sing-box 侧按源码核对)。
+
+VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 Nexus Portal 部分在另一个仓库做,本仓库不做):
+现状差距见 `docs/vnext/current-state.md`,设计决定与逐批交付清单见 `docs/vnext/design.md`,
+迁移与回退见 `docs/vnext/migration.md`,验收记录见 `docs/vnext/acceptance.md`。
+
+* S0 基线与约束 —— 已完成(需求放进仓库、差距清单、两条架构约束按需求调整、低资源参考栈冻结)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。
