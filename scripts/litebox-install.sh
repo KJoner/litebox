@@ -392,6 +392,12 @@ if bash scripts/build-probe.sh; then
 else
     warn "litebox-probe 构建失败,已跳过。要用出站探测时重跑 bash scripts/build-probe.sh"
 fi
+# 可选节点 Agent(VNext AGENT01):默认不装到任何节点上,构建失败不中止安装。
+if bash scripts/build-agent.sh; then
+    ok "litebox-agent 已就绪(只在节点上显式启用时才下发)"
+else
+    warn "litebox-agent 构建失败,已跳过。要用 Agent 时重跑 bash scripts/build-agent.sh"
+fi
 
 fi  # FROM_SOURCE
 
@@ -436,6 +442,11 @@ if ls assets/probe/litebox-probe-linux-* >/dev/null 2>&1; then
     install -d -m 0755 "$INSTALL_DIR/assets/probe"
     cp -f assets/probe/litebox-probe-linux-* "$INSTALL_DIR/assets/probe/"
     ok "出站探测辅助程序已就位"
+fi
+if ls assets/agent/litebox-agent-linux-* >/dev/null 2>&1; then
+    install -d -m 0755 "$INSTALL_DIR/assets/agent"
+    cp -f assets/agent/litebox-agent-linux-* "$INSTALL_DIR/assets/agent/"
+    ok "可选节点 Agent 已就位"
 fi
 # 发布清单(VNext CORE01):主控分发前拿它核对每个文件的哈希。从源码构建时没有清单 ——
 # 那时要把上一次预编译安装留下的旧清单删掉,否则它会与新构建的文件对不上,主控拒绝分发。

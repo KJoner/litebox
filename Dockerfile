@@ -33,6 +33,7 @@ COPY . .
 # sing-box 用固定版本与固定构建标签(with_v2ray_api 是整套流量统计的前提,见 CLAUDE.md);
 # mita / mieru / realm 是上游发布的原样二进制,脚本里写死了版本与校验和。
 RUN bash scripts/build-probe.sh \
+ && bash scripts/build-agent.sh \
  && bash scripts/build-singbox.sh \
  && bash scripts/fetch-mieru.sh \
  && bash scripts/fetch-realm.sh
@@ -85,7 +86,8 @@ ENV LITEBOX_HTTP_LISTEN=0.0.0.0:8080 \
     LITEBOX_NODE_BINARY_DIR=/opt/litebox/assets/singbox \
     LITEBOX_NODE_MIERU_BINARY_DIR=/opt/litebox/assets/mieru \
     LITEBOX_NODE_REALM_BINARY_DIR=/opt/litebox/assets/realm \
-    LITEBOX_NODE_PROBE_BINARY_DIR=/opt/litebox/assets/probe
+    LITEBOX_NODE_PROBE_BINARY_DIR=/opt/litebox/assets/probe \
+    LITEBOX_NODE_AGENT_BINARY_DIR=/opt/litebox/assets/agent
 USER 10001:10001
 WORKDIR /data
 VOLUME ["/data"]

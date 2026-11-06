@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/litebox/litebox/internal/agent"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -653,6 +654,22 @@ func cmdServe(args []string) error {
 	// 前置检查(部署、重检)也要认得"这台实例此刻停着",与巡检、采集同一个判据。
 	nodeService.SetSkip(cloudSkip)
 
+	// 可选节点 Agent(VNext AGENT01–06):只做状态采集。握手之后资源采样由它写,
+	// SSH 那一路对这台机器让路;它超过三个间隔没报就不再算数,SSH 自动接手(不留空窗)。
+	agentStore := agent.NewStore(db)
+	agentService := agent.NewService(agentStore, pool, withManifest(node.NewNamedBinaryProvider(cfg.Node.AgentBinaryDir,
+		"litebox-agent", "请先执行 scripts/build-agent.sh 构建")))
+	agentWindow := 3 * time.Duration(agentService.Interval) * time.Second
+	metricsSkip := func(ctx context.Context, nodeID int64) string {
+		if reason := cloudSkip(ctx, nodeID); reason != "" {
+			return reason
+		}
+		if ok, _ := agentStore.Writer(ctx, nodeID, agentWindow); ok {
+			return "资源采集由 Agent 上报"
+		}
+		return ""
+	}
+
 	// 节点资源监控。间隔为负表示关闭 —— 极端受限的节点上宁可不采。
 	metricsStore := node.NewMetricsStore(db)
 	var monitor *node.Monitor
@@ -663,7 +680,7 @@ func cmdServe(args []string) error {
 			Logger:    logger,
 			Interval:  cfg.Node.MetricsInterval,
 			Retention: cfg.Node.MetricsRetention,
-			Skip:      cloudSkip,
+			Skip:      metricsSkip,
 		})
 		go monitor.Run(ctx)
 	} else {
@@ -856,6 +873,7 @@ func cmdServe(args []string) error {
 		Scheduler:   scheduler,
 		Metrics:     metricsStore,
 		HostTraffic: hostTraffic,
+		Agent:       agentService,
 		Monitor:     monitor,
 		NetRates:    netRates,
 		Watchdog:    watchdog,
@@ -945,6 +963,7 @@ func cmdManifest(args []string) error {
 		{Dir: "mieru", Prefix: "mieru", Component: "mieru", Version: *mieru, Capabilities: []string{"mieru-client"}},
 		{Dir: "realm", Prefix: "realm", Component: "realm", Version: *realm, Capabilities: []string{"tcp", "udp"}},
 		{Dir: "probe", Prefix: "litebox-probe", Component: "litebox-probe", Version: *version, Capabilities: []string{"netprobe-v3"}},
+		{Dir: "agent", Prefix: "litebox-agent", Component: "litebox-agent", Version: *version, Capabilities: []string{"metrics-v1"}},
 	}
 	m, err := node.BuildManifest(*dir, *version, *commit, comps)
 	if err != nil {
