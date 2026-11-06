@@ -264,6 +264,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/enabled", s.handleSetNodeEnabled)
 		authed.HandleFunc("PUT /api/nodes/{id}/sort-order", s.handleSetNodeSortOrder)
 		authed.HandleFunc("PUT /api/sort-order/{kind}/{id}", s.handleSetEntrySortOrder)
+		authed.HandleFunc("POST /api/sort-order/batch", s.handleSortBatch)
 		authed.HandleFunc("GET /api/subscription/order-migration", s.handleOrderMigrationPlan)
 		authed.HandleFunc("POST /api/subscription/order-migration", s.handleOrderMigrationApply)
 		authed.HandleFunc("POST /api/nodes/{id}/test-ssh", s.handleTestNodeSSH)
@@ -348,6 +349,9 @@ func (s *Server) Handler() http.Handler {
 		// 主体是【入站】而不是节点:同机的两个入口可以走两个不同的出口。
 		authed.HandleFunc("POST /api/nodes/{id}/config-in-ram", s.longOperation(s.handleSetConfigInRAM))
 		authed.HandleFunc("POST /api/inbounds/{id}/chain", s.longOperation(s.handleApplyChain))
+		authed.HandleFunc("GET /api/chain-path/{kind}/{id}", s.handleChainPath)
+		authed.HandleFunc("POST /api/chains/quick-preview", s.handleQuickChainPreview)
+		authed.HandleFunc("POST /api/chains/quick", s.handleQuickChainCreate)
 		authed.HandleFunc("DELETE /api/inbounds/{id}/chain", s.longOperation(s.handleClearChain))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
 		authed.HandleFunc("GET /api/nodes/{id}/config-diff", s.longOperation(s.handleNodeConfigDiff))
@@ -367,6 +371,11 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/users/{id}/regenerate-ss-password", s.handleRegenerateSSPassword)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-snell-key", s.handleRegenerateSnellKey)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
+		authed.HandleFunc("GET /api/users/{id}/access", s.handleGetUserAccess)
+		authed.HandleFunc("PUT /api/users/{id}/access", s.handleSetUserAccess)
+		authed.HandleFunc("POST /api/users/{id}/access/preview", s.handlePreviewUserAccess)
+		authed.HandleFunc("GET /api/inbound-access/{kind}/{id}", s.handleGetEntryAccess)
+		authed.HandleFunc("PUT /api/inbound-access/{kind}/{id}", s.handleSetEntryAccess)
 
 		if s.portalAccts != nil && s.portal != nil {
 			authed.HandleFunc("PUT /api/users/{id}/portal-account", s.handleSetPortalAccount)

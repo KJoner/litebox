@@ -94,6 +94,10 @@ func (s *Store) SetMieruChain(
 		if deployed == "" {
 			return ErrChainTargetNotDeployed
 		}
+		// Mieru 入口自己不会是任何人的去向,所以这里只可能撞上下游已有的环(旧数据)。
+		if err := chainTargetUsable(ctx, s, tx, 0, targetID); err != nil {
+			return err
+		}
 	case ChainTargetExternal:
 		// 与 SetChain 一模一样的拦截,而且是同一个函数:先按渲染期那条路把它
 		// 拼成 sing-box 出站。走 QUIC 的、插件名 sing-box 不认的、SS2022 密钥

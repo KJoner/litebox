@@ -60,17 +60,35 @@
 * `deploy/docker/litebox.sh`:install / status / backup / verify-backup / restore / update / logs;重复执行沿用已有 `.env` 与 override,版本相同且健康时不重启;
 * 原生安装:`litebox-install.sh` 默认下载 GitHub Release 的预编译包并核对 sha256;`--build-from-source` 保留旧路径。
 
-## 3. 授权(S5,AUTH01–06)
+## 3. 授权与链路(S5,AUTH01–04、CHAIN02–05、UI06)
 
-新表 `user_inbound_grants(proxy_user_id, entry_kind, entry_id, expires_at, created_at)`,`entry_kind` ∈ SINGBOX / MIERU
-(两张入口表的 id 会撞,所以种类 + id 才是身份)。`proxy_users.access_mode` ∈ INHERIT(默认)/ DIRECT_ONLY;
+迁移 0049(两种引擎各一份):`user_inbound_grants(proxy_user_id, entry_kind, entry_id, created_at)`,`entry_kind` ∈ SINGBOX / MIERU
+(两张入口表的 id 会撞,所以种类 + id 才是身份);`proxy_users.access_mode` ∈ INHERIT(默认)/ DIRECT_ONLY;
 `node_inbounds.restricted` 与 `node_mieru_inbounds.restricted`(入口「仅指定用户」)。
 
 归属集合:INHERIT 模式 = `G ∪ N ∪ D`,DIRECT_ONLY = `D`;入口 restricted 时还必须属于 `D`。
-硬条件(账号停用 / 过期 / 超额、入口关闭、对象删除)由现有视图里的条件照旧施加 —— 直接授权**只**能越过等级门槛。
-**改的是视图**(`user_effective_inbounds`、`user_effective_mieru_inbounds`,`user_effective_nodes` 是前者的投影随之变化),
-配置编译、订阅、门户、脏标记全都已经查视图,不用各处再写一遍(V2 那条规矩)。
-旧数据:`access_mode` 默认 INHERIT、`restricted` 默认 0、`user_inbound_grants` 为空 → 归属集合逐用户不变,升级测试逐行比对。
+硬条件(账号停用 / 过期 / 超额)由 `User.Serviceable` 在 Go 侧照旧拦,入口停用 / 删除、机器删除在视图里拦 ——
+直接授权**只**能越过等级门槛。**改的是视图**(`user_effective_inbounds`、`user_effective_mieru_inbounds`,
+`user_effective_nodes` 是前者的投影随之变化,`user_effective_relays` 跟着重建),配置编译、订阅、门户、脏标记全都已经查视图。
+旧数据:默认值让归属集合逐用户不变,`grants_upgrade_test.go` 对四个视图升级前后逐行比对。
+
+* **授权没有单独的到期时间。** 需求里没有硬性要求,而它会让「这个人今天能不能用」多出一个只有定时任务才会去重算的条件 ——
+  到期那一刻没有任何东西会把节点标脏,凭据会一直留到下一次别的原因触发部署。要限时就给用户本身设到期;
+* **预览不另写规则**:`PreviewAccess` 在事务里写进去、读视图、回滚 —— 预览与保存是同一份判据;
+* **撤权取前后并集标脏**(sing-box 入口所在的机器);Mieru 入口逐入口下发,不自动做,结果里单列 `mieru_pending`;
+* **撤权收敛只读库里的配置状态**,按机器说「撤销待下发 / 已撤销 / 下发失败 / 离线」,新连接与已有连接分开说:
+  sing-box 下发会重启进程,已有连接随之断开;Mieru 走 `mita reload`,旧会话可能继续存活;离线的机器不说已阻止任何东西;
+* **链路**:`ChainPathFrom` 把一条服务端链路整条走一遍(每跳协议取 `deployed_*`、停用 / 没部署 / 拼不出出站逐跳标出、
+  最终出口、DNS 位置);`SetChain` / `SetMieruChain` 补上两道拦截 —— **成环**与**落地已停用**(在此之前 A → B → A 存得进去);
+* **快速组链**只做「保存草稿」:新建入口 + 把出口写进库 + 可选的仅指定用户,一个字节都不下发;下发走已有的
+  `POST /api/inbounds/{id}/chain`(先落地、后入口机、真实拨测、失败回滚)。出口在建入口的**同一步**写进库,
+  否则中间任何一次顺带触发的下发会把新入口按直连部署上去(CHAIN05 禁止的静默回退);
+  预览里有问题(同机、端口被占、成环、下游停用、外部代理拼不出出站)整个拒绝;
+* **多跳的拖动编辑没有做**:链是逐跳设的(每个入口只有一个下一跳),跳点卡片是按方向排列的只读预览,
+  替换出口在同一个弹窗里选;「一个中转配多个落地」的批量也没有做;
+* **批量排序**(`POST /api/sort-order/batch`):带每一项的旧值,一个事务里核对后写入,有冲突整组拒绝(409);
+  只收机器 / sing-box / Mieru / 转发四类(外部代理改排序要锁字段,仍走单条)。新值沿用这一组原来占着的值重新分配,
+  组外条目一个不动。
 
 ## 4. 其余批次的取舍
 
@@ -98,7 +116,7 @@
 - [x] S2 双数据库:驱动层、可移植 SQL、PG 基线迁移、运行锁、迁移工具、两种引擎跑同一批测试、列表批量预取
 - [x] S3 Dockerfile、三份 Compose、发布流水线、一键部署脚本、原生安装下载预编译、release manifest
 - [x] S4 视觉令牌与两端壳层、节点创建流程、设置页搜索与未保存提示
-- [ ] S5 直接入口授权、撤权状态、快速组链与路径预览、多选拖拽排序
+- [x] S5 直接入口授权、撤权状态、快速组链与路径预览、多选拖拽排序(真机验证与 S7 一起做)
 - [ ] S6 三种流量口径、计费公式与规则版本、网卡选择、数据质量、可选 Agent
 - [ ] S7 能力矩阵、Trojan 自建入站、Stash / Surge / Loon / Quantumult X 输出、兼容预览
 

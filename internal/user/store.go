@@ -91,6 +91,9 @@ type User struct {
 	AccessTierCode  string `json:"access_tier_code"`
 	AccessTierName  string `json:"access_tier_name"`
 	AccessTierLevel int    `json:"access_tier_level"`
+	// AccessMode 是入口授权模式(VNext AUTH03):INHERIT = 等级继承 + 整机授权 + 直接授权;
+	// DIRECT_ONLY = 只有直接授权的入口。改它走 SetAccess,不走 Update。
+	AccessMode string `json:"access_mode"`
 
 	// NodeIDs 是管理员单独追加的节点(user_nodes),编辑页面改的就是它。
 	NodeIDs []int64 `json:"node_ids"`
@@ -160,7 +163,7 @@ const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypt
 	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
 	u.reset_cycle, u.reset_day, u.last_reset_at, u.created_at, u.updated_at,
 	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
-	u.access_tier_id, t.code, t.name, t.level`
+	u.access_tier_id, t.code, t.name, t.level, u.access_mode`
 
 // userFrom 固定带上等级表:等级是用户的必备属性,分两次查会出现
 // "列表里有等级、详情里没有"这种前端只能靠猜的差异。
@@ -174,7 +177,7 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
 		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
 		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
-		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel)
+		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel, &u.AccessMode)
 	if err != nil {
 		return nil, err
 	}

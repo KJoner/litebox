@@ -36,6 +36,7 @@ import {
   userActionLabel,
 } from '@/components/lb/derive'
 import UserAdjustModal from '@/components/user/UserAdjustModal.vue'
+import UserAccessPanel from '@/components/user/UserAccessPanel.vue'
 import { color } from '@/theme/tokens'
 
 /**
@@ -846,7 +847,7 @@ const adjustColumns = [
                 <div v-if="user.effective_node_ids.length" class="ud__nodes">
                   <span v-for="id in user.effective_node_ids" :key="id" class="ud__node">
                     {{ nodeLabel(id) }}
-                    <em>{{ user.node_ids.includes(id) ? '额外授权' : '等级继承' }}</em>
+                    <em>{{ user.node_ids.includes(id) ? '额外授权' : user.access_mode === 'DIRECT_ONLY' ? '直接授权' : '等级继承 / 直接授权' }}</em>
                   </span>
                 </div>
                 <div v-else class="ud__note ud__note--danger">
@@ -856,6 +857,10 @@ const adjustColumns = [
               </div>
             </section>
           </div>
+        </a-tab-pane>
+
+        <a-tab-pane key="access" tab="入口授权">
+          <UserAccessPanel v-if="tab === 'access'" :user-id="user.id" :nodes="nodes" @changed="reload(); emit('changed')" />
         </a-tab-pane>
 
         <a-tab-pane key="traffic" tab="流量">

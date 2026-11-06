@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/subscription"
 )
@@ -190,3 +191,57 @@ func (s *Server) handleOrderMigrationApply(w http.ResponseWriter, r *http.Reques
 	})
 	writeJSON(w, http.StatusOK, plan)
 }
+
+// handleSortBatch 多选拖动之后一次提交整组新值(VNext UI06 / A19)。
+// 有人在期间改过其中任何一项时整组拒绝(409 + 冲突列表),一行不改 —— 前端据此重读并让管理员重来。
+func (s *Server) handleSortBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Items []node.SortItem `json:"items"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if len(req.Items) == 0 || len(req.Items) > 2000 {
+		writeError(w, http.StatusBadRequest, "要调整的条目数必须在 1 ~ 2000 之间")
+		return
+	}
+	scheme := s.orderScheme(r)
+	seen := map[string]bool{}
+	for i := range req.Items {
+		it := &req.Items[i]
+		it.Kind = strings.ToUpper(strings.TrimSpace(it.Kind))
+		key := fmt.Sprintf("%s:%d", it.Kind, it.ID)
+		if seen[key] {
+			writeError(w, http.StatusBadRequest, "同一条目出现了两次:"+key)
+			return
+		}
+		seen[key] = true
+		min, max, hint := sortOrderLimits(scheme, it.Kind)
+		if it.SortOrder < min || it.SortOrder > max {
+			writeError(w, http.StatusBadRequest, hint)
+			return
+		}
+	}
+	conflicts, err := s.nodes.Store().ApplySortBatch(r.Context(), req.Items)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(conflicts) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":     fmt.Sprintf("有 %d 项在你调整期间被改过或删掉了,这次一项都没保存;请刷新后重新调整", len(conflicts)),
+			"conflicts": conflicts,
+		})
+		return
+	}
+	admin := adminFromContext(r.Context())
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionSortBatch, TargetType: "sort_order",
+		Detail:   fmt.Sprintf("批量调整 %d 项的排序", len(req.Items)),
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"updated": len(req.Items)})
+}
+
+const actionSortBatch = "sort.batch"

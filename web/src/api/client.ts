@@ -297,6 +297,8 @@ export interface ProxyUser {
   access_tier_code: string
   access_tier_name: string
   access_tier_level: number
+  /** INHERIT = 等级继承 + 整机授权 + 直接授权;DIRECT_ONLY = 只有直接授权。改它走 setUserAccess */
+  access_mode: AccessMode
   status: UserStatus
   quota_bytes: number
   used_uplink: number
@@ -551,6 +553,8 @@ export interface MieruInbound {
   subscription_enabled: boolean
   public_remark: string
   enabled: boolean
+  /** 「仅指定用户」(VNext AUTH03),改它走 setEntryAccess */
+  restricted: boolean
 
   created_at: string
   updated_at: string
@@ -705,6 +709,8 @@ export interface NodeInbound {
   public_remark: string
   /** 关掉后这个入站不再渲染进 sing-box 配置(下次部署生效) */
   enabled: boolean
+  /** 「仅指定用户」(VNext AUTH03):开着时只有被直接授权的用户能用,等级继承与整机授权都不算。改它走 setEntryAccess */
+  restricted: boolean
   created_at: string
   updated_at: string
 }
@@ -3590,6 +3596,87 @@ export interface ProfilePreview {
   landing_count: number
 }
 
+// —— 直接入口授权(VNext AUTH01–04)——
+
+export type AccessMode = 'INHERIT' | 'DIRECT_ONLY'
+/** 入口的身份是「种类 + id」:两张入口表的 id 会撞。 */
+export type GrantEntryKind = 'SINGBOX' | 'MIERU'
+export interface EntryRef {
+  kind: GrantEntryKind
+  id: number
+}
+export interface AccessEntryInfo extends EntryRef {
+  name: string
+  node_id: number
+  node_name: string
+  enabled: boolean
+  restricted: boolean
+}
+export interface UserAccessView {
+  access_mode: AccessMode
+  grants: AccessEntryInfo[]
+  /** 此刻能用的全部入口(三条规则合起来);停用 / 过期 / 超额由后端另外拦 */
+  effective: AccessEntryInfo[]
+}
+export interface AccessDiff {
+  added: AccessEntryInfo[]
+  removed: AccessEntryInfo[]
+  /** 变更前后两个集合涉及的机器的并集 —— 撤权也要重新下发 */
+  affected_node_ids: number[]
+}
+export interface AccessResult extends AccessDiff {
+  /** 已标脏、会自动重新下发 sing-box 的机器 */
+  marked_node_ids: number[]
+  /** 归属变了的 Mieru 入口:要逐入口下发,不自动做 */
+  mieru_pending: AccessEntryInfo[]
+}
+export interface EntryAccess {
+  restricted: boolean
+  users: { id: number; user_code: string; display_name: string }[]
+}
+
+// —— 链路路径与快速组链(VNext CHAIN02–05)——
+
+export interface ChainHop {
+  /** SINGBOX / MIERU / EXTERNAL;NEW 是快速组链里还没建的那个入口 */
+  kind: 'SINGBOX' | 'MIERU' | 'EXTERNAL' | 'NEW'
+  id: number
+  name: string
+  node_id?: number
+  node_name?: string
+  protocol: string
+  /** 这一跳在哪里运行(服务端链路) */
+  runs: string
+  /** 只写面板知道的事:没实测过的是「未实测」 */
+  udp: string
+  enabled: boolean
+  deployed: boolean
+  problem?: string
+}
+export interface ChainPath {
+  hops: ChainHop[]
+  egress: string
+  dns: string
+  loop: boolean
+  problems: string[]
+}
+export interface QuickChainPreview {
+  path: ChainPath
+  creates: string[]
+  modifies: string[]
+  /** 非空时不能保存 —— 不保存一条注定不可用的链 */
+  problems: string[]
+}
+export interface QuickChainBody {
+  entry_node_id: number
+  display_name: string
+  protocol: string
+  listen_port: number
+  target_kind: 'INBOUND' | 'EXTERNAL'
+  target_id: number
+  user_ids: number[]
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<Admin>('/api/auth/login', { method: 'POST', body: { username, password } }),
@@ -3643,6 +3730,19 @@ export const api = {
     request<ProxyUser>(`/api/users/${id}/regenerate-snell-key`, { method: 'POST' }),
   regenerateSubToken: (id: number) =>
     request<ProxyUser>(`/api/users/${id}/regenerate-sub-token`, { method: 'POST' }),
+  userAccess: (id: number) => request<UserAccessView>(`/api/users/${id}/access`),
+  /** 不落库:后端在事务里写进去、读有效权限视图、回滚 —— 与保存用同一份判据。 */
+  previewUserAccess: (id: number, body: { access_mode: AccessMode; grants: EntryRef[] }) =>
+    request<AccessDiff>(`/api/users/${id}/access/preview`, { method: 'POST', body }),
+  setUserAccess: (id: number, body: { access_mode: AccessMode; grants: EntryRef[] }) =>
+    request<AccessResult>(`/api/users/${id}/access`, { method: 'PUT', body }),
+  entryAccess: (kind: GrantEntryKind, id: number) =>
+    request<EntryAccess>(`/api/inbound-access/${kind.toLowerCase()}/${id}`),
+  setEntryAccess: (kind: GrantEntryKind, id: number, body: { restricted: boolean; user_ids: number[] }) =>
+    request<{ access: EntryAccess; node_id: number; auto_deploy: boolean }>(
+      `/api/inbound-access/${kind.toLowerCase()}/${id}`,
+      { method: 'PUT', body },
+    ),
   /** 区间 [from, to) 为 RFC3339;两者都不传时按 days 回落。 */
   userTraffic: (id: number, opts: { days?: number; from?: string; to?: string } = {}) =>
     request<UserTraffic>(`/api/users/${id}/traffic`, {
@@ -3966,6 +4066,20 @@ export const api = {
   // 解除时顺序相反。顺序由后端保证,前端只负责把两次部署的结果都显示出来。
   applyChain: (inboundID: number, body: Record<string, unknown>) =>
     request<{ result: ChainApplyResult; error?: string }>(`/api/inbounds/${inboundID}/chain`, {
+      method: 'POST',
+      body,
+    }),
+  /** 多选拖动之后一次提交整组;期间有人改过其中任何一项 → 409,一行不改 */
+  sortBatch: (items: { kind: string; id: number; sort_order: number; expected: number }[]) =>
+    request<{ updated: number }>('/api/sort-order/batch', { method: 'POST', body: { items } }),
+  chainPath: (kind: 'SINGBOX' | 'MIERU', id: number) =>
+    request<ChainPath>(`/api/chain-path/${kind.toLowerCase()}/${id}`),
+  /** 只读:路径、新建与改动清单、注定不可用的问题 */
+  quickChainPreview: (body: QuickChainBody) =>
+    request<QuickChainPreview>('/api/chains/quick-preview', { method: 'POST', body }),
+  /** 只写库(新建入口 + 写入出口 + 可选的仅指定用户),不下发;下发走 applyChain */
+  quickChain: (body: QuickChainBody) =>
+    request<{ inbound: NodeInbound; preview: QuickChainPreview; access_error: string }>('/api/chains/quick', {
       method: 'POST',
       body,
     }),
