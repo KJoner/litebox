@@ -1,6 +1,18 @@
 import { test, expect, adminOnly, portalOnly } from './support/mock'
 import type { Page } from '@playwright/test'
 
+// VNext 起没选过主题时默认深色;截图要按 colorScheme 分浅 / 深两套,所以先把偏好设成「跟随系统」,
+// 再由 test.use({ colorScheme }) / emulateMedia 决定是哪一套。
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('litebox.theme', 'system')
+    } catch {
+      /* 测试里拿不到 localStorage 时就按默认 */
+    }
+  })
+})
+
 /**
  * 截图基线(@visual)。代表性页面 × 深浅主题 × 三个宽度。
  *

@@ -1,7 +1,7 @@
 /*
- * LiteBox UI 2.0 · 设计令牌(唯一来源)。规格见 docs/ui-modernization/01-design-system.md。
- *
- * 方向是 Modern SaaS Dashboard + Infrastructure Console:中性灰阶、细边框、轻阴影。
+ * LiteBox 设计令牌(唯一来源)。VNext 起沿用 Nexus Portal 系列:暖炭底 + 琥珀强调(默认深色),
+ * 浅色是单独校过对比度的暖纸色,不是深色的简单反转(对比度见 docs/vnext/design.md §6)。
+ * 布局规格仍见 docs/ui-modernization/01-design-system.md;细边框、轻阴影、信息密度不变。
  * 颜色的实值在 theme/tokens.ts 的 palette 里还有一份镜像 —— AntD 的 ConfigProvider
  * 要按实值推导派生色,认不得 var()。改这里的颜色必须同步改那边。
  *
@@ -11,58 +11,58 @@
  * scoped CSS 里不写十六进制色、不写 px 字号与圆角,一律 var(--…)。
  */
 :root {
-  /* ---------- 表面 ---------- */
-  --bg: #F8FAFC;              /* 页面底 */
-  --surface: #FFFFFF;         /* 卡片、侧栏、顶栏、弹窗 */
-  --surface2: #F8FAFC;        /* 卡内嵌入区、表头、行 hover、弹窗底栏 */
-  --surface3: #F1F5F9;        /* 更深一层的嵌入(代码块、骨架) */
-  --fill: rgba(15,23,42,.05); /* 次要按钮、chip、开关关闭态 */
-  --fill2: rgba(15,23,42,.09);/* 上者 hover */
-  --sep: #E2E8F0;             /* 边框 */
-  --sep2: #EEF2F6;            /* 弱分隔(表格行、卡内分组) */
-  --track: rgba(15,23,42,.07);/* 进度条轨道 */
-  --glass: rgba(255,255,255,.86); /* 只给吸顶条在滚动时的底(不做整页毛玻璃) */
-  --overlay: rgba(15,23,42,.45);  /* 弹窗 / 抽屉遮罩 */
+  /* ---------- 表面:暖纸色(浅色单独校过对比度,不是深色的反转)---------- */
+  --bg: #F5F1EA;              /* 页面底 */
+  --surface: #FFFDF9;         /* 卡片、侧栏、顶栏、弹窗 */
+  --surface2: #F8F4EE;        /* 卡内嵌入区、表头、行 hover、弹窗底栏 */
+  --surface3: #EFE9E0;        /* 更深一层的嵌入(代码块、骨架) */
+  --fill: rgba(33,30,25,.05); /* 次要按钮、chip、开关关闭态 */
+  --fill2: rgba(33,30,25,.09);/* 上者 hover */
+  --sep: #E5DDD1;             /* 边框 */
+  --sep2: #EEE8DF;            /* 弱分隔(表格行、卡内分组) */
+  --track: rgba(33,30,25,.08);/* 进度条轨道 */
+  --glass: rgba(255,253,249,.92); /* 只给吸顶条在滚动时的底(不做整页毛玻璃) */
+  --overlay: rgba(27,26,23,.45);  /* 弹窗 / 抽屉遮罩 */
 
   /* ---------- 文字 ---------- */
-  --text: #0F172A;
-  --text2: #475569;
-  --text3: #64748B;           /* 元数据、表头;对白底 4.8 : 1 */
-  --text-inverse: #F8FAFC;    /* 反色 Tooltip 上的字 */
-  --tooltip-bg: #0F172A;
+  --text: #211E19;
+  --text2: #4B453C;
+  --text3: #6B6459;           /* 元数据、表头;对卡片底 5.75 : 1 */
+  --text-inverse: #FFFDF9;    /* 反色 Tooltip 上的字 */
+  --tooltip-bg: #211E19;
 
-  /* ---------- 品牌 ---------- */
-  --brand: #2563B8;
-  --brand-hover: #1D4F96;
-  --brand-bg: #EEF4FC;
-  --brand-border: rgba(37,99,184,.28);
-  --on-brand: #FFFFFF;        /* 品牌实底上的字 */
+  /* ---------- 品牌:琥珀。浅色下用深琥珀,文字对比度才够(5.6 : 1)---------- */
+  --brand: #8C5D16;
+  --brand-hover: #72490E;
+  --brand-bg: rgba(176,122,42,.12);
+  --brand-border: rgba(140,93,22,.30);
+  --on-brand: #FFFDF9;        /* 品牌实底上的字 */
 
   /* ---------- 语义色:前景 / 浅底 / 描边 ---------- */
-  --ok: #1B7A4B;     --ok-bg: rgba(27,122,75,.10);    --ok-border: rgba(27,122,75,.28);
-  --warn: #92610A;   --warn-bg: rgba(180,120,10,.11); --warn-border: rgba(146,97,10,.30);
-  --bad: #B4291D;    --bad-bg: rgba(180,41,29,.09);   --bad-border: rgba(180,41,29,.28);
-  --purple: #5F52A0; --purple-bg: rgba(95,82,160,.10); --purple-border: rgba(95,82,160,.28);
-  --neutral: #64748B; --neutral-bg: rgba(15,23,42,.05);
+  --ok: #3D6A35;     --ok-bg: rgba(61,106,53,.10);    --ok-border: rgba(61,106,53,.28);
+  --warn: #93560E;   --warn-bg: rgba(160,98,22,.11);  --warn-border: rgba(147,86,14,.30);
+  --bad: #B03E2A;    --bad-bg: rgba(176,62,42,.09);   --bad-border: rgba(176,62,42,.28);
+  --purple: #5E4C99; --purple-bg: rgba(94,76,153,.10); --purple-border: rgba(94,76,153,.28);
+  --neutral: #6B6459; --neutral-bg: rgba(33,30,25,.05);
 
   /* ---------- 阴影:细边框为主、阴影为辅 ---------- */
-  --shadow-xs: 0 1px 2px rgba(15,23,42,.04);
-  --shadow: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.03);
-  --shadow-hover: 0 6px 16px -4px rgba(15,23,42,.10), 0 2px 4px -2px rgba(15,23,42,.05);
-  --shadow-lg: 0 16px 40px -12px rgba(15,23,42,.22), 0 4px 12px -4px rgba(15,23,42,.08);
-  --shadow-brand: 0 1px 2px rgba(37,99,184,.25);
-  --focus-ring: 0 0 0 3px rgba(37,99,184,.18);
+  --shadow-xs: 0 1px 2px rgba(33,30,25,.05);
+  --shadow: 0 1px 2px rgba(33,30,25,.05), 0 1px 3px rgba(33,30,25,.04);
+  --shadow-hover: 0 6px 16px -4px rgba(33,30,25,.12), 0 2px 4px -2px rgba(33,30,25,.06);
+  --shadow-lg: 0 16px 40px -12px rgba(33,30,25,.24), 0 4px 12px -4px rgba(33,30,25,.08);
+  --shadow-brand: 0 1px 2px rgba(140,93,22,.25);
+  --focus-ring: 0 0 0 3px rgba(176,122,42,.24);
 
   /* ---------- 圆角 ---------- */
   --r-xs: 4px;      /* 进度条内块、小色块 */
-  --r-sm: 6px;      /* chip、下拉项、分页按钮、Tooltip */
-  --r-btn: 8px;     /* 按钮 —— 不再是胶囊 */
-  --r-input: 8px;   /* 输入框、选择器、搜索框 */
-  --r-tile: 8px;    /* 图标底块 */
-  --r-seg: 8px;     /* 分段控件外框(内选中块 6px) */
-  --r-group: 10px;  /* 卡内分组、Alert、下拉面板、吐司 */
-  --r-card: 12px;   /* 卡片 */
-  --r-sheet: 14px;  /* 弹窗 */
+  --r-sm: 8px;      /* chip、下拉项、分页按钮、Tooltip */
+  --r-btn: 10px;    /* 按钮(Nexus R2:控件 10–12) */
+  --r-input: 10px;  /* 输入框、选择器、搜索框 */
+  --r-tile: 10px;   /* 图标底块 */
+  --r-seg: 10px;    /* 分段控件外框(内选中块 8px) */
+  --r-group: 12px;  /* 卡内分组、Alert、下拉面板、吐司 */
+  --r-card: 16px;   /* 卡片(Nexus R1.5:主卡片 16–20) */
+  --r-sheet: 18px;  /* 弹窗 */
   --r-pill: 999px;  /* 只给状态标签、计数徽标、开关 */
 
   /* ---------- 字号(8 级) ---------- */
@@ -97,14 +97,15 @@
   --page-pad: 24px;
 
   /* ---------- 字体 ---------- */
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Helvetica Neue', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  /* 系统字体优先,Manrope / Noto Sans SC 兜底(VNext UI02);Noto Sans SC 是自托管分片。 */
+  --font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Manrope, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
   /* Windows 上没有 SF Mono / Menlo,Chrome 也不认 ui-monospace,不补 Consolas 会落到 Courier New。 */
   --mono: 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, Consolas, 'Cascadia Mono', monospace;
 
   /* ---------- 动效 ---------- */
-  --dur-fast: 120ms; /* hover、颜色 */
+  --dur-fast: 140ms; /* hover、颜色(VNext UI03:轻动效 140–220ms) */
   --dur: 180ms;      /* 下拉、Tooltip、吐司 */
-  --dur-slow: 240ms; /* 弹窗、抽屉 */
+  --dur-slow: 220ms; /* 弹窗、抽屉 */
   --ease: cubic-bezier(.2,.8,.2,1);
   --ease-sheet: cubic-bezier(.32,.72,0,1);
 
@@ -112,43 +113,44 @@
 }
 
 [data-theme="dark"] {
-  --bg: #0B0F14;
-  --surface: #121923;
-  --surface2: #161F2B;
-  --surface3: #1B2533;
-  --fill: rgba(148,163,184,.10);
-  --fill2: rgba(148,163,184,.16);
-  --sep: #263241;
-  --sep2: #1C2633;
-  --track: rgba(148,163,184,.14);
-  --glass: rgba(18,25,35,.88);
-  --overlay: rgba(2,6,12,.62);
+  /* Nexus R1.5 首页 / R2 Settings 的暖炭色系(VNext UI01):base #1b1a17、ink #efeae1、amber #e6c08a。 */
+  --bg: #1B1A17;
+  --surface: #23211D;
+  --surface2: #2A2824;
+  --surface3: #312E29;
+  --fill: rgba(239,234,225,.07);
+  --fill2: rgba(239,234,225,.12);
+  --sep: #3A3731;
+  --sep2: #2F2C27;
+  --track: rgba(239,234,225,.10);
+  --glass: rgba(36,34,30,.95);
+  --overlay: rgba(10,9,7,.62);
 
-  --text: #F1F5F9;
-  --text2: #CBD5E1;
-  --text3: #94A3B8;
-  --text-inverse: #0F172A;
-  --tooltip-bg: #E2E8F0;
+  --text: #EFEAE1;
+  --text2: #CFC8BC;
+  --text3: #A39C91;
+  --text-inverse: #1B1A17;
+  --tooltip-bg: #EFEAE1;
 
-  --brand: #5B9AF0;
-  --brand-hover: #7DB0F5;
-  --brand-bg: rgba(91,154,240,.14);
-  --brand-border: rgba(91,154,240,.36);
-  --on-brand: #FFFFFF;
+  --brand: #E6C08A;
+  --brand-hover: #F1D3A6;
+  --brand-bg: rgba(230,192,138,.14);
+  --brand-border: rgba(230,192,138,.36);
+  --on-brand: #2B2318;
 
-  --ok: #4CC38A;     --ok-bg: rgba(76,195,138,.13);    --ok-border: rgba(76,195,138,.32);
-  --warn: #E0A526;   --warn-bg: rgba(224,165,38,.13);  --warn-border: rgba(224,165,38,.32);
-  --bad: #F0665C;    --bad-bg: rgba(240,102,92,.13);   --bad-border: rgba(240,102,92,.34);
-  --purple: #B3A6F0; --purple-bg: rgba(179,166,240,.13); --purple-border: rgba(179,166,240,.32);
-  --neutral: #94A3B8; --neutral-bg: rgba(148,163,184,.12);
+  --ok: #A7BF9F;     --ok-bg: rgba(167,191,159,.14);   --ok-border: rgba(167,191,159,.34);
+  --warn: #E3A35B;   --warn-bg: rgba(227,163,91,.14);  --warn-border: rgba(227,163,91,.34);
+  --bad: #E9765F;    --bad-bg: rgba(233,118,95,.14);   --bad-border: rgba(233,118,95,.36);
+  --purple: #C2B3E6; --purple-bg: rgba(194,179,230,.13); --purple-border: rgba(194,179,230,.32);
+  --neutral: #A39C91; --neutral-bg: rgba(239,234,225,.08);
 
   /* 深色下阴影几乎看不见,分层靠背景三档与 --sep;浮层补一圈极淡的亮边。 */
   --shadow-xs: 0 1px 2px rgba(0,0,0,.3);
   --shadow: 0 1px 2px rgba(0,0,0,.35);
   --shadow-hover: 0 8px 20px -6px rgba(0,0,0,.6);
-  --shadow-lg: 0 18px 48px -12px rgba(0,0,0,.75), 0 0 0 1px rgba(148,163,184,.08);
+  --shadow-lg: 0 18px 48px -12px rgba(0,0,0,.75), 0 0 0 1px rgba(239,234,225,.06);
   --shadow-brand: 0 1px 2px rgba(0,0,0,.4);
-  --focus-ring: 0 0 0 3px rgba(91,154,240,.28);
+  --focus-ring: 0 0 0 3px rgba(230,192,138,.32);
 
   color-scheme: dark;
 }

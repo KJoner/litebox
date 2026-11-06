@@ -19,7 +19,7 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | A12 | HTTP 404 探测 | 已有(V22.6) | `internal/netprobe/http_test.go` |
 | A13 | BOCE 停测与预算耗尽 | 已有(V22.3) | `internal/probe/boce*_test.go` |
 | A14 | 多格式导出 | 未开始 | |
-| A15 | 管理端与门户双主题 | 未开始 | |
+| A15 | 管理端与门户双主题 | 本机通过 | 47 张截图基线浅 / 深 × 1440 / 768 / 390;390 与 375 下全部路由无横向溢出;对比度见 design.md §6 |
 | A16 | 页面与后台任务并发 | 未开始 | |
 | A18 | 主控恢复与节点升级 | 部分已有 | `Result.Unchanged`、`verifyCandidateBinary` |
 | A19 | 多选拖拽与即时离页 | 未开始 | |

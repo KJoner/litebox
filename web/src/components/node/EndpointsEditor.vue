@@ -137,7 +137,7 @@ function add() {
   width: 92px;
 }
 .ee__dash {
-  color: #8a94a6;
+  color: var(--text3);
 }
 .ee__name {
   flex: 1;

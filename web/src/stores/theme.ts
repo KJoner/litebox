@@ -16,7 +16,7 @@ export type ThemePreference = ThemeMode | 'system'
  *
  * 「跟随系统」要**持续**跟随:监听 prefers-color-scheme 的变化,系统在傍晚切到深色时
  * 面板跟着切。V18 只在首次进入时读一次系统设置,之后就再也不跟了。
- * localStorage 里没有值时默认就是跟随系统;老版本存过的 'light' / 'dark' 原样沿用。
+ * localStorage 里没有值时默认深色(VNext);老版本存过的 'light' / 'dark' / 'system' 原样沿用。
  *
  * 根节点加 lb-theme-switching 类 400ms,让 background / color 有过渡;
  * 平时不挂它:一个常驻的 transition 会让每次路由切换都闪一下。
@@ -28,7 +28,23 @@ function readPreference(): ThemePreference {
   } catch {
     /* 隐私模式下 localStorage 可能抛错,那就跟随系统 */
   }
-  return 'system'
+  // VNext UI01:没选过就是暖暗色(Nexus 系列的默认),不再默认跟随系统。
+  return 'dark'
+}
+
+const MOTION_KEY = 'litebox.motion'
+
+/** 动效档位(VNext UI03):正常 / 减弱(只留淡入淡出)/ 关闭。根节点上的 data-motion 由 base.css 解释。 */
+export type MotionLevel = 'normal' | 'reduced' | 'off'
+
+function readMotion(): MotionLevel {
+  try {
+    const saved = localStorage.getItem(MOTION_KEY)
+    if (saved === 'normal' || saved === 'reduced' || saved === 'off') return saved
+  } catch {
+    /* 同上 */
+  }
+  return 'normal'
 }
 
 export const useThemeStore = defineStore('theme', () => {
@@ -71,5 +87,20 @@ export const useThemeStore = defineStore('theme', () => {
     preference.value = mode.value === 'dark' ? 'light' : 'dark'
   }
 
-  return { mode, preference, setPreference, toggle }
+  const motion = ref<MotionLevel>(readMotion())
+  const applyMotion = (m: MotionLevel) => document.documentElement.setAttribute('data-motion', m)
+  applyMotion(motion.value)
+  watch(motion, (m) => {
+    applyMotion(m)
+    try {
+      localStorage.setItem(MOTION_KEY, m)
+    } catch {
+      /* 存不下就只在本次生效 */
+    }
+  })
+  function setMotion(m: MotionLevel) {
+    motion.value = m
+  }
+
+  return { mode, preference, setPreference, toggle, motion, setMotion }
 })

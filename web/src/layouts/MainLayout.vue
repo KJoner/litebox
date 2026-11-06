@@ -67,35 +67,49 @@ interface NavItem {
   danger?: boolean
 }
 
+// 一级区域按 VNext §04.2:概览 / 主机与节点 / 入口与链路 / 用户与权限 / 监控与流量 / 操作记录 / 设置。
+// 只换分组与顺序,路由一个不动 —— 分享出去的链接照样能打开。
 const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
   {
-    title: '总览',
+    title: '概览',
     items: [{ key: 'dashboard', label: '仪表盘', icon: 'layout-grid' }],
   },
   {
-    title: '资源',
+    title: '主机与节点',
     items: [
-      { key: 'users', label: '用户管理', icon: 'users', badge: counts.value.users },
       // 「自建节点」与「外部代理」并列:两者只有「能被用户连」这一点相同 ——
       // 一个是我们有 root 的机器,一个是别人的。都叫「节点」的话,
       // 管理员读预警、读审计时每一次都要先判断说的是哪一类。
       { key: 'nodes', label: '自建节点', icon: 'server', badge: counts.value.nodes },
-      // 紧跟自建节点:入口是机器的一部分,而这一页只是换个方向去看它们。
-      { key: 'inbounds', label: '入口管理', icon: 'log-in' },
       { key: 'external-proxies', label: '外部代理', icon: 'external-link', badge: counts.value.external },
-      // 排在两类线路之后:管理员的工作流是配节点 → 配外部代理 →
-      // 配这些东西怎么发出去。
+    ],
+  },
+  {
+    title: '入口与链路',
+    items: [
+      // 入口、转发与链式出口都在这一页按条列出;订阅配置决定这些线路怎么发到客户端。
+      { key: 'inbounds', label: '入口管理', icon: 'log-in' },
       { key: 'subscription-profiles', label: '订阅配置', icon: 'file-text' },
     ],
   },
   {
-    title: '运维',
+    title: '用户与权限',
+    items: [{ key: 'users', label: '用户管理', icon: 'users', badge: counts.value.users }],
+  },
+  {
+    title: '监控与流量',
+    items: [{ key: 'probe-library', label: '探测目标库', icon: 'activity' }],
+  },
+  {
+    title: '操作记录',
     items: [
-      { key: 'probe-library', label: '探测目标库', icon: 'activity' },
       { key: 'deployments', label: '部署记录', icon: 'clock', badge: counts.value.failedDeploys, danger: true },
       { key: 'audit-logs', label: '审计日志', icon: 'list' },
-      { key: 'settings', label: '系统设置', icon: 'settings' },
     ],
+  },
+  {
+    title: '设置',
+    items: [{ key: 'settings', label: '系统设置', icon: 'settings' }],
   },
 ])
 
