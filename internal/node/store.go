@@ -142,6 +142,10 @@ type Node struct {
 	// EGRESS 只计出站(与 sing-box 计数 1:1),BOTH 进出合计(约两倍)。
 	// 它只影响额度比较与展示,不动 traffic_ledger 一个字节。
 	TrafficBillingMode string `json:"traffic_billing_mode"`
+	// TrafficQuotaSource 是额度用量的数据来源:PROXY_ESTIMATE(代理折算)/ HOST_NIC(网卡实测)。
+	// 改它走 SetQuotaSource;Since 是切到网卡实测的分界。
+	TrafficQuotaSource      string `json:"traffic_quota_source"`
+	TrafficQuotaSourceSince string `json:"traffic_quota_source_since"`
 
 	Status               Status  `json:"status"`
 	LastHeartbeatAt      *string `json:"last_heartbeat_at"`
@@ -177,7 +181,7 @@ const nodeColumns = `n.id, n.name, n.display_name, n.host, n.sub_ipv4_address, n
 	n.arch, n.singbox_version, n.singbox_build_tags, n.mem_total_mb,
 	n.sort_order, n.subscription_enabled, n.public_remark, n.maintenance_message,
 	n.traffic_quota_bytes, n.traffic_reset_cycle, n.traffic_reset_day,
-	n.traffic_billing_mode,
+	n.traffic_billing_mode, n.traffic_quota_source, n.traffic_quota_source_since,
 	n.status, n.last_heartbeat_at, n.config_revision, n.deployed_config_sha256,
 	n.host_changed_at, n.ssh_verify_state,
 	n.created_at, n.updated_at`
@@ -196,7 +200,7 @@ func (s *Store) scanNode(scan func(dest ...any) error) (*Node, error) {
 		&n.Arch, &n.SingBoxVersion, &n.BuildTags, &n.MemTotalMB,
 		&n.SortOrder, &n.SubscriptionEnabled, &n.PublicRemark, &n.MaintenanceMessage,
 		&n.TrafficQuotaBytes, &n.TrafficResetCycle, &n.TrafficResetDay,
-		&n.TrafficBillingMode,
+		&n.TrafficBillingMode, &n.TrafficQuotaSource, &n.TrafficQuotaSourceSince,
 		&n.Status, &n.LastHeartbeatAt, &n.ConfigRevision, &n.DeployedConfigSHA256,
 		&n.HostChangedAt, &n.SSHVerifyState,
 		&n.CreatedAt, &n.UpdatedAt,
@@ -1266,4 +1270,36 @@ func (s *Store) ClearSingBoxVersion(ctx context.Context, id int64) error {
 		`UPDATE nodes SET singbox_version = '', singbox_build_tags = '', updated_at = ? WHERE id = ?`,
 		time.Now().UTC().Format(time.RFC3339), id)
 	return err
+}
+
+// 节点额度用量的数据来源(VNext TRAFFIC03,迁移 0050)。
+const (
+	QuotaSourceProxyEstimate = "PROXY_ESTIMATE"
+	QuotaSourceHostNIC       = "HOST_NIC"
+)
+
+// SetQuotaSource 切换节点额度的数据来源,返回是否真的换了。
+//
+// 切到网卡实测时记下分界(此刻):之前那一段仍按代理折算算并标明,不把旧估算改写成网卡实测。
+// 切回代理折算时清掉分界,整个周期回到代理折算 —— 账本一直在,改回去就能还原。
+// 只影响节点额度预警,不进节点配置、不部署;用户额度与用户历史账本一个字节都不受影响。
+func (s *Store) SetQuotaSource(ctx context.Context, id int64, source string) (bool, error) {
+	if source != QuotaSourceProxyEstimate && source != QuotaSourceHostNIC {
+		return false, fmt.Errorf("额度数据来源只能是 %s 或 %s", QuotaSourceProxyEstimate, QuotaSourceHostNIC)
+	}
+	var cur string
+	if err := s.db.QueryRowContext(ctx, `SELECT traffic_quota_source FROM nodes WHERE id = ? AND deleted_at IS NULL`, id).Scan(&cur); err != nil {
+		return false, ErrNotFound
+	}
+	if cur == source {
+		return false, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	since := ""
+	if source == QuotaSourceHostNIC {
+		since = now
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE nodes SET traffic_quota_source = ?, traffic_quota_source_since = ?, updated_at = ? WHERE id = ?`,
+		source, since, now, id)
+	return err == nil, err
 }

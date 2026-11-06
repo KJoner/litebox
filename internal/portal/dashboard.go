@@ -33,7 +33,11 @@ type Dashboard struct {
 	UsedUplink   int64 `json:"used_uplink"`
 	UsedDownlink int64 `json:"used_downlink"`
 	UsedTotal    int64 `json:"used_total"`
-	QuotaBytes   int64 `json:"quota_bytes"`
+	// BilledBytes 是按计费规则算出的计费流量,与 QuotaBytes 同口径;剩余量与百分比都基于它。
+	// BillingLabel 告诉用户额度怎么算(「双向合计 ×1」),否则计费流量与上下行之和对不上时没有解释。
+	BilledBytes  int64  `json:"billed_bytes"`
+	BillingLabel string `json:"billing_label"`
+	QuotaBytes   int64  `json:"quota_bytes"`
 	// Remaining 与 UsedPercent 在不限量时分别为 0 与 null,
 	// 由前端显示"不限量" —— 不做除零,也不编造一个百分比。
 	Remaining   int64    `json:"remaining"`
@@ -149,6 +153,8 @@ func (q *Querier) Dashboard(ctx context.Context, proxyUserID int64) (*Dashboard,
 		UsedUplink:   u.UsedUplink,
 		UsedDownlink: u.UsedDownlink,
 		UsedTotal:    u.UsedTotal(),
+		BilledBytes:  u.BilledBytes(),
+		BillingLabel: u.BillingSegment().Rule.Label(),
 		QuotaBytes:   u.QuotaBytes,
 		ExpiresAt:    u.ExpiresAt,
 		LastResetAt:  u.LastResetAt,
@@ -160,12 +166,12 @@ func (q *Querier) Dashboard(ctx context.Context, proxyUserID int64) (*Dashboard,
 
 	// 额度为 0 表示不限量:不算剩余,也不算百分比。
 	if u.QuotaBytes > 0 {
-		remaining := u.QuotaBytes - u.UsedTotal()
+		remaining := u.QuotaBytes - u.BilledBytes()
 		if remaining < 0 {
 			remaining = 0
 		}
 		d.Remaining = remaining
-		percent := math.Round(float64(u.UsedTotal())/float64(u.QuotaBytes)*1000) / 10
+		percent := math.Round(float64(u.BilledBytes())/float64(u.QuotaBytes)*1000) / 10
 		d.UsedPercent = &percent
 	}
 

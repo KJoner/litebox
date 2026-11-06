@@ -37,6 +37,7 @@ import {
 } from '@/components/lb/derive'
 import UserAdjustModal from '@/components/user/UserAdjustModal.vue'
 import UserAccessPanel from '@/components/user/UserAccessPanel.vue'
+import UserBillingModal from '@/components/user/UserBillingModal.vue'
 import { color } from '@/theme/tokens'
 
 /**
@@ -65,6 +66,7 @@ const loading = ref(false)
 /** 用户本身读不到 —— 这才是整个抽屉的错误态。 */
 const loadError = ref<{ message: string; status?: number; at: string } | null>(null)
 const tab = ref('profile')
+const billingOpen = ref(false)
 
 // 三块附属数据各自持有加载与失败状态,互不牵连。
 const traffic = ref<UserTraffic | null>(null)
@@ -180,7 +182,7 @@ const banner = computed(() => {
     return { type: 'warning' as const, text: '账号已停用。门户仍可登录,但看不到订阅地址;历史流量与调整记录保留。' }
   }
   if (isNearQuota(u)) {
-    const pct = Math.round((u.used_total / u.quota_bytes) * 100)
+    const pct = Math.round(((u.billed_bytes ?? u.used_total) / u.quota_bytes) * 100)
     return {
       type: 'warning' as const,
       text: `已用 ${pct}% 额度。达到 100% 时账号会被自动停用并触发受影响节点重新部署,用户届时会连不上。${reset}`,
@@ -720,14 +722,23 @@ const adjustColumns = [
               <div class="ud__card-head">流量与有效期</div>
               <div class="ud__card-body">
                 <LbQuotaBar
-                  :used-bytes="user.used_total"
+                  :used-bytes="user.billed_bytes ?? user.used_total"
                   :quota-bytes="user.quota_bytes"
                   :warning-level="warningLevel"
                   size="md"
                 />
                 <div class="ud__facts">
-                  <div><span>上行</span><b class="lb-mono">{{ formatBytes(user.used_uplink) }}</b></div>
-                  <div><span>下行</span><b class="lb-mono">{{ formatBytes(user.used_downlink) }}</b></div>
+                  <!-- 上行 / 下行是用户视角的原始字节;进度条比的是按计费规则算出的计费流量(TRAFFIC01)。 -->
+                  <div><span>上行(原始)</span><b class="lb-mono">{{ formatBytes(user.used_uplink) }}</b></div>
+                  <div><span>下行(原始)</span><b class="lb-mono">{{ formatBytes(user.used_downlink) }}</b></div>
+                  <div>
+                    <span>计费规则</span>
+                    <b>
+                      <button type="button" class="lb-linkbtn" @click="billingOpen = true">{{ user.billing_label || '双向合计 ×1' }}</button>
+                      <em v-if="user.billing_next_mode" class="ud__muted">(下一周期改为 {{ user.billing_next_mode }} ×{{ (user.billing_next_multiplier_pct / 100).toFixed(2).replace(/\.?0+$/, '') }})</em>
+                    </b>
+                  </div>
+                  <div><span>计费流量</span><b class="lb-mono">{{ formatBytes(user.billed_bytes ?? user.used_total) }}</b></div>
                   <div>
                     <span>到期时间</span>
                     <b class="lb-mono" :style="{ color: user.status === 'EXPIRED' ? color.danger : undefined }">
@@ -1089,7 +1100,8 @@ const adjustColumns = [
     </a-form>
   </a-modal>
 
-  <UserAdjustModal
+  <UserBillingModal v-model:open="billingOpen" :user="user" @saved="reload(); emit('changed')" />
+    <UserAdjustModal
     v-model:open="adjustOpen"
     :user="user"
     :targets="[]"

@@ -113,6 +113,37 @@ type NodeCycleQuery struct {
 	Cycle       ResetCycle
 	ResetDay    int
 	BillingMode BillingMode
+	// QuotaSource 是额度用量的数据来源(VNext TRAFFIC03,迁移 0050):PROXY_ESTIMATE 是代理折算,
+	// HOST_NIC 是 vnStat 网卡实测。SourceSince 是切到网卡实测的分界,之前那一段仍按代理折算算。
+	QuotaSource string
+	SourceSince time.Time
+}
+
+// 节点额度用量的数据来源。
+const (
+	SourceProxyEstimate = "PROXY_ESTIMATE"
+	SourceHostNIC       = "HOST_NIC"
+)
+
+// 数据质量(VNext TRAFFIC07)。只有网卡实测才有「过期 / 没装」这种状态;代理折算的来源是账本,
+// 它的缺口由流量同步那一侧报。
+const (
+	QualityOK           = "OK"
+	QualityStale        = "STALE"
+	QualityNoData       = "NO_DATA"
+	QualityNotInstalled = "NOT_INSTALLED"
+)
+
+// hostStaleAfter:vnstat 每 5 分钟落一次库、面板每 5 分钟拉一次,超过 30 分钟没成功拉到就算过期。
+const hostStaleAfter = 30 * time.Minute
+
+// hostSample 是一台机器在本周期(网卡实测那一段)的网卡字节与 vnStat 状态。
+type hostSample struct {
+	rx, tx    int64
+	installed bool
+	syncedAt  string
+	lastError string
+	iface     string
 }
 
 // NodePeriod 是一个节点当前额度周期的时间边界。
@@ -149,6 +180,21 @@ type NodeCycleUsage struct {
 	ResetDay       int      `json:"reset_day"`
 	BillingMode    string   `json:"billing_mode"`
 	BillingFactor  int64    `json:"billing_factor"`
+	// QuotaSource / QuotaSourceSince 见 NodeCycleQuery。UsedBytes = EstimateBytes + HostBytes:
+	// 前者是代理折算的那一段(整个周期都是代理折算时就是全部),后者是网卡实测的那一段。
+	// 两段分开给,界面上标出分界 —— 不把旧估算改写成网卡实测,也不把两种口径伪称为同一个数。
+	QuotaSource      string `json:"quota_source"`
+	QuotaSourceSince string `json:"quota_source_since"`
+	EstimateBytes    int64  `json:"estimate_bytes"`
+	HostBytes        int64  `json:"host_bytes"`
+	HostRxBytes      int64  `json:"host_rx_bytes"`
+	HostTxBytes      int64  `json:"host_tx_bytes"`
+	HostIface        string `json:"host_iface"`
+	HostSyncedAt     string `json:"host_synced_at"`
+	// Quality 只对网卡实测有意义:OK / STALE(超过 30 分钟没拉到)/ NO_DATA(从没拉到过)/ NOT_INSTALLED。
+	// 不是 OK 时 HostBytes 是「到上次成功同步为止」的量,不是此刻 —— 不补、不平滑。
+	Quality     string `json:"quality"`
+	QualityNote string `json:"quality_note"`
 }
 
 // CalculateNodePeriod 计算节点当前额度周期的开始与下一次重置时间。
@@ -200,6 +246,12 @@ func daysInMonth(year int, month time.Month) int {
 // 单独拆出来是为了让阈值与除零这两处能被直接测到 —— 它们的错误形态
 // 分别是"超额了却不报警"和"不限量节点整个接口 500"。
 func buildNodeCycleUsage(q NodeCycleQuery, period NodePeriod, uplink, downlink int64) NodeCycleUsage {
+	return buildNodeCycleUsageWith(q, period, uplink, downlink, nil, time.Now().UTC())
+}
+
+// buildNodeCycleUsageWith 多带网卡实测那一段。host 为 nil 表示这台机器整个周期都是代理折算。
+// uplink / downlink 是代理折算那一段(网卡实测的机器上只到分界为止)的账本合计。
+func buildNodeCycleUsageWith(q NodeCycleQuery, period NodePeriod, uplink, downlink int64, host *hostSample, now time.Time) NodeCycleUsage {
 	mode := q.BillingMode
 	if mode == "" {
 		mode = BillingEgress
@@ -210,7 +262,20 @@ func buildNodeCycleUsage(q NodeCycleQuery, period NodePeriod, uplink, downlink i
 	// 折算放在这一处。让上层各自去乘倍数的话,列表、详情、仪表盘预警
 	// 三个地方迟早会有一个漏乘,而漏乘的表现是"额度还剩很多"——
 	// 一个不会报错、只会在收到超额账单那天才被发现的错。
-	used := proxy * factor
+	estimate := proxy * factor
+	used := estimate
+	var hostBytes int64
+	source, quality, note := SourceProxyEstimate, QualityOK, ""
+	if q.QuotaSource == SourceHostNIC && host != nil {
+		source = SourceHostNIC
+		// 与代理折算的口径一一对应:EGRESS 只算网卡出站(tx),BOTH 算进出合计。
+		hostBytes = host.tx
+		if mode == BillingBoth {
+			hostBytes = host.rx + host.tx
+		}
+		used = estimate + hostBytes
+		quality, note = hostQuality(host, now)
+	}
 
 	usage := NodeCycleUsage{
 		NodeID:        q.NodeID,
@@ -224,6 +289,18 @@ func buildNodeCycleUsage(q NodeCycleQuery, period NodePeriod, uplink, downlink i
 		ResetDay:      q.ResetDay,
 		BillingMode:   string(mode),
 		BillingFactor: factor,
+		QuotaSource:   source,
+		EstimateBytes: estimate,
+		HostBytes:     hostBytes,
+		Quality:       quality,
+		QualityNote:   note,
+	}
+	if source == SourceHostNIC {
+		usage.HostRxBytes, usage.HostTxBytes = host.rx, host.tx
+		usage.HostIface, usage.HostSyncedAt = host.iface, host.syncedAt
+		if !q.SourceSince.IsZero() {
+			usage.QuotaSourceSince = q.SourceSince.UTC().Format(time.RFC3339)
+		}
 	}
 	if period.NextReset != nil {
 		next := period.NextReset.UTC().Format(time.RFC3339)
@@ -282,8 +359,13 @@ func (q *Querier) NodesCycleUsage(ctx context.Context) ([]NodeCycleUsage, error)
 	if err := q.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM traffic_ledger`).Scan(&maxID); err != nil {
 		return nil, err
 	}
+	// 网卡实测的机器还依赖主机流量:每次成功同步都会改 synced_at,把它的最大值并进键里。
+	var hostVer string
+	if err := q.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(updated_at), '') FROM host_traffic_state`).Scan(&hostVer); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
-	key := cycleCacheKey(queries, now, maxID)
+	key := cycleCacheKey(queries, now, maxID) + "|" + hostVer
 	if items, ok := q.cycleCache.get(key, now); ok {
 		return items, nil
 	}
@@ -385,7 +467,8 @@ func (q *Querier) nodeCycleQueries(ctx context.Context, nodeID int64) ([]NodeCyc
 	}
 	rows, err := q.db.QueryContext(ctx, `
 		SELECT n.id, n.created_at, n.traffic_quota_bytes,
-		       n.traffic_reset_cycle, n.traffic_reset_day, n.traffic_billing_mode
+		       n.traffic_reset_cycle, n.traffic_reset_day, n.traffic_billing_mode,
+		       n.traffic_quota_source, n.traffic_quota_source_since
 		  FROM nodes n
 		 WHERE `+where+`
 		 ORDER BY n.sort_order, n.id`, args...)
@@ -401,10 +484,14 @@ func (q *Querier) nodeCycleQueries(ctx context.Context, nodeID int64) ([]NodeCyc
 			createdAt string
 			cycle     string
 			billing   string
+			since     string
 		)
 		if err := rows.Scan(&item.NodeID, &createdAt, &item.QuotaBytes,
-			&cycle, &item.ResetDay, &billing); err != nil {
+			&cycle, &item.ResetDay, &billing, &item.QuotaSource, &since); err != nil {
 			return nil, err
+		}
+		if since != "" {
+			item.SourceSince, _ = time.Parse(time.RFC3339, since)
 		}
 		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		// 列上有 CHECK 约束,取值非法只可能是人手改库;
@@ -436,11 +523,23 @@ func (q *Querier) assemble(ctx context.Context, queries []NodeCycleQuery) ([]Nod
 	periods := make(map[int64]NodePeriod, len(queries))
 	values := make([]string, 0, len(queries))
 	args := make([]any, 0, len(queries)*2)
+	hostStarts := map[int64]time.Time{}
 	for _, item := range queries {
 		period := CalculateNodePeriod(item.Cycle, item.ResetDay, item.CreatedAt, now)
 		periods[item.NodeID] = period
-		values = append(values, "SELECT CAST(? AS BIGINT) AS node_id, CAST(? AS TEXT) AS period_start")
-		args = append(args, item.NodeID, period.Start.UTC().Format(time.RFC3339))
+		// 网卡实测的机器:账本只算到分界为止(之前那一段仍是代理折算),之后交给网卡。
+		proxyEnd := "9999-12-31T23:59:59Z"
+		if item.QuotaSource == SourceHostNIC {
+			hs := hostStart(period.Start, item.SourceSince)
+			hostStarts[item.NodeID] = hs
+			if item.SourceSince.After(period.Start) {
+				proxyEnd = item.SourceSince.UTC().Format(time.RFC3339)
+			} else {
+				proxyEnd = period.Start.UTC().Format(time.RFC3339)
+			}
+		}
+		values = append(values, "SELECT CAST(? AS BIGINT) AS node_id, CAST(? AS TEXT) AS period_start, CAST(? AS TEXT) AS proxy_end")
+		args = append(args, item.NodeID, period.Start.UTC().Format(time.RFC3339), proxyEnd)
 	}
 
 	// created_at 是定长的 RFC3339(秒精度、Z 结尾),字符串比较即时间比较。
@@ -450,7 +549,7 @@ func (q *Querier) assemble(ctx context.Context, queries []NodeCycleQuery) ([]Nod
 		       COALESCE(SUM(CASE WHEN l.direction='downlink' THEN l.delta_bytes ELSE 0 END), 0)
 		  FROM traffic_ledger l
 		  JOIN (`+strings.Join(values, " UNION ALL ")+`) p
-		    ON p.node_id = l.node_id AND l.created_at >= p.period_start
+		    ON p.node_id = l.node_id AND l.created_at >= p.period_start AND l.created_at < p.proxy_end
 		 GROUP BY l.node_id`, args...)
 	if err != nil {
 		return nil, err
@@ -471,9 +570,100 @@ func (q *Querier) assemble(ctx context.Context, queries []NodeCycleQuery) ([]Nod
 		return nil, err
 	}
 
+	hosts, err := q.hostSamples(ctx, hostStarts)
+	if err != nil {
+		return nil, err
+	}
 	for _, item := range queries {
 		p := sums[item.NodeID]
-		items = append(items, buildNodeCycleUsage(item, periods[item.NodeID], p.uplink, p.downlink))
+		items = append(items, buildNodeCycleUsageWith(item, periods[item.NodeID], p.uplink, p.downlink, hosts[item.NodeID], now))
 	}
 	return items, nil
+}
+
+// hostSamples 取网卡实测那几台机器在各自起点之后的小时桶合计与 vnStat 状态。
+// 只读面板库里已有的数据,不连节点。
+func (q *Querier) hostSamples(ctx context.Context, starts map[int64]time.Time) (map[int64]*hostSample, error) {
+	out := make(map[int64]*hostSample, len(starts))
+	if len(starts) == 0 {
+		return out, nil
+	}
+	values := make([]string, 0, len(starts))
+	args := make([]any, 0, len(starts)*2)
+	for id, start := range starts {
+		out[id] = &hostSample{}
+		values = append(values, "SELECT CAST(? AS BIGINT) AS node_id, CAST(? AS BIGINT) AS start_ts")
+		args = append(args, id, start.Unix())
+	}
+	rows, err := q.db.QueryContext(ctx, `
+		SELECT h.node_id, COALESCE(SUM(h.rx_bytes), 0), COALESCE(SUM(h.tx_bytes), 0)
+		  FROM host_traffic h
+		  JOIN (`+strings.Join(values, " UNION ALL ")+`) p ON p.node_id = h.node_id
+		 WHERE h.granularity = 'HOUR' AND h.bucket_ts >= p.start_ts
+		 GROUP BY h.node_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id, rx, tx int64
+		if err := rows.Scan(&id, &rx, &tx); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if h := out[id]; h != nil {
+			h.rx, h.tx = rx, tx
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	srows, err := q.db.QueryContext(ctx, `SELECT node_id, installed, synced_at, last_error, iface FROM host_traffic_state`)
+	if err != nil {
+		return nil, err
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var id int64
+		var installed int
+		var synced, lastErr, iface string
+		if err := srows.Scan(&id, &installed, &synced, &lastErr, &iface); err != nil {
+			return nil, err
+		}
+		if h := out[id]; h != nil {
+			h.installed, h.syncedAt, h.lastError, h.iface = installed == 1, synced, lastErr, iface
+		}
+	}
+	return out, srows.Err()
+}
+
+func hostQuality(h *hostSample, now time.Time) (string, string) {
+	if !h.installed {
+		return QualityNotInstalled, "这台机器上还没有可用的 vnStat,网卡实测那一段是 0 —— 不是没有流量"
+	}
+	if h.syncedAt == "" {
+		return QualityNoData, "还没有成功拉到过网卡数据"
+	}
+	at, err := time.Parse(time.RFC3339, h.syncedAt)
+	if err != nil || now.Sub(at) > hostStaleAfter {
+		msg := "网卡数据超过 30 分钟没有更新,数字停在上次成功同步的时刻"
+		if h.lastError != "" {
+			msg += ":" + h.lastError
+		}
+		return QualityStale, msg
+	}
+	return QualityOK, ""
+}
+
+// hostStart 是网卡实测那一段的起点:分界与周期起点取较晚者,再向上取整到整点 ——
+// 小时桶是面板能拿到的最细粒度,分界所在的那一小时不计(宁可少算不到一小时,也不把分界之前的字节算进来)。
+func hostStart(periodStart, since time.Time) time.Time {
+	start := periodStart
+	if since.After(start) {
+		start = since
+	}
+	if t := start.Truncate(time.Hour); !t.Equal(start) {
+		return t.Add(time.Hour)
+	}
+	return start
 }

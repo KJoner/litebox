@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import NodeQuotaSourcePanel from '@/components/node/NodeQuotaSourcePanel.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
@@ -1917,7 +1918,7 @@ const needsPortForward = computed(() =>
                     <b class="lb-mono">{{ formatBytes(cycle.proxy_bytes) }}</b>
                   </div>
                   <div>
-                    <span>主机口径{{ cycle.billing_factor > 1 ? `(双向 ×${cycle.billing_factor})` : '(出站 ×1)' }}</span>
+                    <span>{{ cycle.quota_source === 'HOST_NIC' ? '主机口径(代理折算段 + 网卡实测段)' : `主机口径·代理折算${cycle.billing_factor > 1 ? `(双向 ×${cycle.billing_factor})` : '(出站 ×1)'}` }}</span>
                     <b class="lb-mono">{{ formatBytes(cycle.used_bytes) }}</b>
                   </div>
                   <div><span>上行</span><b class="lb-mono">{{ formatBytes(cycle.uplink_bytes) }}</b></div>
@@ -1941,6 +1942,7 @@ const needsPortForward = computed(() =>
                     </b>
                   </div>
                 </div>
+                <NodeQuotaSourcePanel v-if="node" :node-id="node.id" :cycle="cycle" @changed="reload" />
               </template>
             </div>
           </section>

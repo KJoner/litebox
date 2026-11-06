@@ -52,7 +52,7 @@ func (s *Store) UsersForInbounds(ctx context.Context, inboundIDs []int64) (map[i
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ei.inbound_id, u.user_code, u.uuid_encrypted, u.ss_password_encrypted,
 		       u.snell_password_encrypted, u.status, u.quota_bytes,
-		       u.used_uplink, u.used_downlink, u.expires_at
+		       u.used_uplink, u.used_downlink, u.expires_at, `+billingColumns+`
 		  FROM proxy_users u
 		  JOIN `+access.EffectiveInboundsView+` ei ON ei.proxy_user_id = u.id
 		 WHERE ei.inbound_id IN (`+strings.Join(ph, ",")+`) AND u.deleted_at IS NULL
@@ -69,7 +69,8 @@ func (s *Store) UsersForInbounds(ctx context.Context, inboundIDs []int64) (map[i
 		var uuidEnc, ssKeyEnc, snellKeyEnc string
 		if err := rows.Scan(&inboundID, &u.UserCode, &uuidEnc, &ssKeyEnc, &snellKeyEnc,
 			&u.Status, &u.QuotaBytes,
-			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt); err != nil {
+			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
+			&u.BillingMode, &u.BillingMultiplierPct, &u.BillingSealedBytes, &u.BillingBaseUplink, &u.BillingBaseDownlink); err != nil {
 			return nil, err
 		}
 		if !u.Serviceable(now) {
@@ -187,7 +188,7 @@ func (s *Store) MieruUsersForInbound(
 ) ([]mieru.User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.user_code, u.mieru_password_encrypted, u.status, u.quota_bytes,
-		       u.used_uplink, u.used_downlink, u.expires_at
+		       u.used_uplink, u.used_downlink, u.expires_at, `+billingColumns+`
 		  FROM proxy_users u
 		  JOIN `+access.EffectiveMieruInboundsView+` em ON em.proxy_user_id = u.id
 		 WHERE em.mieru_inbound_id = ? AND u.deleted_at IS NULL
@@ -203,7 +204,8 @@ func (s *Store) MieruUsersForInbound(
 		var u User
 		var enc string
 		if err := rows.Scan(&u.UserCode, &enc, &u.Status, &u.QuotaBytes,
-			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt); err != nil {
+			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
+			&u.BillingMode, &u.BillingMultiplierPct, &u.BillingSealedBytes, &u.BillingBaseUplink, &u.BillingBaseDownlink); err != nil {
 			return nil, err
 		}
 		if !u.Serviceable(now) {

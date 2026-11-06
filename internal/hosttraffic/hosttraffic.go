@@ -51,7 +51,8 @@ func (f Facts) Ready() bool { return f.Installed && f.Iface != "" && f.IfaceInDB
 const probeScript = `
 v=$(vnstat --version 2>/dev/null | head -n 1)
 [ -n "$v" ] && echo "version=$v"
-iface=$(ip route show default 2>/dev/null | head -n 1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+iface="$1"
+[ -z "$iface" ] && iface=$(ip route show default 2>/dev/null | head -n 1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
 [ -z "$iface" ] && iface=$(awk -F: 'NR>2 { gsub(/ /,"",$1); if ($1 != "lo") { print $1; exit } }' /proc/net/dev)
 echo "iface=$iface"
 for m in apt-get apk dnf yum; do
@@ -67,9 +68,13 @@ fi
 [ -n "$v" ] && [ -n "$iface" ] && vnstat --json d 1 -i "$iface" >/dev/null 2>&1 && echo "indb=1"
 `
 
-// Probe 只读探测,不装任何东西。
-func Probe(ctx context.Context, client *sshx.Client) (Facts, error) {
-	res, err := client.Run(ctx, sshx.NewCommand("sh", "-c", probeScript))
+// Probe 只读探测,不装任何东西。pinned 是管理员指定的计量网卡(VNext TRAFFIC03),
+// 空串表示跟随默认路由(升级前的行为)。它作为位置参数传进脚本,不拼进命令文本。
+func Probe(ctx context.Context, client *sshx.Client, pinned string) (Facts, error) {
+	if pinned != "" && !ifacePattern.MatchString(pinned) {
+		return Facts{}, fmt.Errorf("网卡名 %q 不合法", pinned)
+	}
+	res, err := client.Run(ctx, sshx.NewCommand("sh", "-c", probeScript, "sh", pinned))
 	if err != nil {
 		return Facts{}, err
 	}
@@ -112,9 +117,9 @@ var ErrNotReady = errors.New("这台机器上的 vnStat 还没有就绪")
 //
 // 每一步都记进 steps:装包、启服务、加网卡各自都可能失败,而失败在哪一步
 // 决定管理员要做什么。**判据永远是重新探测的结果**,不是安装命令的退出码。
-func Ensure(ctx context.Context, client *sshx.Client) (Facts, []string, error) {
+func Ensure(ctx context.Context, client *sshx.Client, pinned string) (Facts, []string, error) {
 	var steps []string
-	facts, err := Probe(ctx, client)
+	facts, err := Probe(ctx, client, pinned)
 	if err != nil {
 		return facts, steps, err
 	}
@@ -143,7 +148,7 @@ func Ensure(ctx context.Context, client *sshx.Client) (Facts, []string, error) {
 	}
 	steps = append(steps, "vnstat 守护进程已启用")
 
-	facts, err = Probe(ctx, client)
+	facts, err = Probe(ctx, client, pinned)
 	if err != nil {
 		return facts, steps, err
 	}
@@ -161,7 +166,7 @@ func Ensure(ctx context.Context, client *sshx.Client) (Facts, []string, error) {
 			return facts, steps, ctx.Err()
 		case <-time.After(3 * time.Second):
 		}
-		facts, err = Probe(ctx, client)
+		facts, err = Probe(ctx, client, pinned)
 		if err != nil {
 			return facts, steps, err
 		}
@@ -447,4 +452,82 @@ func firstLine(s string) string {
 		s = s[:200]
 	}
 	return s
+}
+
+// Interface 是一块候选计量网卡(VNext TRAFFIC03)。
+type Interface struct {
+	Name string `json:"name"`
+	// RxBytes / TxBytes 是 /proc/net/dev 里此刻的累计值,只为帮管理员认出「流量走的是哪一块」。
+	RxBytes int64 `json:"rx_bytes"`
+	TxBytes int64 `json:"tx_bytes"`
+	// DefaultV4 / DefaultV6 表示这块网卡上挂着对应地址族的默认路由 —— 那只是候选,不是结论:
+	// IPv4 与 IPv6 可以从两块网卡出去,LXC 里看到的名字也未必是宿主上的那一块。
+	DefaultV4 bool `json:"default_v4"`
+	DefaultV6 bool `json:"default_v6"`
+	// Excluded 非空时这块网卡默认不建议计量(回环、容器桥、隧道),写明原因;仍然可以手工选。
+	Excluded string `json:"excluded"`
+}
+
+// interfacesScript:/proc/net/dev 每行「名字: rx字节 … (第 9 列起是 tx)」,冒号后面可能紧贴数字。
+const interfacesScript = `
+sed -n '3,$p' /proc/net/dev | tr ':' ' ' | awk '{print "if=" $1 " " $2 " " $10}'
+d4=$(ip route show default 2>/dev/null | head -n 1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+d6=$(ip -6 route show default 2>/dev/null | head -n 1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+echo "def4=$d4"
+echo "def6=$d6"
+`
+
+// Interfaces 列出这台机器上的网卡(只读,不装任何东西)。
+func Interfaces(ctx context.Context, client *sshx.Client) ([]Interface, error) {
+	res, err := client.RunCheck(ctx, sshx.NewCommand("sh", "-c", interfacesScript))
+	if err != nil {
+		return nil, err
+	}
+	return parseInterfaces(res.Stdout), nil
+}
+
+func parseInterfaces(out string) []Interface {
+	list := []Interface{}
+	var def4, def6 string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "def4="):
+			def4 = strings.TrimPrefix(line, "def4=")
+		case strings.HasPrefix(line, "def6="):
+			def6 = strings.TrimPrefix(line, "def6=")
+		case strings.HasPrefix(line, "if="):
+			f := strings.Fields(strings.TrimPrefix(line, "if="))
+			if len(f) < 3 || !ifacePattern.MatchString(f[0]) {
+				continue
+			}
+			it := Interface{Name: f[0], Excluded: excludedReason(f[0])}
+			it.RxBytes, _ = strconv.ParseInt(f[1], 10, 64)
+			it.TxBytes, _ = strconv.ParseInt(f[2], 10, 64)
+			list = append(list, it)
+		}
+	}
+	for i := range list {
+		list[i].DefaultV4 = list[i].Name == def4
+		list[i].DefaultV6 = list[i].Name == def6
+	}
+	return list
+}
+
+// excludedReason:回环、容器桥与虚拟对端、隧道默认不计量 —— 它们的字节要么根本没出机器,
+// 要么在物理网卡上已经算过一遍,加进去就是重复累计。
+func excludedReason(name string) string {
+	switch {
+	case name == "lo":
+		return "回环,流量没有离开这台机器"
+	case strings.HasPrefix(name, "docker"), strings.HasPrefix(name, "br-"), strings.HasPrefix(name, "virbr"),
+		strings.HasPrefix(name, "cni"), strings.HasPrefix(name, "podman"):
+		return "容器 / 虚拟机网桥,字节在物理网卡上已经算过一遍"
+	case strings.HasPrefix(name, "veth"):
+		return "容器的虚拟对端,字节在物理网卡上已经算过一遍"
+	case strings.HasPrefix(name, "tun"), strings.HasPrefix(name, "tap"), strings.HasPrefix(name, "wg"),
+		strings.HasPrefix(name, "tailscale"), strings.HasPrefix(name, "zt"):
+		return "隧道接口,外层字节已经在物理网卡上算过"
+	}
+	return ""
 }

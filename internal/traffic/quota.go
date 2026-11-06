@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/litebox/litebox/internal/billing"
 	"log/slog"
 	"time"
 
@@ -54,7 +55,8 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 	result.Reset = resetCodes
 
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT id, user_code, status, quota_bytes, used_uplink, used_downlink, expires_at
+		SELECT id, user_code, status, quota_bytes, used_uplink, used_downlink, expires_at,
+		       billing_mode, billing_multiplier_pct, billing_sealed_bytes, billing_base_uplink, billing_base_downlink
 		  FROM proxy_users
 		 WHERE deleted_at IS NULL
 		   AND status IN ('ACTIVE','EXPIRED','QUOTA_EXCEEDED')`)
@@ -76,12 +78,18 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 		var userCode, status string
 		var quota, up, down int64
 		var expiresAt *string
-		if err := rows.Scan(&id, &userCode, &status, &quota, &up, &down, &expiresAt); err != nil {
+		var seg billing.Segment
+		var mode string
+		if err := rows.Scan(&id, &userCode, &status, &quota, &up, &down, &expiresAt,
+			&mode, &seg.Rule.MultiplierPct, &seg.Sealed, &seg.BaseUp, &seg.BaseDown); err != nil {
 			rows.Close()
 			return result, err
 		}
+		seg.Rule.Mode = billing.Mode(mode)
 
-		next, reason := evaluate(quota, up+down, expiresAt, now)
+		// 与 User.QuotaExceeded 同一个公式(internal/billing):两处各算一遍的话,
+		// 面板说没超额、自动迁移却把人停了,或者反过来。
+		next, reason := evaluate(quota, billing.Billed(seg, up, down), expiresAt, now)
 		if next != status {
 			pending = append(pending, candidate{id, userCode, status, next, reason})
 		}
@@ -144,7 +152,7 @@ func evaluate(quota, used int64, expiresAt *string, now time.Time) (status, reas
 		}
 	}
 	if quota > 0 && used >= quota {
-		return "QUOTA_EXCEEDED", fmt.Sprintf("已用 %d 字节达到额度 %d", used, quota)
+		return "QUOTA_EXCEEDED", fmt.Sprintf("计费流量 %d 字节达到额度 %d", used, quota)
 	}
 	return "ACTIVE", "额度与到期时间均正常"
 }
@@ -196,7 +204,7 @@ func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]st
 	for _, t := range due {
 		if _, err := e.db.ExecContext(ctx, `
 			UPDATE proxy_users SET used_uplink = 0, used_downlink = 0,
-				last_reset_at = ?, updated_at = ?
+				last_reset_at = ?, updated_at = ?, `+billing.ResetSQL+`
 			WHERE id = ?`, nowStr, nowStr, t.id); err != nil {
 			return codes, err
 		}

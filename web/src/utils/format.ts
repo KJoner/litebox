@@ -3,10 +3,11 @@
 /** 把字节数格式化为可读大小。0 视为"不限"由调用方自行判断。 */
 export function formatBytes(bytes: number | null | undefined): string {
   if (!bytes || bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  // 1024 进位就写 KiB / MiB / GiB(VNext TRAFFIC02:不把 1 GiB 与 1 GB 混在一起)。
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   const value = bytes / 1024 ** i
-  // 小数位随量级递减:1023 B 不需要小数,1.25 GB 需要。
+  // 小数位随量级递减:1023 B 不需要小数,1.25 GiB 需要。
   const digits = i === 0 ? 0 : value >= 100 ? 1 : 2
   return `${value.toFixed(digits)} ${units[i]}`
 }

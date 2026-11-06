@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/litebox/litebox/internal/billing"
 	"strings"
 	"time"
 
@@ -173,13 +174,13 @@ func replaceNodes(ctx context.Context, tx *sql.Tx, userID int64, nodeIDs []int64
 // DISABLED 是管理员显式设置的,不能被自动改回;
 // DEPLOY_* 由部署流程管理。
 func refreshStatus(ctx context.Context, tx *sql.Tx, id int64, now string) error {
+	var u User
 	var status Status
-	var quota, up, down int64
-	var expiresAt *string
 	err := tx.QueryRowContext(ctx,
-		`SELECT status, quota_bytes, used_uplink, used_downlink, expires_at
-		   FROM proxy_users WHERE id = ?`, id).
-		Scan(&status, &quota, &up, &down, &expiresAt)
+		`SELECT u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at, `+billingColumns+`
+		   FROM proxy_users u WHERE u.id = ?`, id).
+		Scan(&status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
+			&u.BillingMode, &u.BillingMultiplierPct, &u.BillingSealedBytes, &u.BillingBaseUplink, &u.BillingBaseDownlink)
 	if err != nil {
 		return err
 	}
@@ -187,7 +188,6 @@ func refreshStatus(ctx context.Context, tx *sql.Tx, id int64, now string) error 
 		return nil
 	}
 
-	u := User{QuotaBytes: quota, UsedUplink: up, UsedDownlink: down, ExpiresAt: expiresAt}
 	next := StatusActive
 	switch {
 	case u.Expired(time.Now().UTC()):
@@ -249,9 +249,11 @@ func (s *Store) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	}
 	defer tx.Rollback()
 
+	// 手工重置等于开一个新周期:封存段与起点一并清零,待生效的「下一周期」规则在这一刻套用
+	// (与 traffic 包的周期重置同一条 SQL 片段,两处不会分叉)。
 	res, err := tx.ExecContext(ctx, `
 		UPDATE proxy_users SET used_uplink = 0, used_downlink = 0,
-			last_reset_at = ?, updated_at = ?
+			last_reset_at = ?, updated_at = ?, `+billing.ResetSQL+`
 		WHERE id = ? AND deleted_at IS NULL`, now, now, id)
 	if err != nil {
 		return nil, err

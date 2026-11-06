@@ -15,7 +15,7 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | A08 | Agent 连接中断与切换 | 未开始 | |
 | A09 | 用户入口撤权 | 单元 + 前端回归通过,真机未验 | `TestSetAccessMarksBeforeAndAfter`(撤权取前后并集标脏)、`TestEntryAccessRestricted`(仅指定用户、停用照样拦)、`grants_upgrade_test.go`(升级逐行不变,SQLite 与 PG);撤权收敛按配置状态展示 |
 | A10 | 链路失败或形成环路 | 单元 + 前端回归通过,真机未验 | `TestSetChainRejectsLoop`、`TestChainPathStopsOnExistingLoop`、`TestPreviewQuickChain`、`TestQuickChainCreate`(有问题整个拒绝、一行不写) |
-| A11 | 流量重启 / 重传 / 切换 | 未开始 | |
+| A11 | 流量重启 / 重传 / 切换 | 部分 | 计费公式:`internal/billing` 固定夹具(U/D/SUM/MAX、倍率、分段封存、溢出);`TestEnforceUsesBillingRule`、`TestMonthlyResetAppliesPendingRule`、`TestSetBillingImmediateSealsOldSegment`;重启判定沿用 Phase 4 的测试;Agent 重传见 S6 第二部分 |
 | A12 | HTTP 404 探测 | 已有(V22.6) | `internal/netprobe/http_test.go` |
 | A13 | BOCE 停测与预算耗尽 | 已有(V22.3) | `internal/probe/boce*_test.go` |
 | A14 | 多格式导出 | 未开始 | |
@@ -24,7 +24,7 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | A18 | 主控恢复与节点升级 | 部分已有 | `Result.Unchanged`、`verifyCandidateBinary` |
 | A19 | 多选拖拽与即时离页 | 单元 + 前端回归通过 | `TestSortBatchDetectsConflict`(并发改动整组拒绝、一行不改);`vnext-ui.spec.ts` 排序模式(多选置顶、Alt+↑、409 回退) |
 | A20 | 共享 PSK 撤权与旧连接 | 未开始 | |
-| A21 | 旧流量估算迁移 | 未开始 | |
+| A21 | 旧流量估算迁移 | 单元通过 | `TestNodeQuotaHostNICSegments`(分界之前按代理折算、之后取网卡小时桶,两段分开;数据质量 NO_DATA / OK)、`TestNodeQuotaDefaultIsProxyEstimate`(存量默认不变);用户额度不受节点来源影响 |
 
 ## 性能基准(S1)
 

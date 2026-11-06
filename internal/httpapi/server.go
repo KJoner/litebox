@@ -371,6 +371,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/users/{id}/regenerate-ss-password", s.handleRegenerateSSPassword)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-snell-key", s.handleRegenerateSnellKey)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
+		authed.HandleFunc("PUT /api/users/{id}/billing", s.handleSetUserBilling)
 		authed.HandleFunc("GET /api/users/{id}/access", s.handleGetUserAccess)
 		authed.HandleFunc("PUT /api/users/{id}/access", s.handleSetUserAccess)
 		authed.HandleFunc("POST /api/users/{id}/access/preview", s.handlePreviewUserAccess)
@@ -470,6 +471,9 @@ func (s *Server) Handler() http.Handler {
 		// V15:流量 Tab 的粒度切换、实时网卡读数与 vnStat 安装。
 		authed.HandleFunc("GET /api/nodes/{id}/traffic/series", s.handleNodeTrafficSeries)
 		authed.HandleFunc("GET /api/nodes/{id}/host-traffic/live", s.handleNodeHostTrafficLive)
+		authed.HandleFunc("GET /api/nodes/{id}/host-traffic/interfaces", s.handleNodeHostInterfaces)
+		authed.HandleFunc("PUT /api/nodes/{id}/host-traffic/interface", s.handleNodeHostInterface)
+		authed.HandleFunc("PUT /api/nodes/{id}/quota-source", s.handleNodeQuotaSource)
 		authed.HandleFunc("POST /api/nodes/{id}/host-traffic/install", s.longOperation(s.handleNodeHostTrafficInstall))
 		authed.HandleFunc("GET /api/traffic/status", s.handleTrafficStatus)
 	}

@@ -299,6 +299,16 @@ export interface ProxyUser {
   access_tier_level: number
   /** INHERIT = 等级继承 + 整机授权 + 直接授权;DIRECT_ONLY = 只有直接授权。改它走 setUserAccess */
   access_mode: AccessMode
+  /** 计费规则(VNext TRAFFIC02):SUM / UP / DOWN / MAX × 倍率(百分比) */
+  billing_mode: 'SUM' | 'UP' | 'DOWN' | 'MAX'
+  billing_multiplier_pct: number
+  billing_rule_version: number
+  /** 下一周期生效的规则,空串 = 没有 */
+  billing_next_mode: '' | 'SUM' | 'UP' | 'DOWN' | 'MAX'
+  billing_next_multiplier_pct: number
+  /** 按计费规则算出的本周期计费流量,与 quota_bytes 同口径;额度进度条看它 */
+  billed_bytes: number
+  billing_label: string
   status: UserStatus
   quota_bytes: number
   used_uplink: number
@@ -801,6 +811,9 @@ export interface Node {
   traffic_reset_cycle: 'NONE' | 'MONTHLY'
   traffic_reset_day: number
   traffic_billing_mode: NodeBillingMode
+  /** 额度数据来源(VNext TRAFFIC03),改它走 setNodeQuotaSource */
+  traffic_quota_source?: 'PROXY_ESTIMATE' | 'HOST_NIC'
+  traffic_quota_source_since?: string
   ssh_port: number
   ssh_user: string
   /**
@@ -2759,6 +2772,30 @@ export interface NodeCycleUsage {
   /** EGRESS 只计出站(×1);BOTH 进出合计(×2) */
   billing_mode: NodeBillingMode
   billing_factor: number
+  /** 额度数据来源:PROXY_ESTIMATE 代理折算 / HOST_NIC 网卡实测(VNext TRAFFIC03) */
+  quota_source: 'PROXY_ESTIMATE' | 'HOST_NIC'
+  /** 切到网卡实测的分界;之前那一段仍是代理折算 */
+  quota_source_since: string
+  /** used_bytes = estimate_bytes(代理折算段)+ host_bytes(网卡实测段) */
+  estimate_bytes: number
+  host_bytes: number
+  host_rx_bytes: number
+  host_tx_bytes: number
+  host_iface: string
+  host_synced_at: string
+  /** 只对网卡实测有意义:OK / STALE / NO_DATA / NOT_INSTALLED */
+  quality: 'OK' | 'STALE' | 'NO_DATA' | 'NOT_INSTALLED'
+  quality_note: string
+}
+
+export interface HostInterface {
+  name: string
+  rx_bytes: number
+  tx_bytes: number
+  default_v4: boolean
+  default_v6: boolean
+  /** 非空 = 默认不建议计量(回环、容器桥、隧道),写明原因 */
+  excluded: string
 }
 
 export interface UserNodeTraffic {
@@ -3000,6 +3037,10 @@ export interface PortalDashboard {
   quota_bytes: number
   remaining: number
   /** 不限量时为 null,前端据此显示「不限量」而不是 0% */
+  /** 按计费规则算出的计费流量,与 quota_bytes 同口径;剩余与百分比都基于它 */
+  billed_bytes?: number
+  /** 「双向合计 ×1」这类说法,告诉用户额度怎么算 */
+  billing_label?: string
   used_percent: number | null
   expires_at: string | null
   remaining_days: number | null
@@ -4069,6 +4110,28 @@ export const api = {
       method: 'POST',
       body,
     }),
+  /** 预览或保存计费规则;immediate = 立即生效(旧段封存),否则下一周期生效 */
+  setUserBilling: (
+    id: number,
+    body: { mode: string; multiplier_pct: number; immediate: boolean; preview?: boolean },
+  ) =>
+    request<{
+      current_label: string
+      next_label: string
+      immediate: boolean
+      billed_before: number
+      billed_after: number
+      quota_bytes: number
+      exceeded_after: boolean
+    }>(`/api/users/${id}/billing`, { method: 'PUT', body }),
+  setNodeQuotaSource: (id: number, source: 'PROXY_ESTIMATE' | 'HOST_NIC') =>
+    request<{ changed: boolean }>(`/api/nodes/${id}/quota-source`, { method: 'PUT', body: { source } }),
+  nodeHostInterfaces: (id: number) =>
+    request<{ interfaces: HostInterface[]; state: { iface: string; iface_pinned: string; iface_changed_at: string } }>(
+      `/api/nodes/${id}/host-traffic/interfaces`,
+    ),
+  setNodeHostInterface: (id: number, iface: string) =>
+    request<{ changed: boolean }>(`/api/nodes/${id}/host-traffic/interface`, { method: 'PUT', body: { iface } }),
   /** 多选拖动之后一次提交整组;期间有人改过其中任何一项 → 409,一行不改 */
   sortBatch: (items: { kind: string; id: number; sort_order: number; expected: number }[]) =>
     request<{ updated: number }>('/api/sort-order/batch', { method: 'POST', body: { items } }),

@@ -81,7 +81,7 @@ const summaryLine = computed(() => {
 })
 
 const usedParts = computed(() => {
-  const s = formatBytes(data.value?.used_total ?? 0).split(' ')
+  const s = formatBytes(data.value?.billed_bytes ?? data.value?.used_total ?? 0).split(' ')
   return { num: s[0], unit: s[1] ?? '' }
 })
 </script>
@@ -176,7 +176,7 @@ const usedParts = computed(() => {
           <LbStatusTag :meta="{ text: data.status_text, shape: data.serviceable ? 'dot' : 'cross', fg: data.serviceable ? 'var(--ok)' : 'var(--bad)', bg: data.serviceable ? 'var(--ok-bg)' : 'var(--bad-bg)' }" />
         </div>
         <LbQuotaBar
-          :used-bytes="data.used_total"
+          :used-bytes="data.billed_bytes ?? data.used_total"
           :quota-bytes="data.quota_bytes"
           :warning-level="warningLevel"
           size="md"

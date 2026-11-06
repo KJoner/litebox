@@ -56,13 +56,13 @@ func (s *Syncer) SyncNode(ctx context.Context, nodeID int64, install bool) (Sync
 		var facts Facts
 		if install {
 			var steps []string
-			facts, steps, err = Ensure(ctx, client)
+			facts, steps, err = Ensure(ctx, client, st.IfacePinned)
 			result.InstallSteps = append(result.InstallSteps, steps...)
 			if err != nil {
 				return err
 			}
 		} else {
-			facts, err = Probe(ctx, client)
+			facts, err = Probe(ctx, client, st.IfacePinned)
 			if err != nil {
 				return err
 			}
@@ -149,4 +149,15 @@ func (s *Syncer) Live(ctx context.Context, nodeID int64) (LiveSample, error) {
 func (s *Syncer) InstallSummary(ctx context.Context, nodeID int64) (string, error) {
 	_, summary, err := s.InstallNode(ctx, nodeID)
 	return summary, err
+}
+
+// Interfaces 列出一台机器上的网卡供管理员选择(只读)。
+func (s *Syncer) Interfaces(ctx context.Context, nodeID int64) ([]Interface, error) {
+	var list []Interface
+	err := s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
+		var err error
+		list, err = Interfaces(ctx, client)
+		return err
+	})
+	return list, err
 }
