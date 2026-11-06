@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
@@ -30,6 +31,7 @@ import (
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/subscription"
+	"github.com/litebox/litebox/internal/task"
 	"github.com/litebox/litebox/internal/traffic"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -81,6 +83,9 @@ type Server struct {
 	trustProxy bool
 	httpServer *http.Server
 	startedAt  time.Time
+	// tasks 是后台任务(VNext PERF06);asyncWG 让优雅关闭等后台任务跑完。
+	tasks   *task.Store
+	asyncWG sync.WaitGroup
 }
 
 // Options 是构造 Server 所需的依赖。
@@ -141,9 +146,14 @@ type Options struct {
 	// Assets 是前端构建产物的文件系统。为 nil 时只提供 API,
 	// 便于在前端尚未构建时启动后端。
 	Assets fs.FS
+	// Tasks 是后台任务表;nil 时用 DB 现造一个。长操作带 ?async=1 时立即返回 task_id。
+	Tasks *task.Store
 }
 
 func NewServer(opts Options) *Server {
+	if opts.Tasks == nil && opts.DB != nil {
+		opts.Tasks = task.NewStore(opts.DB)
+	}
 	if opts.ProbeLibrary == nil && opts.Probes != nil {
 		opts.ProbeLibrary = probe.NewLibrary(opts.Probes, nil, net.DefaultResolver)
 	}
@@ -190,6 +200,7 @@ func NewServer(opts Options) *Server {
 		secureCookie: opts.Config.HTTP.SecureCookie,
 		trustProxy:   strings.HasPrefix(opts.Config.HTTP.Listen, "127.0.0.1:") || strings.HasPrefix(opts.Config.HTTP.Listen, "localhost:"),
 		startedAt:    time.Now(),
+		tasks:        opts.Tasks,
 	}
 }
 
@@ -219,6 +230,10 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	authed.HandleFunc("GET /api/dashboard/summary", s.handleDashboardSummary)
 	authed.HandleFunc("GET /api/sidebar-counts", s.handleSidebarCounts)
+	if s.tasks != nil {
+		authed.HandleFunc("GET /api/tasks", s.handleListTasks)
+		authed.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	}
 	authed.HandleFunc("GET /api/audit-logs", s.handleAuditLogs)
 
 	if s.nodes != nil {
@@ -227,7 +242,7 @@ func (s *Server) Handler() http.Handler {
 		// V15 加了装包这一步之后,Debian 上一次 apt-get update + install 就可能超过
 		// 60 秒的写超时,真机上撞到过:面板那一侧节点建好了、vnStat 装到一半,
 		// 浏览器拿到的是一句「Empty reply」。
-		authed.HandleFunc("POST /api/nodes", longOperation(s.handleCreateNode))
+		authed.HandleFunc("POST /api/nodes", s.longOperation(s.handleCreateNode))
 		authed.HandleFunc("GET /api/nodes/{id}", s.handleGetNode)
 		// V16:额外订阅地址(地址池)与入口的订阅地址条目。都只影响订阅内容,
 		// 不动节点配置,所以不挂 longOperation、不标脏、不部署。
@@ -244,38 +259,38 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/subscription/order-migration", s.handleOrderMigrationApply)
 		authed.HandleFunc("POST /api/nodes/{id}/test-ssh", s.handleTestNodeSSH)
 		// 管理地址变更后的全面重检(V20),只读:连接、转发、服务、配置、端口、采集。
-		authed.HandleFunc("POST /api/nodes/{id}/recheck", longOperation(s.handleRecheckNode))
+		authed.HandleFunc("POST /api/nodes/{id}/recheck", s.longOperation(s.handleRecheckNode))
 		authed.HandleFunc("POST /api/nodes/{id}/probe", s.handleProbeNode)
-		authed.HandleFunc("POST /api/nodes/{id}/dest-check", longOperation(s.handleCheckNodeDest))
-		authed.HandleFunc("POST /api/nodes/{id}/dest-scan", longOperation(s.handleScanNodeDests))
-		authed.HandleFunc("POST /api/nodes/{id}/bootstrap", longOperation(s.handleBootstrapNode))
-		authed.HandleFunc("POST /api/nodes/{id}/install", longOperation(s.handleInstallNode))
-		authed.HandleFunc("POST /api/nodes/{id}/uninstall", longOperation(s.handleUninstallNode))
+		authed.HandleFunc("POST /api/nodes/{id}/dest-check", s.longOperation(s.handleCheckNodeDest))
+		authed.HandleFunc("POST /api/nodes/{id}/dest-scan", s.longOperation(s.handleScanNodeDests))
+		authed.HandleFunc("POST /api/nodes/{id}/bootstrap", s.longOperation(s.handleBootstrapNode))
+		authed.HandleFunc("POST /api/nodes/{id}/install", s.longOperation(s.handleInstallNode))
+		authed.HandleFunc("POST /api/nodes/{id}/uninstall", s.longOperation(s.handleUninstallNode))
 		authed.HandleFunc("GET /api/panel-key", s.handlePanelPublicKey)
-		authed.HandleFunc("POST /api/nodes/{id}/deploy", longOperation(s.handleDeployNode))
-		authed.HandleFunc("POST /api/nodes/{id}/restart", longOperation(s.handleRestartNode))
+		authed.HandleFunc("POST /api/nodes/{id}/deploy", s.longOperation(s.handleDeployNode))
+		authed.HandleFunc("POST /api/nodes/{id}/restart", s.longOperation(s.handleRestartNode))
 		authed.HandleFunc("POST /api/nodes/{id}/reset-host-key", s.handleResetNodeHostKey)
 		// TCP 调优。preview 是只读的,apply/restore 会改节点上的内核参数,
 		// 三者都要连 SSH 跑好几轮命令,统一走 longOperation。
-		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/preview", longOperation(s.handleNodeTuningPreview))
-		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/apply", longOperation(s.handleNodeTuningApply))
-		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/restore", longOperation(s.handleNodeTuningRestore))
+		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/preview", s.longOperation(s.handleNodeTuningPreview))
+		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/apply", s.longOperation(s.handleNodeTuningApply))
+		authed.HandleFunc("POST /api/nodes/{id}/tcp-tuning/restore", s.longOperation(s.handleNodeTuningRestore))
 		// 中转:转发规则的增删改只 reload nginx,不碰 sing-box。
 		authed.HandleFunc("GET /api/relays", s.handleListRelays)
 		authed.HandleFunc("GET /api/nodes/{id}/relays", s.handleListNodeRelays)
 		authed.HandleFunc("POST /api/nodes/{id}/relays", s.handleCreateRelay)
 		authed.HandleFunc("PUT /api/relays/{id}", s.handleUpdateRelay)
 		authed.HandleFunc("DELETE /api/relays/{id}", s.handleDeleteRelay)
-		authed.HandleFunc("POST /api/nodes/{id}/relays/deploy", longOperation(s.handleDeployRelays))
-		authed.HandleFunc("GET /api/nodes/{id}/nginx", longOperation(s.handleNodeNginxFacts))
+		authed.HandleFunc("POST /api/nodes/{id}/relays/deploy", s.longOperation(s.handleDeployRelays))
+		authed.HandleFunc("GET /api/nodes/{id}/nginx", s.longOperation(s.handleNodeNginxFacts))
 		// realm(V15):第二种转发引擎。下发是 restart,断开在途连接,
 		// 与 nginx 那一个分开的接口、分开的审计动作。
-		authed.HandleFunc("POST /api/nodes/{id}/realm/deploy", longOperation(s.handleDeployRealm))
-		authed.HandleFunc("GET /api/nodes/{id}/realm", longOperation(s.handleNodeRealmFacts))
-		authed.HandleFunc("POST /api/nodes/{id}/realm-install", longOperation(s.handleInstallRealm))
-		authed.HandleFunc("POST /api/nodes/{id}/realm-uninstall", longOperation(s.handleUninstallRealm))
-		authed.HandleFunc("POST /api/nodes/{id}/realm-restart", longOperation(s.handleRestartRealm))
-		authed.HandleFunc("POST /api/nodes/{id}/realm-stop", longOperation(s.handleStopRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm/deploy", s.longOperation(s.handleDeployRealm))
+		authed.HandleFunc("GET /api/nodes/{id}/realm", s.longOperation(s.handleNodeRealmFacts))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-install", s.longOperation(s.handleInstallRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-uninstall", s.longOperation(s.handleUninstallRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-restart", s.longOperation(s.handleRestartRealm))
+		authed.HandleFunc("POST /api/nodes/{id}/realm-stop", s.longOperation(s.handleStopRealm))
 		// sing-box 入站(V8 多入站)。一台落地机器可以有多个入口,
 		// 各自的协议、端口、访问等级与出口去向互不相干。
 		authed.HandleFunc("GET /api/nodes/{id}/inbounds", s.handleListNodeInbounds)
@@ -292,41 +307,41 @@ func (s *Server) Handler() http.Handler {
 		// 安装、下发与改出口都挂 longOperation:它们在改节点上的东西,
 		// ctx 必须与请求解绑 —— 一次已经开始的节点操作不得因为客户端断开而中止。
 		authed.HandleFunc("POST /api/nodes/{id}/mieru-install",
-			longOperation(s.handleInstallMieru))
+			s.longOperation(s.handleInstallMieru))
 		// 按服务的卸载/安装。整机那一个(node.uninstall)三类一起摘,
 		// 这几个只动一类 —— 后果差得很远,所以分开的接口、分开的审计动作。
 		authed.HandleFunc("POST /api/nodes/{id}/singbox-uninstall",
-			longOperation(s.handleUninstallSingBox))
+			s.longOperation(s.handleUninstallSingBox))
 		authed.HandleFunc("POST /api/nodes/{id}/mieru-uninstall",
-			longOperation(s.handleUninstallMieru))
+			s.longOperation(s.handleUninstallMieru))
 		authed.HandleFunc("POST /api/nodes/{id}/nginx-install",
-			longOperation(s.handleInstallNginx))
+			s.longOperation(s.handleInstallNginx))
 		authed.HandleFunc("POST /api/nodes/{id}/nginx-uninstall",
-			longOperation(s.handleUninstallNginx))
+			s.longOperation(s.handleUninstallNginx))
 		// 服务卡片(入口 Tab):一次只读探测 + 运维用的直接启停。
 		// 启停一律 longOperation:它们在改节点上的东西,ctx 必须与请求解绑。
-		authed.HandleFunc("GET /api/nodes/{id}/services", longOperation(s.handleNodeServiceFacts))
-		authed.HandleFunc("POST /api/nodes/{id}/singbox-start", longOperation(s.handleStartSingBox))
-		authed.HandleFunc("POST /api/nodes/{id}/singbox-stop", longOperation(s.handleStopSingBox))
-		authed.HandleFunc("POST /api/nodes/{id}/nginx-start", longOperation(s.handleStartNginx))
-		authed.HandleFunc("POST /api/nodes/{id}/nginx-stop", longOperation(s.handleStopNginx))
-		authed.HandleFunc("POST /api/nodes/{id}/nginx-restart", longOperation(s.handleRestartNginx))
-		authed.HandleFunc("POST /api/nodes/{id}/mieru-start", longOperation(s.handleStartMieru))
-		authed.HandleFunc("POST /api/nodes/{id}/mieru-stop", longOperation(s.handleStopMieru))
-		authed.HandleFunc("POST /api/nodes/{id}/mieru-restart", longOperation(s.handleRestartMieru))
+		authed.HandleFunc("GET /api/nodes/{id}/services", s.longOperation(s.handleNodeServiceFacts))
+		authed.HandleFunc("POST /api/nodes/{id}/singbox-start", s.longOperation(s.handleStartSingBox))
+		authed.HandleFunc("POST /api/nodes/{id}/singbox-stop", s.longOperation(s.handleStopSingBox))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-start", s.longOperation(s.handleStartNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-stop", s.longOperation(s.handleStopNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/nginx-restart", s.longOperation(s.handleRestartNginx))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-start", s.longOperation(s.handleStartMieru))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-stop", s.longOperation(s.handleStopMieru))
+		authed.HandleFunc("POST /api/nodes/{id}/mieru-restart", s.longOperation(s.handleRestartMieru))
 		authed.HandleFunc("POST /api/mieru-inbounds/{id}/deploy",
-			longOperation(s.handleDeployMieru))
+			s.longOperation(s.handleDeployMieru))
 		authed.HandleFunc("POST /api/mieru-inbounds/{id}/chain", s.handleSetMieruChain)
 		authed.HandleFunc("DELETE /api/mieru-inbounds/{id}/chain", s.handleClearMieruChain)
 		authed.HandleFunc("POST /api/inbounds/{id}/dest-check",
-			longOperation(s.handleApplyInboundDest))
+			s.longOperation(s.handleApplyInboundDest))
 		// 链式出站是两台机器的复合操作,一定慢,走 longOperation。
 		// 主体是【入站】而不是节点:同机的两个入口可以走两个不同的出口。
-		authed.HandleFunc("POST /api/nodes/{id}/config-in-ram", longOperation(s.handleSetConfigInRAM))
-		authed.HandleFunc("POST /api/inbounds/{id}/chain", longOperation(s.handleApplyChain))
-		authed.HandleFunc("DELETE /api/inbounds/{id}/chain", longOperation(s.handleClearChain))
+		authed.HandleFunc("POST /api/nodes/{id}/config-in-ram", s.longOperation(s.handleSetConfigInRAM))
+		authed.HandleFunc("POST /api/inbounds/{id}/chain", s.longOperation(s.handleApplyChain))
+		authed.HandleFunc("DELETE /api/inbounds/{id}/chain", s.longOperation(s.handleClearChain))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
-		authed.HandleFunc("GET /api/nodes/{id}/config-diff", longOperation(s.handleNodeConfigDiff))
+		authed.HandleFunc("GET /api/nodes/{id}/config-diff", s.longOperation(s.handleNodeConfigDiff))
 		authed.HandleFunc("GET /api/deployments", s.handleRecentDeployments)
 		authed.HandleFunc("GET /api/dest-candidates", s.handleDestCandidates)
 	}
@@ -398,19 +413,19 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/external-proxies/{id}/credentials",
 			s.handleExternalProxyCredentials)
 		authed.HandleFunc("POST /api/external-proxies/{id}/check",
-			longOperation(s.handleCheckExternalProxy))
+			s.longOperation(s.handleCheckExternalProxy))
 
 		authed.HandleFunc("GET /api/proxy-sources", s.handleListProxySources)
 		authed.HandleFunc("POST /api/proxy-sources", s.handleCreateProxySource)
-		authed.HandleFunc("POST /api/proxy-sources/preview", longOperation(s.handlePreviewProxySource))
-		authed.HandleFunc("POST /api/proxy-sources/import", longOperation(s.handleImportProxySource))
+		authed.HandleFunc("POST /api/proxy-sources/preview", s.longOperation(s.handlePreviewProxySource))
+		authed.HandleFunc("POST /api/proxy-sources/import", s.longOperation(s.handleImportProxySource))
 		authed.HandleFunc("GET /api/proxy-sources/{id}", s.handleGetProxySource)
 		authed.HandleFunc("PUT /api/proxy-sources/{id}", s.handleUpdateProxySource)
 		authed.HandleFunc("DELETE /api/proxy-sources/{id}", s.handleDeleteProxySource)
 		authed.HandleFunc("GET /api/proxy-sources/{id}/url", s.handleProxySourceURL)
 		authed.HandleFunc("POST /api/proxy-sources/{id}/preview",
-			longOperation(s.handlePreviewProxySource))
-		authed.HandleFunc("POST /api/proxy-sources/{id}/sync", longOperation(s.handleSyncProxySource))
+			s.longOperation(s.handlePreviewProxySource))
+		authed.HandleFunc("POST /api/proxy-sources/{id}/sync", s.longOperation(s.handleSyncProxySource))
 	}
 
 	// 配置文件订阅:管理员上传整份客户端配置,面板按用户替换占位符。
@@ -433,11 +448,11 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/traffic/daily", s.handleSiteDailyTraffic)
 	}
 	if s.scheduler != nil {
-		authed.HandleFunc("POST /api/nodes/{id}/sync-traffic", longOperation(s.handleSyncNodeTraffic))
+		authed.HandleFunc("POST /api/nodes/{id}/sync-traffic", s.longOperation(s.handleSyncNodeTraffic))
 		// V15:流量 Tab 的粒度切换、实时网卡读数与 vnStat 安装。
 		authed.HandleFunc("GET /api/nodes/{id}/traffic/series", s.handleNodeTrafficSeries)
 		authed.HandleFunc("GET /api/nodes/{id}/host-traffic/live", s.handleNodeHostTrafficLive)
-		authed.HandleFunc("POST /api/nodes/{id}/host-traffic/install", longOperation(s.handleNodeHostTrafficInstall))
+		authed.HandleFunc("POST /api/nodes/{id}/host-traffic/install", s.longOperation(s.handleNodeHostTrafficInstall))
 		authed.HandleFunc("GET /api/traffic/status", s.handleTrafficStatus)
 	}
 	if s.metrics != nil {
@@ -447,7 +462,7 @@ func (s *Server) Handler() http.Handler {
 	// 卡片实时网速不依赖资源采样库:采样关掉时它照样回答(interval_seconds 为 0)。
 	authed.HandleFunc("GET /api/metrics/net-rates", s.handleNodeNetRates)
 	if s.monitor != nil {
-		authed.HandleFunc("POST /api/nodes/{id}/collect-metrics", longOperation(s.handleCollectNodeMetrics))
+		authed.HandleFunc("POST /api/nodes/{id}/collect-metrics", s.longOperation(s.handleCollectNodeMetrics))
 		authed.HandleFunc("GET /api/metrics/status", s.handleMonitorStatus)
 	}
 	// 供应商到期与续费(V20):三类对象共用一组接口,种类走路径。
@@ -502,9 +517,9 @@ func (s *Server) Handler() http.Handler {
 	if s.probes != nil && s.nodes != nil && s.settings != nil {
 		authed.HandleFunc("GET /api/boce", s.handleBoceOverview)
 		authed.HandleFunc("PUT /api/boce/settings", s.handleUpdateBoceSettings)
-		authed.HandleFunc("POST /api/boce/verify", longOperation(s.handleBoceVerify))
-		authed.HandleFunc("POST /api/boce/balance", longOperation(s.handleBoceBalance))
-		authed.HandleFunc("POST /api/boce/vantages/sync", longOperation(s.handleBoceSyncVantages))
+		authed.HandleFunc("POST /api/boce/verify", s.longOperation(s.handleBoceVerify))
+		authed.HandleFunc("POST /api/boce/balance", s.longOperation(s.handleBoceBalance))
+		authed.HandleFunc("POST /api/boce/vantages/sync", s.longOperation(s.handleBoceSyncVantages))
 		authed.HandleFunc("GET /api/boce/vantages", s.handleBoceVantages)
 		authed.HandleFunc("POST /api/boce/resume", s.handleBoceResume)
 		authed.HandleFunc("POST /api/boce/estimate", s.handleBoceEstimate)
@@ -514,7 +529,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("PUT /api/boce/tasks/{id}/enabled", s.handleSetBoceTaskEnabled)
 		authed.HandleFunc("POST /api/boce/tasks/{id}/archive", s.handleArchiveBoceTask)
 		authed.HandleFunc("DELETE /api/boce/tasks/{id}", s.handleDeleteBoceTask)
-		authed.HandleFunc("POST /api/boce/tasks/{id}/run", longOperation(s.handleRunBoceTask))
+		authed.HandleFunc("POST /api/boce/tasks/{id}/run", s.longOperation(s.handleRunBoceTask))
 		authed.HandleFunc("GET /api/boce/tasks/{id}/runs", s.handleListBoceRuns)
 		authed.HandleFunc("GET /api/nodes/{id}/boce", s.handleNodeBoce)
 		authed.HandleFunc("POST /api/nodes/{id}/boce/tasks", s.handleCreateBoceTask)
@@ -525,13 +540,13 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 		authed.HandleFunc("GET /api/settings/notify", s.handleGetNotifySettings)
 		authed.HandleFunc("PUT /api/settings/notify", s.handleUpdateNotifySettings)
-		authed.HandleFunc("POST /api/settings/notify/test", longOperation(s.handleTestNotify))
+		authed.HandleFunc("POST /api/settings/notify/test", s.longOperation(s.handleTestNotify))
 	}
 	// 巡检结果即使没启用也要有接口:前端据此显示「巡检未启用」,
 	// 而不是让那一块永远转圈。
 	authed.HandleFunc("GET /api/nodes/health", s.handleNodeHealth)
 	if s.watchdog != nil {
-		authed.HandleFunc("POST /api/nodes/health/run", longOperation(s.handleRunNodeHealth))
+		authed.HandleFunc("POST /api/nodes/health/run", s.longOperation(s.handleRunNodeHealth))
 	}
 	if s.tiers != nil {
 		authed.HandleFunc("GET /api/access-tiers", s.handleListTiers)
@@ -628,5 +643,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.httpServer == nil {
 		return nil
 	}
-	return s.httpServer.Shutdown(ctx)
+	err := s.httpServer.Shutdown(ctx)
+	// 后台任务与请求解绑,Shutdown 不会等它们:这里再等一会儿,等不到的下次启动时标成待核对。
+	done := make(chan struct{})
+	go func() { s.asyncWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		s.logger.Warn("关闭时仍有后台任务没跑完,下次启动会标成「待核对」")
+	}
+	return err
 }

@@ -21,7 +21,19 @@
 * 错误响应统一为 `{"error": "中文原因"}`;
 * 时间一律是 UTC 的 RFC3339 字符串,流量一律是字节;
 * 节点安装、部署、握手扫描等长操作有单独的 10 分钟写超时;
-* `/api/` 下超过 1.4 KB 的 JSON 响应在请求带 `Accept-Encoding: gzip` 时压缩(VNext);**订阅 `/sub/` 从不压缩**。
+* `/api/` 下超过 1.4 KB 的 JSON 响应在请求带 `Accept-Encoding: gzip` 时压缩(VNext);**订阅 `/sub/` 从不压缩**;
+* **后台任务**(VNext):挂了长操作的写接口(安装、下发、重启、导入、检测……)带 `?async=1` 时立即返回
+  `202 {"task_id": N, "status": "RUNNING"}`(并带 `Location: /api/tasks/N`),操作在后台跑完;不带时行为不变。
+  可带请求头 `Idempotency-Key`(1~64 位字母数字与 `._:-`):同一个管理员用同一个键再提交只拿到原来那个任务。
+
+```
+GET /api/tasks/{id}               {id, kind, target, status, progress, http_status, result, created_at, finished_at}
+GET /api/tasks?target=node:3      最近的任务(target 可选,limit 默认 50、最多 200)
+```
+
+`status` 是 RUNNING / SUCCEEDED / FAILED / INTERRUPTED;`http_status` 与 `result` 是同步调用时会拿到的状态码与 JSON。
+2xx 记 SUCCEEDED,其余记 FAILED。**INTERRUPTED 表示主控在任务运行中重启了,结果未知 —— 不会自动重放**,
+到部署记录或节点上核对。任务保留 14 天。
 
 ## 公开接口
 

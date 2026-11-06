@@ -42,7 +42,7 @@ func (d *Deployer) DeployRealm(ctx context.Context, req RealmRequest) (Result, e
 		Revision:  req.Revision,
 		StartedAt: time.Now().UTC(),
 	}
-	rec := &stepRecorder{}
+	rec := &stepRecorder{ctx: ctx}
 	result.ConfigSHA256 = singbox.SHA256([]byte(req.ConfigText))
 
 	deployErr := d.pool.Do(ctx, req.NodeID, func(client *sshx.Client) error {

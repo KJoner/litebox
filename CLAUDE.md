@@ -3518,6 +3518,14 @@ sing-box 1.14 的多用户传统 AEAD 走 sing-shadowsocks 的 `shadowaead.NewMu
   有效性只看 `expires_at`、`login_enabled` 与会话行在不在,吊销与过期仍在下一个请求上生效;
 * **JSON 响应 gzip 只在 /api/ 下、超过 1.4 KB 时做,订阅 `/sub/` 一个字节不动**;压缩层实现了 `Unwrap`
   (longOperation 要穿透它放宽写入期限,`TestCompressWriterUnwrapReachesDeadline`);
+* **长操作走后台任务**(`internal/task`、`httpapi/async.go`,迁移 0048):挂 `s.longOperation` 的写接口带 `?async=1`
+  立即返回 202 + task_id,处理器在后台用解绑的 ctx 跑完,**它本来要返回的状态码与 JSON 原样记进 tasks 表**,
+  前端请求层(`ASYNC_LONG_OPS`)自动加 async、轮询、再按同步结果交回调用方。三条:
+  ① 主控重启时 RUNNING 一律标 INTERRUPTED,**绝不重放**(可能已经换过配置、重启过服务);
+  ② 幂等键 `Idempotency-Key` 按 (管理员, 键) 唯一,重复点击只跑一次;
+  ③ 没有「取消」—— 一次已经开始的节点操作不得因为客户端走开而中止。
+  **新加长操作要两边一起改**:后端挂 `s.longOperation`,前端 `ASYNC_LONG_OPS` 加一条正则;
+  只改后端时前端照样同步调用(功能不坏,只是回到 60 秒超时的老问题)。部署步骤经 `task.Report` 报告当前阶段;
 * **节点二进制不进 Go 堆**(`node.DirBinaryProvider.Artifact` + `sshx.Client.UploadArtifact`):
   哈希按 (大小, 修改时间) 缓存,上传时流式读文件、边传边核对哈希,对不上返回 `ErrArtifactChanged`。
   reader 外面那层 `io.LimitReader` 是载重的:pkg/sftp 只有问得出剩余字节数时才并发写,裸 TeeReader 会退回串行。
@@ -4372,5 +4380,7 @@ VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 
 * S0 基线与约束 —— 已完成(需求放进仓库、差距清单、两条架构约束按需求调整、低资源参考栈冻结)
 * S1 页面性能 —— 第一部分已完成(固定数据集基准、最新采样查询、账本覆盖索引 0047、读写分离、周期用量缓存、
   侧栏计数、会话写入节流、gzip、二进制流式分发;50 台主机档 5 会话首屏整屏 p95 2.42 s → 0.17 s)
+* S1 后台任务 —— 已完成(迁移 0048、`?async=1` + task_id + 轮询、幂等键、重启标待核对、部署阶段进度;
+  执行器接口推迟到 S6 与 Agent 一起做 —— 现在只有 SSH 一种实现)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

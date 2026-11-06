@@ -140,8 +140,31 @@ test('下发失败并回滚:红色结论、已做完的步骤、错误原因都�
   await expect(progress.getByRole('button', { name: 'Close' })).toBeInViewport()
 })
 
+test('后台任务:提交立即返回 task_id,轮询期间显示当前阶段,跑完按同步结果显示', async ({ page, api }) => {
+  let polls = 0
+  api.on('POST', `/api/nodes/${NODE}/deploy`, { status: 202, json: { task_id: 42, status: 'RUNNING' } })
+  api.on('GET', '/api/tasks/42', () => {
+    polls++
+    if (polls < 3) {
+      return { json: { id: 42, kind: 'POST /api/nodes/{id}/deploy', target: `node:${NODE}`, status: 'RUNNING',
+        progress: '健康检查:VLESS 拨测(in-1)', http_status: 0, result: null, created_at: '2026-10-17T11:47:00Z', finished_at: null } }
+    }
+    return { json: { id: 42, kind: 'POST /api/nodes/{id}/deploy', target: `node:${NODE}`, status: 'SUCCEEDED', progress: '',
+      http_status: 200, result: deployResult({ status: 'SUCCESS', unchanged: true, steps: [] }),
+      created_at: '2026-10-17T11:47:00Z', finished_at: '2026-10-17T11:47:20Z' } }
+  })
+  await openEntries(page)
+  await page.locator('[data-service="singbox"]').getByRole('button', { name: '下发配置' }).click()
+  await page.getByRole('dialog').filter({ hasText: /部署 rev/ }).getByRole('button', { name: '部署' }).click()
+  const progress = page.getByRole('dialog').filter({ hasText: '下发 sing-box 配置' })
+  await expect(progress).toContainText('当前阶段:健康检查:VLESS 拨测(in-1)')
+  await expect(progress).toContainText('配置已一致')
+  const post = api.requests('POST', `/api/nodes/${NODE}/deploy`)[0]
+  expect(post.query.get('async')).toBe('1')
+})
+
 test('连接中断(拿不到响应):提示操作很可能已在后台跑完,不催人重试', async ({ page, api }) => {
-  await page.route(`**/api/nodes/${NODE}/deploy`, (route) => route.abort('connectionreset'))
+  await page.route(`**/api/nodes/${NODE}/deploy?*`, (route) => route.abort('connectionreset'))
   await openEntries(page)
   await page.locator('[data-service="singbox"]').getByRole('button', { name: '下发配置' }).click()
   await page.getByRole('dialog').filter({ hasText: /部署 rev/ }).getByRole('button', { name: '部署' }).click()
