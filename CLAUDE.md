@@ -32,8 +32,9 @@ V17 增加了阿里云 CDT 主机:按账号轮询 CDT 用量、超阈值自动�
 V18 把管理后台与用户门户的**视觉层**换成 iOS 风格(纯白圆角卡片、胶囊、毛玻璃顶栏、
 浅 / 深两套主题),布局、路由、接口与文案一个字没动。
 **自建节点的落地协议到 V13 才第一次变长** —— 在此之前 V4~V12 一个字没加。
-现在是 VLESS + REALITY、Shadowsocks(2022 与 V22.8 起的传统 AEAD)、Mieru 与 Snell 四种,
-仍然只有这四种:那是我们自己要运维的东西,与登记别人配好的线路是两件事。
+现在是 VLESS + REALITY、Shadowsocks(2022 与 V22.8 起的传统 AEAD)、Mieru、Snell,
+以及 VNext 加的 Trojan + REALITY 五种:那是我们自己要运维的东西,与登记别人配好的线路是两件事
+(外部导入已支持的协议不等于自建安装已支持,见「能力矩阵」)。
 
 ## 架构约束
 
@@ -3697,6 +3698,35 @@ SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/desig
 * **Agent 连的是「订阅站点根」**(与订阅地址同一个取法:库里的设置优先,回落到配置文件),那个地址必须是节点访问得到的。
   装上了但没连上时不判失败,状态停在 PENDING 并写明该查什么。
 
+## VNext Trojan 与客户端格式约束(S7)
+
+迁移 0052(SQLite 重建 node_inbounds,照搬 0046 的做法;PG 直接换约束)。
+
+* **Trojan 是 Trojan + REALITY**:TLS 复用 VLESS 的那一套(握手目标、密钥对、short_id、8192 字节实测),
+  不需要证书与域名 —— 面板管的是没有域名的小鸡。`Protocol.UsesReality()` 回答「用不用 REALITY」,
+  前端 `usesReality()` 同一判据,各处不再写 `=== 'VLESS_REALITY'`;从 VLESS 切到 Trojan 不必重测握手目标,
+  从 Snell / Shadowsocks 切过来要测。入站 TLS 由 `realityTLS` 一处构造,两种协议共用;
+* **用户凭据复用 UUID**(当 Trojan 的 password):重置 UUID 同时标脏 VLESS 与 Trojan 入口所在的机器
+  (`Protocol.UsesUUID`)。订阅、拨测、入站渲染三处的 password 都取 `cred.UUID` / `user.UUID`,同一个来源;
+* **Trojan 这一版不能当链式落地**(`Protocol.ChainLandable`):链式出站的渲染只会拼 VLESS 与 Shadowsocks,
+  落到默认分支会拼出一个 VLESS 出站去连 Trojan 入站。`SetChain` / `SetMieruChain` / 快速组链预览都拦
+  (`ErrChainTargetProtocol`);nginx / realm 透传可以(只搬字节);
+* **mihomo 的 trojan 用 `sni` 不用 `servername`**,写错是静默忽略、REALITY 拒绝握手。真机验过:
+  djj-ph 上部署拨测 HTTP 204,本机 mihomo 1.19.10 与 sing-box 1.13.8 用面板生成的订阅从公网真连、出口是节点;
+* **P1 客户端格式**(`?format=surge|loon|quanx|stash`,`internal/subscription/clients.go`)只读与协议无关的
+  `ClientFacts`(自建与外部都转成它,字段复用 `externalproxy.Params`),**支持不了的一律跳过并写明原因**,
+  不猜、不降级成直连、不输出连不上的线路。一条都写不出来时报错(不给空配置、不塞 DIRECT)。
+  REALITY、VLESS、Snell v6 / 逐用户、Mieru 在这几种客户端上没有验证过的写法,统统跳过;
+* **这四种格式没有在真实客户端上人工验证过**(商业客户端无法自动化),界面、兼容预览与能力矩阵上一律标「实验性」,
+  门户上不出现。Stash 的输出是 Clash 写法,本机 mihomo 解析通过并真连过 —— 那只证明语法对,不等于 Stash 验证过;
+* **名字在这几种一行一条的格式里要转义**(`clientName`:逗号、等号、引号、换行),只改这几种格式里的名字,
+  sing-box / Clash 的名字不受影响;凭据里含逗号或引号的线路直接跳过(写进去会把行截断);
+* **能力矩阵不是手写的表**(`subscription.CapabilityMatrix`):客户端那几列拿代表性线路走真正下发时的
+  `EntryFor` / `EntryForExternal` 与 `Compat` 现算,自建 / 外部 / 出站 / 落地那几列的判据取自代码里唯一的那一处。
+  改了序列化器忘了改表这种分叉因此不存在。`GET /api/capabilities` 同时给出面板、探测辅助程序协议、Agent 上报协议
+  与发布清单里各组件的版本;没有清单时如实说;
+* **兼容预览与真正下发走同一份条目**(`Service.CompatFor` 复用 `buildEntries`,权限过滤已经做完)。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -4565,5 +4595,8 @@ VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 
   指定计量网卡、数据质量、字节单位改 GiB;迁移 0051:可选 Agent 只做状态采集,握手后切换资源采集的写入者、按 boot_id + seq 去重。
   真机(djj-ph,Alpine aarch64 / OpenRC)验过 Agent 的安装、排队、真实上报去重、写入者切换与卸载,空闲常驻 9.1 MiB;
   没做:用户额度固定天数周期、Agent 的 WSS / 命令协议 / 探测)
+* S7 协议与客户端 —— 已完成(迁移 0052:自建 Trojan + REALITY,真机部署拨测与 mihomo / sing-box 真连;
+  `?format=surge|loon|quanx|stash` 实验性输出,支持不了的逐条写原因;能力矩阵现算、版本可查;用户详情的客户端兼容预览。
+  Surge / Loon / Quantumult X / Stash 没有人工验证;Hysteria2 / TUIC / AnyTLS 自建没有做(精简构建不含 QUIC))
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

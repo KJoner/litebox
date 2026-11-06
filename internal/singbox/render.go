@@ -708,6 +708,16 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 			}
 		}
 
+	case ProtocolTrojan:
+		// TLS 与 VLESS 完全相同(REALITY),区别只在入站类型与用户凭据:
+		// Trojan 的 password 就是用户的 UUID,没有 flow。
+		base.Type = "trojan"
+		base.TLS = realityTLS(params)
+		base.Users = make([]InboundUser, 0, len(users))
+		for _, u := range users {
+			base.Users = append(base.Users, InboundUser{Name: params.userName(u), Password: u.UUID})
+		}
+
 	case ProtocolShadowsocks:
 		base.Type = "shadowsocks"
 		base.Method = string(params.SSMethod)
@@ -747,19 +757,7 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 
 	default:
 		base.Type = "vless"
-		base.TLS = &InboundTLS{
-			Enabled:    true,
-			ServerName: params.RealityDest,
-			Reality: RealityConfig{
-				Enabled: true,
-				Handshake: RealityHandshake{
-					Server:     params.RealityDest,
-					ServerPort: params.RealityPort,
-				},
-				PrivateKey: params.RealityPrivateKey,
-				ShortID:    []string{params.ShortID},
-			},
-		}
+		base.TLS = realityTLS(params)
 		base.Users = make([]InboundUser, 0, len(users))
 		for _, u := range users {
 			base.Users = append(base.Users, InboundUser{
@@ -770,6 +768,24 @@ func buildInbound(params InboundParams, memTotalMB int) (Inbound, error) {
 		}
 	}
 	return base, nil
+}
+
+// realityTLS 是 VLESS 与 Trojan 共用的那一份 REALITY 入站 TLS。两处各写一份的话,
+// 改一个字段只改到一处,表现是一种协议的入口握手失败而另一种照常。
+func realityTLS(params InboundParams) *InboundTLS {
+	return &InboundTLS{
+		Enabled:    true,
+		ServerName: params.RealityDest,
+		Reality: RealityConfig{
+			Enabled: true,
+			Handshake: RealityHandshake{
+				Server:     params.RealityDest,
+				ServerPort: params.RealityPort,
+			},
+			PrivateKey: params.RealityPrivateKey,
+			ShortID:    []string{params.ShortID},
+		},
+	}
 }
 
 // userName 是渲染进 users[].name 的值:不计流量的入口一律留空。

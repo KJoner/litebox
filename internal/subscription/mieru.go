@@ -136,6 +136,14 @@ func ExpandAllMieru(physical []PhysicalMieru) []MieruNode {
 // 出站(比如 socks)会让用户拿到一条连得上、但完全没有 mieru 那层伪装的线路
 // —— 那比拿不到更坏。AssignTags 会整条跳过它。
 func EntryForMieru(cred Credentials, node MieruNode) (Entry, error) {
+	e, err := entryForMieru(cred, node)
+	if err == nil {
+		e.Facts = &ClientFacts{Protocol: "MIERU", Server: node.Host}
+	}
+	return e, err
+}
+
+func entryForMieru(cred Credentials, node MieruNode) (Entry, error) {
 	if cred.UserCode == "" {
 		return Entry{}, fmt.Errorf("Mieru 条目 %s 缺少用户代码", node.DisplayName)
 	}

@@ -73,7 +73,7 @@ func TestVLESSNodeHasNoSSMethod(t *testing.T) {
 func TestCreateRejectsUnknownProtocol(t *testing.T) {
 	store, _ := newTestStore(t)
 	p := defaultCreateParams()
-	p.Protocol = "TROJAN"
+	p.Protocol = "HYSTERIA2"
 	if _, err := store.Create(t.Context(), p); err == nil {
 		t.Error("未知协议应当被拒绝,否则会被静默当成 VLESS")
 	}

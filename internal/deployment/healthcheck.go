@@ -119,6 +119,8 @@ func dialLabel(p singbox.Protocol) string {
 		return "Shadowsocks"
 	case singbox.ProtocolSnell:
 		return "Snell"
+	case singbox.ProtocolTrojan:
+		return "Trojan"
 	default:
 		return "VLESS"
 	}
@@ -566,9 +568,15 @@ func probeOutbound(
 		return base, nil
 	}
 
-	base["type"] = "vless"
-	base["uuid"] = user.UUID
-	base["flow"] = singbox.FlowVision
+	if inbound.Protocol == singbox.ProtocolTrojan {
+		// TLS 那一段与 VLESS 一字不差(REALITY),只是出站类型与凭据不同:password 就是用户的 UUID。
+		base["type"] = "trojan"
+		base["password"] = user.UUID
+	} else {
+		base["type"] = "vless"
+		base["uuid"] = user.UUID
+		base["flow"] = singbox.FlowVision
+	}
 	base["tls"] = map[string]any{
 		"enabled":     true,
 		"server_name": inbound.RealityDest,

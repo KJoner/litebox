@@ -36,6 +36,9 @@ var (
 	ErrChainSameHost = errors.New("中转去向不能是同一台机器上的入站")
 	// ErrChainTargetNotDeployed 落地还没部署过,它上面没有任何凭据。
 	ErrChainTargetNotDeployed = errors.New("落地入站尚未成功部署过,链路凭据无处安放")
+	// ErrChainTargetProtocol 落地入站的协议不能当链式落地(这一版是 Trojan,
+	// 链式出站只会拼 VLESS 与 Shadowsocks)。
+	ErrChainTargetProtocol = errors.New("这个落地入站的协议还不能当链式出口(目前只有 VLESS + REALITY 与 Shadowsocks 可以)")
 )
 
 // ChainTarget 是一条链式出站的去向,已解析成渲染需要的样子。
@@ -170,6 +173,9 @@ func (s *Store) SetChain(
 		// 「部署失败」,不会想到问题在另一台机器上。
 		if deployed == "" {
 			return ErrChainTargetNotDeployed
+		}
+		if !singbox.Protocol(deployed).ChainLandable() {
+			return ErrChainTargetProtocol
 		}
 		if err := chainTargetUsable(ctx, s, tx, inboundID, targetID); err != nil {
 			return err

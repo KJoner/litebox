@@ -16,6 +16,7 @@ import {
   type NodeServiceFacts,
   type ServiceStatus,
   type InboundEndpointInput,
+  usesReality,
 } from '@/api/client'
 import {
   LbNameConfirm,
@@ -1648,7 +1649,7 @@ onMounted(async () => {
           <template v-if="row.kind === 'singbox'">
             <a-button size="small" type="link" @click="openEditInbound(row.inbound)">编辑</a-button>
             <a-button
-              v-if="row.inbound.protocol === 'VLESS_REALITY'"
+              v-if="usesReality(row.inbound.protocol)"
               size="small"
               type="link"
               @click="openDest(row.inbound)"
@@ -1750,7 +1751,7 @@ onMounted(async () => {
               编辑
             </a-button>
             <a-button
-              v-if="record.inbound.protocol === 'VLESS_REALITY'"
+              v-if="usesReality(record.inbound.protocol)"
               size="small"
               type="link"
               @click="openDest(record.inbound)"

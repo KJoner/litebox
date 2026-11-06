@@ -119,7 +119,7 @@ type protocolOption struct {
 func availableProtocols(installedVersion string) []protocolOption {
 	list := []protocolOption{}
 	for _, p := range []singbox.Protocol{
-		singbox.ProtocolVLESSReality, singbox.ProtocolShadowsocks, singbox.ProtocolSnell,
+		singbox.ProtocolVLESSReality, singbox.ProtocolTrojan, singbox.ProtocolShadowsocks, singbox.ProtocolSnell,
 	} {
 		if node.ProtocolSupported(installedVersion, p) {
 			list = append(list, protocolOption{Value: string(p), Label: p.Label()})

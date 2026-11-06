@@ -786,7 +786,7 @@ func normalizeInboundParams(p *InboundParams, fallbackName string) error {
 	//
 	// 不给它们填一个默认候选:那个域名从来没在这台机器上实测过,
 	// 而详情里显示一个未经检测的握手目标,会让人以为这一步已经做过了。
-	if singbox.Protocol(p.Protocol) != singbox.ProtocolVLESSReality {
+	if !singbox.Protocol(p.Protocol).UsesReality() {
 		p.RealityDest = ""
 		p.RealityDestPort = 0
 		return nil
@@ -880,15 +880,16 @@ func clearIPv6PortWithoutAddress(ipv6Address string, port *int) {
 	}
 }
 
-// checkInboundProtocolSwitch 拦住"没实测过握手目标就切到 VLESS"。
+// checkInboundProtocolSwitch 拦住"没实测过握手目标就切到用 REALITY 的协议"(VLESS / Trojan)。
 func checkInboundProtocolSwitch(cur *Inbound, next singbox.Protocol, nextDest string) error {
 	// 判据是"切【到】VLESS 而它原来不是 VLESS" —— 从 Snell 切过来
 	// 与从 Shadowsocks 切过来是同一件事,所以这里不列举来源协议。
-	if next != singbox.ProtocolVLESSReality || cur.Protocol == singbox.ProtocolVLESSReality {
+	// Trojan + REALITY 用的是同一套握手目标:从 VLESS 切过来不必重测,从 Snell / Shadowsocks 切过来要测。
+	if !next.UsesReality() || cur.Protocol.UsesReality() {
 		return nil
 	}
 	if nextDest == "" || cur.HandshakeCheckedAt == nil {
-		return errors.New("切换到 VLESS + REALITY 之前必须先实测握手目标 —— " +
+		return errors.New("切换到 " + next.Label() + " 之前必须先实测握手目标 —— " +
 			"REALITY 要求目标返回的每个 TLS 记录不超过 8192 字节,超限时握手会静默失败:" +
 			"客户端连不上,而节点上一切正常")
 	}

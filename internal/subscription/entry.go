@@ -133,10 +133,22 @@ type Entry struct {
 	// 参数是名字而不是 OutboundOptions:mihomo 没有 detour 这个概念
 	// (它的链式是 dialer-proxy,由模板作者自己写),所以这里只需要名字。
 	Proxy func(name string) any
+
+	// Facts 是与协议无关的事实,给 P1 客户端(Surge / Loon / Quantumult X / Stash)的序列化器与兼容预览用。
+	// nil 表示这条线路没有可用的事实 —— 那几种格式会跳过它并写明原因。
+	Facts *ClientFacts
 }
 
 // EntryFor 把一个节点连同用户凭据转成订阅条目。
 func EntryFor(cred Credentials, node Node) (Entry, error) {
+	e, err := entryFor(cred, node)
+	if err == nil {
+		e.Facts = SelfHostedFacts(cred, node)
+	}
+	return e, err
+}
+
+func entryFor(cred Credentials, node Node) (Entry, error) {
 	switch node.Protocol {
 	case singbox.ProtocolSnell:
 		// 共享模式下这个入口根本没有逐用户凭据 —— psk 就是全部。
@@ -180,6 +192,14 @@ func EntryFor(cred Credentials, node Node) (Entry, error) {
 			URI:         ShadowsocksURI(password, node),
 			Outbound:    func(o OutboundOptions) any { return shadowsocksOutbound(o, password, node) },
 			Proxy:       func(name string) any { return shadowsocksProxy(name, password, node) },
+		}, nil
+	case singbox.ProtocolTrojan:
+		// password 就是用户的 UUID —— 与节点配置渲染(users[].password = UUID)同一个来源。
+		return Entry{
+			DisplayName: node.DisplayName,
+			URI:         TrojanURI(cred.UUID, node),
+			Outbound:    func(o OutboundOptions) any { return trojanOutbound(o, cred.UUID, node) },
+			Proxy:       func(name string) any { return trojanProxy(name, cred.UUID, node) },
 		}, nil
 	default:
 		return Entry{

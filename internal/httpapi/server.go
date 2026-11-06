@@ -382,6 +382,8 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/users/{id}/regenerate-snell-key", s.handleRegenerateSnellKey)
 		authed.HandleFunc("POST /api/users/{id}/regenerate-sub-token", s.handleRegenerateSubToken)
 		authed.HandleFunc("PUT /api/users/{id}/billing", s.handleSetUserBilling)
+		authed.HandleFunc("GET /api/users/{id}/compat", s.handleUserCompat)
+		authed.HandleFunc("GET /api/capabilities", s.handleCapabilities)
 		authed.HandleFunc("GET /api/users/{id}/access", s.handleGetUserAccess)
 		authed.HandleFunc("PUT /api/users/{id}/access", s.handleSetUserAccess)
 		authed.HandleFunc("POST /api/users/{id}/access/preview", s.handlePreviewUserAccess)

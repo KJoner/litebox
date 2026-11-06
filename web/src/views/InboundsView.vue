@@ -15,6 +15,7 @@ import {
   type NodeInbound,
   type NodeRelay,
   type OrderScheme,
+  usesReality,
 } from '@/api/client'
 import DeployStepList from '@/components/DeployStepList.vue'
 import { LbEmptyState, LbRowCard, LbStatusTag, configStatusMeta, lbDangerConfirm,
@@ -1206,7 +1207,7 @@ const columns = [
                   <a-menu-item
                     v-if="
                       (record as Row).kind === 'singbox' &&
-                      (record as SingBoxRow).inbound.protocol === 'VLESS_REALITY'
+                      usesReality((record as SingBoxRow).inbound.protocol)
                     "
                     @click="openDest(record as SingBoxRow)"
                   >

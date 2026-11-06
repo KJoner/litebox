@@ -365,7 +365,7 @@ export type NodeBillingMode = 'EGRESS' | 'BOTH'
  * SHADOWSOCKS 用 2022 系列的加密方法与两级 PSK,不用 REALITY。
  * 一个节点只跑一种 —— 表单按它决定显示哪一组字段。
  */
-export type NodeProtocol = 'VLESS_REALITY' | 'SHADOWSOCKS' | 'SNELL'
+export type NodeProtocol = 'VLESS_REALITY' | 'SHADOWSOCKS' | 'SNELL' | 'TROJAN'
 
 /** Snell 的服务端版本。5 走 HTTP/TLS 混淆,6 走流量整形。 */
 export type SnellVersion = 5 | 6
@@ -389,6 +389,15 @@ export const PROTOCOL_LABEL: Record<NodeProtocol, string> = {
   // 不写「2022」:同一个协议下现在还有传统 AEAD,具体是哪一种看加密方法。
   SHADOWSOCKS: 'Shadowsocks',
   SNELL: 'Snell',
+  TROJAN: 'Trojan + REALITY',
+}
+
+/**
+ * 用 REALITY 的协议(握手目标、密钥对、short_id 那一套):VLESS 与 Trojan。
+ * 判据与后端 singbox.Protocol.UsesReality 一致,前端各处不再写 `=== 'VLESS_REALITY'`。
+ */
+export function usesReality(p: NodeProtocol | string | null | undefined): boolean {
+  return p === 'VLESS_REALITY' || p === 'TROJAN'
 }
 
 /** Snell 版本的说明。只在这里写一遍。 */
@@ -438,6 +447,7 @@ export const PROTOCOL_SHORT: Record<NodeProtocol, string> = {
   VLESS_REALITY: 'VLESS',
   SHADOWSOCKS: 'SS2022',
   SNELL: 'Snell',
+  TROJAN: 'Trojan',
 }
 
 /**
@@ -3720,6 +3730,30 @@ export interface QuickChainBody {
   user_ids: number[]
 }
 
+// —— 能力矩阵与客户端兼容预览(VNext §14.1 / CLIENT02)——
+
+export interface CapabilityCell {
+  ok: boolean
+  note?: string
+  verified: boolean
+}
+export interface CapabilityReport {
+  columns: { key: string; label: string }[]
+  rows: { key: string; label: string; kind: 'SELF' | 'EXTERNAL'; columns: Record<string, CapabilityCell>; comments?: string }[]
+  versions: { panel: string; probe_protocol: number; agent_protocol: number; release?: string; commit?: string }
+  components: { component: string; arch: string; version: string; capabilities?: string[] }[]
+  manifest_loaded: boolean
+}
+export type CompatClient = 'sing-box' | 'clash' | 'stash' | 'surge' | 'loon' | 'quanx'
+export interface CompatReport {
+  client: CompatClient
+  label: string
+  /** sing-box 与 mihomo 经过真实客户端验证;另外四种是实验性的 */
+  verified: boolean
+  exported: { name: string; protocol: string }[]
+  skipped: { name: string; protocol: string; reason: string }[]
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<Admin>('/api/auth/login', { method: 'POST', body: { username, password } }),
@@ -4147,6 +4181,9 @@ export const api = {
     ),
   setNodeHostInterface: (id: number, iface: string) =>
     request<{ changed: boolean }>(`/api/nodes/${id}/host-traffic/interface`, { method: 'PUT', body: { iface } }),
+  capabilities: () => request<CapabilityReport>('/api/capabilities'),
+  userCompat: (id: number, client: CompatClient) =>
+    request<CompatReport>(`/api/users/${id}/compat`, { query: { client } }),
   /** 多选拖动之后一次提交整组;期间有人改过其中任何一项 → 409,一行不改 */
   sortBatch: (items: { kind: string; id: number; sort_order: number; expected: number }[]) =>
     request<{ updated: number }>('/api/sort-order/batch', { method: 'POST', body: { items } }),

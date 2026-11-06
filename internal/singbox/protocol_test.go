@@ -52,7 +52,7 @@ func TestParseProtocol(t *testing.T) {
 			t.Errorf("ParseProtocol(%q) = %q,期望 %q", in, got, want)
 		}
 	}
-	if _, err := ParseProtocol("TROJAN"); err == nil {
+	if _, err := ParseProtocol("HYSTERIA2"); err == nil {
 		t.Error("未知协议应当报错,否则会被静默当成 VLESS 渲染")
 	}
 }
