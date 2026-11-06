@@ -20,7 +20,8 @@
   `请求格式错误:json: unknown field "xxx"` —— 直接点名是哪个字段对不上;
 * 错误响应统一为 `{"error": "中文原因"}`;
 * 时间一律是 UTC 的 RFC3339 字符串,流量一律是字节;
-* 节点安装、部署、握手扫描等长操作有单独的 10 分钟写超时。
+* 节点安装、部署、握手扫描等长操作有单独的 10 分钟写超时;
+* `/api/` 下超过 1.4 KB 的 JSON 响应在请求带 `Accept-Encoding: gzip` 时压缩(VNext);**订阅 `/sub/` 从不压缩**。
 
 ## 公开接口
 
@@ -64,8 +65,12 @@ PUT    /api/access-tiers/{id}        只能改 name/description/sort_order
 ```
 GET /api/dashboard/summary        用户/节点/流量统计
 GET /api/dashboard/alerts         预警列表
+GET /api/sidebar-counts           侧栏计数(VNext):{users, nodes, external, failed_deploys_7d}
 GET /api/audit-logs               审计日志
 ```
+
+`/api/sidebar-counts` 每个数只做一次 COUNT:未删除的用户、未删除的节点、未删除的外部代理
+(外部代理功能没接入时 `external` 为 null,不是 0)、近 7 天 FAILED / ROLLED_BACK 的部署。
 
 预警条件:流量 80% / 95% / 100%,剩余 7 天 / 3 天 / 已到期,节点部署失败,
 节点监控数据超过 10 分钟未更新。

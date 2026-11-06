@@ -137,6 +137,14 @@ export interface Admin {
   username: string
 }
 
+export interface SidebarCounts {
+  users: number
+  nodes: number
+  /** 外部代理没接入时为 null */
+  external: number | null
+  failed_deploys_7d: number
+}
+
 export interface DashboardSummary {
   user_total: number
   user_active: number
@@ -3496,6 +3504,8 @@ export const api = {
     }),
 
   dashboardSummary: () => request<DashboardSummary>('/api/dashboard/summary'),
+  // 侧栏的几个数字:每个只做一次 COUNT,不再为它拉五个完整列表(VNext PERF03)。
+  sidebarCounts: () => request<SidebarCounts>('/api/sidebar-counts'),
   dashboardAlerts: () => request<{ items: DashboardAlert[] }>('/api/dashboard/alerts'),
 
   auditLogs: (params: { limit?: number; targetType?: string; targetId?: string } = {}) =>

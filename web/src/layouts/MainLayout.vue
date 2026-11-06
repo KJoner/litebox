@@ -173,24 +173,12 @@ function onTheme({ key }: { key: string | number }) {
 
 async function loadMeta() {
   // 侧栏计数是装饰性的,任何一个取不到都不该影响页面本身。
-  const [u, n, e, d, s] = await Promise.allSettled([
-    api.users(),
-    api.nodes(),
-    api.externalProxies(),
-    api.deployments(50),
-    api.trafficStatus(),
-  ])
-  if (u.status === 'fulfilled') counts.value.users = u.value.items.length
-  if (n.status === 'fulfilled') counts.value.nodes = n.value.items.length
-  if (e.status === 'fulfilled') counts.value.external = e.value.items.length || undefined
-  if (d.status === 'fulfilled') {
-    const week = Date.now() - 7 * 86400000
-    const failed = d.value.items.filter(
-      (x) =>
-        (x.status === 'FAILED' || x.status === 'ROLLED_BACK') &&
-        new Date(x.started_at).getTime() >= week,
-    ).length
-    counts.value.failedDeploys = failed || undefined
+  const [c, s] = await Promise.allSettled([api.sidebarCounts(), api.trafficStatus()])
+  if (c.status === 'fulfilled') {
+    counts.value.users = c.value.users
+    counts.value.nodes = c.value.nodes
+    counts.value.external = c.value.external || undefined
+    counts.value.failedDeploys = c.value.failed_deploys_7d || undefined
   }
   applySync(s)
 }

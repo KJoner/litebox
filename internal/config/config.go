@@ -108,6 +108,9 @@ type DatabaseConfig struct {
 	Path string `yaml:"path"`
 	// BusyTimeout 是 SQLite 遇到锁时的等待时长。
 	BusyTimeout time.Duration `yaml:"busy_timeout"`
+	// ReadConns 是 SQLite 只读连接的条数(VNext,读写分离)。写与事务永远只走一条连接;
+	// 0 表示不分离,退回原来的单连接。默认 3。
+	ReadConns int `yaml:"read_conns"`
 }
 
 type SecurityConfig struct {
@@ -144,6 +147,7 @@ func Default() Config {
 		Database: DatabaseConfig{
 			Path:        "data/litebox.db",
 			BusyTimeout: 5 * time.Second,
+			ReadConns:   3,
 		},
 		Security: SecurityConfig{
 			SessionTTL:       24 * time.Hour,
@@ -208,6 +212,7 @@ func applyEnv(cfg *Config) {
 	envStr("LITEBOX_HTTP_BASE_URL", &cfg.HTTP.BaseURL)
 	envBool("LITEBOX_HTTP_SECURE_COOKIE", &cfg.HTTP.SecureCookie)
 	envStr("LITEBOX_DATABASE_PATH", &cfg.Database.Path)
+	envInt("LITEBOX_DATABASE_READ_CONNS", &cfg.Database.ReadConns)
 	envStr("LITEBOX_MASTER_KEY", &cfg.Security.MasterKey)
 	envDuration("LITEBOX_SESSION_TTL", &cfg.Security.SessionTTL)
 	envInt("LITEBOX_LOGIN_MAX_ATTEMPTS", &cfg.Security.LoginMaxAttempts)

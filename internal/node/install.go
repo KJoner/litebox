@@ -2,8 +2,6 @@ package node
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -78,8 +76,7 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64) (InstallResul
 		}
 	}
 
-	sum := sha256.Sum256(binary)
-	result.BinarySHA256 = hex.EncodeToString(sum[:])
+	result.BinarySHA256 = binary.SHA256
 
 	err = s.pool.Do(ctx, nodeID, func(client *sshx.Client) error {
 		// init 系统必须在传二进制之前就确认可用。
@@ -124,7 +121,8 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64) (InstallResul
 			// 先传到临时路径再 rename:直接覆盖正在运行的可执行文件会得到
 			// "text file busy",而 rename 只是换 inode,运行中的进程不受影响。
 			tempPath := layout.BinaryPath + ".new"
-			if err := client.Upload(ctx, tempPath, binary, 0o755); err != nil {
+			if err := UploadArtifact(ctx, client, binary, tempPath, 0o755); err != nil {
+				client.Run(ctx, sshx.NewCommand("rm", "-f", tempPath))
 				return err
 			}
 			// 验证在【换上去之前】做:rename 之后再发现不对,正在跑的进程虽然
@@ -138,7 +136,7 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64) (InstallResul
 				return err
 			}
 			result.Uploaded = true
-			result.Detail = fmt.Sprintf("已上传 %d 字节", len(binary))
+			result.Detail = fmt.Sprintf("已上传 %d 字节", binary.Size)
 		}
 
 		if installService {
@@ -189,21 +187,14 @@ func (s *Service) InstallBinary(ctx context.Context, nodeID int64) (InstallResul
 }
 
 // singBoxBinary 取要分发的 sing-box 二进制。
-func (s *Service) singBoxBinary(arch string) ([]byte, error) {
+func (s *Service) singBoxBinary(arch string) (Artifact, error) {
 	if arch == "" {
-		return nil, errors.New("还没探测过这台机器的架构,先点一次「探测」")
+		return Artifact{}, errors.New("还没探测过这台机器的架构,先点一次「探测」")
 	}
 	if s.binaries == nil {
-		return nil, errors.New("主控本地没有 sing-box 二进制")
+		return Artifact{}, errors.New("主控本地没有 sing-box 二进制")
 	}
-	binary, err := s.binaries.Load(arch)
-	if err != nil {
-		return nil, err
-	}
-	if len(binary) == 0 {
-		return nil, errors.New("sing-box 二进制内容为空")
-	}
-	return binary, nil
+	return s.binaries.Artifact(arch)
 }
 
 // verifyCandidateBinary 在节点上对还没换上去的新二进制跑一次 `version`。

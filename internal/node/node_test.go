@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -432,11 +433,11 @@ func TestSplitRecordSizes(t *testing.T) {
 
 func TestBinaryProviderRejectsUnknownArch(t *testing.T) {
 	p := NewDirBinaryProvider(t.TempDir())
-	if _, err := p.Load("mips64"); err == nil {
+	if _, err := p.Artifact("mips64"); err == nil {
 		t.Error("不支持的架构应当报错")
 	}
 	// 文件缺失时的报错要能指引用户去构建。
-	_, err := p.Load("amd64")
+	_, err := p.Artifact("amd64")
 	if err == nil || !strings.Contains(err.Error(), "build-singbox.sh") {
 		t.Errorf("缺少二进制时的错误信息应指引构建方式:%v", err)
 	}
@@ -913,5 +914,40 @@ func TestExplainAuthFailure(t *testing.T) {
 	}
 	if got := explainAuthFailure(nil, "password"); got != "" {
 		t.Errorf("nil 错误不应附加提示:%q", got)
+	}
+}
+
+// 哈希按 (大小, 修改时间) 缓存:文件换过之后报新的哈希;内容不进内存,空文件直接拒绝。
+func TestBinaryProviderHashFollowsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sing-box-linux-amd64")
+	if err := os.WriteFile(path, []byte("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := NewDirBinaryProvider(dir)
+	a, err := p.Artifact("amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Size != 2 || a.SHA256 != singbox.SHA256([]byte("v1")) {
+		t.Fatalf("第一次读到 %+v", a)
+	}
+	if err := os.WriteFile(path, []byte("v2-longer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Minute)
+	os.Chtimes(path, future, future)
+	b, err := p.Artifact("amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.SHA256 != singbox.SHA256([]byte("v2-longer")) {
+		t.Errorf("文件换过之后仍报旧哈希")
+	}
+	if err := os.WriteFile(path, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Artifact("amd64"); err == nil {
+		t.Error("空文件应当拒绝")
 	}
 }

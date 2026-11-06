@@ -203,11 +203,18 @@ func scanMetrics(scan func(...any) error) (Metrics, error) {
 }
 
 // Latest 返回每个节点最近一次采样。
+//
+// 子查询必须是不相关的(VNext PERF01 量出来的):原来写成
+// `m.id = (SELECT MAX(id) ... WHERE node_id = m.node_id)`,对表里的**每一行**各算一次
+// 「这台机器的最大 id」—— 5 台机器 × 7 天采样就要 1.4 秒,而仪表盘预警、资源列、
+// 门户探针三个接口都要调它,单连接下互相排队,首屏整屏 p95 到了 20 秒。
+// 现在按 node_id 分组一次算出全部最大 id(走 (node_id, collected_at) 索引,覆盖扫描),
+// 取的仍是「最后插入的那一条」。
 func (s *MetricsStore) Latest(ctx context.Context) (map[int64]Metrics, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+metricsColumns+`
 		  FROM node_metrics m
-		 WHERE m.id = (SELECT MAX(id) FROM node_metrics WHERE node_id = m.node_id)`)
+		 WHERE m.id IN (SELECT MAX(id) FROM node_metrics GROUP BY node_id)`)
 	if err != nil {
 		return nil, err
 	}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -266,12 +268,89 @@ func buildNodeCycleUsage(q NodeCycleQuery, period NodePeriod, uplink, downlink i
 // 无论多少节点都只发两条 SQL(一条读节点、一条汇总 ledger)。
 // 节点列表每行一次查询的话,10 台机器就是 11 条 SQL,而每条都要扫
 // traffic_ledger —— 那张表是全站写入量最大的表。
+//
+// 结果按「账本版本」短缓存(VNext PERF03):仪表盘预警、资产卡片与周期流量三个接口在同一屏里
+// 各要一份,而它要把本周期的账本行全部加一遍。键 = 全部节点的额度配置与本周期起点 + 账本当前的
+// 最大 id(账本只追加,新入账必然改变它);另设 60 秒上限 —— 账本之外有别的东西改了它时,
+// 最多旧 60 秒,而不是一直旧下去。
 func (q *Querier) NodesCycleUsage(ctx context.Context) ([]NodeCycleUsage, error) {
 	queries, err := q.nodeCycleQueries(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
-	return q.assemble(ctx, queries)
+	var maxID int64
+	if err := q.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM traffic_ledger`).Scan(&maxID); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	key := cycleCacheKey(queries, now, maxID)
+	if items, ok := q.cycleCache.get(key, now); ok {
+		return items, nil
+	}
+	items, err := q.assemble(ctx, queries)
+	if err != nil {
+		return nil, err
+	}
+	q.cycleCache.put(key, now, items)
+	return cloneCycleUsage(items), nil
+}
+
+// cycleCacheTTL 是节点周期用量缓存的上限,见 NodesCycleUsage。
+const cycleCacheTTL = time.Minute
+
+type cycleCache struct {
+	mu    sync.Mutex
+	key   string
+	at    time.Time
+	items []NodeCycleUsage
+}
+
+func (c *cycleCache) get(key string, now time.Time) ([]NodeCycleUsage, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil || c.key != key || now.Sub(c.at) >= cycleCacheTTL || now.Before(c.at) {
+		return nil, false
+	}
+	return cloneCycleUsage(c.items), true
+}
+
+func (c *cycleCache) put(key string, now time.Time, items []NodeCycleUsage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.key, c.at, c.items = key, now, cloneCycleUsage(items)
+}
+
+// cycleCacheKey 把影响结果的全部输入拼成一个键:每台机器的额度配置、此刻算出的周期起点,
+// 以及账本版本。周期起点由 now 算出来,跨过重置时刻时键自然变了。
+func cycleCacheKey(queries []NodeCycleQuery, now time.Time, ledgerMaxID int64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d|", ledgerMaxID)
+	for _, item := range queries {
+		period := CalculateNodePeriod(item.Cycle, item.ResetDay, item.CreatedAt, now)
+		fmt.Fprintf(&b, "%+v@%s;", item, period.Start.UTC().Format(time.RFC3339))
+	}
+	return b.String()
+}
+
+// cloneCycleUsage 深拷贝,调用方改了返回值也不会改到缓存里那一份。
+func cloneCycleUsage(in []NodeCycleUsage) []NodeCycleUsage {
+	out := make([]NodeCycleUsage, len(in))
+	for i, u := range in {
+		if u.NextResetAt != nil {
+			v := *u.NextResetAt
+			u.NextResetAt = &v
+		}
+		if u.RemainingBytes != nil {
+			v := *u.RemainingBytes
+			u.RemainingBytes = &v
+		}
+		if u.UsagePercent != nil {
+			v := *u.UsagePercent
+			u.UsagePercent = &v
+		}
+		out[i] = u
+	}
+	return out
 }
 
 // NodeCycleUsage 返回单个节点当前周期的用量。

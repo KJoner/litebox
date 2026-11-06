@@ -218,6 +218,7 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("GET /api/auth/me", s.handleMe)
 	authed.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	authed.HandleFunc("GET /api/dashboard/summary", s.handleDashboardSummary)
+	authed.HandleFunc("GET /api/sidebar-counts", s.handleSidebarCounts)
 	authed.HandleFunc("GET /api/audit-logs", s.handleAuditLogs)
 
 	if s.nodes != nil {
@@ -571,7 +572,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", s.spaHandler())
 	}
 
-	var handler http.Handler = mux
+	var handler http.Handler = compressJSON(mux)
 	handler = s.logRequests(handler)
 	handler = securityHeaders(handler)
 	handler = s.recoverPanic(handler)

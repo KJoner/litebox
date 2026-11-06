@@ -99,7 +99,7 @@ func (s *Service) InstallRealm(ctx context.Context, nodeID int64) (ServiceOpResu
 	if n.Arch == "" {
 		return result, errors.New("还不知道这台机器的架构,先探测一次")
 	}
-	binary, err := s.realmBinaries.Load(n.Arch)
+	binary, err := s.realmBinaries.Artifact(n.Arch)
 	if err != nil {
 		return result, err
 	}
@@ -111,13 +111,14 @@ func (s *Service) InstallRealm(ctx context.Context, nodeID int64) (ServiceOpResu
 		// 先传临时路径再 rename:realm 在跑的时候直接覆盖会得到 ETXTBSY,
 		// 而经 SFTP 那个 errno 变成一句看不出原因的 "Failure"。
 		tmp := layout.RealmBinaryPath + ".new"
-		if err := client.Upload(ctx, tmp, binary, 0o755); err != nil {
+		if err := UploadArtifact(ctx, client, binary, tmp, 0o755); err != nil {
+			client.Run(ctx, sshx.NewCommand("rm", "-f", tmp))
 			return fmt.Errorf("上传 realm: %w", err)
 		}
 		if _, err := client.RunCheck(ctx, sshx.NewCommand("mv", "-f", tmp, layout.RealmBinaryPath)); err != nil {
 			return err
 		}
-		result.step("已上传 %s(%d 字节)", layout.RealmBinaryPath, len(binary))
+		result.step("已上传 %s(%d 字节)", layout.RealmBinaryPath, binary.Size)
 		// 跑一下 --version 而不是只传上去:架构或 libc 不对时在这里就报,
 		// 而不是等到第一次下发。
 		res, err := client.RunCheck(ctx, sshx.NewCommand(layout.RealmBinaryPath, "--version"))

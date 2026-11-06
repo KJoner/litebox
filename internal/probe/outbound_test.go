@@ -566,11 +566,11 @@ func (p *tryPool) TryDo(context.Context, int64, func(*sshx.Client) error) error 
 
 type fakeBins map[string]string
 
-func (b fakeBins) Load(arch string) ([]byte, error) {
+func (b fakeBins) Artifact(arch string) (sshx.Artifact, error) {
 	if _, ok := b[arch]; !ok {
-		return nil, errors.New("missing")
+		return sshx.Artifact{}, errors.New("missing")
 	}
-	return []byte("bin"), nil
+	return sshx.Artifact{Path: "bin", Size: 3, SHA256: b[arch]}, nil
 }
 
 func (b fakeBins) SHA256(arch string) (string, error) {
