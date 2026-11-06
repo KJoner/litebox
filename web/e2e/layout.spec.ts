@@ -13,18 +13,19 @@ test.describe('主题', () => {
     adminOnly(api)
     await page.goto('/dashboard')
     const html = page.locator('html')
-    await expect(html).toHaveAttribute('data-theme', 'light')
-
-    await page.getByRole('button', { name: '切换主题' }).click()
-    await page.getByRole('menuitem', { name: '深色' }).click()
-    await expect(html).toHaveAttribute('data-theme', 'dark')
-
-    await page.reload()
+    // VNext UI01:没选过就是暖暗色(Nexus 系列的默认),不再默认跟随系统。
     await expect(html).toHaveAttribute('data-theme', 'dark')
 
     await page.getByRole('button', { name: '切换主题' }).click()
     await page.getByRole('menuitem', { name: '浅色' }).click()
     await expect(html).toHaveAttribute('data-theme', 'light')
+
+    await page.reload()
+    await expect(html).toHaveAttribute('data-theme', 'light')
+
+    await page.getByRole('button', { name: '切换主题' }).click()
+    await page.getByRole('menuitem', { name: '深色' }).click()
+    await expect(html).toHaveAttribute('data-theme', 'dark')
   })
 
   test('「跟随系统」持续跟随系统的深浅变化', async ({ page, api }) => {

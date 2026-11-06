@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
   api,
@@ -50,6 +51,8 @@ import { daysUntil, formatBytes, formatUTCTime } from '@/utils/format'
 const narrow = useNarrow()
 
 const sources = ref<ProxySource[]>([])
+const route = useRoute()
+const router = useRouter()
 const proxies = ref<ExternalProxy[]>([])
 const tiers = ref<AccessTier[]>([])
 const excludedCount = ref(0)
@@ -117,7 +120,15 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // 从「新增节点 → 已有外部节点」跳过来时直接打开登记表单(VNext NODE01)。
+  if (route.query.create === '1') {
+    proxyModal.target = null
+    proxyModal.open = true
+    router.replace({ query: { ...route.query, create: undefined } })
+  }
+})
 
 const visible = computed(() => {
   const kw = keyword.value.trim().toLowerCase()

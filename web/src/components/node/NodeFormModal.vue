@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
   api,
@@ -64,6 +65,16 @@ const emit = defineEmits<{
 const hostFlags = reactive({ accept_host_key: false, save_unverified: false })
 
 const isEdit = computed(() => props.node !== null)
+
+// VNext NODE01:新增时先选类型。外部节点不在这里建 —— 去「外部代理」登记(那里认分享链接)。
+const hostKind = ref<'self' | 'external'>('self')
+// VNext NODE04:可选项折叠。新增时收起(只填基础连接 + 默认入口就能建),编辑时展开。
+const moreOpen = ref(false)
+const router = useRouter()
+function goExternal() {
+  emit('update:open', false)
+  router.push({ path: '/external-proxies', query: { create: '1' } })
+}
 const submitting = ref(false)
 /** 只有服务端知道的错误(重名、SSH 不通)放表单顶部,不弹吐司。 */
 const serverError = ref('')
@@ -140,6 +151,8 @@ watch(
   () => props.open,
   async (open) => {
     if (!open) return
+    hostKind.value = 'self'
+    moreOpen.value = !!props.node
     serverError.value = ''
     hostFlags.accept_host_key = false
     hostFlags.save_unverified = false
@@ -460,19 +473,24 @@ async function doSubmit() {
           okText: '知道了',
         })
       } else {
+        // VNext NODE05:保存与安装 / 部署是两件事。节点已建好、面板密钥已装上并真连过一次(管理连接已验证),
+        // 接下来做不做「安装并部署」由管理员选 —— 不在这里顺手去装 sing-box。
+        // sshd_config 被改过(或试过没改成)的说明照样列出来,不能只发一句一闪而过的成功提示。
         const notes = bootstrapNotes(result.bootstrap)
-        if (notes.length) {
-          // 面板改了这台机器的 sshd_config(或者试过没改成),不能只发一句一闪而过的成功提示。
-          const open = result.bootstrap?.password_auth_error ? Modal.warning : Modal.info
-          open({
-            title: '节点已创建,公钥已装好',
-            width: 600,
-            content: notes.join('\n\n') + '\n\n接下来依次执行「探测」和「安装 sing-box」。',
-            okText: '知道了',
-          })
-        } else {
-          message.success('节点已创建,公钥已装好。接下来依次执行「探测」和「安装 sing-box」')
-        }
+        const newID = result.node.id
+        Modal.confirm({
+          title: '节点已创建,管理连接已验证',
+          width: 600,
+          content:
+            (notes.length ? notes.join('\n\n') + '\n\n' : '') +
+            '「安装并部署」会补探测、装 sing-box、下发这台机器的第一个入口(前置检查会自动补齐缺的条件);' +
+            '也可以稍后在节点详情的「入口与转发」里做。',
+          okText: '安装并部署',
+          cancelText: '稍后配置',
+          onOk: () => {
+            emit('deploy', newID)
+          },
+        })
       }
       await saveCloud(result.node.id)
       const expiryErr = await expiryForm.save('NODE', result.node.id)
@@ -609,7 +627,7 @@ async function doSubmit() {
     :width="560"
     :confirm-loading="submitting"
     :ok-text="isEdit ? '保存' : '创建节点'"
-    :ok-button-props="{ disabled: isEdit && dirtyFields.length === 0 }"
+    :ok-button-props="{ disabled: (isEdit && dirtyFields.length === 0) || (!isEdit && hostKind === 'external') }"
     cancel-text="取消"
     :mask-closable="false"
     @cancel="tryClose"
@@ -633,7 +651,20 @@ async function doSubmit() {
       description="节点上的路径与服务名是固定的,两个节点指向同一主机会互相覆盖配置。"
     />
 
-    <a-form layout="vertical">
+    <!-- VNext NODE01:新增时先分流。外部节点(别人部署好的线路)没有 SSH 管理权限,
+         不能引导用户去装服务端;它在「外部代理」里登记,支持粘贴分享链接直接识别。 -->
+    <a-radio-group v-if="!isEdit" v-model:value="hostKind" button-style="solid" class="nf__kind">
+      <a-radio-button value="self">自建主机(我有 SSH)</a-radio-button>
+      <a-radio-button value="external">已有外部节点(分享链接 / 机场)</a-radio-button>
+    </a-radio-group>
+    <div v-if="!isEdit && hostKind === 'external'" class="nf__external">
+      <p>别人已经部署好的代理线路(机场订阅、朋友给的链接)在「外部代理」里登记:粘贴分享链接就能识别协议与参数,
+        可以进订阅、当链式出口,但面板不会、也不能去那台机器上安装任何东西。</p>
+      <a-button type="primary" @click="goExternal">去登记外部节点</a-button>
+    </div>
+    <a-form v-show="isEdit || hostKind === 'self'" layout="vertical">
+      <!-- VNext NODE02:第一组只放连上这台机器所需的东西 —— 名称、管理地址、SSH 端口与用户、认证方式。 -->
+      <div class="nf__group-title">基础连接</div>
       <a-form-item v-if="!isEdit" label="节点角色">
         <a-radio-group v-model:value="form.role" button-style="solid">
           <a-radio-button value="LANDING">落地节点</a-radio-button>
@@ -648,11 +679,253 @@ async function doSubmit() {
         </div>
       </a-form-item>
 
-      <a-form-item label="内部名称" required>
+      <a-form-item label="名称" required>
         <a-input v-model:value="form.name" placeholder="例如:LAX-cn2gia-到期20261201" />
         <div class="nf__help">只在管理后台出现。可以写机房、供应商、到期日。</div>
       </a-form-item>
 
+      <a-form-item label="管理 IPv4 地址 / 域名" required>
+        <a-input v-model:value="form.host" placeholder="例如:203.0.113.10 或 la.ddns.example.com" />
+        <div class="nf__help">
+          面板<strong>唯一</strong>的管理通道:SSH、探测、部署、流量同步与资源采集全走它,必须填写。
+          下面那一栏留空时,它同时兼任 IPv4 订阅地址。
+          <br />
+          公网 IP 会变的机器(动态 DNS)填域名:面板在<strong>每次操作之前</strong>
+          重新解析,IP 换了会自动丢掉旧连接;订阅里下发的是域名本身,不是解析结果 ——
+          所以 IP 变了用户不用重新拉订阅。
+          <br />
+          域名只查 A 记录:面板的管理通道一律走 IPv4,只有 AAAA 的域名连不上。
+        </div>
+      </a-form-item>
+
+      <a-row :gutter="12">
+        <a-col :span="12">
+          <a-form-item label="SSH 端口">
+            <a-input-number v-model:value="form.ssh_port" :min="1" :max="65535" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="12">
+          <a-form-item label="SSH 用户">
+            <a-input v-model:value="form.ssh_user" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+
+      <template v-if="!isEdit">
+        <a-form-item label="接入方式">
+          <a-radio-group v-model:value="accessMode" button-style="solid">
+            <a-radio-button value="password">节点密码</a-radio-button>
+            <a-radio-button value="local-key">主控本机私钥</a-radio-button>
+            <a-radio-button value="manual">手工指定私钥</a-radio-button>
+          </a-radio-group>
+          <div class="nf__help">
+            面板有一把自己的专用密钥。这里选的是<strong>怎么把它的公钥装进节点</strong>,
+            不是用哪把密钥登录。
+          </div>
+        </a-form-item>
+
+        <LbSensitiveField
+          v-if="accessMode === 'password'"
+          v-model:value="form.root_password"
+          label="节点登录密码"
+          mode="create"
+          required
+          help="只用于把面板公钥装进节点的那一次连接。不会保存,也不会写进日志或审计详情。"
+        />
+
+        <!-- 这条分支没有输入框。用 Alert 而不是留白 —— 空白区会让人以为表单还没加载完。 -->
+        <a-alert
+          v-else-if="accessMode === 'local-key'"
+          type="info"
+          show-icon
+          class="nf__err"
+          message="用主控本机的私钥去装公钥"
+          description="面板会在自己进程的 ~/.ssh 与 /etc/litebox/keys 下找一把能登录该节点的私钥。找不到或登录不上时,改用「节点密码」。"
+        />
+
+        <LbSensitiveField
+          v-else
+          v-model:value="form.ssh_key"
+          label="SSH 私钥"
+          mode="create"
+          multiline
+          required
+          help="给这个节点单配一把私钥,用主密钥加密后存储,不会再次显示。"
+        />
+
+        <!-- 手工指定私钥时后端不引导,这个开关没有意义,整个不出现。 -->
+        <a-form-item v-if="accessMode !== 'manual'">
+          <a-checkbox v-model:checked="form.enable_password_login">
+            引导时顺带打开节点的 SSH 口令登录
+          </a-checkbox>
+          <div class="nf__help">
+            装好公钥之后,若节点的 sshd 不接受口令登录(PasswordAuthentication no,或 root 的
+            PermitRootLogin 是 prohibit-password —— 云镜像的常见默认),面板写一份排在最前面的配置把它打开并
+            reload sshd,原有的行一行不删。面板自己不需要它,这是为了让你手里那个 root 口令下次还能用。
+            本次就是用口令登录的话什么都不改;没开成不影响接入。
+          </div>
+        </a-form-item>
+      </template>
+
+      <template v-else>
+        <a-form-item label="SSH 私钥">
+          <div class="nf__help" style="margin-top: 0">
+            当前:<strong>{{ props.node?.uses_custom_key ? '本节点单配的私钥' : '面板专用密钥' }}</strong>。
+            <template v-if="props.node?.uses_custom_key">
+              这把私钥若解不开(填错、误贴了公钥),面板每次操作都会报
+              <code class="lb-mono">ssh: no key found</code> —— 勾下面这项退回面板专用密钥,
+              引导时装进节点的那把公钥就能重新接管。
+            </template>
+          </div>
+        </a-form-item>
+
+        <a-form-item v-if="props.node?.uses_custom_key">
+          <a-checkbox v-model:checked="form.clear_ssh_key">改用面板专用密钥(清除本节点单配的私钥)</a-checkbox>
+          <div class="nf__help">
+            清除之后这个节点走面板专用密钥(设置页那把)。前提是它的公钥已经装进了节点的
+            authorized_keys —— 引导时会自动装,没装过的先在节点详情里点「重新引导」。
+          </div>
+        </a-form-item>
+
+        <LbSensitiveField
+          v-if="!form.clear_ssh_key"
+          v-model:value="form.ssh_key"
+          label="更换为新的单配私钥"
+          mode="edit"
+          multiline
+          help="用面板专用密钥的节点请一直留空;填入新私钥则给这个节点单独换一把。填错会被当场拒绝,不会像以前那样悄悄存下。编辑态永不回显,空框不代表密钥丢了。"
+        />
+      </template>
+
+
+      <!-- 第二组:同时创建的默认入口(协议、监听端口与协议必填项)。编辑时这里只剩 API 端口。 -->
+      <div class="nf__group-title">{{ isEdit ? '节点 API' : '同时创建的默认入口' }}</div>
+      <!-- 端口、协议与 TFO 只在【新增】时出现:那是这台机器的第一个入口。
+           建好之后它们各自成行,在节点详情的「入口」面板里改 ——
+           一台机器上可以有好几个入口,而这个表单描述的是机器本身。 -->
+      <a-row v-if="!isEdit" :gutter="12">
+        <a-col :span="8">
+          <a-form-item label="公网代理端口">
+            <a-input-number v-model:value="form.proxy_port" :min="1" :max="65535" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="主机代理端口">
+            <a-input-number
+              v-model:value="form.listen_port"
+              :min="0"
+              :max="65535"
+              placeholder="不填"
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="API 端口">
+            <a-input-number v-model:value="form.api_port" :min="1" :max="65535" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <div v-if="!isEdit" class="nf__help nf__help--row">
+        公网端口写进订阅;主机端口是 sing-box 实际监听的那个,留空表示与公网相同;API 端口仅监听节点回环。
+      </div>
+      <a-form-item v-else label="API 端口">
+        <a-input-number v-model:value="form.api_port" :min="1" :max="65535" style="width: 100%" />
+        <div class="nf__help">
+          仅监听节点回环,全部入口共用一个 —— 一台机器上只有一个 sing-box 进程。
+          代理端口在「入口」里按条设置。
+        </div>
+      </a-form-item>
+
+      <a-form-item v-if="!isEdit" label="落地协议">
+        <a-select v-model:value="form.protocol">
+          <a-select-option value="VLESS_REALITY">VLESS + REALITY —— 需要握手目标</a-select-option>
+          <a-select-option value="SHADOWSOCKS">Shadowsocks —— 不需要握手目标</a-select-option>
+        </a-select>
+        <div class="nf__help">
+          这是这台机器【第一个入口】的协议。建好之后可以在「入口」里再加,
+          同一台机器上的两个入口可以跑不同的协议、不同的端口、不同的访问等级。
+        </div>
+      </a-form-item>
+
+      <!-- TFO 默认关,而且刻意不按机器规格自动开:它的成败取决于用户到节点
+           这一段路径上的中间设备,而面板的探测是从节点本机做的,与那条路无关。 -->
+      <a-form-item v-if="!isEdit" label="TCP Fast Open">
+        <a-switch v-model:checked="form.tcp_fast_open" />
+        <span class="nf__inline">{{ form.tcp_fast_open ? '开启' : '关闭(默认)' }}</span>
+        <div class="nf__help">
+          省掉每条新建连接的一次握手往返,跨境高延迟链路上能感觉到。
+          这一个开关同时管两端 —— 节点入站与订阅里下发给客户端的 sing-box 出站,
+          <strong>只开一边不会有任何效果</strong>。
+          <br />
+          不确定就别开:路径上不少中间设备会丢弃带数据的 SYN 或剥掉 TFO 选项,
+          而这件事面板测不出来(探测是从节点本机做的)。TFO 的 cookie 还是一个
+          跨连接稳定的标识,对刻意伪装成正常 TLS 的节点来说是白送的特征。
+          <br />
+          只写进 sing-box 格式的订阅;分享链接里不加 <code>tfo=1</code> ——
+          它不在标准里,各家客户端认不认无法验证。
+        </div>
+      </a-form-item>
+
+      <a-form-item v-if="!isEdit && isSS" label="加密方法">
+        <a-select
+          v-model:value="form.ss_method"
+          :options="Object.entries(SS_METHOD_LABEL).map(([v, l]) => ({ value: v, label: l }))"
+        />
+        <div class="nf__help">
+          <template v-if="isLegacySSMethod(form.ss_method)">
+            <strong>传统 AEAD 不看时钟</strong>,给校不了时的机器(LXC / OpenVZ 容器常见)用。
+            代价:没有 replay 防护,重放探测能确认这是一个 Shadowsocks 服务;多用户要逐个试解密
+            (十个人以内感觉不到)。机器能校时的话仍建议选 SS2022。
+          </template>
+          <template v-else>
+            SS2022 握手带时间戳,要求节点时间准确;校不了时的机器选「传统」那三种。
+          </template>
+          <br />
+          <strong>改加密方法会改掉所有人的密码</strong>(长度或形状),与改协议一样需要重新部署、
+          用户需要重新拉订阅。
+        </div>
+      </a-form-item>
+
+      <!-- Shadowsocks 2022 对时钟敏感,而部署的三步健康检查全都测不出这个问题:
+           拨测客户端跑在节点自己身上,与服务端共用同一个时钟。所以这里要先说,
+           部署事务开头也会实测一次并在超限时中止。传统 AEAD 不看时钟,不显示。 -->
+      <a-alert
+        v-if="!isEdit && isSS2022"
+        type="warning"
+        show-icon
+        class="nf__alert-gap"
+        message="Shadowsocks 2022 要求节点时间准确"
+        description="握手带时间戳,节点与真实时间相差超过约 30 秒时全部用户都连不上,而服务状态、端口监听与拨测仍然全绿。部署前面板会实测一次,超限直接中止。请确认节点上开着 NTP(ntpd / chronyd / systemd-timesyncd);校不了时就把加密方法换成「传统」那三种。"
+      />
+
+      <!-- 这条 Alert 必须自带下外边距。它下面那行说明用的是 .nf__help--row
+           (margin-top:-12px,为的是贴住上方 a-form-item 那 24px 的固定间距),
+           而 Alert 自身 margin 为 0 —— 不补的话负边距会把说明文字拉进 Alert 框里,
+           两段字直接叠在一起。 -->
+      <a-alert
+        v-if="!isEdit && form.listen_port && form.listen_port !== form.proxy_port"
+        type="warning"
+        show-icon
+        class="nf__alert-gap"
+        :message="`需要自行把 ${form.host || '节点'}:${form.proxy_port} 转发到本机 ${form.listen_port}`"
+        description="面板不会创建这条转发规则。NAT 主机由服务商的端口映射完成,自建则用 nginx stream 或 iptables DNAT;sing-box 只负责监听主机端口。"
+      />
+
+
+      <!-- VNext NODE04:展示、排序、地址池、额度与周期、云实例、到期价格都是可选项,折叠起来;
+           只填上面两组就能创建。编辑时默认展开 —— 改的往往正是这些。 -->
+      <button
+        type="button"
+        class="nf__more-toggle"
+        :aria-expanded="moreOpen"
+        aria-controls="nf-more"
+        @click="moreOpen = !moreOpen"
+      >
+        <span class="nf__more-caret" :class="{ 'nf__more-caret--open': moreOpen }">›</span>
+        更多设置(可选):展示名称、排序、额外地址、流量额度、云实例、到期与价格
+      </button>
+      <div v-show="moreOpen" id="nf-more" class="nf__more">
       <a-form-item label="展示名称">
         <a-input v-model:value="form.display_name" placeholder="例如:洛杉矶 01" />
         <div class="nf__help">
@@ -693,20 +966,6 @@ async function doSubmit() {
           </div>
         </a-form-item>
       </template>
-
-      <a-form-item label="管理 IPv4 地址 / 域名" required>
-        <a-input v-model:value="form.host" placeholder="例如:203.0.113.10 或 la.ddns.example.com" />
-        <div class="nf__help">
-          面板<strong>唯一</strong>的管理通道:SSH、探测、部署、流量同步与资源采集全走它,必须填写。
-          下面那一栏留空时,它同时兼任 IPv4 订阅地址。
-          <br />
-          公网 IP 会变的机器(动态 DNS)填域名:面板在<strong>每次操作之前</strong>
-          重新解析,IP 换了会自动丢掉旧连接;订阅里下发的是域名本身,不是解析结果 ——
-          所以 IP 变了用户不用重新拉订阅。
-          <br />
-          域名只查 A 记录:面板的管理通道一律走 IPv4,只有 AAAA 的域名连不上。
-        </div>
-      </a-form-item>
 
       <a-form-item label="额外 IPv4 地址 / 域名">
         <AddressListEditor
@@ -899,223 +1158,13 @@ async function doSubmit() {
         </a-form-item>
       </template>
 
-      <a-row :gutter="12">
-        <a-col :span="12">
-          <a-form-item label="SSH 端口">
-            <a-input-number v-model:value="form.ssh_port" :min="1" :max="65535" style="width: 100%" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="12">
-          <a-form-item label="SSH 用户">
-            <a-input v-model:value="form.ssh_user" />
-          </a-form-item>
-        </a-col>
-      </a-row>
-
-      <template v-if="!isEdit">
-        <a-form-item label="接入方式">
-          <a-radio-group v-model:value="accessMode" button-style="solid">
-            <a-radio-button value="password">节点密码</a-radio-button>
-            <a-radio-button value="local-key">主控本机私钥</a-radio-button>
-            <a-radio-button value="manual">手工指定私钥</a-radio-button>
-          </a-radio-group>
-          <div class="nf__help">
-            面板有一把自己的专用密钥。这里选的是<strong>怎么把它的公钥装进节点</strong>,
-            不是用哪把密钥登录。
-          </div>
-        </a-form-item>
-
-        <LbSensitiveField
-          v-if="accessMode === 'password'"
-          v-model:value="form.root_password"
-          label="节点登录密码"
-          mode="create"
-          required
-          help="只用于把面板公钥装进节点的那一次连接。不会保存,也不会写进日志或审计详情。"
-        />
-
-        <!-- 这条分支没有输入框。用 Alert 而不是留白 —— 空白区会让人以为表单还没加载完。 -->
-        <a-alert
-          v-else-if="accessMode === 'local-key'"
-          type="info"
-          show-icon
-          class="nf__err"
-          message="用主控本机的私钥去装公钥"
-          description="面板会在自己进程的 ~/.ssh 与 /etc/litebox/keys 下找一把能登录该节点的私钥。找不到或登录不上时,改用「节点密码」。"
-        />
-
-        <LbSensitiveField
-          v-else
-          v-model:value="form.ssh_key"
-          label="SSH 私钥"
-          mode="create"
-          multiline
-          required
-          help="给这个节点单配一把私钥,用主密钥加密后存储,不会再次显示。"
-        />
-
-        <!-- 手工指定私钥时后端不引导,这个开关没有意义,整个不出现。 -->
-        <a-form-item v-if="accessMode !== 'manual'">
-          <a-checkbox v-model:checked="form.enable_password_login">
-            引导时顺带打开节点的 SSH 口令登录
-          </a-checkbox>
-          <div class="nf__help">
-            装好公钥之后,若节点的 sshd 不接受口令登录(PasswordAuthentication no,或 root 的
-            PermitRootLogin 是 prohibit-password —— 云镜像的常见默认),面板写一份排在最前面的配置把它打开并
-            reload sshd,原有的行一行不删。面板自己不需要它,这是为了让你手里那个 root 口令下次还能用。
-            本次就是用口令登录的话什么都不改;没开成不影响接入。
-          </div>
-        </a-form-item>
-      </template>
-
-      <template v-else>
-        <a-form-item label="SSH 私钥">
-          <div class="nf__help" style="margin-top: 0">
-            当前:<strong>{{ props.node?.uses_custom_key ? '本节点单配的私钥' : '面板专用密钥' }}</strong>。
-            <template v-if="props.node?.uses_custom_key">
-              这把私钥若解不开(填错、误贴了公钥),面板每次操作都会报
-              <code class="lb-mono">ssh: no key found</code> —— 勾下面这项退回面板专用密钥,
-              引导时装进节点的那把公钥就能重新接管。
-            </template>
-          </div>
-        </a-form-item>
-
-        <a-form-item v-if="props.node?.uses_custom_key">
-          <a-checkbox v-model:checked="form.clear_ssh_key">改用面板专用密钥(清除本节点单配的私钥)</a-checkbox>
-          <div class="nf__help">
-            清除之后这个节点走面板专用密钥(设置页那把)。前提是它的公钥已经装进了节点的
-            authorized_keys —— 引导时会自动装,没装过的先在节点详情里点「重新引导」。
-          </div>
-        </a-form-item>
-
-        <LbSensitiveField
-          v-if="!form.clear_ssh_key"
-          v-model:value="form.ssh_key"
-          label="更换为新的单配私钥"
-          mode="edit"
-          multiline
-          help="用面板专用密钥的节点请一直留空;填入新私钥则给这个节点单独换一把。填错会被当场拒绝,不会像以前那样悄悄存下。编辑态永不回显,空框不代表密钥丢了。"
-        />
-      </template>
-
-      <!-- 端口、协议与 TFO 只在【新增】时出现:那是这台机器的第一个入口。
-           建好之后它们各自成行,在节点详情的「入口」面板里改 ——
-           一台机器上可以有好几个入口,而这个表单描述的是机器本身。 -->
-      <a-row v-if="!isEdit" :gutter="12">
-        <a-col :span="8">
-          <a-form-item label="公网代理端口">
-            <a-input-number v-model:value="form.proxy_port" :min="1" :max="65535" style="width: 100%" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="8">
-          <a-form-item label="主机代理端口">
-            <a-input-number
-              v-model:value="form.listen_port"
-              :min="0"
-              :max="65535"
-              placeholder="不填"
-              style="width: 100%"
-            />
-          </a-form-item>
-        </a-col>
-        <a-col :span="8">
-          <a-form-item label="API 端口">
-            <a-input-number v-model:value="form.api_port" :min="1" :max="65535" style="width: 100%" />
-          </a-form-item>
-        </a-col>
-      </a-row>
-      <div v-if="!isEdit" class="nf__help nf__help--row">
-        公网端口写进订阅;主机端口是 sing-box 实际监听的那个,留空表示与公网相同;API 端口仅监听节点回环。
-      </div>
-      <a-form-item v-else label="API 端口">
-        <a-input-number v-model:value="form.api_port" :min="1" :max="65535" style="width: 100%" />
-        <div class="nf__help">
-          仅监听节点回环,全部入口共用一个 —— 一台机器上只有一个 sing-box 进程。
-          代理端口在「入口」里按条设置。
-        </div>
-      </a-form-item>
-
-      <a-form-item v-if="!isEdit" label="落地协议">
-        <a-select v-model:value="form.protocol">
-          <a-select-option value="VLESS_REALITY">VLESS + REALITY —— 需要握手目标</a-select-option>
-          <a-select-option value="SHADOWSOCKS">Shadowsocks —— 不需要握手目标</a-select-option>
-        </a-select>
-        <div class="nf__help">
-          这是这台机器【第一个入口】的协议。建好之后可以在「入口」里再加,
-          同一台机器上的两个入口可以跑不同的协议、不同的端口、不同的访问等级。
-        </div>
-      </a-form-item>
-
-      <!-- TFO 默认关,而且刻意不按机器规格自动开:它的成败取决于用户到节点
-           这一段路径上的中间设备,而面板的探测是从节点本机做的,与那条路无关。 -->
-      <a-form-item v-if="!isEdit" label="TCP Fast Open">
-        <a-switch v-model:checked="form.tcp_fast_open" />
-        <span class="nf__inline">{{ form.tcp_fast_open ? '开启' : '关闭(默认)' }}</span>
-        <div class="nf__help">
-          省掉每条新建连接的一次握手往返,跨境高延迟链路上能感觉到。
-          这一个开关同时管两端 —— 节点入站与订阅里下发给客户端的 sing-box 出站,
-          <strong>只开一边不会有任何效果</strong>。
-          <br />
-          不确定就别开:路径上不少中间设备会丢弃带数据的 SYN 或剥掉 TFO 选项,
-          而这件事面板测不出来(探测是从节点本机做的)。TFO 的 cookie 还是一个
-          跨连接稳定的标识,对刻意伪装成正常 TLS 的节点来说是白送的特征。
-          <br />
-          只写进 sing-box 格式的订阅;分享链接里不加 <code>tfo=1</code> ——
-          它不在标准里,各家客户端认不认无法验证。
-        </div>
-      </a-form-item>
-
-      <a-form-item v-if="!isEdit && isSS" label="加密方法">
-        <a-select
-          v-model:value="form.ss_method"
-          :options="Object.entries(SS_METHOD_LABEL).map(([v, l]) => ({ value: v, label: l }))"
-        />
-        <div class="nf__help">
-          <template v-if="isLegacySSMethod(form.ss_method)">
-            <strong>传统 AEAD 不看时钟</strong>,给校不了时的机器(LXC / OpenVZ 容器常见)用。
-            代价:没有 replay 防护,重放探测能确认这是一个 Shadowsocks 服务;多用户要逐个试解密
-            (十个人以内感觉不到)。机器能校时的话仍建议选 SS2022。
-          </template>
-          <template v-else>
-            SS2022 握手带时间戳,要求节点时间准确;校不了时的机器选「传统」那三种。
-          </template>
-          <br />
-          <strong>改加密方法会改掉所有人的密码</strong>(长度或形状),与改协议一样需要重新部署、
-          用户需要重新拉订阅。
-        </div>
-      </a-form-item>
-
-      <!-- Shadowsocks 2022 对时钟敏感,而部署的三步健康检查全都测不出这个问题:
-           拨测客户端跑在节点自己身上,与服务端共用同一个时钟。所以这里要先说,
-           部署事务开头也会实测一次并在超限时中止。传统 AEAD 不看时钟,不显示。 -->
-      <a-alert
-        v-if="!isEdit && isSS2022"
-        type="warning"
-        show-icon
-        class="nf__alert-gap"
-        message="Shadowsocks 2022 要求节点时间准确"
-        description="握手带时间戳,节点与真实时间相差超过约 30 秒时全部用户都连不上,而服务状态、端口监听与拨测仍然全绿。部署前面板会实测一次,超限直接中止。请确认节点上开着 NTP(ntpd / chronyd / systemd-timesyncd);校不了时就把加密方法换成「传统」那三种。"
-      />
-
-      <!-- 这条 Alert 必须自带下外边距。它下面那行说明用的是 .nf__help--row
-           (margin-top:-12px,为的是贴住上方 a-form-item 那 24px 的固定间距),
-           而 Alert 自身 margin 为 0 —— 不补的话负边距会把说明文字拉进 Alert 框里,
-           两段字直接叠在一起。 -->
-      <a-alert
-        v-if="!isEdit && form.listen_port && form.listen_port !== form.proxy_port"
-        type="warning"
-        show-icon
-        class="nf__alert-gap"
-        :message="`需要自行把 ${form.host || '节点'}:${form.proxy_port} 转发到本机 ${form.listen_port}`"
-        description="面板不会创建这条转发规则。NAT 主机由服务商的端口映射完成,自建则用 nginx stream 或 iptables DNAT;sing-box 只负责监听主机端口。"
-      />
-
       <a-divider orientation="left" class="nf__divider">供应商到期(只提醒,不处置)</a-divider>
       <ExpiryFields v-model="expiryForm.form.value" compact />
 
       <div v-if="isEdit" class="nf__help nf__help--row">
         协议、代理端口、TCP Fast Open 与 REALITY 握手目标都在节点详情的
         「入口」面板里按条设置 —— 一台机器上可以有好几个入口,各自不同。
+      </div>
       </div>
     </a-form>
 
@@ -1126,6 +1175,53 @@ async function doSubmit() {
 </template>
 
 <style scoped>
+.nf__kind {
+  display: flex;
+  margin-bottom: var(--sp-4);
+}
+.nf__kind :deep(.ant-radio-button-wrapper) {
+  flex: 1;
+  text-align: center;
+}
+.nf__external {
+  padding: var(--sp-4);
+  border: 1px solid var(--sep);
+  border-radius: var(--r-group);
+  background: var(--surface2);
+  color: var(--text2);
+}
+.nf__group-title {
+  margin: var(--sp-2) 0 var(--sp-3);
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--sep2);
+  font-weight: 600;
+  color: var(--text);
+}
+.nf__more-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  margin: var(--sp-2) 0 var(--sp-3);
+  padding: var(--sp-2) 0;
+  border: 0;
+  border-top: 1px solid var(--sep2);
+  background: none;
+  color: var(--text2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nf__more-toggle:hover {
+  color: var(--text);
+}
+.nf__more-caret {
+  display: inline-block;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.nf__more-caret--open {
+  transform: rotate(90deg);
+}
 .nf__err {
   margin-bottom: 16px;
 }

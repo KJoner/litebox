@@ -701,7 +701,7 @@ async function doSave() {
 }
 .ifm__dests {
   margin-top: 8px;
-  border: 1px solid #E5E8EC;
+  border: 1px solid var(--sep);
   border-radius: var(--r-group);
   overflow: hidden;
 }
@@ -712,13 +712,13 @@ async function doSave() {
   align-items: center;
   padding: 5px 8px;
   font-size: var(--fs-xs);
-  border-top: 1px solid #E5E8EC;
+  border-top: 1px solid var(--sep);
 }
 .ifm__dest:first-child {
   border-top: none;
 }
 .ifm__dest--head {
   color: var(--text3);
-  background: #FAFBFC;
+  background: var(--surface2);
 }
 </style>

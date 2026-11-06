@@ -91,7 +91,7 @@ function editAt(i: number, address: string) {
 }
 .ale__empty {
   font-size: var(--fs-xs);
-  color: #8a94a6;
+  color: var(--text3);
   padding: 2px 0;
 }
 .ale__add {

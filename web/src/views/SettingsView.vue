@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
+import { message, Modal } from 'ant-design-vue'
+import { useThemeStore, type MotionLevel, type ThemePreference } from '@/stores/theme'
 import {
   api,
   ApiError,
@@ -43,20 +44,89 @@ const users = ref<ProxyUser[]>([])
 const nodes = ref<Node[]>([])
 const loadError = ref<string>('')
 
+// keywords 只给本页搜索用(VNext UI09):输入「Telegram」「域名」「密码」这类词能找到对应的那一组。
 const sections = [
-  { id: 'sub', label: '订阅地址' },
-  { id: 'probe', label: '拨测目标' },
-  { id: 'notify', label: '监控与推送' },
-  { id: 'expiry', label: '到期与续费提醒' },
-  { id: 'probe-public', label: '公共探测目标' },
-  { id: 'tcpprobe', label: '网络探测' },
-  { id: 'boce', label: 'Boce 外部拨测' },
-  { id: 'cloud', label: '云账号' },
-  { id: 'key', label: '面板 SSH 公钥' },
-  { id: 'tier', label: '访问等级' },
-  { id: 'pwd', label: '管理员密码' },
+  { id: 'appearance', label: '外观', keywords: '主题 深色 浅色 暗色 跟随系统 动效 动画' },
+  { id: 'sub', label: '订阅地址', keywords: '站点根 域名 base url 订阅链接' },
+  { id: 'probe', label: '拨测目标', keywords: '部署 健康检查 generate_204 http' },
+  { id: 'notify', label: '监控与推送', keywords: 'bark telegram 通知 推送 巡检 冷却 事件' },
+  { id: 'expiry', label: '到期与续费提醒', keywords: '续费 到期 提前 天数 时区' },
+  { id: 'probe-public', label: '公共探测目标', keywords: '出站 探测 目标库' },
+  { id: 'tcpprobe', label: '网络探测', keywords: '入口 tcp 告警 免打扰 间隔 超时' },
+  { id: 'boce', label: 'Boce 外部拨测', keywords: 'boce 拨测 预算 波点 key' },
+  { id: 'order', label: '订阅排序', keywords: '排序 全局 legacy global' },
+  { id: 'cloud', label: '云账号', keywords: '阿里云 cdt accesskey 停机' },
+  { id: 'key', label: '面板 SSH 公钥', keywords: 'ssh 公钥 authorized_keys 密钥' },
+  { id: 'tier', label: '访问等级', keywords: '等级 vip root 普通组' },
+  { id: 'pwd', label: '管理员密码', keywords: '密码 口令 管理员' },
 ]
 const activeSection = ref('sub')
+
+// ---------- 本页搜索(VNext UI09)----------
+const query = ref('')
+const visibleIDs = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return null
+  return new Set(
+    sections
+      .filter((x) => x.label.toLowerCase().includes(q) || x.keywords.toLowerCase().includes(q))
+      .map((x) => x.id),
+  )
+})
+function sectionVisible(id: string): boolean {
+  return visibleIDs.value === null || visibleIDs.value.has(id)
+}
+
+// ---------- 外观:只影响本机显示,改了立即生效、存在浏览器里 ----------
+const themeStore = useThemeStore()
+const themeChoices: { value: ThemePreference; label: string }[] = [
+  { value: 'dark', label: '深色' },
+  { value: 'light', label: '浅色' },
+  { value: 'system', label: '跟随系统' },
+]
+function onThemeChange(e: { target: { value?: unknown } }) {
+  themeStore.setPreference(e.target.value as ThemePreference)
+}
+function onMotionChange(e: { target: { value?: unknown } }) {
+  themeStore.setMotion(e.target.value as MotionLevel)
+}
+const motionChoices: { value: MotionLevel; label: string }[] = [
+  { value: 'normal', label: '正常' },
+  { value: 'reduced', label: '减弱' },
+  { value: 'off', label: '关闭' },
+]
+
+// ---------- 离开前的未保存提示(VNext UI09)----------
+// 只拦「有一组改了还没保存」:各组仍然各自保存,这里不替谁自动提交。
+const dirtyGroups = computed(() =>
+  [
+    baseURLDirty.value && '订阅地址',
+    probeURLDirty.value && '拨测目标',
+    expiryDirty.value && '到期与续费提醒',
+    tcpDirty.value && '网络探测',
+  ].filter(Boolean) as string[],
+)
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (dirtyGroups.value.length) {
+    e.preventDefault()
+    e.returnValue = ''
+  }
+}
+onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload))
+onBeforeRouteLeave(() => {
+  if (!dirtyGroups.value.length) return true
+  return new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: '有改动还没保存',
+      content: `${dirtyGroups.value.join('、')} 的改动还没保存,离开之后就没了。`,
+      okText: '放弃改动并离开',
+      cancelText: '留在这里',
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+})
 
 function jump(id: string) {
   activeSection.value = id
@@ -473,8 +543,16 @@ const probeTip = computed(
     <!-- 1280 以下锚点栏收起,各组直接顺排。 -->
     <nav class="st__anchors">
       <div class="st__anchors-title">本页</div>
+      <a-input
+        v-model:value="query"
+        size="small"
+        allow-clear
+        placeholder="搜索设置"
+        class="st__search"
+        data-testid="settings-search"
+      />
       <button
-        v-for="s in sections"
+        v-for="s in sections.filter((x) => sectionVisible(x.id))"
         :key="s.id"
         class="st__anchor"
         :class="{ 'st__anchor--on': activeSection === s.id }"
@@ -496,8 +574,43 @@ const probeTip = computed(
         <LbEmptyState variant="error" :title="loadError" @retry="loadAll" />
       </div>
 
+      <div v-if="query && visibleIDs && visibleIDs.size === 0" class="lb-card st__noresult">
+        没有和「{{ query }}」相关的设置。
+      </div>
+      <div v-if="dirtyGroups.length" class="st__unsaved" role="status">
+        还没保存:{{ dirtyGroups.join('、') }}
+      </div>
+
+      <!-- 外观:只影响这台浏览器的显示 -->
+      <section id="set-appearance" v-show="sectionVisible('appearance')">
+        <LbSectionTitle title="外观" effect="now" />
+        <div class="lb-card st__appearance">
+          <div class="st__row">
+            <div class="st__row-label">主题</div>
+            <a-radio-group
+              :value="themeStore.preference"
+              option-type="button"
+              button-style="solid"
+              :options="themeChoices"
+              @change="onThemeChange"
+            />
+          </div>
+          <div class="st__row">
+            <div class="st__row-label">动效</div>
+            <a-radio-group
+              :value="themeStore.motion"
+              option-type="button"
+              button-style="solid"
+              :options="motionChoices"
+              @change="onMotionChange"
+            />
+          </div>
+          <div class="st__hint">只影响这台浏览器的显示,改了立即生效。系统开着「减少动态效果」时动画照样减弱。</div>
+        </div>
+      </section>
+
       <!-- ① 订阅地址 -->
-      <section id="set-sub">
+      <section id="set-sub" v-show="sectionVisible('sub')">
         <LbSectionTitle title="订阅地址" effect="now" />
         <div class="lb-card st__card">
           <div class="lb-group">
@@ -535,7 +648,7 @@ const probeTip = computed(
       </section>
 
       <!-- ② 拨测目标 -->
-      <section id="set-probe">
+      <section id="set-probe" v-show="sectionVisible('probe')">
         <LbSectionTitle title="拨测目标">
           <template #badge>
             <span class="lb-effect lb-effect--deploy">下一次部署起生效</span>
@@ -574,7 +687,7 @@ const probeTip = computed(
       </section>
 
       <!-- ③ 监控与推送 -->
-      <section id="set-notify">
+      <section id="set-notify" v-show="sectionVisible('notify')">
         <LbSectionTitle title="监控与推送" effect="now" />
         <div class="lb-card st__card">
           <div v-if="notifyError" class="lb-error-strip">{{ notifyError }}</div>
@@ -751,7 +864,7 @@ const probeTip = computed(
       </section>
 
       <!-- ③½ 到期与续费提醒(V20) -->
-      <section id="set-expiry">
+      <section id="set-expiry" v-show="sectionVisible('expiry')">
         <LbSectionTitle title="到期与续费提醒">
           <template #badge>
             <span class="lb-effect lb-effect--now">下一轮提醒起生效</span>
@@ -809,7 +922,7 @@ const probeTip = computed(
 
       <!-- 公共探测目标(出站网络质量):已经搬到独立的「探测目标库」页,这里只留一个入口。
            锚点保留:旧的「去配置」链接与书签带着 #probe-public 进来时,至少能落在一句指路的话上。 -->
-      <section id="set-probe-public">
+      <section id="set-probe-public" v-show="sectionVisible('probe-public')">
         <LbSectionTitle title="公共探测目标(出站)" />
         <div class="lb-card set__pp" data-testid="public-probe-moved">
           <div>
@@ -821,7 +934,7 @@ const probeTip = computed(
       </section>
 
       <!-- 网络探测:全局开关、告警,以及入口连通性的间隔与超时 -->
-      <section id="set-tcpprobe">
+      <section id="set-tcpprobe" v-show="sectionVisible('tcpprobe')">
         <LbSectionTitle title="网络探测">
           <template #badge>
             <span class="lb-effect lb-effect--now">下一轮探测起生效</span>
@@ -897,7 +1010,7 @@ const probeTip = computed(
       </section>
 
       <!-- Boce 外部入站拨测(付费,V21) -->
-      <section id="set-boce">
+      <section id="set-boce" v-show="sectionVisible('boce')">
         <LbSectionTitle
           title="Boce 外部拨测"
           tip="付费的第三方入站拨测:从 Boce 各省各运营商(以及海外)的拨测点对节点的订阅入口做 TCPing 或 Ping,请求由主控发起,节点上什么都不装。默认关、没有预算时不创建任何付费检测;任务在节点详情的「网络监测」里配。"
@@ -910,7 +1023,7 @@ const probeTip = computed(
       </section>
 
       <!-- 订阅排序方案(V20) -->
-      <section id="set-order">
+      <section id="set-order" v-show="sectionVisible('order')">
         <LbSectionTitle title="订阅排序">
           <template #badge>
             <span class="lb-effect lb-effect--now">用户下次拉订阅起生效</span>
@@ -952,13 +1065,13 @@ const probeTip = computed(
       </section>
 
       <!-- ④ 云账号(阿里云 CDT,V17) -->
-      <section id="set-cloud">
+      <section id="set-cloud" v-show="sectionVisible('cloud')">
         <LbSectionTitle title="云账号(阿里云 CDT)" effect="now" />
         <CloudAccountsPanel />
       </section>
 
       <!-- ⑤ 面板 SSH 公钥 -->
-      <section id="set-key">
+      <section id="set-key" v-show="sectionVisible('key')">
         <LbSectionTitle
           title="面板 SSH 公钥"
           effect="readonly"
@@ -974,7 +1087,7 @@ const probeTip = computed(
       </section>
 
       <!-- ⑥ 访问等级 -->
-      <section id="set-tier">
+      <section id="set-tier" v-show="sectionVisible('tier')">
         <LbSectionTitle
           title="访问等级"
           effect="deploy"
@@ -1004,7 +1117,7 @@ const probeTip = computed(
       </section>
 
       <!-- ⑦ 管理员密码 -->
-      <section id="set-pwd">
+      <section id="set-pwd" v-show="sectionVisible('pwd')">
         <LbSectionTitle
           title="管理员密码"
           effect="sessions"
@@ -1384,6 +1497,43 @@ const probeTip = computed(
   margin-right: auto;
 }
 
+.st__search {
+  margin: 0 0 var(--sp-2);
+}
+.st__noresult {
+  padding: var(--sp-4);
+  color: var(--text3);
+}
+.st__unsaved {
+  position: sticky;
+  top: var(--sp-2);
+  z-index: 3;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-group);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+}
+.st__appearance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+.st__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.st__row-label {
+  min-width: 56px;
+  color: var(--text2);
+}
+.st__hint {
+  color: var(--text3);
+  font-size: var(--fs-xs);
+}
 .st__dirty {
   font-size: var(--fs-sm);
   font-weight: 500;

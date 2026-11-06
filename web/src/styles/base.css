@@ -931,3 +931,18 @@ button {
     gap: var(--sp-3);
   }
 }
+
+/* 动效档位(VNext UI03,stores/theme.ts 写 <html data-motion>):关闭 = 一切变化立即完成;
+   减弱 = 只保留淡入淡出,不做位移与缩放。系统的「减少动态效果」照样由上面的媒体查询处理。 */
+[data-motion='off'] *,
+[data-motion='off'] *::before,
+[data-motion='off'] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+[data-motion='reduced'] *,
+[data-motion='reduced'] *::before,
+[data-motion='reduced'] *::after {
+  animation-name: lb-fade !important;
+}
