@@ -28,6 +28,11 @@ const (
 	// 渲染期发现不了它,只有部署时 sing-box check 会报
 	// "unknown inbound type: snell",而那时错误落在部署记录里。
 	ProtocolSnell Protocol = "SNELL"
+	// ProtocolTrojan 是 Trojan + REALITY(VNext PROTO02)。TLS 那一层直接复用 VLESS 的 REALITY
+	// (握手目标、密钥对、short_id、实测校验都是同一套),所以不需要证书、也不需要域名 ——
+	// 普通 Trojan 要一张受信的证书,而面板管理的是没有域名的小鸡。
+	// 用户凭据复用 UUID(当作 Trojan 的 password):重置 UUID 同时作废两种协议上的凭据。
+	ProtocolTrojan Protocol = "TROJAN"
 )
 
 // ParseProtocol 解析协议名。空串回落到 VLESS —— 存量节点的列在迁移里
@@ -40,6 +45,8 @@ func ParseProtocol(raw string) (Protocol, error) {
 		return ProtocolShadowsocks, nil
 	case ProtocolSnell:
 		return ProtocolSnell, nil
+	case ProtocolTrojan:
+		return ProtocolTrojan, nil
 	}
 	return "", fmt.Errorf("未知的落地协议 %q", raw)
 }
@@ -52,6 +59,8 @@ func (p Protocol) Label() string {
 		return "Shadowsocks"
 	case ProtocolSnell:
 		return "Snell"
+	case ProtocolTrojan:
+		return "Trojan + REALITY"
 	default:
 		return "VLESS + REALITY"
 	}
@@ -89,7 +98,18 @@ func (p Protocol) LegacyInboundTag() string {
 }
 
 // UsesReality 表示该协议需要 REALITY 的握手目标、私钥与 short_id。
-func (p Protocol) UsesReality() bool { return p == ProtocolVLESSReality }
+func (p Protocol) UsesReality() bool { return p == ProtocolVLESSReality || p == ProtocolTrojan }
+
+// UsesUUID 表示这个协议的用户凭据是 UUID(VLESS 的 uuid、Trojan 的 password)。
+// 重置 UUID 时要标脏的就是这两种协议的入口所在的机器。
+func (p Protocol) UsesUUID() bool { return p == ProtocolVLESSReality || p == ProtocolTrojan }
+
+// ChainLandable 表示这个协议的入站能不能当链式出口的落地。Trojan 这一版不能:
+// 链式出站的渲染(buildChainOutbound)只会拼 VLESS 与 Shadowsocks,让它落到默认分支
+// 会拼出一个 VLESS 出站去连 Trojan 入站 —— 握手失败、部署回滚,报错落在入口机上。
+func (p Protocol) ChainLandable() bool {
+	return p == ProtocolVLESSReality || p == ProtocolShadowsocks || p == ""
+}
 
 // SSMethod 是 Shadowsocks 的加密方法。
 //

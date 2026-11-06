@@ -18,7 +18,7 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | A11 | 流量重启 / 重传 / 切换 | 部分 | 计费公式:`internal/billing` 固定夹具(U/D/SUM/MAX、倍率、分段封存、溢出);`TestEnforceUsesBillingRule`、`TestMonthlyResetAppliesPendingRule`、`TestSetBillingImmediateSealsOldSegment`;重启判定沿用 Phase 4 的测试;Agent 重传见 S6 第二部分 |
 | A12 | HTTP 404 探测 | 已有(V22.6) | `internal/netprobe/http_test.go` |
 | A13 | BOCE 停测与预算耗尽 | 已有(V22.3) | `internal/probe/boce*_test.go` |
-| A14 | 多格式导出 | 未开始 | |
+| A14 | 多格式导出 | 部分 | `TestClientSerializers`(跳过原因、名字转义、重名、IPv6、全跳过报错)、`TestCapabilityMatrixIsComputed`;真机:面板生成的 Clash 与 sing-box 订阅经本机 mihomo 1.19.10 / sing-box 1.13.8 真连 Trojan + REALITY 入口(HTTP 204,出口是节点);Stash 输出经 mihomo 解析并真连传统 AEAD 入口。**Surge / Loon / Quantumult X / Stash 没有在真实客户端上人工验证**,标实验性 |
 | A15 | 管理端与门户双主题 | 本机通过 | 47 张截图基线浅 / 深 × 1440 / 768 / 390;390 与 375 下全部路由无横向溢出;对比度见 design.md §6 |
 | A16 | 页面与后台任务并发 | 未开始 | |
 | A18 | 主控恢复与节点升级 | 部分已有 | `Result.Unchanged`、`verifyCandidateBinary` |
@@ -70,3 +70,14 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | 5 会话首屏整屏 | 53 ms | 206 ms | — | — |
 
 PG 每条语句都有一次网络往返(本机 Docker 约 1 ms),所以「条数」比单条耗时更要紧;SQLite 在进程内,没有这一项。
+
+## Trojan + REALITY 真机验证(S7,2026-11-07)
+
+测试机 djj-ph(Alpine 3.24 / aarch64 / OpenRC / NAT,sing-box v1.14.0),隔离的 scratch 面板:
+
+* 新建 Trojan 入口(公网映射端口),整台下发:`sing-box check` 通过,三步健康检查里 Trojan 拨测 HTTP 204(同机 VLESS、
+  传统 AEAD Shadowsocks 同样 204);
+* 本机 mihomo 1.19.10 用 `?format=clash` 生成的 trojan proxy、本机 sing-box 1.13.8 用 `?format=sing-box` 的 trojan 出站,
+  经公网连上并取到 HTTP 204,出口地址是节点;完整的 sing-box 订阅 `check` 通过;
+* 流量同步之后用户的计数增加(Trojan 入口的 `users[].name` 照常建计数器);
+* 没测:Trojan 在 64 / 128 MiB 档的资源、经 nginx / realm 透传的 Trojan、升级回滚。

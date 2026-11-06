@@ -270,6 +270,9 @@ func (s *Store) PreviewQuickChain(ctx context.Context, p QuickChainParams) (*Qui
 		if !t.Deployed() {
 			out.Problems = append(out.Problems, ErrChainTargetNotDeployed.Error())
 		}
+		if t.Deployed() && !t.DeployedProtocol.ChainLandable() {
+			out.Problems = append(out.Problems, ErrChainTargetProtocol.Error())
+		}
 		if err := s.walkFromInbound(ctx, path, t.ID, map[int64]bool{}); err != nil {
 			return nil, err
 		}

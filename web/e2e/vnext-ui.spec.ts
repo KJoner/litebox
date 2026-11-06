@@ -164,3 +164,32 @@ test('快速组链:预览按跳列出路径与改动,有问题时不能保存', 
   await expect(dialog.getByRole('button', { name: '只保存(不下发)' })).toBeDisabled()
   expect(api.requests('POST', '/api/chains/quick')).toHaveLength(0)
 })
+
+test('能力矩阵:点开才读,✓ / ○ / ✕ 三种标记,不支持的悬停有原因', async ({ page, api }) => {
+  adminOnly(api)
+  api.on('GET', '/api/capabilities', {
+    json: {
+      columns: [{ key: 'selfhost', label: '自建入站' }, { key: 'surge', label: 'Surge' }, { key: 'stash', label: 'Stash' }],
+      rows: [
+        { key: 'TROJAN', label: 'Trojan + REALITY', kind: 'SELF', columns: {
+          selfhost: { ok: true, verified: true }, surge: { ok: false, verified: false, note: 'Surge 不支持 REALITY' }, stash: { ok: false, verified: false, note: 'REALITY 在 Stash 上没有验证过' } } },
+        { key: 'SS_LEGACY', label: 'Shadowsocks 传统 AEAD', kind: 'SELF', columns: {
+          selfhost: { ok: true, verified: true }, surge: { ok: true, verified: false }, stash: { ok: true, verified: false } } },
+      ],
+      versions: { panel: 'dev', probe_protocol: 3, agent_protocol: 1 },
+      components: [],
+      manifest_loaded: false,
+    },
+  })
+  await page.goto('/settings')
+  await page.getByPlaceholder('搜索设置').fill('trojan')
+  const sec = page.locator('#set-capability')
+  await expect(sec).toBeVisible()
+  expect(api.requests('GET', '/api/capabilities')).toHaveLength(0)
+  await sec.getByRole('button', { name: '读取能力矩阵' }).click()
+  const row = sec.getByRole('row').filter({ hasText: 'Trojan + REALITY' })
+  await expect(row.getByRole('cell').nth(1)).toHaveAttribute('title', 'Surge 不支持 REALITY')
+  await expect(row).toContainText('✓')
+  await expect(sec.getByRole('row').filter({ hasText: '传统 AEAD' })).toContainText('○')
+  await expect(sec.getByText('没有发布清单')).toBeVisible()
+})

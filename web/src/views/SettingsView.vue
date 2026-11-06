@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CapabilityMatrix from '@/components/settings/CapabilityMatrix.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
@@ -59,6 +60,7 @@ const sections = [
   { id: 'key', label: '面板 SSH 公钥', keywords: 'ssh 公钥 authorized_keys 密钥' },
   { id: 'tier', label: '访问等级', keywords: '等级 vip root 普通组' },
   { id: 'pwd', label: '管理员密码', keywords: '密码 口令 管理员' },
+  { id: 'capability', label: '能力矩阵与版本', keywords: '协议 客户端 兼容 trojan surge loon quantumult stash 版本 清单' },
 ]
 const activeSection = ref('sub')
 
@@ -1113,6 +1115,17 @@ const probeTip = computed(
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <!-- 能力矩阵与版本(VNext §14.1):只读,点开才读 -->
+      <section id="set-capability" v-show="sectionVisible('capability')">
+        <LbSectionTitle
+          title="能力矩阵与版本"
+          tip="每种协议能不能自建、能不能按用户计量、能不能当出站 / 落地,以及在各个客户端里能不能导出,分开列。每一格由后端拿代表性的线路走真正下发的那一套判据现算,不是手写的表。"
+        />
+        <div class="lb-card st__card">
+          <CapabilityMatrix />
         </div>
       </section>
 

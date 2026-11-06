@@ -71,7 +71,7 @@ func EntryForExternal(p ExternalProxy) (Entry, error) {
 		return Entry{}, fmt.Errorf("%s 外部代理缺少原始分享链接,无法下发", p.Protocol.Label())
 	}
 
-	entry := Entry{DisplayName: p.DisplayName, URI: uri}
+	entry := Entry{DisplayName: p.DisplayName, URI: uri, Facts: ExternalFacts(p)}
 
 	// 协议翻译只有 externalproxy.SingBoxOutbound 一处实现,与链式出口、
 	// 中转拨测共用。**先拼一次**再包成闭包:闭包里拼的话,失败时只能返回

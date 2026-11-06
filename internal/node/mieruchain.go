@@ -94,6 +94,9 @@ func (s *Store) SetMieruChain(
 		if deployed == "" {
 			return ErrChainTargetNotDeployed
 		}
+		if !singbox.Protocol(deployed).ChainLandable() {
+			return ErrChainTargetProtocol
+		}
 		// Mieru 入口自己不会是任何人的去向,所以这里只可能撞上下游已有的环(旧数据)。
 		if err := chainTargetUsable(ctx, s, tx, 0, targetID); err != nil {
 			return err

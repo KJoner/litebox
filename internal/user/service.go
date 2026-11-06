@@ -110,7 +110,9 @@ func (s *Service) RegenerateUUID(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Trojan 入口用的也是 UUID(当 password),两种协议的机器都要重新下发。
 	s.markProtocolNodes(ctx, id, singbox.ProtocolVLESSReality)
+	s.markProtocolNodes(ctx, id, singbox.ProtocolTrojan)
 	return u, nil
 }
 

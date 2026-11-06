@@ -20,6 +20,7 @@ import {
   type SnellV6Mode,
   type NodeAddress,
   type InboundEndpointInput,
+  usesReality,
 } from '@/api/client'
 import EndpointsEditor from './EndpointsEditor.vue'
 import { LbStatusTag, lbDangerConfirm } from '@/components/lb'
@@ -312,8 +313,8 @@ const snellUnavailable = computed(
  */
 const protocolSwitchBlocked = computed(() => {
   const cur = props.inbound
-  if (!cur || form.value.protocol !== 'VLESS_REALITY') return ''
-  if (cur.protocol === 'VLESS_REALITY') return ''
+  if (!cur || !usesReality(form.value.protocol)) return ''
+  if (usesReality(cur.protocol)) return ''
   if (!cur.handshake_checked_at) {
     return '这个入口还没有实测过握手目标。REALITY 要求目标返回的每个 TLS 记录不超过 8192 字节,超限时握手会静默失败:客户端连不上,而节点上一切正常。请先跑一次「实测握手目标」。'
   }
@@ -429,7 +430,7 @@ async function doSave() {
       </a-form-item>
       <!-- 握手目标只在 VLESS 下出现:Shadowsocks 根本不用 REALITY,
            摆一个用不上的输入框会让人以为它有意义。 -->
-      <a-form-item v-if="form.protocol === 'VLESS_REALITY'" label="REALITY 握手目标">
+      <a-form-item v-if="usesReality(form.protocol)" label="REALITY 握手目标">
         <div class="ifm__dest-cur">
           <span v-if="form.reality_dest" class="lb-mono">{{ form.reality_dest }}</span>
           <span v-else class="ifm__dim">尚未选择</span>

@@ -42,6 +42,11 @@ const (
 	// 而 Clash 用户原来只能靠模板里的 proxy-providers 去拉 URI 列表 ——
 	// 那些协议对他们等于不存在。
 	FormatClash Format = "clash"
+	// P1 客户端(VNext CLIENT01):实验性,未在真实客户端上人工验证,见 clients.go。
+	FormatSurge Format = "surge"
+	FormatLoon  Format = "loon"
+	FormatQuanX Format = "quanx"
+	FormatStash Format = "stash"
 )
 
 // ParseFormat 解析格式参数,未知值回落到 base64。
@@ -55,6 +60,14 @@ func ParseFormat(raw string) Format {
 	// 那个客户端是哪一年装的,而他不该为此拿到一份 base64。
 	case "clash", "mihomo", "yaml", "clash-meta":
 		return FormatClash
+	case "surge":
+		return FormatSurge
+	case "loon":
+		return FormatLoon
+	case "quanx", "quantumult-x", "quantumultx":
+		return FormatQuanX
+	case "stash":
+		return FormatStash
 	default:
 		return FormatBase64
 	}
@@ -174,6 +187,19 @@ func (s *Service) Build(ctx context.Context, token string, format Format) (Resul
 		// 用户点了订阅链接却什么都没发生。
 		result.ContentType = "text/yaml; charset=utf-8"
 		result.Filename = u.UserCode + ".yaml"
+	case FormatSurge, FormatLoon, FormatQuanX, FormatStash:
+		kind := ClientKind(format)
+		body, err := ClientConfig(kind, entries, s.mixedPort)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Body = body
+		result.ContentType = "text/plain; charset=utf-8"
+		result.Filename = u.UserCode + ".conf"
+		if kind == ClientStash {
+			result.ContentType = "text/yaml; charset=utf-8"
+			result.Filename = u.UserCode + ".yaml"
+		}
 	case FormatURI:
 		result.Body = []byte(strings.Join(uriList(entries), "\n"))
 		result.ContentType = "text/plain; charset=utf-8"
@@ -609,4 +635,24 @@ func (s *Service) mergeEntries(ctx context.Context, nodes, external []Entry) []E
 		return append(append(out, external...), nodes...)
 	}
 	return append(append(out, nodes...), external...)
+}
+
+// CompatFor 是管理员看的兼容预览(VNext CLIENT02):这个用户在某个客户端里能拿到哪几条、少了哪几条、为什么。
+// 与真正下发走同一份条目(buildEntries,权限过滤已经做完),不另查一遍。
+func (s *Service) CompatFor(ctx context.Context, userID int64, client string) (CompatReport, error) {
+	u, err := s.users.Get(ctx, userID)
+	if err != nil {
+		return CompatReport{}, err
+	}
+	entries, err := s.buildEntries(ctx, u)
+	if err != nil {
+		return CompatReport{}, err
+	}
+	kind := ClientKind(strings.ToLower(strings.TrimSpace(client)))
+	switch kind {
+	case "sing-box", "clash", ClientSurge, ClientLoon, ClientQuanX, ClientStash:
+	default:
+		return CompatReport{}, fmt.Errorf("不认识的客户端 %q", client)
+	}
+	return Compat(kind, entries), nil
 }

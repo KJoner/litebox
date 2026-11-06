@@ -101,8 +101,9 @@
   节点额度可改用 vnStat 网卡实测,分界之前仍按代理折算、两段分开;计量网卡可指定;
 * **S6 Agent**(已做):可选,默认关,只做状态采集(计划内探测没有做),节点主动 HTTPS 上报;握手之后才切换资源采集的写入者,
   超时没报 SSH 自动接手;配置下发仍走 SSH;
-* **S7 新协议**:先做 Trojan(sing-box 入站 + REALITY 或证书),逐项记录能力矩阵;Hysteria2 / TUIC 需要 `with_quic`,只给选了它们的机器分发能力构建;
-* **S7 客户端**:Stash 走 Clash 系 serializer 的能力子集;Surge / Loon / Quantumult X 各写 serializer,商业客户端无法自动验证的标「未人工验证」。
+* **S7 新协议**(已做):Trojan + REALITY(不用证书),能力矩阵现算;Hysteria2 / TUIC 需要 `with_quic`,延期;
+* **S7 客户端**(已做):Stash 走 Clash 系写法的子集;Surge / Loon / Quantumult X 各一个序列化器,读 `ClientFacts`,
+  商业客户端无法自动验证的标「实验性」。
 
 ## 5. 交付清单
 
@@ -124,7 +125,10 @@
   - [x] 第二部分:可选 Agent(只做状态采集,迁移 0051);执行器接口没有抽 —— Agent 这一版只接替资源采集一种写入,
         配置下发仍只有 SSH 一种实现,抽接口仍然违反「不以未来扩展为理由提前引入框架」
   - [ ] 没做:用户额度的固定天数周期(要重建 proxy_users 的 CHECK)、Agent 的 WSS 与命令协议、Agent 执行探测
-- [ ] S7 能力矩阵、Trojan 自建入站、Stash / Surge / Loon / Quantumult X 输出、兼容预览
+- [x] S7 能力矩阵、Trojan 自建入站、Stash / Surge / Loon / Quantumult X 输出、兼容预览
+  - Trojan + REALITY(迁移 0052):真机部署拨测 + mihomo / sing-box 公网真连 + 按用户计量;不能当链式落地
+  - 四种 P1 格式是实验性的(没有人工验证),Stash 输出经 mihomo 解析与真连;Hysteria2 / TUIC / AnyTLS 自建延期:
+    节点的精简 sing-box 不含 `with_quic`,只给选了它们的机器分发能力构建要另起一批做验证
 
 ## 6. 视觉(S4)
 

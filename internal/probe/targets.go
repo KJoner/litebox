@@ -466,6 +466,8 @@ func protoLabel(proto string) string {
 	switch proto {
 	case "VLESS_REALITY":
 		return "VLESS"
+	case "TROJAN":
+		return "Trojan"
 	case "SHADOWSOCKS":
 		return "Shadowsocks"
 	case "SNELL":

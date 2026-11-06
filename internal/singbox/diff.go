@@ -444,6 +444,8 @@ func protocolLabelOf(in Inbound) string {
 		return ProtocolSnell.Label()
 	case "vless":
 		return ProtocolVLESSReality.Label()
+	case "trojan":
+		return ProtocolTrojan.Label()
 	case "":
 		return "(无)"
 	default:

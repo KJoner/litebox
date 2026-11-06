@@ -38,6 +38,7 @@ import {
 import UserAdjustModal from '@/components/user/UserAdjustModal.vue'
 import UserAccessPanel from '@/components/user/UserAccessPanel.vue'
 import UserBillingModal from '@/components/user/UserBillingModal.vue'
+import UserCompatPanel from '@/components/user/UserCompatPanel.vue'
 import { color } from '@/theme/tokens'
 
 /**
@@ -872,6 +873,10 @@ const adjustColumns = [
 
         <a-tab-pane key="access" tab="入口授权">
           <UserAccessPanel v-if="tab === 'access'" :user-id="user.id" :nodes="nodes" @changed="reload(); emit('changed')" />
+        </a-tab-pane>
+
+        <a-tab-pane key="compat" tab="客户端兼容">
+          <UserCompatPanel v-if="tab === 'compat'" :user-id="user.id" />
         </a-tab-pane>
 
         <a-tab-pane key="traffic" tab="流量">
