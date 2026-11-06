@@ -1,0 +1,53 @@
+# 快捷 PostgreSQL 模式:在 compose.yaml 之上叠加一个专用 PG(VNext DEPLOY02 / DEPLOY05)。
+#
+#   docker compose -f compose.yaml -f compose.postgres.yaml up -d
+#
+# - PG 不向宿主发布 5432,只在本项目的网络里可达;健康检查通过之后主控才启动(主控启动时自己迁移);
+# - 集群管理员(postgres)与应用账号(litebox)分开:应用账号由初始化脚本建,不是超级用户;
+# - 版本固定到一个测过的主版本并用 digest 锁死。**PG 大版本升级是独立的迁移任务,不能只改这里的标签**;
+#   PG 18 的官方镜像数据目录改成了 /var/lib/postgresql(17 及以前是 /var/lib/postgresql/data),
+#   换 18 时挂载点也要跟着改,而且要先 pg_dump / 恢复。
+services:
+  litebox:
+    environment:
+      LITEBOX_DB_DRIVER: postgres
+      LITEBOX_DB_DSN_FILE: /run/secrets/litebox_db_dsn
+    secrets:
+      - litebox_master_key
+      - litebox_db_dsn
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: ${LITEBOX_PG_IMAGE:-postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/litebox_pg_admin_password
+      LITEBOX_APP_PASSWORD_FILE: /run/secrets/litebox_pg_app_password
+    secrets:
+      - litebox_pg_admin_password
+      - litebox_pg_app_password
+    volumes:
+      - ${LITEBOX_PG_DATA_DIR:-./pgdata}:/var/lib/postgresql/data
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d litebox"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 128mb
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  litebox_db_dsn:
+    file: ./secrets/db_dsn
+  litebox_pg_admin_password:
+    file: ./secrets/pg_admin_password
+  litebox_pg_app_password:
+    file: ./secrets/pg_app_password

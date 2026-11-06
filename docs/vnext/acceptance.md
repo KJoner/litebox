@@ -7,10 +7,10 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 |---|---|---|---|
 | A01 | 旧 SQLite 原地升级 | 未开始 | |
 | A02 | SQLite 导入 PG | 本地通过(PG 17) | `TestTransferRoundTrip`、`litebox db import/verify/export` 冒烟(见 migration.md §2 末尾);真实库未测 |
-| A03 | 接已有共享 PG(LiteBox 一侧) | 部分 | 应用账号不需要 CREATEDB、advisory lock 按库隔离;与 Nexus 的联合验收在 S3 的 Compose 里做 |
-| A04 | 默认 SQLite Compose | 未开始 | |
-| A05 | 快捷 PG Compose | 未开始 | |
-| A06 | 安装与升级失败 | 未开始 | |
+| A03 | 接已有共享 PG(LiteBox 一侧) | 本机通过 | 只在给定库里迁移、不建库;两个应用账号互相连不进对方的库;Nexus 本身的联合验收不在本仓库 |
+| A04 | 默认 SQLite Compose | 本机通过 | 只起主控;`down`/`up` 后数据还在;见 deploy.md §7 |
+| A05 | 快捷 PG Compose | 本机通过 | 健康依赖、5432 不发布、应用账号非超级用户;口令只用字母数字(特殊字符的 URL 编码未测) |
+| A06 | 安装与升级失败 | 部分 | 备份验证不过不删旧备份、迁移演练失败不动线上;跨版本回滚要等第二个发布版本 |
 | A07 | 64/128 MB SSH 节点 | 未开始 | |
 | A08 | Agent 连接中断与切换 | 未开始 | |
 | A09 | 用户入口撤权 | 未开始 | |

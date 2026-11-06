@@ -98,7 +98,10 @@ type HTTPConfig struct {
 	BaseURL string `yaml:"base_url"`
 	// SecureCookie 控制 Session Cookie 是否带 Secure 属性。
 	// 生产环境经 HTTPS 反代时必须为 true;本地 HTTP 调试时置 false。
-	SecureCookie    bool          `yaml:"secure_cookie"`
+	SecureCookie bool `yaml:"secure_cookie"`
+	// TrustProxy 决定是否采信 X-Forwarded-For:auto(默认)= 只监听回环时采信(前面必有反代);
+	// true / false 显式指定。容器里监听 0.0.0.0、前面又有反代时要设 true,否则记下的客户端地址全是反代的。
+	TrustProxy      string        `yaml:"trust_proxy"`
 	ReadTimeout     time.Duration `yaml:"read_timeout"`
 	WriteTimeout    time.Duration `yaml:"write_timeout"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
@@ -226,6 +229,15 @@ func applyEnv(cfg *Config) {
 	envStr("LITEBOX_HTTP_LISTEN", &cfg.HTTP.Listen)
 	envStr("LITEBOX_HTTP_BASE_URL", &cfg.HTTP.BaseURL)
 	envBool("LITEBOX_HTTP_SECURE_COOKIE", &cfg.HTTP.SecureCookie)
+	envStr("LITEBOX_HTTP_TRUST_PROXY", &cfg.HTTP.TrustProxy)
+	// 主密钥也可以放在只读 secret 文件里(容器部署):环境变量本身不等于加密,文件可以收紧权限。
+	if p, ok := os.LookupEnv("LITEBOX_MASTER_KEY_FILE"); ok && p != "" {
+		if b, err := os.ReadFile(p); err == nil {
+			cfg.Security.MasterKey = strings.TrimSpace(string(b))
+		} else {
+			masterKeyFileErr = fmt.Errorf("读取 LITEBOX_MASTER_KEY_FILE(%s): %w", p, err)
+		}
+	}
 	envStr("LITEBOX_DATABASE_PATH", &cfg.Database.Path)
 	// VNext 的数据库配置(DB02)。旧的 LITEBOX_DATABASE_PATH 照样认,新名字后读、优先。
 	envStr("LITEBOX_DB_DRIVER", &cfg.Database.Driver)
@@ -295,7 +307,19 @@ func envDuration(key string, dst *time.Duration) {
 
 // Validate 校验配置的完整性。主密钥的格式由 crypto 包校验,
 // 这里只确认必填项存在,避免在启动后期才失败。
+// masterKeyFileErr 记下读 LITEBOX_MASTER_KEY_FILE 时的错误,由 Validate 报出来 —— 读不到文件时
+// 不能悄悄当成「没配置主密钥」,那会把人引向去生成一把新的。
+var masterKeyFileErr error
+
 func (c Config) Validate() error {
+	if masterKeyFileErr != nil {
+		return masterKeyFileErr
+	}
+	switch strings.ToLower(c.HTTP.TrustProxy) {
+	case "", "auto", "true", "false":
+	default:
+		return fmt.Errorf("http.trust_proxy 取值非法: %q(auto / true / false)", c.HTTP.TrustProxy)
+	}
 	if c.HTTP.Listen == "" {
 		return fmt.Errorf("http.listen 不能为空")
 	}

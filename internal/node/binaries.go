@@ -46,6 +46,15 @@ type DirBinaryProvider struct {
 
 	mu    sync.Mutex
 	cache map[string]*cachedHash
+	// manifest 是发布清单(VNext CORE03);nil 表示开发环境自己构建、不核对。
+	manifest *Manifest
+}
+
+// SetManifest 让这个目录里的文件在分发前与发布清单核对。
+func (p *DirBinaryProvider) SetManifest(m *Manifest) {
+	p.mu.Lock()
+	p.manifest = m
+	p.mu.Unlock()
 }
 
 // cachedHash 是一份二进制的哈希,连同算它时文件的大小与修改时间。
@@ -117,6 +126,13 @@ func (p *DirBinaryProvider) Artifact(arch string) (Artifact, error) {
 	sum, err := fileSHA256(path)
 	if err != nil {
 		return Artifact{}, err
+	}
+	// 与发布清单核对:哈希对不上(被换过、下载不完整、构建串了)就拒绝分发,不往节点上送一份来路不明的东西。
+	if abs, err := filepath.Abs(path); err == nil {
+		if want, ok := p.manifest.lookup(abs); ok && want.SHA256 != sum {
+			return Artifact{}, fmt.Errorf("%s 与发布清单不一致(清单 %.12s,文件 %.12s),拒绝分发 —— 重新拉取这个版本的镜像或发布包",
+				path, want.SHA256, sum)
+		}
 	}
 	p.cache[arch] = &cachedHash{size: info.Size(), modTime: info.ModTime(), sha256: sum}
 	return Artifact{Path: path, Size: info.Size(), SHA256: sum}, nil

@@ -944,3 +944,30 @@ func TestBinaryProviderHashFollowsFile(t *testing.T) {
 		t.Error("空文件应当拒绝")
 	}
 }
+
+// 文件与发布清单的哈希对不上时拒绝分发;清单里没有这个文件时不拦(开发环境自己构建的)。
+func TestBinaryProviderChecksManifest(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "singbox")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "sing-box-linux-amd64"), []byte("good"), 0o755)
+	os.WriteFile(filepath.Join(dir, "sing-box-linux-arm64"), []byte("good-arm"), 0o755)
+	m, err := BuildManifest(root, "v9", "abc", []ManifestComponent{{Dir: "singbox", Prefix: "sing-box", Component: "sing-box", Version: "v1.14.0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	WriteManifest(m, filepath.Join(root, "release-manifest.json"))
+	loaded, err := LoadManifest(filepath.Join(root, "release-manifest.json"))
+	if err != nil || loaded == nil || len(loaded.Files) != 2 {
+		t.Fatalf("读清单: %+v %v", loaded, err)
+	}
+	p := NewDirBinaryProvider(dir)
+	p.SetManifest(loaded)
+	if _, err := p.Artifact("amd64"); err != nil {
+		t.Fatalf("与清单一致的文件应当能分发:%v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "sing-box-linux-arm64"), []byte("tampered"), 0o755)
+	if _, err := p.Artifact("arm64"); err == nil || !strings.Contains(err.Error(), "发布清单不一致") {
+		t.Fatalf("被换过的文件应当拒绝分发,得到 %v", err)
+	}
+}

@@ -1,0 +1,21 @@
+# 接已有 PostgreSQL(VNext DEPLOY02 / DB06):只部署主控,连管理员预先准备好的库与应用账号。
+# **不创建、不修改、不删除共享实例上的任何东西。**
+#
+#   docker compose -f compose.yaml -f compose.external-postgres.yaml up -d
+#
+# 连接串放在 secrets/db_dsn(一行)。跨主机连接请用可验证的 TLS:
+#   postgres://litebox:<URL 编码后的口令>@db.example.com:5432/litebox?sslmode=verify-full&sslrootcert=/data/pg-ca.pem
+# PG 在同一台宿主的另一个 Compose 项目里时:地址写那个项目里的服务名(不要写 localhost —— 那是容器自己),
+# 并叠加 compose.pg-network.yaml 加入它的网络。
+services:
+  litebox:
+    environment:
+      LITEBOX_DB_DRIVER: postgres
+      LITEBOX_DB_DSN_FILE: /run/secrets/litebox_db_dsn
+    secrets:
+      - litebox_master_key
+      - litebox_db_dsn
+
+secrets:
+  litebox_db_dsn:
+    file: ./secrets/db_dsn

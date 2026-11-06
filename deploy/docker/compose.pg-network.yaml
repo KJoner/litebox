@@ -1,0 +1,12 @@
+# 已有 PG 在同一台宿主的另一个 Compose 项目里:主控加入它所在的 external network。
+#   docker compose -f compose.yaml -f compose.external-postgres.yaml -f compose.pg-network.yaml up -d
+services:
+  litebox:
+    networks:
+      - default
+      - shared-pg
+
+networks:
+  shared-pg:
+    external: true
+    name: ${LITEBOX_PG_NETWORK:?请在 .env 里设置 LITEBOX_PG_NETWORK(已有 PG 所在的 external network 名)}
