@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -23,22 +24,49 @@ type State struct {
 	// SyncedAt 是上一次成功同步的时间,空串表示从没同步过。
 	SyncedAt  string `json:"synced_at"`
 	LastError string `json:"last_error"`
+	// IfacePinned 是管理员指定的计量网卡,空串 = 跟随默认路由(VNext TRAFFIC03,迁移 0050)。
+	// IfaceChangedAt 是换网卡的分界:之前的柱子来自另一块网卡,界面上要标出来。
+	IfacePinned    string `json:"iface_pinned"`
+	IfaceChangedAt string `json:"iface_changed_at"`
 }
 
 // State 返回状态行;没有时返回零值与 false。
 func (s *Store) State(ctx context.Context, nodeID int64) (State, bool, error) {
 	var st State
 	err := s.db.QueryRowContext(ctx, `
-		SELECT node_id, installed, iface, vnstat_version, synced_at, last_error
+		SELECT node_id, installed, iface, vnstat_version, synced_at, last_error, iface_pinned, iface_changed_at
 		  FROM host_traffic_state WHERE node_id = ?`, nodeID).Scan(
-		&st.NodeID, &st.Installed, &st.Iface, &st.VnstatVersion, &st.SyncedAt, &st.LastError)
+		&st.NodeID, &st.Installed, &st.Iface, &st.VnstatVersion, &st.SyncedAt, &st.LastError,
+		&st.IfacePinned, &st.IfaceChangedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return State{NodeID: nodeID}, false, nil
 	}
 	return st, err == nil, err
 }
 
-// SaveState 整行 upsert。
+// SetPinned 指定计量网卡(空串 = 跟随默认路由),返回是否真的换了。只改这两列,同步写的那几列不动 ——
+// SaveState 是同步结果的整行写入,让它顺带覆盖管理员的选择,下一轮同步就会把选择抹掉。
+func (s *Store) SetPinned(ctx context.Context, nodeID int64, iface string) (bool, error) {
+	if iface != "" && !ifacePattern.MatchString(iface) {
+		return false, fmt.Errorf("网卡名 %q 不合法", iface)
+	}
+	st, _, err := s.State(ctx, nodeID)
+	if err != nil {
+		return false, err
+	}
+	if st.IfacePinned == iface {
+		return false, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO host_traffic_state (node_id, iface_pinned, iface_changed_at, updated_at) VALUES (?,?,?,?)
+		ON CONFLICT(node_id) DO UPDATE SET iface_pinned = excluded.iface_pinned,
+			iface_changed_at = excluded.iface_changed_at, updated_at = excluded.updated_at`,
+		nodeID, iface, now, now)
+	return err == nil, err
+}
+
+// SaveState 整行 upsert(不含 iface_pinned / iface_changed_at,那两列只由 SetPinned 写)。
 func (s *Store) SaveState(ctx context.Context, st State) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO host_traffic_state

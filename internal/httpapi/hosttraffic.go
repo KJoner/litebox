@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/hosttraffic"
+	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/traffic"
 )
 
@@ -135,4 +138,97 @@ func (s *Server) handleNodeHostTrafficInstall(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result, "summary": summary})
+}
+
+// handleNodeQuotaSource 切换节点额度的数据来源(代理折算 / 网卡实测)。
+func (s *Server) handleNodeQuotaSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Source string `json:"source"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	changed, err := s.nodes.Store().SetQuotaSource(r.Context(), id, strings.ToUpper(strings.TrimSpace(req.Source)))
+	if err != nil {
+		if errors.Is(err, node.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "节点不存在")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if changed {
+		admin := adminFromContext(r.Context())
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionNodeUpdate, TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+			Detail:   "节点额度数据来源改为 " + req.Source,
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"changed": changed})
+}
+
+// handleNodeHostInterfaces 列出这台机器的网卡与当前指定的计量网卡(只读,一次 SSH)。
+func (s *Server) handleNodeHostInterfaces(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	if s.hostTraffic == nil {
+		writeError(w, http.StatusServiceUnavailable, "主机流量未启用")
+		return
+	}
+	st, _, err := s.hostTraffic.Store().State(r.Context(), id)
+	if err != nil {
+		s.writeNodeError(w, err, "读取主机流量状态失败")
+		return
+	}
+	list, err := s.hostTraffic.Interfaces(r.Context(), id)
+	if err != nil {
+		s.writeNodeError(w, err, "读取网卡列表失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"interfaces": list, "state": st})
+}
+
+// handleNodeHostInterface 指定计量网卡(空串 = 跟随默认路由)。下一次同步起生效,换网卡的时刻记作分界。
+func (s *Server) handleNodeHostInterface(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	if s.hostTraffic == nil {
+		writeError(w, http.StatusServiceUnavailable, "主机流量未启用")
+		return
+	}
+	var req struct {
+		Iface string `json:"iface"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	changed, err := s.hostTraffic.Store().SetPinned(r.Context(), id, strings.TrimSpace(req.Iface))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if changed {
+		admin := adminFromContext(r.Context())
+		what := req.Iface
+		if what == "" {
+			what = "跟随默认路由"
+		}
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionNodeUpdate, TargetType: "node", TargetID: strconv.FormatInt(id, 10),
+			Detail:   "主机流量计量网卡改为 " + what,
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"changed": changed})
 }

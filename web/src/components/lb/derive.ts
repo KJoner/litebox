@@ -25,7 +25,7 @@ export function isExpiringSoon(u: ProxyUser): boolean {
 /** 不限量的用户永远不算「接近上限」:没有上限可接近。 */
 export function isNearQuota(u: ProxyUser): boolean {
   if (u.quota_bytes <= 0) return false
-  return u.used_total / u.quota_bytes >= threshold.nearQuotaRatio
+  return (u.billed_bytes ?? u.used_total) / u.quota_bytes >= threshold.nearQuotaRatio
 }
 
 /** 等级继承 + 额外授权合并后一个都没有。这是最容易被忽略的「配好了但用不了」。 */

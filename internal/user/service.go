@@ -3,6 +3,9 @@ package user
 import (
 	"context"
 	"log/slog"
+	"time"
+
+	"github.com/litebox/litebox/internal/billing"
 
 	"github.com/litebox/litebox/internal/singbox"
 )
@@ -222,4 +225,26 @@ func (s *Service) SetEntryAccess(ctx context.Context, e EntryRef, restricted boo
 		s.markNodes([]int64{nodeID})
 	}
 	return nodeID, nil
+}
+
+// SetBilling 改计费规则。立即生效可能让人因此超额(或解除超额)—— 那时归属不变、但节点上该不该有他的凭据变了,
+// 所以前后可服务状态不同就标脏他的有效节点。下一周期生效不碰节点。
+func (s *Service) SetBilling(ctx context.Context, id int64, next billing.Rule, immediate bool) (*BillingChange, error) {
+	before, err := s.store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	change, err := s.store.SetBilling(ctx, id, next, immediate)
+	if err != nil {
+		return nil, err
+	}
+	after, err := s.store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if before.Serviceable(now) != after.Serviceable(now) {
+		s.markNodes(after.EffectiveNodeIDs)
+	}
+	return change, nil
 }

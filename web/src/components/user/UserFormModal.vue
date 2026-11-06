@@ -281,8 +281,8 @@ async function submit() {
               class="uf__quota-num"
             />
             <a-select v-model:value="form.quota_unit" class="uf__quota-unit">
-              <a-select-option value="GB">GB</a-select-option>
-              <a-select-option value="TB">TB</a-select-option>
+              <a-select-option value="GB">GiB</a-select-option>
+              <a-select-option value="TB">TiB</a-select-option>
             </a-select>
           </div>
         </div>

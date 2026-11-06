@@ -89,6 +89,8 @@ func (s *Server) handleUserTraffic(w http.ResponseWriter, r *http.Request) {
 		"used_uplink":   u.UsedUplink,
 		"used_downlink": u.UsedDownlink,
 		"used_total":    u.UsedTotal(),
+		"billed_bytes":  u.BilledBytes(),
+		"billing_label": u.BillingSegment().Rule.Label(),
 		"quota_bytes":   u.QuotaBytes,
 		"range":         report.Range,
 		"total":         report.Total,

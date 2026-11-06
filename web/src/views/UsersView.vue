@@ -519,7 +519,7 @@ onMounted(load)
             <span v-else>{{ nodeCountOf(u) }} 个节点</span>
           </div>
           <LbQuotaBar
-            :used-bytes="u.used_total"
+            :used-bytes="u.billed_bytes ?? u.used_total"
             :quota-bytes="u.quota_bytes"
             :warning-level="
               u.status === 'QUOTA_EXCEEDED'
@@ -632,7 +632,7 @@ onMounted(load)
 
           <template v-else-if="column.key === 'used'">
             <LbQuotaBar
-              :used-bytes="record.used_total"
+              :used-bytes="record.billed_bytes ?? record.used_total"
               :quota-bytes="record.quota_bytes"
               :warning-level="
                 record.status === 'QUOTA_EXCEEDED'

@@ -33,6 +33,10 @@ const (
 type userResponse struct {
 	*user.User
 	UsedTotal int64 `json:"used_total"`
+	// BilledBytes 是按计费规则算出的本周期计费流量,与 quota_bytes 同口径;额度进度条与剩余量都看它。
+	// used_total 仍是原始上行 + 下行(用户视角),两者在默认规则下相等。
+	BilledBytes  int64  `json:"billed_bytes"`
+	BillingLabel string `json:"billing_label"`
 	// PortalAccount 为 nil 表示该用户还没有门户登录账号。
 	// 结构体里没有密码哈希,不存在漏掉字段过滤的可能。
 	PortalAccount *portal.Account `json:"portal_account"`
@@ -53,9 +57,11 @@ type userResponse struct {
 
 func toResponse(u *user.User) userResponse {
 	return userResponse{
-		User:        u,
-		UsedTotal:   u.UsedTotal(),
-		NextResetAt: portal.NextResetAt(u, time.Now().UTC()),
+		User:         u,
+		UsedTotal:    u.UsedTotal(),
+		BilledBytes:  u.BilledBytes(),
+		BillingLabel: u.BillingSegment().Rule.Label(),
+		NextResetAt:  portal.NextResetAt(u, time.Now().UTC()),
 	}
 }
 

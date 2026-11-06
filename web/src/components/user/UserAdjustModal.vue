@@ -308,8 +308,8 @@ async function submit() {
           <a-col :span="10">
             <a-form-item label="单位">
               <a-select v-model:value="form.quota_unit">
-                <a-select-option value="GB">GB</a-select-option>
-                <a-select-option value="TB">TB</a-select-option>
+                <a-select-option value="GB">GiB</a-select-option>
+                <a-select-option value="TB">TiB</a-select-option>
               </a-select>
             </a-form-item>
           </a-col>

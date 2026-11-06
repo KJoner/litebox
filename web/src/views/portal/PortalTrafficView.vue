@@ -116,7 +116,7 @@ const maxShare = computed(() =>
       class="pt__alert"
       :class="quota.used_percent >= 100 ? 'pt__alert--error' : 'pt__alert--warn'"
     >
-      已用 {{ formatBytes(quota.used_total) }},占额度的 {{ Math.round(quota.used_percent) }}%。
+      已用 {{ formatBytes(quota.billed_bytes ?? quota.used_total) }},占额度的 {{ Math.round(quota.used_percent) }}%。
       <template v-if="quota.used_percent >= 100">
         账号已自动停用,客户端会连不上。
       </template>
@@ -132,8 +132,9 @@ const maxShare = computed(() =>
         <div class="pt__totals">
           <div class="pt__total">
             <span>额度已用 <LbInfoTip :text="QUOTA_PERIOD_TIP" :width="300" /></span>
-            <b class="lb-tabular">{{ formatBytes(quota.used_total) }}</b>
+            <b class="lb-tabular">{{ formatBytes(quota.billed_bytes ?? quota.used_total) }}</b>
             <em>/ {{ formatQuota(quota.quota_bytes) }}</em>
+            <em v-if="quota.billing_label && quota.billing_label !== '双向合计 ×1'" class="pt__rule">按「{{ quota.billing_label }}」计算</em>
           </div>
           <div class="pt__total">
             <span>上行</span>
@@ -145,7 +146,7 @@ const maxShare = computed(() =>
           </div>
         </div>
         <LbQuotaBar
-          :used-bytes="quota.used_total"
+          :used-bytes="quota.billed_bytes ?? quota.used_total"
           :quota-bytes="quota.quota_bytes"
           :warning-level="warningLevel"
           size="md"

@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/litebox/litebox/internal/billing"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +96,19 @@ type User struct {
 	// DIRECT_ONLY = 只有直接授权的入口。改它走 SetAccess,不走 Update。
 	AccessMode string `json:"access_mode"`
 
+	// 计费规则(VNext TRAFFIC02,迁移 0050)。改它走 SetBilling。
+	BillingMode          string `json:"billing_mode"`
+	BillingMultiplierPct int    `json:"billing_multiplier_pct"`
+	BillingRuleVersion   int    `json:"billing_rule_version"`
+	// BillingNext* 是「下一周期生效」的待生效规则,空串表示没有。
+	BillingNextMode          string `json:"billing_next_mode"`
+	BillingNextMultiplierPct int    `json:"billing_next_multiplier_pct"`
+	// 本周期中途立即改过规则时:旧段封存的计费字节与新段起点。
+	BillingSealedBytes  int64  `json:"billing_sealed_bytes"`
+	BillingBaseUplink   int64  `json:"billing_base_uplink"`
+	BillingBaseDownlink int64  `json:"billing_base_downlink"`
+	BillingChangedAt    string `json:"billing_changed_at"`
+
 	// NodeIDs 是管理员单独追加的节点(user_nodes),编辑页面改的就是它。
 	NodeIDs []int64 `json:"node_ids"`
 	// EffectiveNodeIDs 是等级继承与额外授权合并后的实际可用节点。
@@ -121,12 +135,30 @@ type User struct {
 	SubAccessCount   int64   `json:"sub_access_count"`
 }
 
-// UsedTotal 返回累计已用流量。
+// UsedTotal 返回本周期的原始流量(上行 + 下行),不套计费规则。额度比较用 BilledBytes。
 func (u User) UsedTotal() int64 { return u.UsedUplink + u.UsedDownlink }
 
-// QuotaExceeded 判断是否已超额。额度为 0 表示不限量。
+// BillingSegment 是这个用户本周期的计费状态。零值的规则按默认(双向合计 ×1)算 ——
+// 只扫了部分列的 User(测试、旧调用点)因此与升级前的口径一致,不会凭空变成别的规则。
+func (u User) BillingSegment() billing.Segment {
+	rule := billing.Rule{Mode: billing.Mode(u.BillingMode), MultiplierPct: u.BillingMultiplierPct}
+	if rule.Mode == "" {
+		rule.Mode = billing.ModeSum
+	}
+	if rule.MultiplierPct == 0 {
+		rule.MultiplierPct = billing.DefaultMultiplier
+	}
+	return billing.Segment{Rule: rule, Sealed: u.BillingSealedBytes, BaseUp: u.BillingBaseUplink, BaseDown: u.BillingBaseDownlink}
+}
+
+// BilledBytes 是本周期按计费规则算出的计费流量,与 quota_bytes 同口径。
+func (u User) BilledBytes() int64 {
+	return billing.Billed(u.BillingSegment(), u.UsedUplink, u.UsedDownlink)
+}
+
+// QuotaExceeded 判断是否已超额。额度为 0 表示不限量。比较的是计费流量,不是原始 U + D。
 func (u User) QuotaExceeded() bool {
-	return u.QuotaBytes > 0 && u.UsedTotal() >= u.QuotaBytes
+	return u.QuotaBytes > 0 && u.BilledBytes() >= u.QuotaBytes
 }
 
 // Expired 判断是否已过期。
@@ -163,7 +195,14 @@ const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypt
 	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
 	u.reset_cycle, u.reset_day, u.last_reset_at, u.created_at, u.updated_at,
 	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
-	u.access_tier_id, t.code, t.name, t.level, u.access_mode`
+	u.access_tier_id, t.code, t.name, t.level, u.access_mode,
+	` + billingColumns + `, u.billing_rule_version, u.billing_next_mode, u.billing_next_multiplier_pct, u.billing_changed_at`
+
+// billingColumns 是判定「超没超额」必须一起读的计费列。凡是要调 Serviceable / QuotaExceeded 的查询
+// 都带上它(scanBilling 一处扫描):少读一列,那一处就按默认规则算,与面板上显示的结论分叉 ——
+// 面板说没超额,节点上却已经把人停了(或者反过来)。
+const billingColumns = `u.billing_mode, u.billing_multiplier_pct, u.billing_sealed_bytes,
+	u.billing_base_uplink, u.billing_base_downlink`
 
 // userFrom 固定带上等级表:等级是用户的必备属性,分两次查会出现
 // "列表里有等级、详情里没有"这种前端只能靠猜的差异。
@@ -177,7 +216,9 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
 		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
 		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
-		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel, &u.AccessMode)
+		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel, &u.AccessMode,
+		&u.BillingMode, &u.BillingMultiplierPct, &u.BillingSealedBytes, &u.BillingBaseUplink, &u.BillingBaseDownlink,
+		&u.BillingRuleVersion, &u.BillingNextMode, &u.BillingNextMultiplierPct, &u.BillingChangedAt)
 	if err != nil {
 		return nil, err
 	}

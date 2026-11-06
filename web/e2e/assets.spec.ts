@@ -135,7 +135,7 @@ test('头部两行:第一行状态带开机时长,第二行是异常标记与自
   await expect(card(page, 'NODE-2').getByTestId('card-state')).toHaveText('在线 49 天')
   await expect(card(page, 'NODE-1')).not.toContainText('运行中')
   // 上海:实时网速(16 秒前);东京:资源采样里的网速。
-  await expect(card(page, 'NODE-1').getByTestId('card-rates')).toContainText('1.23 KB/s')
+  await expect(card(page, 'NODE-1').getByTestId('card-rates')).toContainText('1.23 KiB/s')
   await expect(card(page, 'NODE-1').getByTestId('card-rates')).toContainText('640 B/s')
   await expect(card(page, 'NODE-1').getByTestId('card-rates')).toHaveAttribute('title', /最近 30 秒的平均网速/)
   await expect(card(page, 'NODE-2').getByTestId('card-rates')).toHaveAttribute('title', /资源采样里的网速/)

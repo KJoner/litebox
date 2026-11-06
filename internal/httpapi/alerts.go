@@ -180,7 +180,7 @@ func buildDashboardAlerts(users []*user.User, nodes []*node.Node,
 			continue
 		}
 		if u.QuotaBytes > 0 {
-			percent := float64(u.UsedTotal()) / float64(u.QuotaBytes) * 100
+			percent := float64(u.BilledBytes()) / float64(u.QuotaBytes) * 100
 			switch {
 			case percent >= 100:
 				alerts = append(alerts, Alert{AlertError, "user", u.DisplayName, u.ID,
