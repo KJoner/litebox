@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/litebox/litebox/internal/externalproxy"
@@ -259,23 +260,44 @@ func (s *Store) ClearChain(ctx context.Context, inboundID int64) error {
 // 中转连不上落地(部署时拨测失败并回滚),漏在 stats 白名单里的表现是
 // 链路正常工作而落地的节点用量少算了经中转过来的全部流量,后者没有任何报错。
 func (s *Store) ChainUsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error) {
+	m, err := s.ChainUsersForInbounds(ctx, []int64{inboundID})
+	if err != nil {
+		return nil, err
+	}
+	if users := m[inboundID]; users != nil {
+		return users, nil
+	}
+	return []singbox.User{}, nil
+}
+
+// ChainUsersForInbounds 是批量版(节点列表一次取全部入口的,VNext PERF03);单个入口就是只有一个 id 的批量。
+func (s *Store) ChainUsersForInbounds(ctx context.Context, inboundIDs []int64) (map[int64][]singbox.User, error) {
+	out := make(map[int64][]singbox.User, len(inboundIDs))
+	if len(inboundIDs) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(inboundIDs))
+	args := make([]any, len(inboundIDs))
+	for i, id := range inboundIDs {
+		ph[i], args[i] = "?", id
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT chain_code, chain_uuid_encrypted, chain_ss_password_encrypted
+		SELECT chain_target_inbound_id, chain_code, chain_uuid_encrypted, chain_ss_password_encrypted
 		  FROM node_inbounds
 		 WHERE deleted_at IS NULL
 		   AND chain_target_kind = 'INBOUND'
-		   AND chain_target_inbound_id = ?
+		   AND chain_target_inbound_id IN (`+strings.Join(ph, ",")+`)
 		   AND chain_code != ''
-		 ORDER BY chain_code`, inboundID)
+		 ORDER BY chain_target_inbound_id, chain_code`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	users := make([]singbox.User, 0)
 	for rows.Next() {
+		var target int64
 		var code, uuidEnc, ssEnc string
-		if err := rows.Scan(&code, &uuidEnc, &ssEnc); err != nil {
+		if err := rows.Scan(&target, &code, &uuidEnc, &ssEnc); err != nil {
 			return nil, err
 		}
 		u := singbox.User{Code: code}
@@ -289,9 +311,9 @@ func (s *Store) ChainUsersForInbound(ctx context.Context, inboundID int64) ([]si
 				return nil, fmt.Errorf("解密链路 %s 的 Shadowsocks 密钥: %w", code, err)
 			}
 		}
-		users = append(users, u)
+		out[target] = append(out[target], u)
 	}
-	return users, rows.Err()
+	return out, rows.Err()
 }
 
 // ChainSourceNodeIDs 返回把出站链到这个落地入站的全部机器 ID。

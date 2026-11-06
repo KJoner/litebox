@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/netprobe"
 )
 
@@ -485,7 +486,11 @@ func (l *Library) Apply(ctx context.Context, req ApplyRequest) (*ApplyResult, er
 		}
 		meta := publicMeta{Source: req.Source, SourceKey: rowKey(it.Key, mode), Role: it.Role,
 			Upstream: encodeUpstream(it.Upstream, hostMode)}
-		if _, err := l.store.createPublic(ctx, tx, in, meta, floor); err != nil {
+		// 撞了唯一约束就跳过这一条、接着导下一条:包在保存点里,PG 下一条语句出错会让整个事务中止。
+		if err := database.Savepoint(ctx, tx, "import_item", func() error {
+			_, err := l.store.createPublic(ctx, tx, in, meta, floor)
+			return err
+		}); err != nil {
 			if errors.Is(err, ErrPublicDuplicate) || isUnique(err) {
 				res.Skipped = append(res.Skipped, it.Name+":已经在目标库里")
 				continue

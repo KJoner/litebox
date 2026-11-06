@@ -96,8 +96,10 @@ func run() error {
 		return cmdSSHKey(args)
 	case "serve":
 		return cmdServe(args)
+	case "db":
+		return cmdDB(args)
 	default:
-		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check genkey ssh-key reset-password version)", command)
+		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check db genkey ssh-key reset-password version)", command)
 	}
 }
 
@@ -163,7 +165,7 @@ func setup(fs *flag.FlagSet, args []string) (config.Config, *slog.Logger, *sql.D
 
 	logger := newLogger(cfg.Log)
 
-	db, err := database.OpenSQLite(cfg.Database.Path, cfg.Database.BusyTimeout, cfg.Database.ReadConns)
+	db, err := openDatabase(cfg.Database)
 	if err != nil {
 		return cfg, logger, nil, err
 	}
@@ -172,6 +174,21 @@ func setup(fs *flag.FlagSet, args []string) (config.Config, *slog.Logger, *sql.D
 		return cfg, logger, nil, err
 	}
 	return cfg, logger, db, nil
+}
+
+// openDatabase 按配置打开 SQLite 或 PostgreSQL(VNext DB01)。PG 连不上直接报错,不回落。
+func openDatabase(cfg config.DatabaseConfig) (*sql.DB, error) {
+	if !cfg.IsPostgres() {
+		return database.OpenSQLite(cfg.Path, cfg.BusyTimeout, cfg.ReadConns)
+	}
+	dsn, err := cfg.ResolveDSN()
+	if err != nil {
+		return nil, err
+	}
+	return database.OpenPostgres(database.PGOptions{
+		DSN: dsn, MaxOpen: cfg.MaxOpen,
+		ConnectTimeout: cfg.ConnectTimeout, StatementTimeout: cfg.StatementTimeout,
+	})
 }
 
 func newLogger(cfg config.LogConfig) *slog.Logger {
@@ -327,6 +344,22 @@ func cmdServe(args []string) error {
 		return err
 	}
 	defer db.Close()
+
+	// 单活动主控锁(VNext §03.2):第二个实例拿不到就拒绝启动,不跑调度、不碰节点。
+	// PG 下锁所在的连接断了又取不回来时退出进程 —— 失去锁之后继续提交变更正是它要防的事。
+	runLock, err := database.AcquireRunLock(context.Background(), db, cfg.Database.Path, logger, func(err error) {
+		logger.Error("失去单活动主控锁,进程退出以免两个主控同时写", "error", err)
+		os.Exit(3)
+	})
+	if err != nil {
+		return err
+	}
+	defer runLock.Release()
+	if cfg.Database.IsPostgres() {
+		logger.Info("存储引擎", "driver", "postgres")
+	} else {
+		logger.Info("存储引擎", "driver", "sqlite", "path", cfg.Database.Path)
+	}
 
 	// 主密钥必须在启动时就验证可用,不能等到第一次加密用户 UUID 时才失败。
 	cipher, err := crypto.NewCipher(cfg.Security.MasterKey)

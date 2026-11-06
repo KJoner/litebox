@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 )
 
 func TestLayoutPaths(t *testing.T) {
@@ -56,14 +56,7 @@ func TestStepRecorderCapturesOutcomes(t *testing.T) {
 }
 
 func TestStoreSaveAndList(t *testing.T) {
-	db, err := database.Open(filepath.Join(t.TempDir(), "deploy.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	if _, err := db.Exec(`
 		INSERT INTO nodes (id, name, host, proxy_port, reality_dest, reality_privkey_encrypted,
 			reality_pubkey, reality_short_id, created_at, updated_at)
@@ -114,14 +107,7 @@ func TestStoreSaveAndList(t *testing.T) {
 }
 
 func TestStoreListRecentReturnsEmptySlice(t *testing.T) {
-	db, err := database.Open(filepath.Join(t.TempDir(), "deploy2.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 
 	// 没有记录时返回空切片而非 nil,前端拿到的才是 [] 而不是 null。
 	records, err := NewStore(db).ListRecent(t.Context(), 10)

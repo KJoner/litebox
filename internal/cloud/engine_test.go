@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/litebox/litebox/internal/aliyun"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/notify"
 )
 
@@ -124,14 +124,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "cloud.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	key, _ := crypto.GenerateMasterKey()
 	cipher, err := crypto.NewCipher(key)
 	if err != nil {
@@ -139,12 +132,12 @@ func newHarness(t *testing.T) *harness {
 	}
 	// 一台节点:引擎只认 node_id,这里插最少的列。
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.Exec(`INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id, created_at, updated_at)
+	id, err := database.InsertID(context.Background(), db, `INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id, created_at, updated_at)
 		VALUES ('hk', '1.2.3.4', 443, 'x', '', '', '', ?, ?)`, now, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeID, _ := res.LastInsertId()
+	nodeID := id
 
 	h := &harness{t: t, db: db, api: &fakeAPI{status: map[string]aliyun.InstanceStatus{}, details: map[string]aliyun.Instance{}}, nodeID: nodeID}
 	h.store = NewStore(db, cipher)
@@ -428,9 +421,9 @@ func TestStoreGuardsBindingsAndAccounts(t *testing.T) {
 	h.bind(BindingParams{})
 	// 同一实例不能绑第二个节点。
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, _ := h.db.Exec(`INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id, created_at, updated_at)
+	id, _ := database.InsertID(context.Background(), h.db, `INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id, created_at, updated_at)
 		VALUES ('hk2', '1.2.3.5', 443, 'x', '', '', '', ?, ?)`, now, now)
-	other, _ := res.LastInsertId()
+	other := id
 	if _, err := h.store.SaveBinding(ctx, other, BindingParams{AccountID: h.acct.ID, RegionID: "cn-hongkong", InstanceID: "i-abc"}); !errors.Is(err, ErrInstanceBound) {
 		t.Fatalf("同一实例绑两个节点应被拒,得到 %v", err)
 	}

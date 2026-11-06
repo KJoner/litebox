@@ -14,6 +14,8 @@ import (
 
 	"github.com/litebox/litebox/internal/boce"
 	"github.com/litebox/litebox/internal/netprobe"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // Boce 任务:一台节点上的一个入口 + 若干拨测点 + 一张时间表。
@@ -288,7 +290,7 @@ func (s *Store) CreateBoceTask(ctx context.Context, nodeID int64, in BoceTaskInp
 	}
 	defer tx.Rollback()
 	// check_type 是 0043 的列,CHECK 只收 'TCPING',已冻结;测法写 test_type。
-	res, err := tx.ExecContext(ctx, `INSERT INTO boce_tasks (node_id, name, check_type, test_type, ref, family, vantage_ids, schedule_mode,
+	id, err := database.InsertID(ctx, tx, `INSERT INTO boce_tasks (node_id, name, check_type, test_type, ref, family, vantage_ids, schedule_mode,
 		interval_min, times, window_start, window_end, weekdays, timezone, month_points_limit, enabled, note, created_at, updated_at)
 		VALUES (?,?,'TCPING',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		nodeID, in.Name, in.TestType, hit.Ref, FamilyV4, intsJSON(in.VantageIDs), in.Mode, in.IntervalMin, strings.Join(in.Times, ","),
@@ -296,7 +298,6 @@ func (s *Store) CreateBoceTask(ctx context.Context, nodeID int64, in BoceTaskInp
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	t, err := scanBoceTask(tx.QueryRowContext(ctx, `SELECT `+boceTaskColumns+` FROM boce_tasks WHERE id = ?`, id))
 	if err != nil {
 		return nil, err

@@ -439,7 +439,7 @@ func (q *Querier) assemble(ctx context.Context, queries []NodeCycleQuery) ([]Nod
 	for _, item := range queries {
 		period := CalculateNodePeriod(item.Cycle, item.ResetDay, item.CreatedAt, now)
 		periods[item.NodeID] = period
-		values = append(values, "SELECT ? AS node_id, ? AS period_start")
+		values = append(values, "SELECT CAST(? AS BIGINT) AS node_id, CAST(? AS TEXT) AS period_start")
 		args = append(args, item.NodeID, period.Start.UTC().Format(time.RFC3339))
 	}
 

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/crypto"
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
@@ -24,14 +24,7 @@ const testSSHKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA
 
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "node.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	key, err := crypto.GenerateMasterKey()
 	if err != nil {
 		t.Fatal(err)

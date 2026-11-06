@@ -48,6 +48,15 @@ const (
 // 返回的第二个值是 needs_deploy,与状态分开给:前者驱动界面上的「该部署了」
 // 提示,后者只描述事实。不确定的时候不催 —— 催错了管理员会去重启一台正常的机器。
 func (s *Service) ConfigStatus(ctx context.Context, n *Node) (ConfigState, bool) {
+	// 单台也一次取齐这台机器全部入口的凭据(三条查询,而不是每个入口三条)。
+	pf, err := s.prefetchRender(ctx, []*Node{n})
+	if err != nil {
+		pf = nil
+	}
+	return s.configStatusWith(ctx, n, pf)
+}
+
+func (s *Service) configStatusWith(ctx context.Context, n *Node, pf *renderPrefetch) (ConfigState, bool) {
 	// 中转机上不跑 sing-box,"库里的配置是否已在节点上生效"在它身上没有主语。
 	// 它的中转配置由「转发」面板下发,与这里说的配置是两件事。
 	if n.Role.IsRelay() {
@@ -66,7 +75,7 @@ func (s *Service) ConfigStatus(ctx context.Context, n *Node) (ConfigState, bool)
 		return ConfigNeverDeployed, deployable
 	}
 
-	desired, err := s.desiredConfig(ctx, n.ID)
+	desired, err := s.desiredConfigWith(ctx, n.ID, pf)
 	if err != nil {
 		// 渲染不出来就说不知道,不猜 IN_SYNC ——
 		// 猜出来的「已同步」会让管理员不去部署,被移出的用户就一直还能用。
@@ -129,13 +138,18 @@ func anyMieruEgress(n *Node) bool {
 
 // ConfigStatuses 批量计算,供节点列表一次算完。
 //
-// 每个节点一次「查用户 + 渲染」,10 台机器就是 10 次 —— 都是内存与本地 SQLite,
-// 与列表本身的开销同量级。不做缓存:缓存一旦过期,显示的就是「已同步」而实际没同步,
-// 那正是这个字段要避免的那种骗人。
+// 全部入口的凭据先一次批量取好(prefetchRender),再逐台渲染 —— 渲染本身仍然每次现做。
+// 不做缓存:缓存一旦过期,显示的就是「已同步」而实际没同步,那正是这个字段要避免的那种骗人。
 func (s *Service) ConfigStatuses(ctx context.Context, nodes []*Node) map[int64]NodeConfigStatus {
 	out := make(map[int64]NodeConfigStatus, len(nodes))
+	// 全部入口的凭据一次批量取好(VNext PERF03);取失败就退回逐个查,结果一样,只是慢。
+	pf, err := s.prefetchRender(ctx, nodes)
+	if err != nil {
+		s.logger.Warn("批量读取入口凭据失败,逐个入口去查", "error", err)
+		pf = nil
+	}
 	for _, n := range nodes {
-		state, needs := s.ConfigStatus(ctx, n)
+		state, needs := s.configStatusWith(ctx, n, pf)
 		out[n.ID] = NodeConfigStatus{State: state, NeedsDeploy: needs}
 	}
 	return out

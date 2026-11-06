@@ -2,23 +2,16 @@ package access
 
 import (
 	"database/sql"
-	"path/filepath"
 	"testing"
-	"time"
 
+	"context"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 )
 
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "access.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	return db
 }
 
@@ -26,7 +19,7 @@ const ts = "2026-08-03T00:00:00Z"
 
 func addUser(t *testing.T, db *sql.DB, code string, tierID int64) int64 {
 	t.Helper()
-	res, err := db.Exec(`
+	id, err := database.InsertID(context.Background(), db, `
 		INSERT INTO proxy_users (user_code, display_name, uuid_encrypted, sub_token_hash,
 			access_tier_id, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?)`,
@@ -34,7 +27,6 @@ func addUser(t *testing.T, db *sql.DB, code string, tierID int64) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
@@ -45,7 +37,7 @@ func addUser(t *testing.T, db *sql.DB, code string, tierID int64) int64 {
 // 现在是入口那一层的投影,而不是一条独立的规则。
 func addNode(t *testing.T, db *sql.DB, name string, tierID int64) int64 {
 	t.Helper()
-	res, err := db.Exec(`
+	id, err := database.InsertID(context.Background(), db, `
 		INSERT INTO nodes (name, display_name, host, proxy_port, listen_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			created_at, updated_at)
@@ -55,7 +47,6 @@ func addNode(t *testing.T, db *sql.DB, name string, tierID int64) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	if _, err := db.Exec(`
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,

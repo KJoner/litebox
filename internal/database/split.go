@@ -36,6 +36,7 @@ type splitConnector struct {
 
 	mu     sync.Mutex
 	writer driver.Conn
+	stats  queryStats
 }
 
 func newSplitConnector(drv driver.Driver, writerDSN, readerDSN string) *splitConnector {
@@ -50,7 +51,13 @@ func (c *splitConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return &splitConn{c: c, reader: reader}, nil
 }
 
-func (c *splitConnector) Driver() driver.Driver { return c.drv }
+func (c *splitConnector) Driver() driver.Driver { return &splitDriver{Driver: c.drv, stats: &c.stats} }
+
+// splitDriver 只是给 db.Driver() 一个能认出来的类型(QueryCount 要用),开连接仍走 Connector。
+type splitDriver struct {
+	driver.Driver
+	stats *queryStats
+}
 
 // Close 由 sql.DB.Close 调用。
 func (c *splitConnector) Close() error {
@@ -110,6 +117,7 @@ func (s *splitConn) Prepare(query string) (driver.Stmt, error) {
 }
 
 func (s *splitConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	s.c.stats.n.Add(1)
 	if s.tx != nil {
 		return s.writer.(driver.ConnPrepareContext).PrepareContext(ctx, query)
 	}
@@ -156,6 +164,7 @@ func (t *splitTx) end(fn func() error) error {
 }
 
 func (s *splitConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	s.c.stats.n.Add(1)
 	if s.tx != nil {
 		return s.writer.(driver.ExecerContext).ExecContext(ctx, query, args)
 	}
@@ -168,6 +177,7 @@ func (s *splitConn) ExecContext(ctx context.Context, query string, args []driver
 }
 
 func (s *splitConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	s.c.stats.n.Add(1)
 	if s.tx != nil {
 		return s.writer.(driver.QueryerContext).QueryContext(ctx, query, args)
 	}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"context"
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -225,7 +227,7 @@ func TestEntryForFailsWithoutUserKey(t *testing.T) {
 // 这一列正是本节要验证的东西。
 func (e *subEnv) addSSNode(t *testing.T, name string, deployedProtocol string) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, display_name, host, ipv6_address, proxy_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id, status,
 			deployed_config_sha256, access_tier_id, sort_order, subscription_enabled,
@@ -241,7 +243,6 @@ func (e *subEnv) addSSNode(t *testing.T, name string, deployedProtocol string) i
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	// 订阅只反映【入站】上已经生效的那一列(deployed_protocol),
 	// 期望协议留在 protocol 上不动 —— 这正是本节要验证的窗口。
 	if _, err := e.db.Exec(`

@@ -5,18 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/litebox/litebox/internal/database"
 	"io"
 	"log/slog"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/notify"
 )
 
@@ -339,14 +339,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "probe.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	e := &env{db: db, store: NewStore(db), dialer: &fakeDialer{}, res: &fakeResolver{records: map[string][]net.IP{}},
 		notif: &fakeNotifier{}, clock: time.Date(2026, 10, 18, 3, 0, 0, 0, time.UTC), cfg: DefaultConfig(),
 		skip: map[int64]string{}}
@@ -367,12 +360,18 @@ func (e *env) engine() *Engine {
 
 func (e *env) exec(t *testing.T, q string, args ...any) int64 {
 	t.Helper()
-	res, err := e.db.Exec(q, args...)
-	if err != nil {
+	// INSERT 走 RETURNING id(PG 不支持 LastInsertId),其余语句只执行。
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(q)), "INSERT") {
+		id, err := database.InsertID(context.Background(), e.db, q, args...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+		return id
+	}
+	if _, err := e.db.Exec(q, args...); err != nil {
 		t.Fatalf("%v\n%s", err, q)
 	}
-	id, _ := res.LastInsertId()
-	return id
+	return 0
 }
 
 func (e *env) addNode(t *testing.T, name, host string) int64 {

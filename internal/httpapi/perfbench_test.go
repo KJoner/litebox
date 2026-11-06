@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/crypto"
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/sshx"
@@ -109,7 +110,7 @@ func TestPerfBench(t *testing.T) {
 	}
 
 	var report strings.Builder
-	fmt.Fprintf(&report, "\n| 接口 | 状态 | 响应体 | p50 | p95 | 最大 |\n|---|---|---|---|---|---|\n")
+	fmt.Fprintf(&report, "\n| 接口 | 状态 | 响应体 | SQL 条数 | p50 | p95 | 最大 |\n|---|---|---|---|---|---|---|\n")
 	const iterations = 30
 	for _, c := range cases {
 		client := env.client
@@ -121,13 +122,16 @@ func TestPerfBench(t *testing.T) {
 			_, status, size = get(client, c.path)
 		}
 		samples := make([]time.Duration, 0, iterations)
+		q0 := database.QueryCount(env.db)
 		for i := 0; i < iterations; i++ {
 			d, s, _ := get(client, c.path)
 			status = s
 			samples = append(samples, d)
 		}
+		// 含会话校验那 1~2 条(每个请求都要查一次会话)。
+		queries := float64(database.QueryCount(env.db)-q0) / iterations
 		p50, p95, max := percentiles(samples)
-		fmt.Fprintf(&report, "| %s | %d | %s | %s | %s | %s |\n", c.name, status, humanSize(size), p50, p95, max)
+		fmt.Fprintf(&report, "| %s | %d | %s | %.0f | %s | %s | %s |\n", c.name, status, humanSize(size), queries, p50, p95, max)
 	}
 
 	// 5 个并发会话各自重放一遍仪表盘首屏(侧栏五个列表 + 仪表盘的批量接口)。

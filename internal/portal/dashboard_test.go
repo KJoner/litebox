@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"context"
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/user"
 )
 
@@ -35,7 +37,7 @@ func (e *env) addNode(t *testing.T, f nodeFixture) int64 {
 	if f.TierID == 0 {
 		f.TierID = 1
 	}
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, display_name, host, proxy_port, listen_port, api_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			status, deployed_config_sha256, subscription_enabled,
@@ -48,7 +50,6 @@ func (e *env) addNode(t *testing.T, f nodeFixture) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 
 	// 多入站(V8)之后门户里一行 = 一个入口,可见性走 user_effective_inbounds
 	// (INNER JOIN)—— 一台没有入站的机器上,任何用户都查不出来。

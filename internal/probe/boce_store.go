@@ -350,7 +350,7 @@ func (s *Store) recordAPIOK(ctx context.Context) (int, error) {
 
 // tryMark 拿一个提醒去重键;拿到(第一次)返回真。
 func (s *Store) tryMark(ctx context.Context, key string) (bool, error) {
-	r, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO boce_marks (key, at) VALUES (?,?)`, key, s.now().UTC().Format(time.RFC3339))
+	r, err := s.db.ExecContext(ctx, `INSERT INTO boce_marks (key, at) VALUES (?,?) ON CONFLICT DO NOTHING`, key, s.now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return false, err
 	}

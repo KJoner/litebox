@@ -4,23 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 )
 
 func newTestService(t *testing.T, opts Options) (*Service, *sql.DB) {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "auth.db"), 5*time.Second)
-	if err != nil {
-		t.Fatalf("打开数据库: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatalf("迁移: %v", err)
-	}
+	db := dbtest.Open(t)
 
 	if opts.SessionTTL == 0 {
 		opts.SessionTTL = time.Hour

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // ErrNotFound 表示目标不存在。
@@ -212,19 +214,19 @@ func (s *Store) Create(ctx context.Context, nodeID int64, ref string, family Fam
 		return nil, errors.New("目标名称最长 64 个字符")
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO probe_targets
+	id, err := database.InsertID(ctx, s.db, `
+		INSERT INTO probe_targets
 		  (node_id, direction, protocol, kind, ref, family, label, source, enabled, resolved_host, resolved_port,
 		   generation, generation_since, created_at, updated_at)
-		VALUES (?,'INGRESS','TCP',?,?,?,?,?,1,?,?,1,?,?,?)`,
+		VALUES (?,'INGRESS','TCP',?,?,?,?,?,1,?,?,1,?,?,?)
+		ON CONFLICT DO NOTHING`,
 		nodeID, hit.Kind, hit.Ref, hit.Family, label, SourceMaster, hit.Host, hit.Port, now, now, now)
 	if err != nil {
 		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if id == 0 {
 		return nil, ErrDuplicate
 	}
-	id, _ := res.LastInsertId()
 	return s.Get(ctx, id)
 }
 

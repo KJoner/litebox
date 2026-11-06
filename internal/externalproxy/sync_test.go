@@ -6,15 +6,13 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/litebox/litebox/internal/crypto"
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 )
 
 type env struct {
@@ -24,14 +22,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "ep.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	key, _ := crypto.GenerateMasterKey()
 	cipher, _ := crypto.NewCipher(key)
 	return &env{store: NewStore(db, cipher), db: db}

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,14 @@ import (
 //
 // 备份不含主密钥。主密钥丢失时,备份中的用户 UUID 与节点私钥全部无法还原,
 // 调用方必须把这一点告诉使用者。
+//
+// PG 下不做:应用数据库的逻辑备份用与服务端版本匹配的 pg_dump(部署脚本里的 backup 命令),
+// 主控进程里没有、也不该有 pg_dump。
 func Backup(ctx context.Context, db *sql.DB, destPath string) (int64, error) {
+	if IsPostgres(db) {
+		return 0, errors.New("PostgreSQL 请用 pg_dump 备份应用数据库(部署脚本 litebox.sh backup 会做);" +
+			"litebox backup 只给 SQLite 用")
+	}
 	if destPath == "" {
 		return 0, fmt.Errorf("备份路径不能为空")
 	}
@@ -66,8 +74,18 @@ type CheckResult struct {
 // integrity_check 查页面级损坏;foreign_key_check 查引用完整性 ——
 // 后者是必要的:SQLite 的外键约束可以在运行时被关掉,
 // 若历史上有过一次未开启 foreign_keys 的写入,坏引用会一直潜伏。
+//
+// PG 下没有 integrity_check / foreign_key_check 这两个概念(页面校验与外键由服务端一直保证),
+// 两项直接记通过,只报版本与行数。
 func Check(ctx context.Context, db *sql.DB) (CheckResult, error) {
 	result := CheckResult{TableCounts: map[string]int64{}}
+	if IsPostgres(db) {
+		result.IntegrityOK, result.ForeignKeysOK = true, true
+		result.JournalMode = "postgres"
+		db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&result.SchemaVersion)
+		countTables(ctx, db, &result)
+		return result, nil
+	}
 
 	var integrity string
 	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
@@ -114,7 +132,12 @@ func Check(ctx context.Context, db *sql.DB) (CheckResult, error) {
 	db.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&result.SchemaVersion)
 
-	// 行数用于人工判断备份是否"看起来对",不参与成败判定。
+	countTables(ctx, db, &result)
+	return result, nil
+}
+
+// countTables 数几张关键表的行数:用于人工判断备份是否"看起来对",不参与成败判定。
+func countTables(ctx context.Context, db *sql.DB, result *CheckResult) {
 	for _, table := range []string{
 		"admin_users", "proxy_users", "nodes", "user_nodes",
 		"traffic_ledger", "traffic_daily", "deployments", "audit_logs",
@@ -125,7 +148,6 @@ func Check(ctx context.Context, db *sql.DB) (CheckResult, error) {
 			result.TableCounts[table] = count
 		}
 	}
-	return result, nil
 }
 
 // OK 表示自检全部通过。

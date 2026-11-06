@@ -143,29 +143,31 @@ func (s *Store) saveRoundTx(ctx context.Context, tx querier, samples []Sample, u
 			                          http_2xx, http_3xx, http_4xx, http_5xx)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(target_id, generation, hour) DO UPDATE SET
-			  attempts = attempts + excluded.attempts,
-			  ok = ok + excluded.ok,
-			  lossy = lossy + excluded.lossy,
-			  dns_errors = dns_errors + excluded.dns_errors,
-			  skipped = skipped + excluded.skipped,
-			  ssh_errors = ssh_errors + excluded.ssh_errors,
-			  tool_errors = tool_errors + excluded.tool_errors,
-			  blocked = blocked + excluded.blocked,
-			  vantage_errors = vantage_errors + excluded.vantage_errors,
-			  api_errors = api_errors + excluded.api_errors,
-			  expired = expired + excluded.expired,
-			  http_2xx = http_2xx + excluded.http_2xx,
-			  http_3xx = http_3xx + excluded.http_3xx,
-			  http_4xx = http_4xx + excluded.http_4xx,
-			  http_5xx = http_5xx + excluded.http_5xx,
-			  sent = sent + excluded.sent,
-			  received = received + excluded.received,
-			  rtt_n = rtt_n + excluded.rtt_n,
-			  rtt_sum_us = rtt_sum_us + excluded.rtt_sum_us,
-			  rtt_min_us = CASE WHEN excluded.rtt_n = 0 THEN rtt_min_us
-			                    WHEN rtt_n = 0 THEN excluded.rtt_min_us
-			                    ELSE MIN(rtt_min_us, excluded.rtt_min_us) END,
-			  rtt_max_us = MAX(rtt_max_us, excluded.rtt_max_us)`,
+			  attempts = probe_hourly.attempts + excluded.attempts,
+			  ok = probe_hourly.ok + excluded.ok,
+			  lossy = probe_hourly.lossy + excluded.lossy,
+			  dns_errors = probe_hourly.dns_errors + excluded.dns_errors,
+			  skipped = probe_hourly.skipped + excluded.skipped,
+			  ssh_errors = probe_hourly.ssh_errors + excluded.ssh_errors,
+			  tool_errors = probe_hourly.tool_errors + excluded.tool_errors,
+			  blocked = probe_hourly.blocked + excluded.blocked,
+			  vantage_errors = probe_hourly.vantage_errors + excluded.vantage_errors,
+			  api_errors = probe_hourly.api_errors + excluded.api_errors,
+			  expired = probe_hourly.expired + excluded.expired,
+			  http_2xx = probe_hourly.http_2xx + excluded.http_2xx,
+			  http_3xx = probe_hourly.http_3xx + excluded.http_3xx,
+			  http_4xx = probe_hourly.http_4xx + excluded.http_4xx,
+			  http_5xx = probe_hourly.http_5xx + excluded.http_5xx,
+			  sent = probe_hourly.sent + excluded.sent,
+			  received = probe_hourly.received + excluded.received,
+			  rtt_n = probe_hourly.rtt_n + excluded.rtt_n,
+			  rtt_sum_us = probe_hourly.rtt_sum_us + excluded.rtt_sum_us,
+			  rtt_min_us = CASE WHEN excluded.rtt_n = 0 THEN probe_hourly.rtt_min_us
+			                    WHEN probe_hourly.rtt_n = 0 THEN excluded.rtt_min_us
+			                    WHEN excluded.rtt_min_us < probe_hourly.rtt_min_us THEN excluded.rtt_min_us
+			                    ELSE probe_hourly.rtt_min_us END,
+			  rtt_max_us = CASE WHEN excluded.rtt_max_us > probe_hourly.rtt_max_us THEN excluded.rtt_max_us
+			                    ELSE probe_hourly.rtt_max_us END`,
 			sm.TargetID, sm.Generation, hour, c.attempts, c.ok, c.lossy, c.dns, c.skipped,
 			c.ssh, c.tool, c.blocked, c.sent, c.received, c.rttN, c.rttSum, minUS, maxUS,
 			c.vantage, c.api, c.expired, c.h2xx, c.h3xx, c.h4xx, c.h5xx); err != nil {

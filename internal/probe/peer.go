@@ -11,6 +11,8 @@ import (
 
 	"github.com/litebox/litebox/internal/netprobe"
 	"github.com/litebox/litebox/internal/sshx"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // 自建节点互测入站(PEER,V22.6)。
@@ -203,19 +205,19 @@ func (s *Store) CreatePeers(ctx context.Context, nodeID int64, in PeerInput) (*P
 			// Ping 只测地址:端口不进序列身份,入口换端口不换代。
 			port = 0
 		}
-		res, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO probe_targets (node_id, direction, protocol, tcp_mode, kind, ref, family, label, source,
+		id, err := database.InsertID(ctx, tx, `
+			INSERT INTO probe_targets (node_id, direction, protocol, tcp_mode, kind, ref, family, label, source,
 				enabled, resolved_host, resolved_port, generation, generation_since, created_at, updated_at, peer_node_id)
-			VALUES (?, 'INGRESS', ?, 'CONNECT', 'SERVICE', ?, ?, ?, 'PEER', ?, ?, ?, 1, ?, ?, ?, ?)`,
+			VALUES (?, 'INGRESS', ?, 'CONNECT', 'SERVICE', ?, ?, ?, 'PEER', ?, ?, ?, 1, ?, ?, ?, ?)
+		ON CONFLICT DO NOTHING`,
 			nodeID, it.proto, hit.Ref, hit.Family, hit.Label, b2i(enabled), hit.Host, port, now, now, now, it.peer)
 		if err != nil {
 			return nil, err
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
+		if id == 0 {
 			dups++
 			continue
 		}
-		id, _ := res.LastInsertId()
 		ids = append(ids, id)
 	}
 	if err := tx.Commit(); err != nil {

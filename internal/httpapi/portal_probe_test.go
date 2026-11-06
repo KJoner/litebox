@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/litebox/litebox/internal/database"
 	"io"
 	"net/http"
 	"strings"
@@ -41,12 +43,18 @@ func TestPortalProbeScopeAndWhitelist(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	mustExec := func(q string, args ...any) int64 {
 		t.Helper()
-		res, err := env.db.Exec(q, args...)
-		if err != nil {
+		// INSERT 走 RETURNING id(PG 不支持 LastInsertId),其余语句只执行。
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(q)), "INSERT") {
+			id, err := database.InsertID(context.Background(), env.db, q, args...)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, q)
+			}
+			return id
+		}
+		if _, err := env.db.Exec(q, args...); err != nil {
 			t.Fatalf("%v\n%s", err, q)
 		}
-		id, _ := res.LastInsertId()
-		return id
+		return 0
 	}
 	mustExec(`UPDATE nodes SET display_name = '香港01', status = 'ONLINE' WHERE id = ?`, a)
 	mustExec(`UPDATE nodes SET display_name = 'VIP 东京', status = 'ONLINE' WHERE id = ?`, b)

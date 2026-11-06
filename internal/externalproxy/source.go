@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 var ErrSourceNotFound = errors.New("代理源不存在")
@@ -193,7 +195,7 @@ func (s *Store) CreateSource(ctx context.Context, p SourceParams) (*Source, erro
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, s.db, `
 		INSERT INTO proxy_sources
 		  (name, url_encrypted, name_prefix, default_access_tier_id, default_subscription_enabled,
 		   auto_sync_enabled, sync_interval_minutes, expires_at, enabled, remark, sort_order,
@@ -206,10 +208,6 @@ func (s *Store) CreateSource(ctx context.Context, p SourceParams) (*Source, erro
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 	return s.GetSource(ctx, id)

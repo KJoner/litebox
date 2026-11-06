@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/mieru"
 )
 
@@ -18,14 +18,7 @@ import (
 
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "p.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	return db
 }
 
@@ -33,7 +26,7 @@ func newDB(t *testing.T) *sql.DB {
 func seed(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.Exec(`
+	id, err := database.InsertID(context.Background(), db, `
 		INSERT INTO nodes (name, display_name, host, ssh_port, ssh_user,
 			ssh_key_encrypted, ssh_host_key, api_port,
 			proxy_port, listen_port, ipv6_proxy_port,
@@ -45,7 +38,6 @@ func seed(t *testing.T, db *sql.DB) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 

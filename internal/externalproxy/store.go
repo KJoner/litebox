@@ -10,6 +10,8 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // EffectiveView 是有效外部代理视图名。需要自己 JOIN 的包引用它,
@@ -205,7 +207,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Proxy, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, s.db, `
 		INSERT INTO external_proxies
 		  (source_id, name, display_name, raw_name, protocol, server, port,
 		   params_encrypted, raw_uri_encrypted, access_tier_id, subscription_enabled,
@@ -220,10 +222,6 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Proxy, error) {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, id)
@@ -683,5 +681,6 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }

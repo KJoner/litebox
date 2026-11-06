@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"testing"
 
+	"context"
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
@@ -22,7 +24,7 @@ func newUserEnv(t *testing.T) *userEnv {
 // addNode 插入一个指定协议的节点。
 func (e *userEnv) addNode(t *testing.T, name, protocol string) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted,
 			reality_pubkey, reality_short_id, protocol, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -31,7 +33,6 @@ func (e *userEnv) addNode(t *testing.T, name, protocol string) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	seedInbound(t, e.db, id, protocol, 24443)
 	return id
 }

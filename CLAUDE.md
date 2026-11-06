@@ -3530,6 +3530,48 @@ sing-box 1.14 的多用户传统 AEAD 走 sing-shadowsocks 的 `shadowaead.NewMu
   哈希按 (大小, 修改时间) 缓存,上传时流式读文件、边传边核对哈希,对不上返回 `ErrArtifactChanged`。
   reader 外面那层 `io.LimitReader` 是载重的:pkg/sftp 只有问得出剩余字节数时才并发写,裸 TeeReader 会退回串行。
 
+## VNext 双数据库约束(S2)
+
+SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/design.md` §1,迁移手册见 `docs/vnext/migration.md`。
+
+* **一份 SQL 两种引擎都认,不写两套 SQL。** PG 驱动包装层(`internal/database/postgres.go`)只做三件事:
+  `?` 按词法改成 `$n`(`Rebind`,跳过字符串、标识符、注释与美元引号)、Go 的 bool 参数转 0/1、事务进程内串行。
+  其余不可移植的写法**在调用处改成两边都认的写法**,不在驱动层偷偷翻译。写 SQL 时照这张表:
+
+  | 不要写 | 写成 | 原因 |
+  |---|---|---|
+  | `res.LastInsertId()` | `database.InsertID(ctx, q, "INSERT ...")`(末尾自动加 `RETURNING id`) | PG 驱动不支持 LastInsertId |
+  | `INSERT OR IGNORE` | `INSERT ... ON CONFLICT DO NOTHING`(冲突时 `InsertID` 返回 0) | PG 没有 OR IGNORE;而且它只吞唯一冲突,不吞 CHECK |
+  | `INSERT OR REPLACE` | `ON CONFLICT (键) DO UPDATE SET ... = excluded....` | 同上 |
+  | upsert 里 `x = x + excluded.x` | `x = 表名.x + excluded.x` | PG 认为不带表名的 x 有歧义 |
+  | 标量 `MAX(a, b)` / `MIN(a, b)` | `CASE WHEN a > b THEN a ELSE b END` | PG 的 MAX/MIN 只是聚合函数 |
+  | `SELECT ? AS id` / `IN (VALUES (?, ?))` | `CAST(? AS BIGINT)` | PG 推断不出类型,当成 text 与整数比就报错 |
+  | `CASE WHEN ? THEN`、`a.enabled AND b.enabled` | `? = 1`、`a.enabled = 1 AND b.enabled = 1` | 布尔列是整数,PG 要求真正的布尔表达式 |
+  | `GROUP BY a` 却 SELECT 了 `b` | `GROUP BY a, b` | SQLite 允许裸列,PG 拒绝 |
+  | 错误文本 `UNIQUE constraint failed` | `database.IsUniqueViolation(err)` | PG 是 SQLSTATE 23505 |
+  | 事务里一条语句失败了照常往下走 | 包进 `database.Savepoint(ctx, tx, "名", fn)` | **PG 下事务里任何一条出错整个事务就中止**,提交变回滚;SQLite 不会 |
+
+* **事务的单写入者语义在 PG 下保留**:驱动层 BeginTx 取进程级的锁,提交 / 回滚时释放 —— SQLite 单写者下
+  「事务里先查后写」天然串行,Boce 预算、续费幂等、端口冲突检测都靠它。事务外的单条语句仍然并发;
+* **迁移两边各一套、版本号统一**:`migrations/`(SQLite,只追加)与 `migrations_pg/`(从 `0048_baseline.sql` 起步,
+  等价于 SQLite 0001–0048 的结构**加上迁移插入的初始数据**)。以后每加一个迁移两边各写一个同版本号的文件;
+  `TestPostgresSchemaMatchesSQLite` 比对两边的表、列与顺序、视图输出列、初始数据行数,漏写一边会在那里失败。
+  基线由 `pgbaseline_gen_test.go` 生成过一次,**应用后不可修改、不再重新生成**;
+* **库的版本比程序新时拒绝启动**(`ErrSchemaNewer`)。这推翻了以前「旧二进制能打开新库」的回滚路径:
+  回滚到旧版本必须恢复与它匹配的备份;应急时 `LITEBOX_ALLOW_NEWER_SCHEMA=1`(日志里留警告);
+* **单活动主控锁**(`database.AcquireRunLock`):SQLite 是数据文件旁的 `.lock` 独占文件锁,PG 是专用连接上的
+  会话级 advisory lock(连接断了重取,取不回来就退出进程 —— 失去锁之后继续写正是它要防的事)。
+  `litebox db import/export` 同样要拿锁,主控开着时拒绝;
+* **PG 连不上直接报错退出,绝不回落成一个空 SQLite** —— 那会让管理员以为数据丢了;
+* **测试一律经 `internal/database/dbtest.Open(t)`**:设了 `LITEBOX_TEST_PG_DSN` 时每个测试在 PG 上建临时库,
+  CI 的 `go-postgres` 任务就是这么跑的。新写的测试不要再直接 `database.Open` 一个文件(SQLite 专属的升级测试除外);
+* **节点列表的 N+1**:渲染配置要逐个入口查三类凭据(用户、链式、Mieru 出口),PG 下每条都有一次网络往返,
+  5 台机器就 280 ms。`node.Service.prefetchRender` 一次批量取齐,`UsersForInbounds` / `ChainUsersForInbounds` /
+  `MieruChainUsersForInbounds` 与单个版本**是同一份代码**(单个就是只有一个 id 的批量),
+  `TestPrefetchRenderMatchesPerNode` 钉着两条路渲染出逐字节相同的配置;
+* SQLite ↔ PG 的离线迁移只「原样搬」:保留 id、密文、关联关系,不重新加密;主密钥跟着部署走。
+  `database.CopyAll` 只往空库里导(只有迁移带进来的初始数据),**绝不清一个有数据的库**;`Verify` 逐表逐行哈希 + 有效权限视图。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -4382,5 +4424,8 @@ VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 
   侧栏计数、会话写入节流、gzip、二进制流式分发;50 台主机档 5 会话首屏整屏 p95 2.42 s → 0.17 s)
 * S1 后台任务 —— 已完成(迁移 0048、`?async=1` + task_id + 轮询、幂等键、重启标待核对、部署阶段进度;
   执行器接口推迟到 S6 与 Agent 一起做 —— 现在只有 SSH 一种实现)
+* S2 双数据库 —— 已完成(PG 驱动包装层、可移植 SQL、PG 基线迁移、库比程序新拒绝启动、单活动主控锁、
+  `litebox db inspect/import/verify/export`、dbtest 两种引擎跑同一批测试、CI 的 PG 任务、节点列表批量预取;
+  本地 PG 17 验证,PG 16 / 18 与跨主机 TLS 未验证)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

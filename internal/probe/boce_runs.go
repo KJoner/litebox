@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/boce"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // Boce 的执行记录与预算。
@@ -389,7 +391,7 @@ func (s *Store) reserveBoceRun(ctx context.Context, cfg BoceConfig, req boceRunR
 	if !testType.Valid() {
 		testType = boce.MethodTCPing
 	}
-	r, err := tx.ExecContext(ctx, `INSERT INTO boce_runs (task_id, node_id, trigger_kind, test_type, slot, idem_key, state, host, generation,
+	id, err := database.InsertID(ctx, tx, `INSERT INTO boce_runs (task_id, node_id, trigger_kind, test_type, slot, idem_key, state, host, generation,
 		vantage_ids, points, points_reserved, day_key, month_key, error, created_at, finished_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.Task.ID, req.Task.NodeID, req.Trigger, testType, slot, req.IdemKey, state, req.Host, req.Generation,
@@ -397,7 +399,6 @@ func (s *Store) reserveBoceRun(ctx context.Context, cfg BoceConfig, req boceRunR
 	if err != nil {
 		return res, err
 	}
-	id, _ := r.LastInsertId()
 	run, err := scanBoceRun(tx.QueryRowContext(ctx, `SELECT `+boceRunColumns+` FROM boce_runs WHERE id = ?`, id))
 	if err != nil {
 		return res, err
@@ -421,9 +422,9 @@ func (s *Store) markBoceSent(ctx context.Context, runID int64, vendorID string, 
 
 // endBoceRun 收尾一轮(失败 / 不确定 / 跳过 / 完成)。points 是最终的估算消耗。
 func (s *Store) endBoceRun(ctx context.Context, q querier, runID int64, state string, points, attempts, code int, errText string) error {
-	_, err := q.ExecContext(ctx, `UPDATE boce_runs SET state = ?, points = ?, attempts = MAX(attempts, ?), error_code = ?,
+	_, err := q.ExecContext(ctx, `UPDATE boce_runs SET state = ?, points = ?, attempts = CASE WHEN attempts > ? THEN attempts ELSE ? END, error_code = ?,
 		error = ?, next_poll_at = '', finished_at = ? WHERE id = ?`,
-		state, points, attempts, code, truncateText(errText, 300), s.now().UTC().Format(time.RFC3339), runID)
+		state, points, attempts, attempts, code, truncateText(errText, 300), s.now().UTC().Format(time.RFC3339), runID)
 	return err
 }
 
@@ -594,9 +595,10 @@ func (s *Store) saveBoceResults(ctx context.Context, p boceSave) ([]boceEmit, in
 		if it != nil {
 			item = *it
 		}
-		r, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO boce_results (run_id, vantage_id, target_id, at, status, node_name,
+		r, err := tx.ExecContext(ctx, `INSERT INTO boce_results (run_id, vantage_id, target_id, at, status, node_name,
 			origin_ip, ip, ip_region, ip_isp, packet_loss, sent, received, rtt_avg_ms, rtt_min_ms, rtt_max_ms, error_code, error, charged)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT DO NOTHING`,
 			run.ID, v, tid, atTS, string(st), item.NodeName, item.OriginIP, item.IP, item.IPRegion, item.IPISP, item.PacketLoss,
 			item.Sent, item.Received, item.RTTAvgMs, item.RTTMinMs, item.RTTMaxMs, item.ErrorCode, truncateText(errText, 300), b2i(charged))
 		if err != nil {

@@ -10,6 +10,8 @@ import (
 
 	"github.com/litebox/litebox/internal/aliyun"
 	"github.com/litebox/litebox/internal/crypto"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // Store 读写 cloud_* 六张表。
@@ -92,7 +94,7 @@ func (s *Store) CreateAccount(ctx context.Context, p AccountParams) (*Account, e
 		return nil, fmt.Errorf("加密 AccessKey Secret: %w", err)
 	}
 	now := nowRFC3339()
-	res, err := s.db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, s.db, `
 		INSERT INTO cloud_accounts (name, provider, access_key_id, access_key_secret_encrypted,
 		    cdt_quota_intl_bytes, cdt_quota_cn_bytes, threshold_percent, enabled, created_at, updated_at)
 		VALUES (?, 'ALIYUN', ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -101,7 +103,6 @@ func (s *Store) CreateAccount(ctx context.Context, p AccountParams) (*Account, e
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	return s.GetAccount(ctx, id)
 }
 
@@ -517,11 +518,12 @@ func (s *Store) UpdateRuntime(ctx context.Context, nodeID int64, u RuntimeUpdate
 
 // ---------- 去重键与事件 ----------
 
-// ClaimMark 试着占一个去重键,占到返回 true。INSERT OR IGNORE:面板重启、两轮重叠
+// ClaimMark 试着占一个去重键,占到返回 true。ON CONFLICT DO NOTHING:面板重启、两轮重叠
 // 都只会有一个拿到。
 func (s *Store) ClaimMark(ctx context.Context, key string, nodeID, accountID int64) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO cloud_action_marks (mark_key, node_id, account_id, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO cloud_action_marks (mark_key, node_id, account_id, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT DO NOTHING`,
 		key, nodeID, accountID, nowRFC3339())
 	if err != nil {
 		return false, err

@@ -7,13 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"context"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -264,14 +265,7 @@ func (e *subEnv) encrypt(t *testing.T, plain string) string {
 
 func newSubEnv(t *testing.T) *subEnv {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "sub.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	key, _ := crypto.GenerateMasterKey()
 	cipher, _ := crypto.NewCipher(key)
 	store := user.NewStore(db, cipher)
@@ -313,7 +307,7 @@ func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
 	if host == "" {
 		host = "192.0.2.1"
 	}
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, display_name, host, ipv6_address, proxy_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id, status,
 			deployed_config_sha256, access_tier_id, sort_order, subscription_enabled,
@@ -325,7 +319,6 @@ func (e *subEnv) addNodeFull(t *testing.T, f nodeFixture) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	seedInbound(t, e.db, seededInbound{
 		NodeID: id, DisplayName: f.DisplayName, ListenPort: 24443, PublicPort: 24443,
 		SortOrder: f.SortOrder, Deployed: f.Deployed, TierID: f.TierID,
@@ -366,7 +359,7 @@ func seedInbound(t *testing.T, db *sql.DB, in seededInbound) int64 {
 	if in.Deployed {
 		deployedProtocol, deployedMethod = in.Protocol, in.SSMethod
 	}
-	res, err := db.Exec(`
+	id, err := database.InsertID(context.Background(), db, `
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
 			ss_password_encrypted, listen_port, public_port, ipv6_public_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
@@ -382,7 +375,6 @@ func seedInbound(t *testing.T, db *sql.DB, in seededInbound) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
@@ -669,7 +661,7 @@ func itoa(v int64) string {
 // 面板这边看起来一切正常,只有用户连不上。
 func TestSubscriptionUsesPublicPortNotListenPort(t *testing.T) {
 	env := newSubEnv(t)
-	res, err := env.db.Exec(`
+	id, err := database.InsertID(context.Background(), env.db, `
 		INSERT INTO nodes (name, host, proxy_port, listen_port, api_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			status, deployed_config_sha256, created_at, updated_at)
@@ -680,7 +672,7 @@ func TestSubscriptionUsesPublicPortNotListenPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeID, _ := res.LastInsertId()
+	nodeID := id
 	seedInbound(t, env.db, seededInbound{
 		NodeID: nodeID, DisplayName: "NAT 节点",
 		ListenPort: 20443, PublicPort: 443, Deployed: true,

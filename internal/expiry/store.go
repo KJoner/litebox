@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // ErrNotFound 表示这个对象没有到期档案(或对象本身不存在)。
@@ -305,18 +307,19 @@ func (s *Store) Renew(ctx context.Context, p RenewParams) (*Renewal, error) {
 	if p.Amount != nil && *p.Amount >= 0 {
 		amount = *p.Amount
 	}
-	res, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO expiry_renewals
+	id, err := database.InsertID(ctx, tx, `
+		INSERT INTO expiry_renewals
 		  (kind, object_id, request_id, old_expires_at, new_expires_at, method, base, admin_user_id, note, created_at,
 		   amount_minor, currency, period_start)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT DO NOTHING`,
 		p.Key.Kind, p.Key.ObjectID, p.RequestID, p.Plan.OldExpiresAt, p.Plan.NewExpiresAt,
 		p.Plan.Method, string(p.Plan.Base), p.AdminUserID, p.Note, now,
 		amount, p.Currency, periodStart)
 	if err != nil {
 		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if id == 0 {
 		// 幂等键撞上了:原样返回第一次的记录,一个字节都不改。
 		// 先结束事务再查 —— 连接池只有一条连接,事务开着时另起查询会自我死锁。
 		if err := tx.Rollback(); err != nil {
@@ -328,7 +331,6 @@ func (s *Store) Renew(ctx context.Context, p RenewParams) (*Renewal, error) {
 		}
 		return existing, ErrDuplicateRequest
 	}
-	id, _ := res.LastInsertId()
 
 	// 档案可能还不存在(第一次就是通过「续费」登记的):建一行,其余取默认。
 	if _, err := tx.ExecContext(ctx, `
@@ -475,9 +477,10 @@ type Notice struct {
 func (s *Store) ClaimNotice(ctx context.Context, key Key, period, stage, channel string, now time.Time) (bool, error) {
 	ts := now.UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO expiry_notices
+		INSERT INTO expiry_notices
 		  (kind, object_id, period_expires_at, stage, channel, status, attempts, next_attempt_at, created_at)
-		VALUES (?,?,?,?,?,'PENDING',0,?,?)`,
+		VALUES (?,?,?,?,?,'PENDING',0,?,?)
+		ON CONFLICT DO NOTHING`,
 		key.Kind, key.ObjectID, period, stage, channel, ts, ts)
 	if err != nil {
 		return false, err

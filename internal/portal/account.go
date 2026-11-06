@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/crypto"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 var (
@@ -294,7 +296,8 @@ func (s *Store) allSessionCounts(ctx context.Context) (map[int64]int, error) {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }
 
 func truncate(s string, n int) string {

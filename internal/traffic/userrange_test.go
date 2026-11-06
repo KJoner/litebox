@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"context"
+	"github.com/litebox/litebox/internal/database"
 	"testing"
 	"time"
 )
@@ -28,14 +29,13 @@ func (e *testEnv) daily(t *testing.T, day, userCode string, nodeID int64, up, do
 
 func (e *testEnv) addNode2(t *testing.T, name string) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted,
 			reality_pubkey, reality_short_id, status, sort_order, created_at, updated_at)
 		VALUES (?,'127.0.0.2',24443,'www.fastly.com','e','p','abcd','ONLINE',5,'t','t')`, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 

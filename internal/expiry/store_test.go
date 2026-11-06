@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/notify"
 )
 
@@ -23,55 +23,45 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "expiry.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	return &env{db: db, store: NewStore(db)}
 }
 
 func (e *env) addAdmin(t *testing.T, name string) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`INSERT INTO admin_users (username, password_hash, created_at, updated_at) VALUES (?,'h','t','t')`, name)
+	id, err := database.InsertID(context.Background(), e.db, `INSERT INTO admin_users (username, password_hash, created_at, updated_at) VALUES (?,'h','t','t')`, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
 func (e *env) addNode(t *testing.T, name string) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted,
 			reality_pubkey, reality_short_id, status, created_at, updated_at)
 		VALUES (?,'127.0.0.1',24443,'www.fastly.com','e','p','abcd','ONLINE','t','t')`, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
 func (e *env) addSource(t *testing.T, name string) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO proxy_sources (name, url_encrypted, name_prefix, enabled, created_at, updated_at)
 		VALUES (?,'enc','',1,'t','t')`, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
 func (e *env) addProxy(t *testing.T, name string, sourceID *int64) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO external_proxies (source_id, name, display_name, raw_name, protocol, server, port,
 			params_encrypted, access_tier_id, subscription_enabled, sort_order, origin, identity_key,
 			status, created_at, updated_at)
@@ -80,7 +70,6 @@ func (e *env) addProxy(t *testing.T, name string, sourceID *int64) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
