@@ -105,7 +105,21 @@ type HTTPConfig struct {
 }
 
 type DatabaseConfig struct {
+	// Driver 是存储引擎:sqlite(默认)或 postgres(VNext DB01)。
+	// **PG 连不上时直接报错退出,绝不回落成一个空 SQLite** —— 那会让管理员以为数据丢了。
+	Driver string `yaml:"driver"`
+	// Path 是 SQLite 数据文件(driver=sqlite 时用)。
 	Path string `yaml:"path"`
+	// DSN / DSNFile 是 PostgreSQL 连接串或存放它的文件(只读 secret 文件)。二者给一个;
+	// 同一层(都在配置文件里,或都在环境变量里)同时给两个视为矛盾,报错。
+	// 跨主机连接请用可验证的 TLS(sslmode=verify-full + sslrootcert),不要关证书校验。
+	DSN     string `yaml:"dsn"`
+	DSNFile string `yaml:"dsn_file"`
+	// MaxOpen 是 PG 连接池上限(默认 5,共享实例上两个应用各自从保守值起步);
+	// ConnectTimeout 默认 10 秒,StatementTimeout 默认 60 秒(负数表示不限)。
+	MaxOpen          int           `yaml:"max_open"`
+	ConnectTimeout   time.Duration `yaml:"connect_timeout"`
+	StatementTimeout time.Duration `yaml:"statement_timeout"`
 	// BusyTimeout 是 SQLite 遇到锁时的等待时长。
 	BusyTimeout time.Duration `yaml:"busy_timeout"`
 	// ReadConns 是 SQLite 只读连接的条数(VNext,读写分离)。写与事务永远只走一条连接;
@@ -146,6 +160,7 @@ func Default() Config {
 		},
 		Database: DatabaseConfig{
 			Path:        "data/litebox.db",
+			Driver:      "sqlite",
 			BusyTimeout: 5 * time.Second,
 			ReadConns:   3,
 		},
@@ -212,6 +227,24 @@ func applyEnv(cfg *Config) {
 	envStr("LITEBOX_HTTP_BASE_URL", &cfg.HTTP.BaseURL)
 	envBool("LITEBOX_HTTP_SECURE_COOKIE", &cfg.HTTP.SecureCookie)
 	envStr("LITEBOX_DATABASE_PATH", &cfg.Database.Path)
+	// VNext 的数据库配置(DB02)。旧的 LITEBOX_DATABASE_PATH 照样认,新名字后读、优先。
+	envStr("LITEBOX_DB_DRIVER", &cfg.Database.Driver)
+	envStr("LITEBOX_DB_SQLITE_PATH", &cfg.Database.Path)
+	// 环境变量覆盖配置文件里的连接来源:给了 DSN 就不再看文件里的 DSN_FILE,反之亦然 ——
+	// 正常的「环境变量覆盖配置文件」不算矛盾;只有同一层里两个都给了才报错(见 Validate)。
+	envDSN, hasDSN := os.LookupEnv("LITEBOX_DB_DSN")
+	envDSNFile, hasDSNFile := os.LookupEnv("LITEBOX_DB_DSN_FILE")
+	switch {
+	case hasDSN && envDSN != "" && hasDSNFile && envDSNFile != "":
+		cfg.Database.DSN, cfg.Database.DSNFile = envDSN, envDSNFile
+	case hasDSN && envDSN != "":
+		cfg.Database.DSN, cfg.Database.DSNFile = envDSN, ""
+	case hasDSNFile && envDSNFile != "":
+		cfg.Database.DSN, cfg.Database.DSNFile = "", envDSNFile
+	}
+	envInt("LITEBOX_DB_MAX_OPEN", &cfg.Database.MaxOpen)
+	envDuration("LITEBOX_DB_CONNECT_TIMEOUT", &cfg.Database.ConnectTimeout)
+	envDuration("LITEBOX_DB_STATEMENT_TIMEOUT", &cfg.Database.StatementTimeout)
 	envInt("LITEBOX_DATABASE_READ_CONNS", &cfg.Database.ReadConns)
 	envStr("LITEBOX_MASTER_KEY", &cfg.Security.MasterKey)
 	envDuration("LITEBOX_SESSION_TTL", &cfg.Security.SessionTTL)
@@ -266,8 +299,20 @@ func (c Config) Validate() error {
 	if c.HTTP.Listen == "" {
 		return fmt.Errorf("http.listen 不能为空")
 	}
-	if c.Database.Path == "" {
-		return fmt.Errorf("database.path 不能为空")
+	switch strings.ToLower(c.Database.Driver) {
+	case "", "sqlite":
+		if c.Database.Path == "" {
+			return fmt.Errorf("database.path 不能为空")
+		}
+	case "postgres", "postgresql":
+		if c.Database.DSN != "" && c.Database.DSNFile != "" {
+			return fmt.Errorf("database.dsn 与 database.dsn_file 只能给一个(LITEBOX_DB_DSN / LITEBOX_DB_DSN_FILE 同理)")
+		}
+		if c.Database.DSN == "" && c.Database.DSNFile == "" {
+			return fmt.Errorf("database.driver 是 postgres,但没有连接串:设 LITEBOX_DB_DSN 或 LITEBOX_DB_DSN_FILE")
+		}
+	default:
+		return fmt.Errorf("database.driver 取值非法: %q(只认 sqlite 或 postgres)", c.Database.Driver)
 	}
 	if c.Security.MasterKey == "" {
 		// 主密钥刻意不写进 yaml,而是放在 systemd 的 EnvironmentFile 里。
@@ -309,4 +354,32 @@ func executablePath() string {
 // DatabaseDir 返回数据库文件所在目录,启动时需要确保其存在。
 func (c Config) DatabaseDir() string {
 	return filepath.Dir(c.Database.Path)
+}
+
+// IsPostgres 回答配置选的是不是 PostgreSQL。
+func (d DatabaseConfig) IsPostgres() bool {
+	switch strings.ToLower(d.Driver) {
+	case "postgres", "postgresql":
+		return true
+	}
+	return false
+}
+
+// ResolveDSN 返回 PG 连接串:DSN 直接给的用它,否则读 DSNFile(去掉首尾空白)。
+func (d DatabaseConfig) ResolveDSN() (string, error) {
+	if d.DSN != "" {
+		return d.DSN, nil
+	}
+	if d.DSNFile == "" {
+		return "", fmt.Errorf("没有 PostgreSQL 连接串")
+	}
+	b, err := os.ReadFile(d.DSNFile)
+	if err != nil {
+		return "", fmt.Errorf("读取连接串文件 %s: %w", d.DSNFile, err)
+	}
+	dsn := strings.TrimSpace(string(b))
+	if dsn == "" {
+		return "", fmt.Errorf("连接串文件 %s 是空的", d.DSNFile)
+	}
+	return dsn, nil
 }

@@ -19,6 +19,8 @@ import (
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/singbox"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 var (
@@ -293,7 +295,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := tx.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, tx, `
 		INSERT INTO proxy_users
 		  (user_code, display_name, remark, uuid_encrypted, ss_password_encrypted,
 		   mieru_password_encrypted, snell_password_encrypted,
@@ -307,10 +309,6 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 

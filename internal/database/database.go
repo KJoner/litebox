@@ -98,6 +98,9 @@ func verifyPragmas(db *sql.DB) error {
 
 // CheckIntegrity 执行 SQLite 自带的一致性检查,用于启动自检与运维脚本。
 func CheckIntegrity(db *sql.DB) error {
+	if IsPostgres(db) {
+		return nil // 页面级校验由 PG 服务端负责
+	}
 	var result string
 	if err := db.QueryRow("PRAGMA integrity_check").Scan(&result); err != nil {
 		return fmt.Errorf("执行 integrity_check: %w", err)

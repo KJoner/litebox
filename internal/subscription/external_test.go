@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"context"
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/settings"
 	"github.com/litebox/litebox/internal/singbox"
@@ -138,7 +140,7 @@ func (e *subEnv) addExternal(t *testing.T, f extFixture) int64 {
 		if f.SourceExpires != "" {
 			exp = f.SourceExpires
 		}
-		res, err := e.db.Exec(`
+		id, err := database.InsertID(context.Background(), e.db, `
 			INSERT INTO proxy_sources (name, url_encrypted, name_prefix, expires_at, enabled,
 				created_at, updated_at)
 			VALUES (?,?,?,?,?,?,?)`,
@@ -147,7 +149,6 @@ func (e *subEnv) addExternal(t *testing.T, f extFixture) int64 {
 		if err != nil {
 			t.Fatal(err)
 		}
-		id, _ := res.LastInsertId()
 		sourceID = id
 	}
 
@@ -160,7 +161,7 @@ func (e *subEnv) addExternal(t *testing.T, f extFixture) int64 {
 	if tier == 0 {
 		tier = 1
 	}
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO external_proxies (source_id, name, display_name, raw_name, protocol,
 			server, port, params_encrypted, access_tier_id, subscription_enabled, sort_order,
 			expires_at, origin, identity_key, status, created_at, updated_at)
@@ -174,7 +175,6 @@ func (e *subEnv) addExternal(t *testing.T, f extFixture) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 

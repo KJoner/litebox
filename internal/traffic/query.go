@@ -61,7 +61,7 @@ func (q *Querier) UserByNode(ctx context.Context, userCode string) ([]UserNodeTr
 		  FROM traffic_ledger l
 		  LEFT JOIN nodes n ON n.id = l.node_id
 		 WHERE l.user_code = ?
-		 GROUP BY l.node_id
+		 GROUP BY l.node_id, n.name
 		 ORDER BY l.node_id`, userCode)
 	if err != nil {
 		return nil, err

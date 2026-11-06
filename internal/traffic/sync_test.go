@@ -6,12 +6,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/user"
 	"github.com/litebox/litebox/internal/v2rayapi"
 )
@@ -64,23 +64,16 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "traffic.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 
-	res, err := db.Exec(`
+	id, err := database.InsertID(context.Background(), db, `
 		INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted,
 			reality_pubkey, reality_short_id, status, created_at, updated_at)
 		VALUES ('n1','127.0.0.1',24443,'www.apple.com','e','p','abcd','ONLINE','t','t')`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeID, _ := res.LastInsertId()
+	nodeID := id
 	// 有效节点(user_effective_nodes)现在是入口那一层的投影(迁移 0020):
 	// 一台没有入口的机器,任何用户在上面都没有凭据,受影响节点自然是空的。
 	if _, err := db.Exec(`

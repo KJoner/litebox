@@ -12,6 +12,8 @@ import (
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/subscription"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // Mieru 入口(V13)。
@@ -352,7 +354,7 @@ func (s *Store) CreateMieruInbound(
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := tx.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, tx, `
 		INSERT INTO node_mieru_inbounds (
 			node_id, display_name,
 			listen_port_start, listen_port_end,
@@ -372,10 +374,6 @@ func (s *Store) CreateMieruInbound(
 		p.AccessTierID, p.SortOrder, boolOr(p.SubscriptionEnabled, true),
 		p.PublicRemark, boolOr(p.Enabled, true),
 		now, now)
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
 	if err != nil {
 		return nil, err
 	}

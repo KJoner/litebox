@@ -3,27 +3,21 @@ package user
 import (
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"context"
 	"github.com/litebox/litebox/internal/crypto"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/singbox"
 )
 
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "user.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	key, err := crypto.GenerateMasterKey()
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +33,7 @@ func seedNodes(t *testing.T, db *sql.DB, n int) []int64 {
 	t.Helper()
 	ids := make([]int64, 0, n)
 	for i := 1; i <= n; i++ {
-		res, err := db.Exec(`
+		id, err := database.InsertID(context.Background(), db, `
 			INSERT INTO nodes (name, host, proxy_port, reality_dest, reality_privkey_encrypted,
 				reality_pubkey, reality_short_id, created_at, updated_at)
 			VALUES (?,?,?,?,?,?,?,?,?)`,
@@ -49,7 +43,6 @@ func seedNodes(t *testing.T, db *sql.DB, n int) []int64 {
 		if err != nil {
 			t.Fatal(err)
 		}
-		id, _ := res.LastInsertId()
 		seedInbound(t, db, id, "VLESS_REALITY", 24443+i)
 		ids = append(ids, id)
 	}
@@ -64,7 +57,7 @@ func seedNodes(t *testing.T, db *sql.DB, n int) []int64 {
 // 而那看起来像是等级规则错了。
 func seedInbound(t *testing.T, db *sql.DB, nodeID int64, protocol string, port int) int64 {
 	t.Helper()
-	res, err := db.Exec(`
+	id, err := database.InsertID(context.Background(), db, `
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, listen_port,
 			reality_dest, reality_privkey_encrypted, reality_pubkey, reality_short_id,
 			created_at, updated_at)
@@ -75,7 +68,6 @@ func seedInbound(t *testing.T, db *sql.DB, nodeID int64, protocol string, port i
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 

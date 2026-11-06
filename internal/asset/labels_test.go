@@ -2,12 +2,10 @@ package asset
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/expiry"
 )
 
@@ -36,14 +34,7 @@ func TestNormalize(t *testing.T) {
 }
 
 func TestStoreRoundTrip(t *testing.T) {
-	db, err := database.Open(filepath.Join(t.TempDir(), "a.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	s := NewStore(db)
 	ctx := context.Background()
 	key := Key{expiry.KindNode, 7}

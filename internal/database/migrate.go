@@ -2,21 +2,38 @@ package database
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql migrations_pg/*.sql
 var migrationFS embed.FS
+
+// 两种引擎各有一套迁移(VNext DB05):SQLite 的 migrations/ 只追加不改;PG 的 migrations_pg/ 从
+// 0048_baseline.sql 起步(等价于 SQLite 0001–0048 结束时的结构),之后每加一个迁移两边各写一份,
+// **版本号统一** —— 同一个版本号在两种引擎上表示同一份逻辑结构。各自记各自的哈希。
+const (
+	sqliteMigrationDir   = "migrations"
+	postgresMigrationDir = "migrations_pg"
+)
+
+// AllowNewerSchemaEnv 设成 1 时,库的版本比程序新也照样启动(只给应急用,见 Migrate)。
+const AllowNewerSchemaEnv = "LITEBOX_ALLOW_NEWER_SCHEMA"
+
+// ErrSchemaNewer 表示数据库已经被更新版本的程序迁移过。
+var ErrSchemaNewer = errors.New("数据库版本比程序新")
 
 // Migration 是一个已解析的迁移脚本。
 type Migration struct {
@@ -47,12 +64,27 @@ func (m Migration) Matches(recorded string) bool {
 // Migrate 按版本号顺序应用所有未执行的迁移。
 // 迁移是幂等的:已记录在 schema_migrations 中的版本会被跳过,
 // 因此可以对同一数据库反复执行。
+//
+// **库的版本比程序新时拒绝启动**(VNext DB05):旧程序不认得新迁移加的表、列与约束,
+// 照常跑下去的表现是某些写入悄悄失败、某些字段悄悄丢失。回滚到旧版本必须恢复与它匹配的备份;
+// 实在要应急,设环境变量 LITEBOX_ALLOW_NEWER_SCHEMA=1(后果自负,日志里会留一行警告)。
+//
+// PG 下迁移期间持有一把会话级 advisory lock,两个进程同时迁移时后来的那个等前一个做完。
 func Migrate(db *sql.DB, logger *slog.Logger) error {
+	dir := sqliteMigrationDir
+	if IsPostgres(db) {
+		dir = postgresMigrationDir
+		unlock, err := lockMigrations(db)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
 	if err := ensureMigrationTable(db); err != nil {
 		return err
 	}
 
-	migrations, err := loadMigrations()
+	migrations, err := loadMigrationsFrom(dir)
 	if err != nil {
 		return err
 	}
@@ -60,6 +92,23 @@ func Migrate(db *sql.DB, logger *slog.Logger) error {
 	applied, err := appliedMigrations(db)
 	if err != nil {
 		return err
+	}
+	if latest := migrations[len(migrations)-1].Version; len(applied) > 0 {
+		newest := 0
+		for v := range applied {
+			newest = max(newest, v)
+		}
+		if newest > latest {
+			msg := fmt.Sprintf("数据库已迁移到版本 %d,而这个程序只认识到 %d。"+
+				"请使用与数据库匹配的版本,或恢复升级前的备份;应急时可设 %s=1 强行启动",
+				newest, latest, AllowNewerSchemaEnv)
+			if os.Getenv(AllowNewerSchemaEnv) != "1" {
+				return fmt.Errorf("%w:%s", ErrSchemaNewer, msg)
+			}
+			if logger != nil {
+				logger.Warn("数据库版本比程序新,按 " + AllowNewerSchemaEnv + "=1 继续启动")
+			}
+		}
 	}
 
 	var count int
@@ -125,9 +174,33 @@ func appliedMigrations(db *sql.DB) (map[int]string, error) {
 	return applied, rows.Err()
 }
 
-// loadMigrations 解析 migrations 目录下形如 0001_init.sql 的脚本。
-func loadMigrations() ([]Migration, error) {
-	entries, err := fs.ReadDir(migrationFS, "migrations")
+// lockMigrations 在一条专用连接上取 PG 的会话级 advisory lock(键是固定常量),返回释放函数。
+func lockMigrations(db *sql.DB) (func(), error) {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(?)`, migrationLockKey); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("取得迁移锁: %w", err)
+	}
+	return func() {
+		conn.ExecContext(ctx, `SELECT pg_advisory_unlock(?)`, migrationLockKey)
+		conn.Close()
+	}, nil
+}
+
+// migrationLockKey 是 PG advisory lock 的键("LiteBoxM" 的 ASCII)。只在这个库里有意义,
+// 两个应用共用一个 PG 实例时各用各的库,键撞了也不互相影响(advisory lock 按库隔离)。
+const migrationLockKey int64 = 0x4c697465426f784d
+
+// loadMigrations 解析 SQLite 的迁移(测试与升级测试用)。
+func loadMigrations() ([]Migration, error) { return loadMigrationsFrom(sqliteMigrationDir) }
+
+// loadMigrationsFrom 解析 dir 目录下形如 0001_init.sql 的脚本。
+func loadMigrationsFrom(dir string) ([]Migration, error) {
+	entries, err := fs.ReadDir(migrationFS, dir)
 	if err != nil {
 		return nil, fmt.Errorf("读取迁移目录: %w", err)
 	}
@@ -146,7 +219,7 @@ func loadMigrations() ([]Migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("迁移文件 %s 的版本号非法: %w", entry.Name(), err)
 		}
-		content, err := migrationFS.ReadFile("migrations/" + entry.Name())
+		content, err := migrationFS.ReadFile(dir + "/" + entry.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -169,6 +242,9 @@ func loadMigrations() ([]Migration, error) {
 		return migrations[i].Version < migrations[j].Version
 	})
 
+	if len(migrations) == 0 {
+		return nil, fmt.Errorf("迁移目录 %s 是空的", dir)
+	}
 	for i, m := range migrations {
 		if i > 0 && migrations[i-1].Version == m.Version {
 			return nil, fmt.Errorf("迁移版本号重复: %d", m.Version)

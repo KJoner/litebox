@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/config"
 	"github.com/litebox/litebox/internal/crypto"
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/portal"
@@ -45,14 +44,7 @@ type testEnv struct {
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
-	db, err := database.Open(filepath.Join(t.TempDir(), "api.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 
 	cfg := config.Default()
 	cfg.Security.MasterKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="

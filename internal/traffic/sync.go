@@ -363,7 +363,7 @@ func addDailyTraffic(ctx context.Context, tx *sql.Tx, nodeID int64,
 		INSERT INTO traffic_daily (day, user_code, node_id, %s, updated_at)
 		VALUES (?,?,?,?,?)
 		ON CONFLICT(day, user_code, node_id) DO UPDATE SET
-			%s = %s + excluded.%s, updated_at = excluded.updated_at`,
+			%s = traffic_daily.%s + excluded.%s, updated_at = excluded.updated_at`,
 		column, column, column, column)
 	_, err := tx.ExecContext(ctx, query, day, key.UserCode, nodeID, delta, now)
 	return err

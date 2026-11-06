@@ -463,7 +463,12 @@ func (s *Service) ConfigDiff(ctx context.Context, nodeID int64) (ConfigDiffResul
 
 // desiredConfig 渲染节点当前应有的配置。
 func (s *Service) desiredConfig(ctx context.Context, nodeID int64) (singbox.Rendered, error) {
-	n, inbounds, _, err := s.renderInputs(ctx, nodeID)
+	return s.desiredConfigWith(ctx, nodeID, nil)
+}
+
+// desiredConfigWith 与 desiredConfig 相同,pf 是节点列表预先批量取好的入口凭据(nil 表示逐个去查)。
+func (s *Service) desiredConfigWith(ctx context.Context, nodeID int64, pf *renderPrefetch) (singbox.Rendered, error) {
+	n, inbounds, _, err := s.renderInputsWith(ctx, nodeID, pf)
 	if err != nil {
 		return singbox.Rendered{}, err
 	}
@@ -480,6 +485,13 @@ func (s *Service) desiredConfig(ctx context.Context, nodeID int64) (singbox.Rend
 // 与渲染参数一一对应。它不进配置文件,但缺了它那个入站就【完全没被验证过】。
 func (s *Service) renderInputs(
 	ctx context.Context, nodeID int64,
+) (*Node, []singbox.InboundParams, []deployment.ProbeTarget, error) {
+	return s.renderInputsWith(ctx, nodeID, nil)
+}
+
+// renderInputsWith 是 renderInputs 的本体;pf 只换「入口凭据从哪里来」,判据与拼装一字不差。
+func (s *Service) renderInputsWith(
+	ctx context.Context, nodeID int64, pf *renderPrefetch,
 ) (*Node, []singbox.InboundParams, []deployment.ProbeTarget, error) {
 	n, err := s.store.Get(ctx, nodeID)
 	if err != nil {
@@ -507,7 +519,7 @@ func (s *Service) renderInputs(
 		if !in.Enabled {
 			continue
 		}
-		users, err := s.inboundUsers(ctx, in)
+		users, err := s.inboundUsers(ctx, in, pf)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -558,7 +570,12 @@ func (s *Service) renderInputs(
 // 中转主机连不上这个入口(它那边部署时拨测失败并回滚,报错落在中转机上);
 // 漏在 stats 白名单里则更糟 —— 链路正常工作,而这台机器的节点用量
 // 少算了经中转过来的全部流量,没有任何报错。
-func (s *Service) inboundUsers(ctx context.Context, in *Inbound) ([]singbox.User, error) {
+func (s *Service) inboundUsers(ctx context.Context, in *Inbound, pf *renderPrefetch) ([]singbox.User, error) {
+	if pf.has(in.ID) {
+		users := append([]singbox.User{}, pf.users[in.ID]...)
+		users = append(users, pf.chain[in.ID]...)
+		return append(users, pf.mieruChain[in.ID]...), nil
+	}
 	var users []singbox.User
 	if s.users != nil {
 		var err error
@@ -906,4 +923,55 @@ func (s *Service) Deployments(ctx context.Context, nodeID int64, limit int) ([]d
 // RecentDeployments 返回全局最近的部署记录。
 func (s *Service) RecentDeployments(ctx context.Context, limit int) ([]deployment.Record, error) {
 	return s.deployStore.ListRecent(ctx, limit)
+}
+
+// renderPrefetch 是节点列表一次批量取好的全部入口凭据(VNext PERF03)。
+//
+// 列表要逐台渲染期望配置算哈希,而每个入口原来要查三次(用户、链式凭据、Mieru 出口凭据):
+// 5 台 × 20 个入口就是 300 多条查询,PG 下每条都有一次网络往返(5 台就 280 ms)。
+// 这里一次各取一批,渲染时从内存拿。**取法与逐个查是同一份代码**(单个就是只有一个 id 的批量),
+// 预取之后才建出来的入口(ids 里没有)照常逐个去查。
+type renderPrefetch struct {
+	ids                      map[int64]bool
+	users, chain, mieruChain map[int64][]singbox.User
+}
+
+func (pf *renderPrefetch) has(id int64) bool { return pf != nil && pf.ids[id] }
+
+// batchUserProvider 是 UserProvider 的可选批量版(*user.Store 实现了它)。
+type batchUserProvider interface {
+	UsersForInbounds(ctx context.Context, inboundIDs []int64) (map[int64][]singbox.User, error)
+}
+
+func (s *Service) prefetchRender(ctx context.Context, nodes []*Node) (*renderPrefetch, error) {
+	batch, ok := s.users.(batchUserProvider)
+	if s.users != nil && !ok {
+		return nil, nil // 测试里的简化实现没有批量版:逐个查
+	}
+	pf := &renderPrefetch{ids: map[int64]bool{}}
+	var ids []int64
+	for _, n := range nodes {
+		if n.Role.IsRelay() {
+			continue
+		}
+		for _, in := range n.Inbounds {
+			if in.Enabled && !pf.ids[in.ID] {
+				pf.ids[in.ID] = true
+				ids = append(ids, in.ID)
+			}
+		}
+	}
+	var err error
+	if batch != nil {
+		if pf.users, err = batch.UsersForInbounds(ctx, ids); err != nil {
+			return nil, err
+		}
+	}
+	if pf.chain, err = s.store.ChainUsersForInbounds(ctx, ids); err != nil {
+		return nil, err
+	}
+	if pf.mieruChain, err = s.store.MieruChainUsersForInbounds(ctx, ids); err != nil {
+		return nil, err
+	}
+	return pf, nil
 }

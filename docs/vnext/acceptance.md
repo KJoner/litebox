@@ -6,8 +6,8 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | 编号 | 场景 | 状态 | 证据 |
 |---|---|---|---|
 | A01 | 旧 SQLite 原地升级 | 未开始 | |
-| A02 | SQLite 导入 PG | 未开始 | |
-| A03 | 接已有共享 PG(LiteBox 一侧) | 未开始 | |
+| A02 | SQLite 导入 PG | 本地通过(PG 17) | `TestTransferRoundTrip`、`litebox db import/verify/export` 冒烟(见 migration.md §2 末尾);真实库未测 |
+| A03 | 接已有共享 PG(LiteBox 一侧) | 部分 | 应用账号不需要 CREATEDB、advisory lock 按库隔离;与 Nexus 的联合验收在 S3 的 Compose 里做 |
 | A04 | 默认 SQLite Compose | 未开始 | |
 | A05 | 快捷 PG Compose | 未开始 | |
 | A06 | 安装与升级失败 | 未开始 | |
@@ -59,3 +59,14 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
   **本批没有加配置哈希缓存** —— 要做就得绑定全部依赖版本(含用户到期这种不写库的时间因素),
   收益不抵风险;到 100 台以上再按数据决定;
 * JSON 响应超过 1.4 KB 时 gzip(节点列表 700 KB → 约十分之一),本机回环测不出收益,~100 ms RTT 下才有意义,未测。
+
+### PG 对比(5 台主机档,本机 Docker 里的 PG 17,S2)
+
+| 接口 | SQLite p95 | PG p95(批量预取前) | PG p95(批量预取后) | SQL 条数 |
+|---|---|---|---|---|
+| 节点列表 | 25 ms | 279 ms | 41 ms | 330 → 33 |
+| 节点详情 | 7 ms | 68 ms | — | 74 → 17 |
+| 资产卡片聚合 | 8.6 ms | 48 ms | 53 ms | 67 |
+| 5 会话首屏整屏 | 53 ms | 206 ms | — | — |
+
+PG 每条语句都有一次网络往返(本机 Docker 约 1 ms),所以「条数」比单条耗时更要紧;SQLite 在进程内,没有这一项。

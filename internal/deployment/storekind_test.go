@@ -2,23 +2,15 @@ package deployment
 
 import (
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 )
 
 func kindTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "deploy.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	if _, err := db.Exec(`
 		INSERT INTO nodes (id, name, host, proxy_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id,

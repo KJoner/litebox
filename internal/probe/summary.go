@@ -159,7 +159,8 @@ func (s *Store) hourlyTotals(ctx context.Context, targets []Target, from, to tim
 	args := []any{from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339)}
 	for i, t := range targets {
 		gen[t.ID] = t.Generation
-		ph[i] = "(?,?)"
+		// CAST:PG 推断不出 VALUES 里参数的类型(会当成 text),与整数列比较就报错。
+		ph[i] = "(CAST(? AS BIGINT), CAST(? AS BIGINT))"
 		args = append(args, t.ID, t.Generation)
 	}
 	// 按 (target_id, generation) 成对筛:主键是 (target_id, generation, hour),只给 target_id 的话

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // Record 是一条部署记录。
@@ -46,7 +48,7 @@ func (s *Store) Save(ctx context.Context, r Result) (int64, error) {
 		return 0, err
 	}
 	finishedAt := r.FinishedAt.Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, s.db, `
 		INSERT INTO deployments
 		  (node_id, kind, revision, config_sha256, status, started_at, finished_at,
 		   error_message, rollback_result, steps_json, created_at)
@@ -58,7 +60,7 @@ func (s *Store) Save(ctx context.Context, r Result) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // ListByNode 返回某节点的部署记录,按时间倒序。

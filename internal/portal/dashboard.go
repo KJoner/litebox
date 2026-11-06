@@ -285,9 +285,9 @@ func (q *Querier) Nodes(ctx context.Context, proxyUserID int64) ([]Node, error) 
 		       CASE WHEN i.public_port = 0 THEN i.listen_port ELSE i.public_port END,
 		       CASE WHEN i.public_remark != '' THEN i.public_remark ELSE n.public_remark END,
 		       n.maintenance_message,
-		       n.subscription_enabled AND i.subscription_enabled AND i.enabled,
+		       (n.subscription_enabled = 1 AND i.subscription_enabled = 1 AND i.enabled = 1),
 		       n.deployed_config_sha256,
-		       n.ipv6_address != '' AND i.ipv6_enabled, i.deployed_protocol,
+		       (n.ipv6_address != '' AND i.ipv6_enabled = 1), i.deployed_protocol,
 		       i.deployed_unmetered
 		  FROM node_inbounds i
 		  JOIN nodes n ON n.id = i.node_id
@@ -370,8 +370,8 @@ func (q *Querier) mieruNodes(ctx context.Context, proxyUserID int64) ([]Node, er
 		            THEN m.deployed_listen_port_start ELSE m.public_port_start END,
 		       CASE WHEN m.public_remark != '' THEN m.public_remark ELSE n.public_remark END,
 		       n.maintenance_message,
-		       n.subscription_enabled AND m.subscription_enabled AND m.enabled,
-		       n.ipv6_address != '' AND m.ipv6_enabled, m.deployed_transport
+		       (n.subscription_enabled = 1 AND m.subscription_enabled = 1 AND m.enabled = 1),
+		       (n.ipv6_address != '' AND m.ipv6_enabled = 1), m.deployed_transport
 		  FROM node_mieru_inbounds m
 		  JOIN nodes n ON n.id = m.node_id
 		  JOIN access_tiers t ON t.id = m.access_tier_id

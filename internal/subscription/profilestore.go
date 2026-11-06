@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // ErrProfileNotFound 表示模板不存在或已删除。
@@ -229,7 +231,7 @@ func (s *ProfileStore) CreateProfile(ctx context.Context, params ProfileParams) 
 		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, s.db, `
 		INSERT INTO subscription_profiles
 		    (kind, name, display_name, filename, content, singbox_landing_detour,
 		     description, remark, enabled, sort_order, created_at, updated_at)
@@ -241,10 +243,6 @@ func (s *ProfileStore) CreateProfile(ctx context.Context, params ProfileParams) 
 		if isUniqueViolation(err) {
 			return nil, fmt.Errorf("已经有一份叫 %q 的配置了", params.Name)
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 	return s.GetProfile(ctx, id)
@@ -320,5 +318,6 @@ func boolToInt(b bool) int {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }

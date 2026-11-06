@@ -17,6 +17,8 @@ import (
 	// 是反的,但反过来更糟:把规则搬进 node 包,subscription 就要 import
 	// 整个 node(含 deployment/sshx/nginx),而公开订阅路由刻意不依赖它们。
 	"github.com/litebox/litebox/internal/subscription"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // 一台落地机器上的 sing-box 入站(V8)。
@@ -468,7 +470,7 @@ func (s *Store) createInboundTx(
 	now := time.Now().UTC().Format(time.RFC3339)
 	// tag 先留空:它由 id 派生,而 id 要插入之后才知道。空串被
 	// idx_node_inbounds_tag 的部分索引放过,是插入过程中唯一合法的中间态。
-	res, err := tx.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, tx, `
 		INSERT INTO node_inbounds (node_id, tag, display_name, protocol, ss_method,
 			ss_password_encrypted,
 			snell_version, snell_psk_encrypted, snell_obfs_mode, snell_obfs_host,
@@ -491,10 +493,6 @@ func (s *Store) createInboundTx(
 		if isUniqueViolation(err) {
 			return 0, fmt.Errorf("%w:该机器上已有入站监听 %d", ErrInboundPortConflict, p.ListenPort)
 		}
-		return 0, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx,

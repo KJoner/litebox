@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
@@ -25,25 +26,48 @@ import (
 // 在这里按协议分叉的话,查询要多一个参数,而调用方拿到的
 // "用户列表"会变成一个依赖入站协议的东西,配置 diff 就没法比了。
 func (s *Store) UsersForInbound(ctx context.Context, inboundID int64) ([]singbox.User, error) {
+	m, err := s.UsersForInbounds(ctx, []int64{inboundID})
+	if err != nil {
+		return nil, err
+	}
+	if users := m[inboundID]; users != nil {
+		return users, nil
+	}
+	return []singbox.User{}, nil
+}
+
+// UsersForInbounds 是 UsersForInbound 的批量版(VNext PERF03):节点列表算配置状态时要把每台机器的
+// 配置渲染一遍,逐个入口查的话 50 台 × 10 个入口就是 500 条查询,PG 下每条都有一次网络往返。
+// **判据与 UsersForInbound 是同一份代码**(单个入口就是只有一个 id 的批量),不会分叉。
+func (s *Store) UsersForInbounds(ctx context.Context, inboundIDs []int64) (map[int64][]singbox.User, error) {
+	out := make(map[int64][]singbox.User, len(inboundIDs))
+	if len(inboundIDs) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(inboundIDs))
+	args := make([]any, len(inboundIDs))
+	for i, id := range inboundIDs {
+		ph[i], args[i] = "?", id
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.user_code, u.uuid_encrypted, u.ss_password_encrypted,
+		SELECT ei.inbound_id, u.user_code, u.uuid_encrypted, u.ss_password_encrypted,
 		       u.snell_password_encrypted, u.status, u.quota_bytes,
 		       u.used_uplink, u.used_downlink, u.expires_at
 		  FROM proxy_users u
 		  JOIN `+access.EffectiveInboundsView+` ei ON ei.proxy_user_id = u.id
-		 WHERE ei.inbound_id = ? AND u.deleted_at IS NULL
-		 ORDER BY u.user_code`, inboundID)
+		 WHERE ei.inbound_id IN (`+strings.Join(ph, ",")+`) AND u.deleted_at IS NULL
+		 ORDER BY ei.inbound_id, u.user_code`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	now := time.Now().UTC()
-	users := make([]singbox.User, 0)
 	for rows.Next() {
 		var u User
+		var inboundID int64
 		var uuidEnc, ssKeyEnc, snellKeyEnc string
-		if err := rows.Scan(&u.UserCode, &uuidEnc, &ssKeyEnc, &snellKeyEnc,
+		if err := rows.Scan(&inboundID, &u.UserCode, &uuidEnc, &ssKeyEnc, &snellKeyEnc,
 			&u.Status, &u.QuotaBytes,
 			&u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt); err != nil {
 			return nil, err
@@ -78,10 +102,10 @@ func (s *Store) UsersForInbound(ctx context.Context, inboundID int64) ([]singbox
 				return nil, err
 			}
 		}
-		users = append(users, singbox.User{
+		out[inboundID] = append(out[inboundID], singbox.User{
 			Code: u.UserCode, UUID: uuid, SSPassword: ssKey, SnellUserKey: snellKey})
 	}
-	return users, rows.Err()
+	return out, rows.Err()
 }
 
 // NodesForUser 返回某用户当前可用的节点 ID(等级继承 + 额外授权)。

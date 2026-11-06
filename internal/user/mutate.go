@@ -10,6 +10,8 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // UpdateParams 是编辑用户的参数。nil 字段表示不修改。
@@ -351,5 +353,6 @@ func (s *Store) Delete(ctx context.Context, id int64) ([]int64, error) {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }

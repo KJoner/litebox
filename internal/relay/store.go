@@ -13,6 +13,8 @@ import (
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/relayaddr"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // Store 读写 node_relays。
@@ -188,7 +190,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Relay, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, s.db, `
 		INSERT INTO node_relays (node_id, engine, display_name, listen_port, public_port,
 			target_kind, target_inbound_id, target_external_id, target_host, target_port,
 			access_tier_id, sort_order, subscription_enabled, public_remark, enabled,
@@ -202,10 +204,6 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Relay, error) {
 		if isUniqueViolation(err) {
 			return nil, fmt.Errorf("%w:该主机上已有规则监听 %d", ErrPortConflict, p.ListenPort)
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, id)
@@ -466,5 +464,6 @@ func boolOr(v *bool, fallback bool) bool {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }

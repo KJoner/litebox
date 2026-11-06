@@ -13,6 +13,8 @@ import (
 	"unicode"
 
 	"github.com/litebox/litebox/internal/netprobe"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 // 公共目标的取值范围。与迁移 0041 / 0042 的 CHECK 一致;这里先拦,错误落在表单上而不是一句 SQL 报错。
@@ -305,7 +307,8 @@ func normalizePublic(in PublicInput, floor int) (PublicInput, error) {
 }
 
 func isUnique(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }
 
 // decorate 给一个目标补上来源与生效数这几项派生值。
@@ -470,7 +473,7 @@ func (s *Store) createPublic(ctx context.Context, db execer, in PublicInput, met
 		enabled = *in.Enabled
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	res, err := db.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, db, `
 		INSERT INTO probe_public_targets (name, host, protocol, tcp_mode, port, family, interval_sec, count, timeout_ms,
 			apply_all, enabled, allow_restricted, sort_order, note, created_at, updated_at,
 			source, source_key, region, province, city, isp, role, upstream, url)
@@ -484,7 +487,7 @@ func (s *Store) createPublic(ctx context.Context, db execer, in PublicInput, met
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // syncedFields 是上游同步会改写的字段:导入之后管理员手工改过它们,同步就不再覆盖。
@@ -704,8 +707,9 @@ func (s *Store) SetPublicScopes(ctx context.Context, ids []int64, scope string, 
 		}
 		if scope == ScopeSelected {
 			for _, n := range nodeIDs {
-				if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO probe_node_bindings (node_id, public_id, mode, updated_at)
-					VALUES (?,?,'ON',?)`, n, id, now); err != nil {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO probe_node_bindings (node_id, public_id, mode, updated_at)
+					VALUES (?,?,'ON',?)
+					ON CONFLICT (node_id, public_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at`, n, id, now); err != nil {
 					return err
 				}
 			}
@@ -781,8 +785,9 @@ func (s *Store) SetBindings(ctx context.Context, nodeIDs, publicIDs []int64, mod
 			if mode == ModeInherit {
 				_, err = tx.ExecContext(ctx, `DELETE FROM probe_node_bindings WHERE node_id = ? AND public_id = ?`, n, id)
 			} else {
-				_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO probe_node_bindings (node_id, public_id, mode, updated_at)
-					VALUES (?,?,?,?)`, n, id, mode, now)
+				_, err = tx.ExecContext(ctx, `INSERT INTO probe_node_bindings (node_id, public_id, mode, updated_at)
+					VALUES (?,?,?,?)
+					ON CONFLICT (node_id, public_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at`, n, id, mode, now)
 			}
 			if err != nil {
 				return err

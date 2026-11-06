@@ -2,24 +2,15 @@ package subscription
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 )
 
 func newProfileStore(t *testing.T) *ProfileStore {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "profiles.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	return NewProfileStore(db)
 }
 

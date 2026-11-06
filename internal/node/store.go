@@ -13,6 +13,8 @@ import (
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/traffic"
+
+	"github.com/litebox/litebox/internal/database"
 )
 
 var (
@@ -319,7 +321,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 	// 迁移 0019 冻结的那几列这里一律写零值。它们仍然 NOT NULL,
 	// 但已经没有任何代码路径读它们 —— 写一个"看起来合理"的值反而更糟:
 	// 半年后有人翻库看到 nodes.proxy_port = 443,会以为那是真的。
-	res, err := tx.ExecContext(ctx, `
+	id, err := database.InsertID(ctx, tx, `
 		INSERT INTO nodes (name, display_name, host, sub_ipv4_address, ipv6_address,
 			ssh_port, ssh_user,
 			ssh_key_encrypted, ssh_host_key, api_port,
@@ -339,10 +341,6 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Node, error) {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 
@@ -853,7 +851,7 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*Node, Up
 		   SET name = ?, display_name = ?, host = ?,
 		       sub_ipv4_address = ?, ipv6_address = ?,
 		       ssh_port = ?, ssh_user = ?,
-		       ssh_key_encrypted = CASE WHEN ? THEN ? ELSE ssh_key_encrypted END,
+		       ssh_key_encrypted = CASE WHEN ? = 1 THEN ? ELSE ssh_key_encrypted END,
 		       api_port = ?,
 		       sort_order = ?, subscription_enabled = ?,
 		       public_remark = ?, maintenance_message = ?,
@@ -1253,7 +1251,8 @@ func billingLabel(mode string) string {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
+	return database.IsUniqueViolation(err)
 }
 
 // ClearSingBoxVersion 在卸载 sing-box 之后清掉版本号与构建标签。

@@ -3,11 +3,12 @@ package traffic
 import (
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
+	"context"
 	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/v2rayapi"
 )
 
@@ -155,20 +156,13 @@ type cycleEnv struct {
 
 func newCycleEnv(t *testing.T) *cycleEnv {
 	t.Helper()
-	db, err := database.Open(filepath.Join(t.TempDir(), "cycle.db"), 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := database.Migrate(db, nil); err != nil {
-		t.Fatal(err)
-	}
+	db := dbtest.Open(t)
 	return &cycleEnv{db: db, querier: NewQuerier(db)}
 }
 
 func (e *cycleEnv) addNode(t *testing.T, name string, quota int64, cycle string, day int) int64 {
 	t.Helper()
-	res, err := e.db.Exec(`
+	id, err := database.InsertID(context.Background(), e.db, `
 		INSERT INTO nodes (name, display_name, host, proxy_port, reality_dest,
 			reality_privkey_encrypted, reality_pubkey, reality_short_id, status,
 			traffic_quota_bytes, traffic_reset_cycle, traffic_reset_day,
@@ -179,7 +173,6 @@ func (e *cycleEnv) addNode(t *testing.T, name string, quota int64, cycle string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
