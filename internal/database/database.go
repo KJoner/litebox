@@ -18,26 +18,49 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Open 打开(必要时创建)SQLite 数据库并应用连接级 PRAGMA。
+// DefaultReadConns 是 SQLite 只读连接的默认条数(VNext PERF04,见 split.go)。
+// 每条连接各有一份页缓存(默认约 2MB),主控按 1GB 内存的机器估算取 3。
+const DefaultReadConns = 3
+
+// Open 打开(必要时创建)SQLite 数据库并应用连接级 PRAGMA,读写分离、读连接数取默认值。
 func Open(path string, busyTimeout time.Duration) (*sql.DB, error) {
+	return OpenSQLite(path, busyTimeout, DefaultReadConns)
+}
+
+// OpenSQLite 与 Open 相同,readConns 是只读连接的条数;0 表示不分离,退回原来的单连接
+// (写与读排同一个队),留给排查问题时对照用。
+func OpenSQLite(path string, busyTimeout time.Duration, readConns int) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("创建数据目录 %s: %w", dir, err)
 		}
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)",
+	base := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)",
 		url.PathEscape(path), busyTimeout.Milliseconds())
 
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("打开数据库: %w", err)
+	var db *sql.DB
+	if readConns <= 0 {
+		var err error
+		if db, err = sql.Open("sqlite", base); err != nil {
+			return nil, fmt.Errorf("打开数据库: %w", err)
+		}
+		// SQLite 是单写者模型。写连接限制为 1 可以把锁竞争挡在 Go 侧,
+		// 比让多个连接在 SQLite 层互相 busy 重试更可预测。
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		probe, err := sql.Open("sqlite", base)
+		if err != nil {
+			return nil, fmt.Errorf("打开数据库: %w", err)
+		}
+		drv := probe.Driver()
+		probe.Close()
+		// query_only 放在 journal_mode 之后:全新的库要由先连上的那一条把它切成 WAL。
+		db = sql.OpenDB(newSplitConnector(drv, base, base+"&_pragma=query_only(1)"))
+		db.SetMaxOpenConns(readConns)
+		db.SetMaxIdleConns(readConns)
 	}
-
-	// SQLite 是单写者模型。写连接限制为 1 可以把锁竞争挡在 Go 侧,
-	// 比让多个连接在 SQLite 层互相 busy 重试更可预测。
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
 	if err := db.Ping(); err != nil {

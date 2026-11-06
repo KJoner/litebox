@@ -3,11 +3,14 @@ package sshx
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -412,6 +415,11 @@ func (c *Client) DialThrough(network, addr string) (net.Conn, error) {
 
 // Upload 通过 SFTP 上传数据到远端路径,并设置权限。
 func (c *Client) Upload(ctx context.Context, remotePath string, data []byte, mode uint32) error {
+	return c.UploadReader(ctx, remotePath, bytes.NewReader(data), mode)
+}
+
+// UploadReader 与 Upload 相同,只是内容从 r 流式读出 —— 大文件(节点二进制)不必先整份读进内存。
+func (c *Client) UploadReader(ctx context.Context, remotePath string, r io.Reader, mode uint32) error {
 	if c == nil || c.ssh == nil {
 		return ErrNotConnected
 	}
@@ -431,7 +439,7 @@ func (c *Client) Upload(ctx context.Context, remotePath string, data []byte, mod
 		return fmt.Errorf("创建远端文件 %s: %w", remotePath, err)
 	}
 	// 用 ReadFrom 而非 Write:只有前者会走 pkg/sftp 的并发写路径。
-	if _, err := f.ReadFrom(bytes.NewReader(data)); err != nil {
+	if _, err := f.ReadFrom(r); err != nil {
 		f.Close()
 		return fmt.Errorf("写入远端文件 %s: %w", remotePath, err)
 	}
@@ -440,6 +448,39 @@ func (c *Client) Upload(ctx context.Context, remotePath string, data []byte, mod
 	}
 	if err := client.Chmod(remotePath, fileMode(mode)); err != nil {
 		return fmt.Errorf("设置远端文件权限 %s: %w", remotePath, err)
+	}
+	return nil
+}
+
+// Artifact 是主控上一份要分发到节点的文件:路径、大小与按内容算的哈希(VNext CORE03)。
+type Artifact struct {
+	Path   string
+	Size   int64
+	SHA256 string
+}
+
+// ErrArtifactChanged 表示文件在算完哈希之后被换掉了(上传途中重新构建了一份)。
+var ErrArtifactChanged = errors.New("主控上的二进制在上传过程中被替换了,请重试")
+
+// UploadArtifact 把主控本地的一份文件流式传到 remotePath,边传边核对哈希,内容不整份进内存。
+//
+// 核对不上时返回 ErrArtifactChanged,调用方照常删掉临时文件 —— 那份东西不是
+// 管理员以为的那一版,换上去的话卡片上的「可升级」与节点上的实际版本就对不上了。
+func (c *Client) UploadArtifact(ctx context.Context, a Artifact, remotePath string, mode uint32) error {
+	f, err := os.Open(a.Path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	// 套一层 LimitReader 不只是封顶:pkg/sftp 只有从 reader 上问得出剩余字节数时才走并发写
+	// (*io.LimitedReader 是它认的形状之一),裸的 TeeReader 会退回串行写 —— 跨洲链路上
+	// 一个 28MB 的二进制要多传两分钟。
+	if err := c.UploadReader(ctx, remotePath, io.LimitReader(io.TeeReader(f, h), a.Size), mode); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != a.SHA256 {
+		return fmt.Errorf("%w(期望 %.12s,实际传上去的是 %.12s)", ErrArtifactChanged, a.SHA256, got)
 	}
 	return nil
 }

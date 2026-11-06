@@ -27,6 +27,8 @@ type DailyPoint struct {
 // Querier 提供流量查询。
 type Querier struct {
 	db *sql.DB
+	// cycleCache 是全部节点周期用量的短缓存(VNext PERF03),见 NodesCycleUsage。
+	cycleCache cycleCache
 }
 
 func NewQuerier(db *sql.DB) *Querier {

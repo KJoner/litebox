@@ -1,0 +1,48 @@
+package httpapi
+
+import (
+	"net/http"
+	"time"
+)
+
+// sidebarCounts 是侧栏上那几个数字(VNext PERF03)。
+//
+// 原来侧栏为了五个数字拉了五个完整列表(用户、节点含逐台渲染配置算哈希、外部代理、
+// 最近 50 条部署记录、同步状态),而数据库只有一条连接,它们与页面自己的请求排在同一个队里。
+// 这里每个数只做一次 COUNT。判据与对应列表接口一致:未删除的用户、未删除的节点、
+// 未删除的外部代理;失败部署算近 7 天的 FAILED / ROLLED_BACK(原来只在最近 50 条里数,
+// 一周部署超过 50 次时会少算)。
+type sidebarCounts struct {
+	Users int `json:"users"`
+	Nodes int `json:"nodes"`
+	// External 在外部代理功能没接入时为 null,不报 0 —— 0 读起来像「一条都没配」。
+	External        *int `json:"external"`
+	FailedDeploys7d int  `json:"failed_deploys_7d"`
+}
+
+func (s *Server) handleSidebarCounts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var out sidebarCounts
+	since := time.Now().UTC().AddDate(0, 0, -7).Format(time.RFC3339)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT (SELECT COUNT(*) FROM proxy_users WHERE deleted_at IS NULL),
+		       (SELECT COUNT(*) FROM nodes WHERE deleted_at IS NULL),
+		       (SELECT COUNT(*) FROM deployments
+		         WHERE status IN ('FAILED', 'ROLLED_BACK') AND started_at >= ?)`, since).
+		Scan(&out.Users, &out.Nodes, &out.FailedDeploys7d); err != nil {
+		s.logger.Error("读取侧栏计数失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if s.external != nil {
+		var n int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM external_proxies WHERE deleted_at IS NULL`).Scan(&n); err != nil {
+			s.logger.Error("读取外部代理计数失败", "error", err)
+			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		out.External = &n
+	}
+	writeJSON(w, http.StatusOK, out)
+}

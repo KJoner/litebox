@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/litebox/litebox/internal/auth"
 	"github.com/litebox/litebox/internal/crypto"
 )
 
@@ -194,16 +195,17 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Identity, er
 		mustChange   bool
 		loginEnabled bool
 		expiresAt    string
+		lastSeen     string
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT s.id, a.id, a.proxy_user_id, a.username, u.display_name,
-		       a.must_change_password, a.login_enabled, s.expires_at
+		       a.must_change_password, a.login_enabled, s.expires_at, s.last_seen_at
 		  FROM portal_sessions s
 		  JOIN portal_accounts a ON a.id = s.account_id
 		  JOIN proxy_users u ON u.id = a.proxy_user_id AND u.deleted_at IS NULL
 		 WHERE s.token_hash = ?`, crypto.HashToken(token)).
 		Scan(&sessionID, &accountID, &proxyUserID, &username, &displayName,
-			&mustChange, &loginEnabled, &expiresAt)
+			&mustChange, &loginEnabled, &expiresAt, &lastSeen)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrSessionInvalid
@@ -221,8 +223,12 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Identity, er
 		return nil, ErrSessionInvalid
 	}
 
-	_, _ = s.db.ExecContext(ctx, `UPDATE portal_sessions SET last_seen_at = ? WHERE id = ?`,
-		time.Now().UTC().Format(time.RFC3339), sessionID)
+	// 写入节流与管理员会话同一处判据(auth.ShouldTouchSession):有效性只看
+	// expires_at、login_enabled 与这一行在不在,last_seen_at 只用于「最近活动」。
+	if now := time.Now().UTC(); auth.ShouldTouchSession(lastSeen, now) {
+		_, _ = s.db.ExecContext(ctx, `UPDATE portal_sessions SET last_seen_at = ? WHERE id = ?`,
+			now.Format(time.RFC3339), sessionID)
+	}
 
 	return &Identity{
 		AccountID: accountID, ProxyUserID: proxyUserID, Username: username,

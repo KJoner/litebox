@@ -18,6 +18,8 @@ http:
 database:
   path: "/var/lib/litebox/litebox.db"
   busy_timeout: 5s
+  # 只读连接条数(写与事务永远只走一条连接)。0 = 不分离,退回单连接。
+  read_conns: 3
 
 security:
   # 主密钥用于加密用户 UUID 与节点 REALITY 私钥。

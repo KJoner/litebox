@@ -49,7 +49,7 @@ type TryPool interface {
 
 // HelperBinaries 按架构提供辅助程序(*node.DirBinaryProvider)。
 type HelperBinaries interface {
-	Load(arch string) ([]byte, error)
+	Artifact(arch string) (sshx.Artifact, error)
 	SHA256(arch string) (string, error)
 }
 
@@ -233,7 +233,7 @@ func (r *SSHRunner) ensureFile(ctx context.Context, client *sshx.Client, nodeID 
 			return nil
 		}
 	}
-	data, err := r.Binaries.Load(arch)
+	data, err := r.Binaries.Artifact(arch)
 	if err != nil {
 		return toolError(fmt.Sprintf("主控读取 %s 架构的探测辅助程序失败", arch), err)
 	}
@@ -244,7 +244,8 @@ func (r *SSHRunner) ensureFile(ctx context.Context, client *sshx.Client, nodeID 
 	}
 	// 先传临时路径再 rename:与 realm / mita 同一条规矩,覆盖一个正在执行的文件会得到 ETXTBSY。
 	tmp := p + ".new"
-	if err := client.Upload(ctx, tmp, data, 0o755); err != nil {
+	if err := client.UploadArtifact(ctx, data, tmp, 0o755); err != nil {
+		client.Run(ctx, sshx.NewCommand("rm", "-f", tmp))
 		return toolError("上传探测辅助程序失败(磁盘满或目录不可写?)", err)
 	}
 	if res, err := client.Run(ctx, sshx.NewCommand("mv", "-f", tmp, p)); err != nil {

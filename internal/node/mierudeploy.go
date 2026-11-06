@@ -2,8 +2,6 @@ package node
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -83,21 +81,19 @@ func (s *Service) InstallMieruBinaries(
 		return result, errors.New("这台机器还没有探测过架构,请先探测一次")
 	}
 
-	mita, err := s.mieruBinaries.Load(arch)
+	mita, err := s.mieruBinaries.Artifact(arch)
 	if err != nil {
 		return result, err
 	}
-	client, err := s.mieruClients.Load(arch)
+	client, err := s.mieruClients.Artifact(arch)
 	if err != nil {
 		return result, err
 	}
 	layout := s.layout
 	result.MitaPath = layout.MieruBinaryPath()
 	result.ClientPath = layout.MieruClientPath()
-	sum := sha256.Sum256(mita)
-	result.MitaSHA256 = hex.EncodeToString(sum[:])
-	sum = sha256.Sum256(client)
-	result.ClientSHA256 = hex.EncodeToString(sum[:])
+	result.MitaSHA256 = mita.SHA256
+	result.ClientSHA256 = client.SHA256
 
 	err = s.pool.Do(ctx, nodeID, func(c *sshx.Client) error {
 		// unshare 必须先确认。缺了它,服务定义写下去、服务起不来,
@@ -125,13 +121,14 @@ func (s *Service) InstallMieruBinaries(
 		// sing-box 那一侧早就这么做了,这里当时漏了。
 		for _, up := range []struct {
 			path string
-			data []byte
+			data Artifact
 		}{
 			{layout.MieruBinaryPath(), mita},
 			{layout.MieruClientPath(), client},
 		} {
 			tmp := up.path + ".new"
-			if err := c.Upload(ctx, tmp, up.data, 0o755); err != nil {
+			if err := UploadArtifact(ctx, c, up.data, tmp, 0o755); err != nil {
+				c.Run(ctx, sshx.NewCommand("rm", "-f", tmp))
 				return err
 			}
 			if _, err := c.RunCheck(ctx, sshx.NewCommand("mv", tmp, up.path)); err != nil {

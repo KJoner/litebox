@@ -3493,6 +3493,35 @@ sing-box 1.14 的多用户传统 AEAD 走 sing-shadowsocks 的 `shadowaead.NewMu
 * **回滚到这一版之前先把用了传统 AEAD 的入口改回 SS2022 并下发**。旧二进制能打开 0046 的库,
   但渲染那台机器时会报「未知的 Shadowsocks 加密方法」(配置状态「未知」),订阅里那几条也会被跳过。
 
+## VNext 页面性能约束(S1)
+
+需求 §11,测量见 `docs/vnext/acceptance.md`「性能基准」(`internal/httpapi/perfbench_test.go`,`LITEBOX_PERFBENCH=5|50`)。
+**改性能之前先跑基准,改完再跑一次,两组数字都写进验收文档** —— 不凭静态印象断言「慢是 SQLite / SSH 造成的」。
+
+* **SQLite 读写分离**(`internal/database/split.go`):写与事务永远只走一条写连接(`writeMu` 串行),
+  事务外第一个关键字是 SELECT / WITH / EXPLAIN 的语句走只读连接(`query_only` 打开)。
+  单连接时「事务里先查后写」天然串行,这条语义**原样保留** —— Boce 预算、续费幂等、端口冲突检测都靠它。
+  判错是不对称的:读当成写只是少一点并发;写当成读会被只读连接当场拒绝,不会悄悄写进去
+  (`TestSplitMisroutedWriteIsRejected`)。「事务里再用 db 写」仍会在 `writeMu` 上自锁,与原来一样不要这么写。
+  `database.read_conns: 0` 退回单连接,留给排查时对照;
+* **相关子查询在 SQLite 上是逐行求值的**:`WHERE m.id = (SELECT MAX(id) ... WHERE node_id = m.node_id)`
+  对表里每一行各算一次,5 台机器 × 7 天采样就要 1.4 秒,而它被预警、资源列、门户探针三处调用,
+  单连接下互相排队把首屏拖到 20 秒(生产上体现为「点开仪表盘要等好几秒」)。取「每组最新一条」一律写成
+  不相关的 `IN (SELECT MAX(id) ... GROUP BY ...)`;
+* **节点周期用量的缓存键是账本版本**(`traffic.Querier.NodesCycleUsage`):全部节点的额度配置 + 此刻算出的周期起点 +
+  `MAX(traffic_ledger.id)`(账本只追加),另设 60 秒上限。**算法一个字没改**,仍然只从账本按时间范围现算(V2.1 那条);
+  返回的是深拷贝。账本将来若有改写或删除的路径,必须让这个键跟着变;
+* **列表的配置状态没有缓存**(`ConfigStatuses` 逐台渲染)。要加的话键必须绑定全部依赖版本,
+  而且要包含「用户到期」这种不写库的时间因素 —— 漏一个就是把过期的「已同步」显示给管理员,正是这一列要避免的;
+* **侧栏计数走 `/api/sidebar-counts`**,不为几个数字拉完整列表;
+* **会话 last_seen_at 至少隔 1 分钟才写**(`auth.ShouldTouchSession`,门户共用这一处判据)。
+  有效性只看 `expires_at`、`login_enabled` 与会话行在不在,吊销与过期仍在下一个请求上生效;
+* **JSON 响应 gzip 只在 /api/ 下、超过 1.4 KB 时做,订阅 `/sub/` 一个字节不动**;压缩层实现了 `Unwrap`
+  (longOperation 要穿透它放宽写入期限,`TestCompressWriterUnwrapReachesDeadline`);
+* **节点二进制不进 Go 堆**(`node.DirBinaryProvider.Artifact` + `sshx.Client.UploadArtifact`):
+  哈希按 (大小, 修改时间) 缓存,上传时流式读文件、边传边核对哈希,对不上返回 `ErrArtifactChanged`。
+  reader 外面那层 `io.LimitReader` 是载重的:pkg/sftp 只有问得出剩余字节数时才并发写,裸 TeeReader 会退回串行。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -4341,5 +4370,7 @@ VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 
 迁移与回退见 `docs/vnext/migration.md`,验收记录见 `docs/vnext/acceptance.md`。
 
 * S0 基线与约束 —— 已完成(需求放进仓库、差距清单、两条架构约束按需求调整、低资源参考栈冻结)
+* S1 页面性能 —— 第一部分已完成(固定数据集基准、最新采样查询、账本覆盖索引 0047、读写分离、周期用量缓存、
+  侧栏计数、会话写入节流、gzip、二进制流式分发;50 台主机档 5 会话首屏整屏 p95 2.42 s → 0.17 s)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

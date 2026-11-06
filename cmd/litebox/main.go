@@ -162,7 +162,7 @@ func setup(fs *flag.FlagSet, args []string) (config.Config, *slog.Logger, *sql.D
 
 	logger := newLogger(cfg.Log)
 
-	db, err := database.Open(cfg.Database.Path, cfg.Database.BusyTimeout)
+	db, err := database.OpenSQLite(cfg.Database.Path, cfg.Database.BusyTimeout, cfg.Database.ReadConns)
 	if err != nil {
 		return cfg, logger, nil, err
 	}

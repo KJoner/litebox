@@ -164,13 +164,14 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Admin, error
 		adminID   int64
 		username  string
 		expiresAt string
+		lastSeen  string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT s.id, s.admin_user_id, u.username, s.expires_at
+		`SELECT s.id, s.admin_user_id, u.username, s.expires_at, s.last_seen_at
 		   FROM admin_sessions s
 		   JOIN admin_users u ON u.id = s.admin_user_id
 		  WHERE s.token_hash = ?`, crypto.HashToken(token)).
-		Scan(&sessionID, &adminID, &username, &expiresAt)
+		Scan(&sessionID, &adminID, &username, &expiresAt, &lastSeen)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrSessionInvalid
@@ -185,10 +186,30 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Admin, error
 		return nil, ErrSessionInvalid
 	}
 
-	_, _ = s.db.ExecContext(ctx, `UPDATE admin_sessions SET last_seen_at = ? WHERE id = ?`,
-		time.Now().UTC().Format(time.RFC3339), sessionID)
+	if now := time.Now().UTC(); ShouldTouchSession(lastSeen, now) {
+		_, _ = s.db.ExecContext(ctx, `UPDATE admin_sessions SET last_seen_at = ? WHERE id = ?`,
+			now.Format(time.RFC3339), sessionID)
+	}
 
 	return &Admin{ID: adminID, Username: username}, nil
+}
+
+// SessionTouchInterval 是会话 last_seen_at 的最短写入间隔(VNext PERF03)。
+//
+// 原来每个请求都写一次,而 SQLite 只有一条连接:仪表盘一次首屏十几个并发读请求,
+// 每个都先排进写队列做一次 UPDATE。last_seen_at 只用来展示「最近活动」与排序,
+// **会话是否有效只看 expires_at 与这一行在不在**(吊销 = 删行),所以写得稀一点
+// 不改变任何安全语义 —— 吊销、改密踢人、过期照样在下一个请求上生效。
+const SessionTouchInterval = time.Minute
+
+// ShouldTouchSession 回答这次请求要不要更新 last_seen_at。读不懂旧值时写 ——
+// 宁可多写一次,也不让一个坏值把「最近活动」永远停在那里。管理员与门户共用这一处。
+func ShouldTouchSession(lastSeen string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, lastSeen)
+	if err != nil {
+		return true
+	}
+	return now.Sub(t) >= SessionTouchInterval || t.After(now)
 }
 
 // Logout 销毁指定会话。
