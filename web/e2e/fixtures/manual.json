@@ -1,6 +1,18 @@
 {
   "_说明": "录制时拿不到、手工补的数据。键与 api.json 相同,同名时以这里为准。节点 1 在录制那天 SSH 不通,它的服务现状与网卡读数照节点 2 的形状补。。资产卡片(估值、标签、网络探测)与出站探测的公共目标是手写的演示数据,地址只用文档地址段。自建节点拨测(东京-beta → 上海-alpha)、HTTP 目标与卡片别名(V22.6)同样是手写的演示数据。",
   "responses": {
+    "GET /api/nodes/1/agent": {
+      "installed": false,
+      "status": { "node_id": 1, "state": "", "version": "", "last_seen_at": "", "rss_kb": 0, "dropped_total": 0, "last_error": "", "installed_at": "" },
+      "metrics_writer": "SSH",
+      "min_memory_mb": 256
+    },
+    "GET /api/nodes/2/agent": {
+      "installed": false,
+      "status": { "node_id": 2, "state": "", "version": "", "last_seen_at": "", "rss_kb": 0, "dropped_total": 0, "last_error": "", "installed_at": "" },
+      "metrics_writer": "SSH",
+      "min_memory_mb": 256
+    },
     "GET /api/sidebar-counts": {
       "users": 1,
       "nodes": 2,

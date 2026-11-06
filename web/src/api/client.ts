@@ -83,6 +83,8 @@ const ASYNC_LONG_OPS: RegExp[] = [
   /^\/api\/nodes\/\d+\/(relays|realm)\/deploy$/,
   /^\/api\/nodes\/\d+\/(realm-(install|uninstall|restart|stop)|singbox-(start|stop)|nginx-(start|stop|restart)|mieru-(start|stop|restart))$/,
   /^\/api\/nodes\/\d+\/host-traffic\/install$/,
+  /^\/api\/nodes\/\d+\/agent\/(install|uninstall)$/,
+  /^\/api\/nodes\/\d+\/agent\/(install|uninstall)$/,
   /^\/api\/nodes\/\d+\/(mieru|singbox|nginx)-(install|uninstall)$/,
   /^\/api\/mieru-inbounds\/\d+\/deploy$/,
   /^\/api\/inbounds\/\d+\/dest-check$/,
@@ -4124,6 +4126,19 @@ export const api = {
       quota_bytes: number
       exceeded_after: boolean
     }>(`/api/users/${id}/billing`, { method: 'PUT', body }),
+  nodeAgent: (id: number) =>
+    request<{
+      installed: boolean
+      status: { state: 'PENDING' | 'ACTIVE' | 'REMOVED' | ''; version: string; last_seen_at: string; rss_kb: number; dropped_total: number; last_error: string; installed_at: string }
+      metrics_writer: 'AGENT' | 'SSH'
+      min_memory_mb: number
+    }>(`/api/nodes/${id}/agent`),
+  installNodeAgent: (id: number) =>
+    request<{ result: { steps: string[]; state: string; note: string }; error?: string }>(`/api/nodes/${id}/agent/install`, {
+      method: 'POST',
+    }),
+  uninstallNodeAgent: (id: number) =>
+    request<{ steps: string[]; error?: string }>(`/api/nodes/${id}/agent/uninstall`, { method: 'POST' }),
   setNodeQuotaSource: (id: number, source: 'PROXY_ESTIMATE' | 'HOST_NIC') =>
     request<{ changed: boolean }>(`/api/nodes/${id}/quota-source`, { method: 'PUT', body: { source } }),
   nodeHostInterfaces: (id: number) =>

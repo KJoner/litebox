@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/litebox/litebox/internal/agent"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -50,6 +51,7 @@ type Server struct {
 	scheduler    *traffic.Scheduler
 	metrics      *node.MetricsStore
 	hostTraffic  *hosttraffic.Syncer
+	agent        *agent.Service
 	monitor      *node.Monitor
 	netRates     *node.NetRateSampler
 	watchdog     *node.Watchdog
@@ -104,7 +106,9 @@ type Options struct {
 	Metrics   *node.MetricsStore
 	// HostTraffic 是主机流量(vnStat)那一路(V15),nil 表示没启用。
 	HostTraffic *hosttraffic.Syncer
-	Monitor     *node.Monitor
+	// Agent 是可选的节点 Agent(VNext AGENT01–06),nil 表示未接入。
+	Agent   *agent.Service
+	Monitor *node.Monitor
 	// NetRates 是资产卡片的实时网速(只在有页面在看时读),nil 表示关闭。
 	NetRates *node.NetRateSampler
 	Watchdog *node.Watchdog
@@ -186,6 +190,7 @@ func NewServer(opts Options) *Server {
 		scheduler:    opts.Scheduler,
 		metrics:      opts.Metrics,
 		hostTraffic:  opts.HostTraffic,
+		agent:        opts.Agent,
 		monitor:      opts.Monitor,
 		netRates:     opts.NetRates,
 		watchdog:     opts.Watchdog,
@@ -229,6 +234,11 @@ func (s *Server) Handler() http.Handler {
 		// 而用户手滑删掉末段也仍然能拉到。
 		mux.HandleFunc("GET /sub/{token}/profile/{id}", s.handleProfileSubscription)
 		mux.HandleFunc("GET /sub/{token}/profile/{id}/{filename}", s.handleProfileSubscription)
+	}
+
+	// 节点 Agent 的上报:不在 /api/ 下(那里是管理员会话),凭据是安装时写进节点 0600 配置里的令牌。
+	if s.agent != nil {
+		mux.HandleFunc("POST /agent/v1/report", s.handleAgentReport)
 	}
 
 	// 需要登录的接口
@@ -474,6 +484,9 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/nodes/{id}/host-traffic/interfaces", s.handleNodeHostInterfaces)
 		authed.HandleFunc("PUT /api/nodes/{id}/host-traffic/interface", s.handleNodeHostInterface)
 		authed.HandleFunc("PUT /api/nodes/{id}/quota-source", s.handleNodeQuotaSource)
+		authed.HandleFunc("GET /api/nodes/{id}/agent", s.handleNodeAgent)
+		authed.HandleFunc("POST /api/nodes/{id}/agent/install", s.longOperation(s.handleNodeAgentInstall))
+		authed.HandleFunc("POST /api/nodes/{id}/agent/uninstall", s.longOperation(s.handleNodeAgentUninstall))
 		authed.HandleFunc("POST /api/nodes/{id}/host-traffic/install", s.longOperation(s.handleNodeHostTrafficInstall))
 		authed.HandleFunc("GET /api/traffic/status", s.handleTrafficStatus)
 	}

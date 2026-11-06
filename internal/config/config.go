@@ -56,6 +56,9 @@ type NodeConfig struct {
 	// ProbeBinaryDir 存放出站网络探测的非驻留辅助程序 litebox-probe-linux-<arch>,
 	// 由 scripts/build-probe.sh 从本仓库的 cmd/litebox-probe 构建。
 	ProbeBinaryDir string `yaml:"probe_binary_dir"`
+	// AgentBinaryDir 存放可选节点 Agent 的 litebox-agent-linux-<arch>(VNext AGENT01),
+	// 由 scripts/build-agent.sh 构建。只有管理员对某台机器显式启用 Agent 时才会下发。
+	AgentBinaryDir string `yaml:"agent_binary_dir"`
 	// SSHDialTimeout 是建立到节点 SSH 连接的超时。
 	SSHDialTimeout time.Duration `yaml:"ssh_dial_timeout"`
 	// DeployTimeout 是单次部署事务的整体超时。
@@ -178,6 +181,7 @@ func Default() Config {
 			MieruBinaryDir:   "assets/mieru",
 			RealmBinaryDir:   "assets/realm",
 			ProbeBinaryDir:   "assets/probe",
+			AgentBinaryDir:   "assets/agent",
 			SSHDialTimeout:   20 * time.Second,
 			DeployTimeout:    5 * time.Minute,
 			DeployDebounce:   4 * time.Second,
@@ -265,6 +269,7 @@ func applyEnv(cfg *Config) {
 	envStr("LITEBOX_NODE_MIERU_BINARY_DIR", &cfg.Node.MieruBinaryDir)
 	envStr("LITEBOX_NODE_REALM_BINARY_DIR", &cfg.Node.RealmBinaryDir)
 	envStr("LITEBOX_NODE_PROBE_BINARY_DIR", &cfg.Node.ProbeBinaryDir)
+	envStr("LITEBOX_NODE_AGENT_BINARY_DIR", &cfg.Node.AgentBinaryDir)
 	envDuration("LITEBOX_DEPLOY_TIMEOUT", &cfg.Node.DeployTimeout)
 	envDuration("LITEBOX_DEPLOY_DEBOUNCE", &cfg.Node.DeployDebounce)
 	envDuration("LITEBOX_TRAFFIC_SYNC_INTERVAL", &cfg.Traffic.SyncInterval)

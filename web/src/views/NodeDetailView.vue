@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import NodeQuotaSourcePanel from '@/components/node/NodeQuotaSourcePanel.vue'
+import NodeAgentCard from '@/components/node/NodeAgentCard.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
@@ -1585,6 +1586,22 @@ const needsPortForward = computed(() =>
                     全面重检
                   </a-button>
                 </div>
+              </div>
+            </section>
+
+            <!-- 可选节点 Agent(VNext AGENT01–06):默认不装,只做状态采集。 -->
+            <section class="nd__card nd__card--span">
+              <div class="nd__card-head">
+                <span class="nd__card-head-title">
+                  Agent(可选)
+                  <LbInfoTip
+                    :width="320"
+                    text="默认不装:节点上跑的只有上游软件,面板一行代码都不常驻。启用之后只做状态采集(CPU、内存、磁盘、网卡速率),节点主动连主控上报;配置下发、启停与探测仍走 SSH。内存不足 256 MB 的机器上不装。"
+                  />
+                </span>
+              </div>
+              <div class="nd__card-body">
+                <NodeAgentCard :node="node" />
               </div>
             </section>
 

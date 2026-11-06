@@ -11,8 +11,8 @@ A03、A17 属于 Nexus Portal 或两应用共享实例的联合验收,本仓库�
 | A04 | 默认 SQLite Compose | 本机通过 | 只起主控;`down`/`up` 后数据还在;见 deploy.md §7 |
 | A05 | 快捷 PG Compose | 本机通过 | 健康依赖、5432 不发布、应用账号非超级用户;口令只用字母数字(特殊字符的 URL 编码未测) |
 | A06 | 安装与升级失败 | 部分 | 备份验证不过不删旧备份、迁移演练失败不动线上;跨版本回滚要等第二个发布版本 |
-| A07 | 64/128 MB SSH 节点 | 未开始 | |
-| A08 | Agent 连接中断与切换 | 未开始 | |
+| A07 | 64/128 MB SSH 节点 | 部分 | 128 MB 及以下拒装 Agent(`TestInstallRefusesSmallMachines`,界面上禁用并说明);64 / 128 MiB 参考栈的 24 小时实测未做 |
+| A08 | Agent 连接中断与切换 | 真机部分通过(2026-11-07) | Alpine 3.24 / aarch64 / OpenRC / 512 MB 测试机,隔离的 scratch 面板:面板经 SSH 安装(OpenRC + supervise-daemon,配置 0600);连不上主控时停在 PENDING、资源采集仍走 SSH、样本进本地队列(12 条);截获 Agent 真实发出的上报转交面板:12 条入库、原样重发 0 条、错误令牌 401、转 ACTIVE 后写入者切到 Agent;卸载后进程 / 服务定义 / 二进制 / 配置 / 队列全部清掉、sing-box 不受影响、写入者回到 SSH。空闲常驻 9.1 MiB(VmRSS)。**没测**:节点长时间直连主控的持续上报(本机面板在 NAT 后面,反向隧道未获授权)、WSS、命令协议 |
 | A09 | 用户入口撤权 | 单元 + 前端回归通过,真机未验 | `TestSetAccessMarksBeforeAndAfter`(撤权取前后并集标脏)、`TestEntryAccessRestricted`(仅指定用户、停用照样拦)、`grants_upgrade_test.go`(升级逐行不变,SQLite 与 PG);撤权收敛按配置状态展示 |
 | A10 | 链路失败或形成环路 | 单元 + 前端回归通过,真机未验 | `TestSetChainRejectsLoop`、`TestChainPathStopsOnExistingLoop`、`TestPreviewQuickChain`、`TestQuickChainCreate`(有问题整个拒绝、一行不写) |
 | A11 | 流量重启 / 重传 / 切换 | 部分 | 计费公式:`internal/billing` 固定夹具(U/D/SUM/MAX、倍率、分段封存、溢出);`TestEnforceUsesBillingRule`、`TestMonthlyResetAppliesPendingRule`、`TestSetBillingImmediateSealsOldSegment`;重启判定沿用 Phase 4 的测试;Agent 重传见 S6 第二部分 |

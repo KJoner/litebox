@@ -53,4 +53,5 @@ litebox.local.yaml
 assets/realm/realm-linux-*
 # 出站网络探测的辅助程序(各约 3MB,由 scripts/build-probe.sh 从本仓库构建)
 assets/probe/litebox-probe-linux-*
+assets/agent/litebox-agent-linux-*
 assets/release-manifest.json
