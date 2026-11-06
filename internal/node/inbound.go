@@ -171,6 +171,9 @@ type Inbound struct {
 	// Enabled 为假时这个入站不再渲染进 sing-box 配置(下次部署生效)。
 	// 与软删除不同:行还留着,重新打开不用重配等级、排序与握手目标。
 	Enabled bool `json:"enabled"`
+	// Restricted 是「仅指定用户」(迁移 0049):开着时这个入口只对被直接授权的用户出现,等级继承与整机授权都不算。
+	// 改它走 user.Service.SetEntryAccess,不走 UpdateInbound。
+	Restricted bool `json:"restricted"`
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -214,7 +217,7 @@ const inboundColumns = `i.id, i.node_id, n.name, n.display_name,
 	i.chain_target_kind, i.chain_target_inbound_id, i.chain_target_external_id,
 	i.chain_code, i.chain_uuid_encrypted, i.chain_ss_password_encrypted,
 	i.access_tier_id, t.code, t.name, t.level,
-	i.sort_order, i.subscription_enabled, i.public_remark, i.enabled,
+	i.sort_order, i.subscription_enabled, i.public_remark, i.enabled, i.restricted,
 	i.created_at, i.updated_at`
 
 // inboundFrom 固定带上节点与等级表:两者都是入站的必备上下文,
@@ -245,7 +248,7 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 		&in.ChainTargetKind, &chainInboundID, &chainExternalID,
 		&in.ChainCode, &chainUUIDEnc, &chainSSEnc,
 		&in.AccessTierID, &in.AccessTierCode, &in.AccessTierName, &in.AccessTierLevel,
-		&in.SortOrder, &in.SubscriptionEnabled, &in.PublicRemark, &in.Enabled,
+		&in.SortOrder, &in.SubscriptionEnabled, &in.PublicRemark, &in.Enabled, &in.Restricted,
 		&in.CreatedAt, &in.UpdatedAt,
 	)
 	if err != nil {

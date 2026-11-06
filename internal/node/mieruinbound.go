@@ -110,6 +110,8 @@ type MieruInbound struct {
 	SubscriptionEnabled bool   `json:"subscription_enabled"`
 	PublicRemark        string `json:"public_remark"`
 	Enabled             bool   `json:"enabled"`
+	// Restricted 是「仅指定用户」(迁移 0049),改它走 user.Service.SetEntryAccess。
+	Restricted bool `json:"restricted"`
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -162,7 +164,7 @@ const mieruColumns = `m.id, m.node_id, n.name, n.display_name,
 	m.chain_target_inbound_id, m.chain_target_external_id,
 	m.chain_code, m.chain_uuid_encrypted, m.chain_ss_password_encrypted,
 	m.access_tier_id, t.code, t.name, t.level,
-	m.sort_order, m.subscription_enabled, m.public_remark, m.enabled,
+	m.sort_order, m.subscription_enabled, m.public_remark, m.enabled, m.restricted,
 	m.created_at, m.updated_at`
 
 const mieruFrom = ` FROM node_mieru_inbounds m
@@ -190,7 +192,7 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 		&chainInboundID, &chainExternalID,
 		&m.ChainCode, &chainUUIDEnc, &chainSSEnc,
 		&m.AccessTierID, &m.AccessTierCode, &m.AccessTierName, &m.AccessTierLevel,
-		&m.SortOrder, &m.SubscriptionEnabled, &m.PublicRemark, &m.Enabled,
+		&m.SortOrder, &m.SubscriptionEnabled, &m.PublicRemark, &m.Enabled, &m.Restricted,
 		&m.CreatedAt, &m.UpdatedAt,
 	); err != nil {
 		return nil, err

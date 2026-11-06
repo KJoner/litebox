@@ -29,6 +29,10 @@ import InboundChainModal from '@/components/node/InboundChainModal.vue'
 import InboundDestModal from '@/components/node/InboundDestModal.vue'
 import InboundFormModal from '@/components/node/InboundFormModal.vue'
 import EntrySortModal, { type SortTarget } from '@/components/node/EntrySortModal.vue'
+import EntryAccessModal from '@/components/node/EntryAccessModal.vue'
+import QuickChainModal from '@/components/node/QuickChainModal.vue'
+import SortModeModal from '@/components/lb/SortModeModal.vue'
+import type { SortRow } from '@/components/lb/sortMode'
 import { globalValue, sortByEntryOrder, type EntryOrderKey } from '@/components/node/entryOrder'
 import MieruChainModal from '@/components/node/MieruChainModal.vue'
 import MieruInboundFormModal from '@/components/node/MieruInboundFormModal.vue'
@@ -198,10 +202,11 @@ function rowOwner(r: Row): string {
 }
 function rowTier(r: Row): string {
   switch (r.kind) {
+    // 「仅指定用户」的入口等级不起作用,写在等级那一格里 —— 不写的话那一格显示的等级是在说一件不成立的事。
     case 'singbox':
-      return r.inbound.access_tier_name
+      return r.inbound.restricted ? '仅指定用户' : r.inbound.access_tier_name
     case 'mieru':
-      return r.mieru.access_tier_name
+      return r.mieru.restricted ? '仅指定用户' : r.mieru.access_tier_name
     case 'nginx':
     case 'realm':
       return r.relay.access_tier_name
@@ -677,6 +682,47 @@ function toggleExternalSub(p: ExternalProxy) {
 // ---------- 排序 ----------
 
 const sortOpen = ref(false)
+// 入口授权(VNext AUTH03):仅指定用户 + 直接授权的用户
+const accessOpen = ref(false)
+const accessTarget = ref<{ kind: 'SINGBOX' | 'MIERU'; id: number; name: string; nodeName: string } | null>(null)
+// 批量排序(VNext UI06):一台机器上全部入口的完整顺序,不受页面筛选影响。
+// rows 已经按订阅规则排好,这里只取这台机器那一段 —— 入口序号对这台机器之外的条目没有意义。
+const sortModeOpen = ref(false)
+const sortModeNode = ref<Node | null>(null)
+const sortModeRows = computed<SortRow[]>(() => {
+  const n = sortModeNode.value
+  if (!n) return []
+  return rows.value
+    .filter((r) => r.kind !== 'external' && r.node.id === n.id)
+    .map((r) => {
+      const k = orderKey(r)
+      const kind = r.kind === 'singbox' ? 'SINGBOX' : r.kind === 'mieru' ? 'MIERU' : r.kind === 'realm' ? 'REALM' : 'NGINX'
+      return { key: r.key, kind, id: k.id, label: rowName(r), sub: kindLabel[r.kind], value: k.sort }
+    })
+})
+function openSortMode(n: Node) {
+  sortModeNode.value = n
+  sortModeOpen.value = true
+}
+
+// 快速组链(VNext CHAIN02):从入口机的行进来预填入口机,从出口(自建入口 / 外部代理)进来预填出口。
+const quickOpen = ref(false)
+const quickPreset = ref<{ entryNodeId?: number; targetKind?: 'INBOUND' | 'EXTERNAL'; targetId?: number } | null>(null)
+function openQuickAsEntry(nodeId: number) {
+  quickPreset.value = { entryNodeId: nodeId }
+  quickOpen.value = true
+}
+function openQuickAsExit(kind: 'INBOUND' | 'EXTERNAL', id: number) {
+  quickPreset.value = { targetKind: kind, targetId: id }
+  quickOpen.value = true
+}
+function openAccess(r: SingBoxRow | MieruRow) {
+  accessTarget.value =
+    r.kind === 'singbox'
+      ? { kind: 'SINGBOX', id: r.inbound.id, name: r.inbound.display_name, nodeName: r.node.name }
+      : { kind: 'MIERU', id: r.mieru.id, name: r.mieru.display_name, nodeName: r.node.name }
+  accessOpen.value = true
+}
 const sortTargetRow = ref<SortTarget | null>(null)
 function openSort(r: Row) {
   sortTargetRow.value = sortTarget(r)
@@ -1097,6 +1143,13 @@ const columns = [
               <template #overlay>
                 <a-menu>
                   <a-menu-item @click="checkExternal((record as ExternalRow).proxy)">检查连通性</a-menu-item>
+                  <a-menu-item
+                    :disabled="!(record as ExternalRow).proxy.dialable_by_node"
+                    :title="(record as ExternalRow).proxy.dialable_by_node ? '' : (record as ExternalRow).proxy.dialable_reason"
+                    @click="openQuickAsExit('EXTERNAL', (record as ExternalRow).proxy.id)"
+                  >
+                    作为出口组链
+                  </a-menu-item>
                   <a-menu-item @click="toggleExternalSub((record as ExternalRow).proxy)">
                     {{ (record as ExternalRow).proxy.subscription_enabled ? '停发订阅' : '恢复下发' }}
                   </a-menu-item>
@@ -1134,6 +1187,14 @@ const columns = [
               <template #overlay>
                 <a-menu>
                   <a-menu-item @click="openChain(record as SingBoxRow | MieruRow)">出口去向</a-menu-item>
+                  <a-menu-item @click="openAccess(record as SingBoxRow | MieruRow)">入口授权(仅指定用户)</a-menu-item>
+                  <a-menu-item @click="openQuickAsEntry((record as SingBoxRow | MieruRow).node.id)">作为入口组链(在这台机器上新建)</a-menu-item>
+                  <a-menu-item
+                    v-if="(record as Row).kind === 'singbox'"
+                    @click="openQuickAsExit('INBOUND', (record as SingBoxRow).inbound.id)"
+                  >
+                    作为出口组链
+                  </a-menu-item>
                   <!-- **下发那一档按类型分。** sing-box 是整台机器一次(踢掉这台机器上
                        全部 sing-box 入口的连接),Mieru 是逐入口各下各的(只断那一个)
                        —— 两者的后果差得很远,放在同一个菜单项下面只能写一句废话。 -->
@@ -1141,6 +1202,7 @@ const columns = [
                     下发这个 Mieru 入口(只断它)
                   </a-menu-item>
                   <a-menu-item @click="openSort(record as Row)">调整排序</a-menu-item>
+                  <a-menu-item @click="openSortMode((record as SingBoxRow | MieruRow).node)">批量调整这台机器的入口顺序</a-menu-item>
                   <a-menu-item
                     v-if="
                       (record as Row).kind === 'singbox' &&
@@ -1229,6 +1291,23 @@ const columns = [
     />
 
     <EntrySortModal v-model:open="sortOpen" :target="sortTargetRow" :scheme="scheme" @saved="load" />
+    <EntryAccessModal v-model:open="accessOpen" :target="accessTarget" @saved="load" />
+    <SortModeModal
+      v-model:open="sortModeOpen"
+      :title="sortModeNode ? `调整「${sortModeNode.display_name || sortModeNode.name}」的入口顺序` : '调整入口顺序'"
+      :scope="`这台机器上的全部入口(sing-box、Mieru 与转发),订阅与门户里按这个顺序排`"
+      :rows="sortModeRows"
+      :min="0"
+      :max="scheme === 'GLOBAL' ? 999 : 1000000"
+      @saved="load"
+    />
+    <QuickChainModal
+      v-model:open="quickOpen"
+      :nodes="nodes"
+      :externals="externals"
+      :preset="quickPreset"
+      @saved="load"
+    />
 
     <a-modal
       v-model:open="deployOpen"

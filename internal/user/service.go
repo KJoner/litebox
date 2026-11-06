@@ -171,3 +171,55 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 func (s *Service) SyncNode(nodeID int64) {
 	s.markNodes([]int64{nodeID})
 }
+
+// AccessResult 是一次授权变更的结果。
+type AccessResult struct {
+	*AccessDiff
+	// MarkedNodes 是已标脏、会自动重新下发 sing-box 的机器(变更前后归属的 sing-box 入口所在机器的并集)。
+	MarkedNodes []int64 `json:"marked_node_ids"`
+	// MieruPending 是归属变了的 Mieru 入口:Mieru 一个入口一个实例、逐入口下发,不自动做,
+	// 被移出的人的凭据要等那个入口下发一次才真正删掉 —— 界面要把这几条列出来。
+	MieruPending []EntryInfo `json:"mieru_pending"`
+}
+
+// SetAccess 换掉一个用户的授权模式与直接授权集合。
+// 撤权与授权同样要重新下发:被移出的入口所在机器上还留着他的凭据,拖多久就多能用多久(AUTH02)。
+func (s *Service) SetAccess(ctx context.Context, id int64, mode string, grants []EntryRef) (*AccessResult, error) {
+	diff, err := s.store.SetAccess(ctx, id, mode, grants)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyAccessDiff(diff), nil
+}
+
+func (s *Service) applyAccessDiff(diff *AccessDiff) *AccessResult {
+	res := &AccessResult{AccessDiff: diff, MarkedNodes: []int64{}, MieruPending: []EntryInfo{}}
+	seen := map[int64]bool{}
+	for _, list := range [][]EntryInfo{diff.Added, diff.Removed} {
+		for _, e := range list {
+			if e.Kind == EntryMieru {
+				res.MieruPending = append(res.MieruPending, e)
+				continue
+			}
+			if !seen[e.NodeID] {
+				seen[e.NodeID] = true
+				res.MarkedNodes = append(res.MarkedNodes, e.NodeID)
+			}
+		}
+	}
+	s.markNodes(res.MarkedNodes)
+	return res
+}
+
+// SetEntryAccess 换掉一个入口的「仅指定用户」开关与直接授权的用户。
+// 标脏只在 sing-box 入口上做;Mieru 入口要逐入口下发,由调用方提示。
+func (s *Service) SetEntryAccess(ctx context.Context, e EntryRef, restricted bool, userIDs []int64) (int64, error) {
+	nodeID, err := s.store.SetEntryAccess(ctx, e, restricted, userIDs)
+	if err != nil {
+		return 0, err
+	}
+	if e.Kind == EntrySingBox {
+		s.markNodes([]int64{nodeID})
+	}
+	return nodeID, nil
+}

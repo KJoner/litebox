@@ -13,6 +13,8 @@ import {
   type NodeMetrics,
 } from '@/api/client'
 import NodeFormModal from '@/components/node/NodeFormModal.vue'
+import SortModeModal from '@/components/lb/SortModeModal.vue'
+import type { SortRow } from '@/components/lb/sortMode'
 import ExpiryModal from '@/components/expiry/ExpiryModal.vue'
 import NodeOpProgressModal from '@/components/node/NodeOpProgressModal.vue'
 import NodesProbeBatchModal from '@/components/probe/NodesProbeBatchModal.vue'
@@ -63,6 +65,23 @@ import { daysUntil, formatBytes, formatDate, formatUTCDay, formatUTCTime } from 
  */
 const narrow = useNarrow()
 const nodes = ref<Node[]>([])
+
+// 批量调整机器顺序(VNext UI06):全部机器的完整顺序,不受筛选影响;只改排序号,不部署。
+const sortModeOpen = ref(false)
+const sortGlobal = ref(false)
+const sortModeRows = computed<SortRow[]>(() =>
+  [...nodes.value]
+    .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+    .map((n) => ({ key: `n${n.id}`, kind: 'NODE', id: n.id, label: n.display_name || n.name, sub: n.name, value: n.sort_order })),
+)
+async function openSortMode() {
+  try {
+    sortGlobal.value = (await api.settings()).subscription_order_scheme === 'GLOBAL'
+  } catch {
+    sortGlobal.value = false
+  }
+  sortModeOpen.value = true
+}
 const tiers = ref<AccessTier[]>([])
 const loading = ref(true)
 const loadError = ref<{ message: string; status?: number; at: string } | null>(null)
@@ -566,6 +585,7 @@ const keyOpen = ref(false)
           <template #icon><LbIcon name="activity" :size="15" /></template>
           立即巡检
         </a-button>
+        <a-button @click="openSortMode">调整顺序</a-button>
         <a-button :loading="loading" aria-label="刷新" title="刷新" @click="load">
           <template #icon><LbIcon name="refresh" :size="15" /></template>
         </a-button>
@@ -978,6 +998,15 @@ const keyOpen = ref(false)
       </div>
     </section>
 
+    <SortModeModal
+      v-model:open="sortModeOpen"
+      title="调整机器顺序"
+      scope="全部自建机器;订阅与门户里按机器的先后排它们的入口"
+      :rows="sortModeRows"
+      :min="sortGlobal ? 1 : 0"
+      :max="sortGlobal ? 1000 : 1000000"
+      @saved="load"
+    />
     <NodeFormModal
       v-model:open="formOpen"
       :node="editing"

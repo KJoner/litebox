@@ -171,6 +171,9 @@ func (s *Store) SetChain(
 		if deployed == "" {
 			return ErrChainTargetNotDeployed
 		}
+		if err := chainTargetUsable(ctx, s, tx, inboundID, targetID); err != nil {
+			return err
+		}
 	}
 
 	if kind == ChainTargetExternal {
@@ -591,4 +594,26 @@ func (s *Store) chainExternalTarget(
 		}
 	}
 	return &t, nil
+}
+
+// chainTargetUsable 是 VNext CHAIN04 补上的两道:落地停用、以及成环。
+//
+// 环路在此之前存得进去(A → B,再把 B → A),两台机器的部署都成功,拨测都失败,
+// 报错只说「经代理未取到 HTTP 响应」—— 流量在两台机器之间来回转圈,哪一层都不认为是自己的错。
+func chainTargetUsable(ctx context.Context, s *Store, tx *sql.Tx, from, target int64) error {
+	var enabled int
+	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM node_inbounds WHERE id = ?`, target).Scan(&enabled); err != nil {
+		return err
+	}
+	if enabled != 1 {
+		return ErrChainTargetDisabled
+	}
+	loops, err := s.chainLoopsBack(ctx, tx, from, target)
+	if err != nil {
+		return err
+	}
+	if loops {
+		return ErrChainLoop
+	}
+	return nil
 }
