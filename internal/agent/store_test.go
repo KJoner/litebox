@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,22 +218,104 @@ func TestAcceptDroppedCounterIdempotent(t *testing.T) {
 	}
 }
 
-// R08:每台机器只留最近 bootMarksKept 次开机的水位。
-func TestBootMarksBounded(t *testing.T) {
+// F04:水位按时间裁,不按个数 —— 还在时效里的开机,水位一直留着;过了时效(maxAge + futureSkew + 余量)才删。
+func TestBootMarksPrunedByTimeNotCount(t *testing.T) {
 	store := NewStore(dbtest.Open(t))
 	ctx := t.Context()
 	id := seedNode(t, store)
 	token, _ := store.Prepare(ctx, id)
 	base := time.Now().UTC()
-	for i := 0; i < bootMarksKept+5; i++ {
-		store.now = func() time.Time { return base.Add(time.Duration(i) * time.Second) }
-		boot := "boot-" + string(rune('a'+i))
+	for i := 0; i < 21; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		store.now = func() time.Time { return at }
+		boot := fmt.Sprintf("boot-%02d", i)
 		store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: boot,
-			Samples: []agentproto.Sample{bootSmp(boot, 1, base)}})
+			Samples: []agentproto.Sample{bootSmp(boot, 1, at)}})
 	}
-	var n int
-	store.db.QueryRow(`SELECT COUNT(*) FROM agent_boot_marks WHERE node_id = ?`, id).Scan(&n)
-	if n != bootMarksKept {
-		t.Fatalf("留了 %d 次开机的水位,期望 %d", n, bootMarksKept)
+	count := func() int {
+		var n int
+		store.db.QueryRow(`SELECT COUNT(*) FROM agent_boot_marks WHERE node_id = ?`, id).Scan(&n)
+		return n
+	}
+	if n := count(); n != 21 {
+		t.Fatalf("还在时效里的 21 次开机应当都留着水位,得到 %d", n)
+	}
+	// 过了时效之后的下一次上报把它们裁掉。
+	later := base.Add(bootMarkHorizon + time.Minute)
+	store.now = func() time.Time { return later }
+	store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-new",
+		Samples: []agentproto.Sample{bootSmp("boot-new", 1, later)}})
+	if n := count(); n != 1 {
+		t.Fatalf("过了时效之后应当只剩新的那一次,得到 %d", n)
+	}
+	// 被裁掉的开机,它的样本再发一遍也被时效拦下,不会当成新样本入库。
+	r, _ := store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-00",
+		Samples: []agentproto.Sample{bootSmp("boot-00", 1, base)}})
+	if r.Accepted != 0 {
+		t.Fatalf("过了时效的旧样本又入库了:%+v", r)
+	}
+}
+
+// 复核 F04(审查回归):一次旧开机不会因为后面又开了 16 次机就「变老」—— 它的样本仍在 24 小时的时效之内,
+// 原样重放必须仍被认出来。
+func TestReviewOldBootReplayWithinAcceptanceWindow(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	id := seedNode(t, store)
+	token, err := store.Prepare(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC()
+	for i := 0; i <= 16; i++ {
+		at := base.Add(time.Duration(i) * time.Second)
+		store.now = func() time.Time { return at }
+		boot := fmt.Sprintf("review-boot-%02d", i)
+		r, err := store.Accept(t.Context(), token, agentproto.Report{
+			Protocol: 1, NodeID: id, BootID: boot,
+			Samples: []agentproto.Sample{bootSmp(boot, 1, base)},
+		})
+		if err != nil || r.Accepted != 1 {
+			t.Fatalf("initial boot %d: %+v, %v", i, r, err)
+		}
+	}
+	r, err := store.Accept(t.Context(), token, agentproto.Report{
+		Protocol: 1, NodeID: id, BootID: "review-boot-00",
+		Samples: []agentproto.Sample{bootSmp("review-boot-00", 1, base)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Accepted != 0 {
+		t.Fatalf("already accepted sample replayed after only 16 seconds was inserted again: %+v", r)
+	}
+}
+
+// F04:水位满了(机器反复重启、或者 Agent 每次都报一个新 boot_id)时,没有水位的开机的样本被拒收并写明原因,
+// 而不是删掉还在时效里的水位去腾地方 —— 那正是会把旧样本当成新样本的做法。已经有水位的开机照常。
+func TestBootMarksCapRejectsUnprovableBoots(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	ctx := t.Context()
+	id := seedNode(t, store)
+	token, _ := store.Prepare(ctx, id)
+	base := time.Now().UTC()
+	store.now = func() time.Time { return base }
+	samples := make([]agentproto.Sample, 0, bootMarksCap)
+	for i := 0; i < bootMarksCap; i++ {
+		samples = append(samples, bootSmp(fmt.Sprintf("b-%03d", i), 1, base))
+	}
+	if r, err := store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "b-000", Samples: samples}); err != nil || r.Accepted != bootMarksCap {
+		t.Fatalf("填满:%+v %v", r, err)
+	}
+	r, err := store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "b-new",
+		Samples: []agentproto.Sample{bootSmp("b-new", 1, base), bootSmp("b-001", 2, base)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Accepted != 1 || r.Handled != 2 {
+		t.Fatalf("新开机拒收、已知开机照收:%+v", r)
+	}
+	st, _, _ := store.Get(ctx, id)
+	if st.DroppedTotal != 1 || !strings.Contains(st.LastError, "开机次数超过") {
+		t.Fatalf("拒收要计进丢弃数并写明原因:dropped=%d err=%q", st.DroppedTotal, st.LastError)
 	}
 }

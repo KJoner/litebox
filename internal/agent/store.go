@@ -137,9 +137,20 @@ const (
 	maxAge     = 24 * time.Hour
 )
 
-// bootMarksKept 是每台机器保留多少次开机的序号水位(R08)。样本的时效是 24 小时,
-// 24 小时里重启 16 次以上的机器上,更早那几次开机的重放会被时效拦下。
-const bootMarksKept = 16
+// 开机水位保留多久、最多几个(复核 F04)。
+//
+// 原来按个数只留最近 16 次开机:24 小时里重启第 17 次时,最早那一次的水位被裁掉,而它的样本还在
+// 24 小时的时效之内 —— 再发一遍就被当成没收过的样本重新入库。现在按**时间**裁:一个水位只要它那次开机的
+// 样本还可能通过时效检查,就一直留着。水位的 updated_at 是那次开机最后一个样本被收下的时刻,那次开机的
+// 任何样本采集时间都不晚于它(再加上节点时钟最多快 futureSkew),所以过了 maxAge + futureSkew 之后,
+// 它的每一个样本都会被时效拦下,水位才可以删。多留一小时余量。
+//
+// 个数只做上限(机器反复重启、或者 Agent 坏了每次都报一个新的 boot_id):超过上限时**拒收**没有水位的
+// 开机的样本并写明原因 —— 不删掉还在时效里的水位去腾地方,那正是会把旧样本当成新样本的做法。
+const (
+	bootMarkHorizon = maxAge + futureSkew + time.Hour
+	bootMarksCap    = 256
+)
 
 // AcceptResult 是一次上报的处理结果。
 type AcceptResult struct {
@@ -150,7 +161,7 @@ type AcceptResult struct {
 }
 
 // Accept 处理一次上报。去重在同一个事务里做,依据是**每个样本自己的** (boot_id, seq)(R08):
-// 主控按 (node_id, boot_id) 各记一个序号水位,每台机器保留最近 bootMarksKept 次开机。
+// 主控按 (node_id, boot_id) 各记一个序号水位,水位留到那次开机的样本都过了时效为止(F04)。
 // 宿主重启前没发出去的旧队列跟着新开机的样本一起补发、A → B → A 的重放、主控重启、网络重试,
 // 都不会让同一个样本入两次库,也不会让新开机的样本被当成重复丢掉。
 func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report) (AcceptResult, error) {
@@ -178,6 +189,13 @@ func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report)
 		return res, ErrNodeMismatch
 	}
 
+	now := s.now()
+	nowStr := now.Format(time.RFC3339)
+	// 先删掉已经过了时效的水位(它们那次开机的样本都会被时效拦下),再读。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_boot_marks WHERE node_id = ? AND updated_at < ?`,
+		nodeID, now.Add(-bootMarkHorizon).UTC().Format(time.RFC3339)); err != nil {
+		return res, err
+	}
 	marks, err := bootMarks(ctx, tx, nodeID)
 	if err != nil {
 		return res, err
@@ -194,14 +212,18 @@ func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report)
 		}
 		return samples[i].Seq < samples[j].Seq
 	})
-	now := s.now()
-	nowStr := now.Format(time.RFC3339)
-	skipped := int64(0)
+	skipped, overCap := int64(0), int64(0)
 	touched := map[string]bool{}
 	for _, smp := range samples {
 		res.Handled++
-		if smp.Seq <= marks[smp.BootID] {
+		mark, known := marks[smp.BootID]
+		if known && smp.Seq <= mark {
 			continue // 已经收过(重传、重放)
+		}
+		// 没有水位的开机、而水位已经满了:证明不了它是新的还是被裁掉的旧开机,拒收(F04)。
+		if !known && len(marks) >= bootMarksCap {
+			overCap++
+			continue
 		}
 		marks[smp.BootID] = smp.Seq
 		touched[smp.BootID] = true
@@ -227,11 +249,6 @@ func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report)
 			return res, err
 		}
 	}
-	if len(touched) > 0 {
-		if err := pruneBootMarks(ctx, tx, nodeID); err != nil {
-			return res, err
-		}
-	}
 
 	// 丢弃数:新 Agent 报累计值,按差值加(应答丢了重发时差值为 0);累计值变小说明 Agent 的本地状态
 	// 重建过,从它报的数重新起算。旧 Agent 报的是「上次成功以来」,照旧直接加。
@@ -251,10 +268,13 @@ func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report)
 	if skipped > 0 {
 		lastErr = fmt.Sprintf("有 %d 个样本的时间不可信(比主控快 10 分钟以上或早于 24 小时),没有入库 —— 检查节点时钟", skipped)
 	}
+	if overCap > 0 {
+		lastErr = fmt.Sprintf("24 小时内的开机次数超过 %d 次,有 %d 个样本来自新的开机而没有入库 —— 检查这台机器是不是在反复重启", bootMarksCap, overCap)
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE node_agents SET state = 'ACTIVE', version = ?, last_boot_id = ?, last_seq = ?,
 		last_seen_at = ?, rss_kb = ?, dropped_total = dropped_total + ?, dropped_seen = ?, last_error = ?, updated_at = ?
 		WHERE node_id = ?`,
-		rep.Version, rep.BootID, marks[rep.BootID], nowStr, rep.RSSKB, dropped+skipped, seen, lastErr,
+		rep.Version, rep.BootID, marks[rep.BootID], nowStr, rep.RSSKB, dropped+skipped+overCap, seen, lastErr,
 		nowStr, nodeID); err != nil {
 		return res, err
 	}
@@ -282,36 +302,4 @@ func bootMarks(ctx context.Context, q txQuerier, nodeID int64) (map[string]int64
 		out[boot] = seq
 	}
 	return out, rows.Err()
-}
-
-// pruneBootMarks 只留最近 bootMarksKept 次开机的水位。
-func pruneBootMarks(ctx context.Context, q txQuerier, nodeID int64) error {
-	rows, err := q.QueryContext(ctx, `SELECT boot_id FROM agent_boot_marks WHERE node_id = ?
-		ORDER BY updated_at DESC, boot_id DESC`, nodeID)
-	if err != nil {
-		return err
-	}
-	var stale []string
-	i := 0
-	for rows.Next() {
-		var boot string
-		if err := rows.Scan(&boot); err != nil {
-			rows.Close()
-			return err
-		}
-		if i >= bootMarksKept {
-			stale = append(stale, boot)
-		}
-		i++
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, boot := range stale {
-		if _, err := q.ExecContext(ctx, `DELETE FROM agent_boot_marks WHERE node_id = ? AND boot_id = ?`, nodeID, boot); err != nil {
-			return err
-		}
-	}
-	return nil
 }
