@@ -156,10 +156,16 @@ pg_client_image() {
     if [ "$(mode)" = "postgres" ]; then echo "${LITEBOX_PG_IMAGE:-postgres:17-alpine}"; else echo "${LITEBOX_PG_CLIENT_IMAGE:-postgres:17-alpine}"; fi
 }
 pg_client() {
-    local net=()
+    local net=() mounts=() f
     [ -n "$(envget LITEBOX_PG_NETWORK)" ] && net=(--network "$(envget LITEBOX_PG_NETWORK)")
+    # 每个秘密文件再按 Compose 的命名约定挂到 /run/secrets/litebox_<文件名>(C03):连接串里写的
+    # sslrootcert / sslcert / sslkey 是主控容器里的路径,临时客户端里同一个路径要能读到同一个文件。
+    for f in "$DIR"/secrets/*; do
+        [ -f "$f" ] && mounts+=(-v "$f:/run/secrets/litebox_$(basename "$f"):ro")
+    done
     # shellcheck disable=SC2086
-    docker run --rm -i "${net[@]}" -v "$DIR/secrets:/lbsecrets:ro" ${LITEBOX_PG_CLIENT_ARGS:-} "$(pg_client_image)" sh -c "$1"
+    docker run --rm -i "${net[@]}" -v "$DIR/secrets:/lbsecrets:ro" "${mounts[@]}" ${LITEBOX_PG_CLIENT_ARGS:-} \
+        "$(pg_client_image)" sh -c "$1"
 }
 
 # pg_client_check:已有 PG 模式的备份 / 恢复要求 pg_dump 的主版本不低于服务端(C03 的版本相容预检)。
