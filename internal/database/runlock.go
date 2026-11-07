@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,11 +25,42 @@ import (
 // ErrRunLockHeld 表示另一个主控实例正在用这个库。
 var ErrRunLockHeld = errors.New("另一个 LiteBox 主控正在使用这个数据库")
 
+// ErrRunLockLost 表示这个进程此刻不能确认自己还持有运行锁(C02):锁所在的连接断了、正在重取。
+// 这段时间里另一个实例可能已经拿到了锁,所以一切对节点的写操作都要停下 —— 不能等到稍后 os.Exit。
+var ErrRunLockLost = errors.New("运行锁暂时无法确认(锁所在的数据库连接断了),对节点的操作已暂停")
+
+// runLockCheckEvery 是看门狗确认锁连接还活着的间隔。原来是 15 秒:那就是另一个实例拿到锁之后、
+// 这个进程还在照常下发配置的最长窗口。测试里改小。
+var runLockCheckEvery = 5 * time.Second
+
 const runLockKey int64 = 0x4c697465426f7852 // "LiteBoxR"
 
 // RunLock 是持有中的运行锁。
 type RunLock struct {
 	release func()
+	// held 是「此刻能确认自己持有锁」:PG 下看门狗发现锁连接断了就先置假,重取成功再置真。
+	// SQLite 的文件锁随进程存在,不会中途丢,恒为真。
+	held atomic.Bool
+}
+
+// Held 回答此刻能不能确认自己持有锁。
+func (l *RunLock) Held() bool { return l != nil && l.held.Load() }
+
+// fence 是装上了写入闸门的那把锁(InstallWriteFence)。
+var fence atomic.Pointer[RunLock]
+
+// InstallWriteFence 让 CheckWriteFence 看这把锁(主控 serve 调一次)。之后任何时候锁连接断了,
+// CheckWriteFence 立刻返回 ErrRunLockLost,直到重新取得;取不回来就由 onLost 退出进程。
+func InstallWriteFence(l *RunLock) { fence.Store(l) }
+
+// CheckWriteFence 是「现在能不能去节点上做事」的闸门(C02)。没装闸门的进程(命令行工具、测试)恒为 nil。
+// 执行端在每次连节点之前、以及部署事务真正替换配置之前各问一次:旧实例失去锁之后,新任务一个都不开始,
+// 已经在跑的事务也不会凭旧世代把配置覆盖掉。
+func CheckWriteFence() error {
+	if l := fence.Load(); l != nil && !l.Held() {
+		return ErrRunLockLost
+	}
+	return nil
 }
 
 // Release 释放运行锁(进程退出时也会自动释放)。
@@ -47,23 +79,29 @@ func AcquireRunLock(ctx context.Context, db *sql.DB, sqlitePath string, logger *
 			return nil, err
 		}
 		// 只关文件、不删:删掉的话,等在旧文件上的进程与新建同名文件的进程会同时拿到「锁」。
-		return &RunLock{release: func() { f.Close() }}, nil
+		l := &RunLock{release: func() { f.Close() }}
+		l.held.Store(true)
+		return l, nil
 	}
 	conn, err := tryAdvisory(ctx, db)
 	if err != nil {
 		return nil, err
 	}
+	l := &RunLock{}
+	l.held.Store(true)
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		watchAdvisory(db, conn, stop, logger, onLost)
+		watchAdvisory(db, conn, stop, logger, onLost, &l.held)
 	}()
 	// 释放要等看门狗把锁真的放掉再返回:否则紧接着接手的那个进程(升级时的新版本、测试里的下一步)
 	// 会在这几毫秒里撞上「锁被占用」。
-	return &RunLock{release: func() {
+	l.release = func() {
 		close(stop)
 		<-done
-	}}, nil
+		l.held.Store(false)
+	}
+	return l, nil
 }
 
 func tryAdvisory(ctx context.Context, db *sql.DB) (*sql.Conn, error) {
@@ -84,9 +122,10 @@ func tryAdvisory(ctx context.Context, db *sql.DB) (*sql.Conn, error) {
 	return conn, nil
 }
 
-// watchAdvisory 每 15 秒确认一次锁连接还活着;断了就重取,取不回来就 onLost。
-func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slog.Logger, onLost func(error)) {
-	t := time.NewTicker(15 * time.Second)
+// watchAdvisory 每 runLockCheckEvery 确认一次锁连接还活着;断了就**先关闸**(held 置假,一切对节点的
+// 写操作立刻停下),再重取;重取成功开闸,取不回来就 onLost。
+func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slog.Logger, onLost func(error), held *atomic.Bool) {
+	t := time.NewTicker(runLockCheckEvery)
 	defer t.Stop()
 	defer func() {
 		if conn != nil {
@@ -108,6 +147,7 @@ func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slo
 		if err == nil {
 			continue
 		}
+		held.Store(false)
 		conn.Close()
 		conn = nil
 		if logger != nil {
@@ -120,8 +160,9 @@ func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slo
 			cancel()
 			if err == nil {
 				conn = c
+				held.Store(true)
 				if logger != nil {
-					logger.Info("已重新取得运行锁")
+					logger.Info("已重新取得运行锁,恢复对节点的操作")
 				}
 				break
 			}

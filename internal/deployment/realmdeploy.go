@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
 )
@@ -145,6 +146,10 @@ func (d *Deployer) runRealmTransaction(
 	}
 
 	if err := rec.run("原子替换配置", func() (string, error) {
+		// 写入闸门(C02):失去单活动主控锁的实例到这里停下,节点上的配置一个字节都不换。
+		if err := database.CheckWriteFence(); err != nil {
+			return "", err
+		}
 		if _, err := client.RunCheck(ctx,
 			sshx.NewCommand("mv", "-f", tempPath, d.layout.RealmConfigPath)); err != nil {
 			return "", err

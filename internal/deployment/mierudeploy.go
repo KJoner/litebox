@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/sshx"
 )
@@ -176,6 +177,10 @@ func (d *Deployer) runMieruTransaction(
 	// ---------- 第三步:下发并生效 ----------
 	applied := false
 	if err := rec.run("下发配置", func() (string, error) {
+		// 写入闸门(C02):失去单活动主控锁的实例到这里停下,节点上的配置一个字节都不换。
+		if err := database.CheckWriteFence(); err != nil {
+			return "", err
+		}
 		// 临时 JSON 放在实例目录里,0600,apply 完立刻删 ——
 		// 它里面是**全部用户的明文口令**,而 mita 自己只存 hash。
 		// 留在磁盘上等于把这台机器的凭据强度降到我们下发的那一刻。

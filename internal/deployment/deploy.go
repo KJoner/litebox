@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/singbox"
 	"github.com/litebox/litebox/internal/sshx"
 )
@@ -380,6 +381,10 @@ func (d *Deployer) runTransaction(
 
 	// 步骤 4:原子替换。同目录 rename 是原子的,不会出现半截配置。
 	if err := rec.run("原子替换配置", func() (string, error) {
+		// 写入闸门(C02):失去单活动主控锁的实例到这里停下,节点上的配置一个字节都不换。
+		if err := database.CheckWriteFence(); err != nil {
+			return "", err
+		}
 		_, err := client.RunCheck(ctx, sshx.NewCommand("mv", tempPath, d.layout.ConfigPath()))
 		return d.layout.ConfigPath(), err
 	}); err != nil {

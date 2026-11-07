@@ -70,7 +70,17 @@ func (p *Pool) TryDo(ctx context.Context, nodeID int64, fn func(*Client) error) 
 	return p.doLocked(ctx, nodeID, entry, fn)
 }
 
+// Fence 是「现在能不能去节点上做事」的闸门(C02):主控在 serve 里把它设成 database.CheckWriteFence。
+// 返回错误时一切 Do / TryDo 不连节点直接返回 —— 失去单活动主控锁的实例不该再碰任何一台机器。
+// 不直接依赖 database 包:sshx 是底层,谁来提供闸门由上层决定。
+var Fence func() error
+
 func (p *Pool) doLocked(ctx context.Context, nodeID int64, entry *pooledConn, fn func(*Client) error) error {
+	if Fence != nil {
+		if err := Fence(); err != nil {
+			return err
+		}
+	}
 	p.dropIfDomainMoved(ctx, nodeID, entry)
 
 	client, err := p.ensure(ctx, nodeID, entry)

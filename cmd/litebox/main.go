@@ -425,6 +425,9 @@ func cmdServe(args []string) error {
 		return err
 	}
 	defer runLock.Release()
+	// 写入闸门(C02):锁连接一断就停下对节点的一切操作,不等 onLost 退出进程。
+	database.InstallWriteFence(runLock)
+	sshx.Fence = database.CheckWriteFence
 	if err := database.Migrate(db, logger); err != nil {
 		return err
 	}
