@@ -198,8 +198,9 @@ func refreshStatus(ctx context.Context, tx *sql.Tx, id int64, now string) error 
 	if next == status {
 		return nil
 	}
+	// 带上读到的旧状态(C01):同一行在别处被改成 DISABLED 时这一步落空,而不是把它冲回自动状态。
 	_, err = tx.ExecContext(ctx,
-		`UPDATE proxy_users SET status = ?, updated_at = ? WHERE id = ?`, next, now, id)
+		`UPDATE proxy_users SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, next, now, id, status)
 	return err
 }
 

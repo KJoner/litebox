@@ -319,3 +319,57 @@ func TestMonthlyResetKeepsCounterBaseline(t *testing.T) {
 		t.Errorf("重置后累计 = %d,期望 50000(只有新增部分)", down)
 	}
 }
+
+// C01:Enforcer 在事务外选出「超额 → 正常」的候选之后、落库之前,管理员把这个人停用了 ——
+// 最终必须仍是 DISABLED,不能被自动迁移冲回 ACTIVE。用钩子确定性地插进那一步,不靠 sleep。
+func TestEnforceDoesNotOverwriteAdminDisable(t *testing.T) {
+	env := newTestEnv(t)
+	enforcer := newEnforcer(t, env)
+	code := env.mkUser(t, "用户", 1000)
+	// 先让他超额,再把额度调大:下一轮 Enforce 会想把他从 QUOTA_EXCEEDED 改回 ACTIVE。
+	if _, err := env.db.Exec(`UPDATE proxy_users SET status = 'QUOTA_EXCEEDED', used_downlink = 1500 WHERE user_code = ?`, code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.db.Exec(`UPDATE proxy_users SET quota_bytes = 10000 WHERE user_code = ?`, code); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	env.db.QueryRow(`SELECT id FROM proxy_users WHERE user_code = ?`, code).Scan(&id)
+	enforcer.beforeApply = func() {
+		if _, err := env.store.SetEnabled(t.Context(), id, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := enforcer.Enforce(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := env.statusOf(t, code); got != "DISABLED" {
+		t.Fatalf("管理员停用被自动迁移冲掉了:最终状态 %s", got)
+	}
+	if len(result.Changes) != 0 {
+		t.Fatalf("没有真正落库的迁移不该报出来:%+v", result.Changes)
+	}
+}
+
+// C01:候选选出之后流量又记了一笔(正常 → 超额之间),事务里按最新的数重判。
+func TestEnforceReevaluatesInsideTransaction(t *testing.T) {
+	env := newTestEnv(t)
+	enforcer := newEnforcer(t, env)
+	code := env.mkUser(t, "用户", 1000)
+	if _, err := env.db.Exec(`UPDATE proxy_users SET used_downlink = 1500 WHERE user_code = ?`, code); err != nil {
+		t.Fatal(err)
+	}
+	// 选出「正常 → 超额」之后,管理员把额度调成了不限。
+	enforcer.beforeApply = func() {
+		if _, err := env.db.Exec(`UPDATE proxy_users SET quota_bytes = 0 WHERE user_code = ?`, code); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := enforcer.Enforce(t.Context(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.statusOf(t, code); got != "ACTIVE" {
+		t.Fatalf("按过时的额度判成了 %s", got)
+	}
+}

@@ -3,12 +3,13 @@ package traffic
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"github.com/litebox/litebox/internal/billing"
 	"log/slog"
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/billing"
 )
 
 // StatusChange 记录一次用户状态迁移。
@@ -34,6 +35,8 @@ type EnforceResult struct {
 type Enforcer struct {
 	db     *sql.DB
 	logger *slog.Logger
+	// beforeApply 只给测试用:在「事务外选出候选」与「事务里落库」之间插一步,确定性地造出交错(C01)。
+	beforeApply func()
 }
 
 func NewEnforcer(db *sql.DB, logger *slog.Logger) *Enforcer {
@@ -54,44 +57,22 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 	}
 	result.Reset = resetCodes
 
-	rows, err := e.db.QueryContext(ctx, `
-		SELECT id, user_code, status, quota_bytes, used_uplink, used_downlink, expires_at,
-		       billing_mode, billing_multiplier_pct, billing_sealed_bytes, billing_base_uplink, billing_base_downlink
-		  FROM proxy_users
+	rows, err := e.db.QueryContext(ctx, `SELECT `+enforceColumns+` FROM proxy_users
 		 WHERE deleted_at IS NULL
 		   AND status IN ('ACTIVE','EXPIRED','QUOTA_EXCEEDED')`)
 	if err != nil {
 		return result, err
 	}
 
-	type candidate struct {
-		id       int64
-		userCode string
-		from     string
-		to       string
-		reason   string
-	}
-	var pending []candidate
-
+	var pending []int64
 	for rows.Next() {
-		var id int64
-		var userCode, status string
-		var quota, up, down int64
-		var expiresAt *string
-		var seg billing.Segment
-		var mode string
-		if err := rows.Scan(&id, &userCode, &status, &quota, &up, &down, &expiresAt,
-			&mode, &seg.Rule.MultiplierPct, &seg.Sealed, &seg.BaseUp, &seg.BaseDown); err != nil {
+		c, err := scanEnforce(rows.Scan, now)
+		if err != nil {
 			rows.Close()
 			return result, err
 		}
-		seg.Rule.Mode = billing.Mode(mode)
-
-		// 与 User.QuotaExceeded 同一个公式(internal/billing):两处各算一遍的话,
-		// 面板说没超额、自动迁移却把人停了,或者反过来。
-		next, reason := evaluate(quota, billing.Billed(seg, up, down), expiresAt, now)
-		if next != status {
-			pending = append(pending, candidate{id, userCode, status, next, reason})
+		if c.to != c.from {
+			pending = append(pending, c.id)
 		}
 	}
 	rows.Close()
@@ -100,6 +81,9 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 	}
 	if len(pending) == 0 {
 		return result, nil
+	}
+	if e.beforeApply != nil {
+		e.beforeApply()
 	}
 
 	tx, err := e.db.BeginTx(ctx, nil)
@@ -110,11 +94,29 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 
 	nowStr := now.UTC().Format(time.RFC3339)
 	nodeSet := make(map[int64]bool)
-	for _, c := range pending {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE proxy_users SET status = ?, updated_at = ? WHERE id = ?`,
-			c.to, nowStr, c.id); err != nil {
+	for _, id := range pending {
+		// 事务外选出来的只是候选(C01):从那一刻到这里,管理员可能停用了他、改了额度或到期、
+		// 流量同步也可能又记了一笔。所以在事务里重读、重判,UPDATE 还要带上读到的旧状态 ——
+		// 否则「超额 → 正常」这一步会把管理员刚设的 DISABLED 冲掉,一个被停用的人又能连了。
+		c, err := scanEnforce(tx.QueryRowContext(ctx, `SELECT `+enforceColumns+` FROM proxy_users
+			 WHERE id = ? AND deleted_at IS NULL AND status IN ('ACTIVE','EXPIRED','QUOTA_EXCEEDED')`, id).Scan, now)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			return result, err
+		}
+		if c.to == c.from {
+			continue
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE proxy_users SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND deleted_at IS NULL`,
+			c.to, nowStr, c.id, c.from)
+		if err != nil {
+			return result, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
 		}
 		// 有效节点必须在同一个事务里查:状态已经改成 EXPIRED/QUOTA_EXCEEDED,
 		// 但归属关系不受状态影响,漏取会让这些用户的凭据留在节点上继续可用。
@@ -141,6 +143,35 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 			"user_code", c.UserCode, "from", c.From, "to", c.To, "reason", c.Reason)
 	}
 	return result, nil
+}
+
+const enforceColumns = `id, user_code, status, quota_bytes, used_uplink, used_downlink, expires_at,
+	billing_mode, billing_multiplier_pct, billing_sealed_bytes, billing_base_uplink, billing_base_downlink`
+
+type enforceCandidate struct {
+	id       int64
+	userCode string
+	from     string
+	to       string
+	reason   string
+}
+
+// scanEnforce 读一行 enforceColumns 并判出应有状态。
+func scanEnforce(scan func(...any) error, now time.Time) (enforceCandidate, error) {
+	var c enforceCandidate
+	var quota, up, down int64
+	var expiresAt *string
+	var seg billing.Segment
+	var mode string
+	if err := scan(&c.id, &c.userCode, &c.from, &quota, &up, &down, &expiresAt,
+		&mode, &seg.Rule.MultiplierPct, &seg.Sealed, &seg.BaseUp, &seg.BaseDown); err != nil {
+		return c, err
+	}
+	seg.Rule.Mode = billing.Mode(mode)
+	// 与 User.QuotaExceeded 同一个公式(internal/billing):两处各算一遍的话,
+	// 面板说没超额、自动迁移却把人停了,或者反过来。
+	c.to, c.reason = evaluate(quota, billing.Billed(seg, up, down), expiresAt, now)
+	return c, nil
 }
 
 // evaluate 依据额度与到期时间给出应有状态。
