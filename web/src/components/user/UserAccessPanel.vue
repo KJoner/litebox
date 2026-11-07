@@ -77,8 +77,21 @@ function convergeText(e: AccessEntryInfo): { text: string; tone: 'ok' | 'warn' |
         '要真正收回:在入口上「轮换 psk」(所有人一起换、都要重新拉订阅)、改成逐用户凭据,或停用这个入口',
       tone: 'bad',
     }
+  // 持久化下发队列(R05):有这一行就说明还没落到节点上,按它的状态说实话。
+  const q = (n.pending_applies ?? []).find((a) => a.kind === (e.kind === 'MIERU' ? 'MIERU' : 'SINGBOX'))
+  if (q?.state === 'BLOCKED')
+    return { text: `自动下发停下了,他的凭据仍在节点上:${q.last_error || '原因见部署记录'}`, tone: 'bad' }
+  if (q?.state === 'RETRY')
+    return {
+      text: `节点暂时没下发成功(${q.last_error || '连不上'}),第 ${q.attempts} 次失败,会自动重试;在那之前他的凭据仍在节点上`,
+      tone: 'bad',
+    }
+  if (q) return { text: '撤销排队下发中:节点上还留着他的凭据', tone: 'warn' }
   if (e.kind === 'MIERU')
-    return { text: '要在入口管理里下发这个 Mieru 入口;下发后新连接会被拒绝,已建立的会话可能继续存活(mita reload 不断旧会话)', tone: 'warn' }
+    return {
+      text: '已下发(mita reload):新连接会被拒绝;已经建立的会话可能继续存活 —— reload 不断旧会话',
+      tone: 'ok',
+    }
   switch (n.config_state) {
     case 'IN_SYNC':
       return { text: '已撤销:凭据已从节点配置删除,新连接会被拒绝;下发时 sing-box 重启,已建立的连接随之断开', tone: 'ok' }
@@ -212,7 +225,12 @@ function save() {
           '只是订阅里不再出现;要真正收回请轮换那个入口的 psk 或停用它',
       )
     const mieru = [...d.added, ...d.removed].filter((e) => e.kind === 'MIERU')
-    if (mieru.length) impacts.push(`Mieru 入口要逐入口下发才生效(不会自动做):${mieru.map((e) => `${e.node_name}/${e.name}`).join('、')}`)
+    if (mieru.length)
+      impacts.push(
+        `Mieru 入口会自动 reload(只动了用户的那几个,一条连接都不断,已建立的会话可能继续存活):` +
+          `${mieru.map((e) => `${e.node_name}/${e.name}`).join('、')}。` +
+          '同时还有端口 / 传输层 / 出口改动没下发的入口不会自动做,会在下方点名',
+      )
   }
   if (!impacts.length) impacts.push('他能用的入口集合不变,不会触发任何下发')
   lbDangerConfirm({
@@ -238,7 +256,7 @@ async function doSave() {
     else
       message.success(
         res.mieru_pending.length
-          ? `已保存。另有 ${res.mieru_pending.length} 个 Mieru 入口需要到节点上逐个下发`
+          ? `已保存。${res.mieru_pending.length} 个 Mieru 入口会自动 reload,结果见下方「撤权收敛」`
           : '已保存',
       )
     await load()

@@ -16,6 +16,9 @@ type NodeDeployer interface {
 	DeployRelays(ctx context.Context, nodeID int64) (Result, error)
 	// DeployRealm 下发 realm 转发配置(restart,断开全部 realm 线路的在途连接)。
 	DeployRealm(ctx context.Context, nodeID int64) (Result, error)
+	// DeployMieruChanged 把这台机器上【只动了用户】的 Mieru 入口逐个 reload 一遍(R05)。
+	// 端口、传输层、出口也有改动的入口不碰,在错误里说清楚要手动下发哪一个。
+	DeployMieruChanged(ctx context.Context, nodeID int64) (Result, error)
 }
 
 // DirtyKind 区分同一台机器上两种互不相干的下发。
@@ -37,6 +40,9 @@ const (
 	// restart、断开全部 realm 线路的在途连接 —— 改一条 nginx 规则不该
 	// 顺带把 realm 上的人踢一遍。
 	DirtyRealm
+	// DirtyMieru 是这台机器上 Mieru 入口的用户集合变了(R05):停用 / 到期 / 超额 / 撤权都会走到这里。
+	// 一个入口一个 mita 实例,只 reload 只动了用户的那几个。
+	DirtyMieru
 )
 
 // Coordinator 把密集的用户变更合并成较少的部署。
@@ -64,6 +70,8 @@ type Coordinator struct {
 	// 他正看着屏幕,结果就在他眼前;而协调器这条路是用户变更、
 	// 等级调整这些事顺带触发的,失败了没有任何人会知道。
 	onFailure func(nodeID int64, kind string, result Result, err error)
+	// queue 不为 nil 时标脏先落库、成功才删,失败按 Retryable 分重试与停下(R05)。
+	queue ApplyQueue
 
 	wake   chan struct{}
 	done   chan struct{}
@@ -90,6 +98,8 @@ type CoordinatorOptions struct {
 	Clock func() time.Time
 	// OnFailure 可空。见 Coordinator.onFailure。
 	OnFailure func(nodeID int64, kind string, result Result, err error)
+	// Queue 是持久化的下发队列(可以为 nil,那时与原来一样只在内存里排队)。
+	Queue ApplyQueue
 }
 
 func NewCoordinator(opts CoordinatorOptions) *Coordinator {
@@ -112,6 +122,7 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 		maxDelay:  maxDelay,
 		clock:     clock,
 		onFailure: opts.OnFailure,
+		queue:     opts.Queue,
 		pending:   make(map[int64]*pendingNode),
 		inflight:  make(map[int64]bool),
 		wake:      make(chan struct{}, 1),
@@ -135,10 +146,30 @@ func (c *Coordinator) MarkRealmDirty(nodeIDs ...int64) {
 	c.mark(DirtyRealm, nodeIDs...)
 }
 
+// MarkMieruDirty 标记这几台机器上 Mieru 入口的用户集合变了(R05)。
+func (c *Coordinator) MarkMieruDirty(nodeIDs ...int64) {
+	c.mark(DirtyMieru, nodeIDs...)
+}
+
 func (c *Coordinator) mark(kind DirtyKind, nodeIDs ...int64) {
 	if len(nodeIDs) == 0 {
 		return
 	}
+	if c.queue != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		for _, id := range nodeIDs {
+			if err := c.queue.Enqueue(ctx, id, kind); err != nil {
+				c.logger.Error("下发排队落库失败(这一次照常下发,但离线 / 重启之后不会自动接着做)",
+					"node_id", id, "error", err)
+			}
+		}
+		cancel()
+	}
+	c.markMemory(kind, nodeIDs...)
+}
+
+// markMemory 只在内存里排队(从持久化队列里捞出来重试的那些走这里,不再加 seq)。
+func (c *Coordinator) markMemory(kind DirtyKind, nodeIDs ...int64) {
 	now := c.clock()
 
 	c.mu.Lock()
@@ -182,6 +213,9 @@ func (c *Coordinator) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+	retry := time.NewTicker(30 * time.Second)
+	defer retry.Stop()
+	c.loadDue(ctx)
 
 	for {
 		select {
@@ -190,8 +224,27 @@ func (c *Coordinator) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 		case <-c.wake:
+		case <-retry.C:
+			c.loadDue(ctx)
 		}
 		c.dispatchReady(ctx)
+	}
+}
+
+// loadDue 把持久化队列里该(再)试的行放回内存排队。面板重启后第一次调用时,上次没做完的全在这里。
+func (c *Coordinator) loadDue(ctx context.Context) {
+	if c.queue == nil {
+		return
+	}
+	due, err := c.queue.Due(ctx, c.clock())
+	if err != nil {
+		c.logger.Error("读取待下发队列失败", "error", err)
+		return
+	}
+	for _, a := range due {
+		if k := KindOf(a.Kind); k != 0 {
+			c.markMemory(k, a.NodeID)
+		}
 	}
 }
 
@@ -236,6 +289,39 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 	deployCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 	defer cancel()
 
+	// 下发之前记下各种下发的 seq:成功时只删 seq 没变的那一行 —— 下发途中又有新改动进来的话,
+	// 那一行要留着等下一轮,不能被这一次的成功顺手删掉。
+	var seqs map[DirtyKind]int64
+	if c.queue != nil {
+		var err error
+		if seqs, err = c.queue.Seqs(deployCtx, nodeID); err != nil {
+			c.logger.Warn("读取下发队列失败,这一轮的结果不回写队列", "node_id", nodeID, "error", err)
+			seqs = nil
+		}
+	}
+	settle := func(kind DirtyKind, result Result, err error) {
+		if seqs == nil {
+			return
+		}
+		seq, ok := seqs[kind]
+		if !ok {
+			return
+		}
+		var qerr error
+		switch {
+		case err == nil:
+			qerr = c.queue.Done(deployCtx, nodeID, kind, seq)
+		case Retryable(result, err):
+			// 读不到尝试次数,按「这一行之前失败过几次」由库里加一;等待时间按这一次的序号算一个保守值。
+			qerr = c.queue.Fail(deployCtx, nodeID, kind, seq, firstLine(err.Error()), c.clock().Add(c.retryAfter(nodeID, kind)))
+		default:
+			qerr = c.queue.Fail(deployCtx, nodeID, kind, seq, firstLine(err.Error()), time.Time{})
+		}
+		if qerr != nil {
+			c.logger.Warn("回写下发队列失败", "node_id", nodeID, "error", qerr)
+		}
+	}
+
 	// 顺序固定:先 sing-box 后 nginx。
 	//
 	// sing-box 那一步会重启服务,而 nginx 只是 reload。反过来的话,
@@ -244,6 +330,7 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 	// 其实来自另一件事。
 	if kinds&DirtySingBox != 0 {
 		result, err := c.deployer.Deploy(deployCtx, nodeID)
+		settle(DirtySingBox, result, err)
 		if err != nil {
 			c.logger.Error("合并部署失败",
 				"node_id", nodeID, "status", result.Status, "error", err,
@@ -260,6 +347,7 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 	// 因为一次失败就把中转配置一起搁下,只会让故障面变大。
 	if kinds&DirtyRelays != 0 {
 		result, err := c.deployer.DeployRelays(deployCtx, nodeID)
+		settle(DirtyRelays, result, err)
 		if err != nil {
 			c.logger.Error("中转配置下发失败",
 				"node_id", nodeID, "status", result.Status, "error", err,
@@ -276,17 +364,55 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 	// 让它在 nginx reload 之后跑,不会有"刚 reload 好又被重启"的错觉。
 	if kinds&DirtyRealm != 0 {
 		result, err := c.deployer.DeployRealm(deployCtx, nodeID)
+		settle(DirtyRealm, result, err)
 		if err != nil {
 			c.logger.Error("realm 配置下发失败",
 				"node_id", nodeID, "status", result.Status, "error", err,
 				"rollback", result.RollbackResult)
 			c.notifyFailure(nodeID, "realm 转发配置", result, err)
-			return
+		} else {
+			c.logger.Info("realm 配置下发成功",
+				"node_id", nodeID, "revision", result.Revision,
+				"config_sha256", shortHash(result.ConfigSHA256))
 		}
-		c.logger.Info("realm 配置下发成功",
-			"node_id", nodeID, "revision", result.Revision,
-			"config_sha256", shortHash(result.ConfigSHA256))
 	}
+
+	// Mieru 排在最后:只 reload 只动了用户的入口,一条连接都不断(旧会话可能继续存活,
+	// 那是 mita reload 的行为,界面上照实说)。端口 / 传输层 / 出口也改了的入口不在这里碰。
+	if kinds&DirtyMieru != 0 {
+		result, err := c.deployer.DeployMieruChanged(deployCtx, nodeID)
+		settle(DirtyMieru, result, err)
+		if err != nil {
+			c.logger.Error("Mieru 用户变更下发失败", "node_id", nodeID, "error", err)
+			c.notifyFailure(nodeID, "Mieru 用户", result, err)
+		} else if len(result.Steps) > 0 {
+			c.logger.Info("Mieru 用户变更下发成功", "node_id", nodeID)
+		}
+	}
+}
+
+// retryAfter 按这一行已经失败过的次数算下一次等多久(读不到就按第一次失败算)。
+func (c *Coordinator) retryAfter(nodeID int64, kind DirtyKind) time.Duration {
+	attempts := 1
+	if lister, ok := c.queue.(interface {
+		Attempts(ctx context.Context, nodeID int64, kind DirtyKind) (int, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if n, err := lister.Attempts(ctx, nodeID, kind); err == nil {
+			attempts = n + 1
+		}
+	}
+	return RetryAfter(attempts)
+}
+
+func firstLine(s string) string {
+	for i, r := range s {
+		if r == '\n' {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 func (c *Coordinator) notifyFailure(nodeID int64, kind string, result Result, err error) {

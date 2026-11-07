@@ -66,7 +66,8 @@ function save() {
       : `这个入口仍按访问等级开放,另外直接授权 ${userIds.value.length} 个用户(越过等级门槛)`,
     t.kind === 'SINGBOX'
       ? `会自动重新下发「${t.nodeName}」的 sing-box —— 重启时这台机器上全部入口的在线连接会断一下`
-      : '这是 Mieru 入口,要在列表上「下发这个 Mieru 入口」之后才生效(不会自动做)',
+      : '这是 Mieru 入口:只动了用户的话会自动 reload(一条连接都不断,已建立的会话可能继续存活);' +
+        '它还有端口 / 传输层 / 出口改动没下发时不会自动做,要在列表上手动下发',
     '直接授权越过的只是等级门槛:账号停用、过期、超额照样生效',
   ]
   if (shared.value) {
@@ -94,7 +95,7 @@ async function doSave(t: NonNullable<typeof props.target>) {
   saving.value = true
   try {
     const res = await api.setEntryAccess(t.kind, t.id, { restricted: restricted.value, user_ids: userIds.value })
-    message.success(res.auto_deploy ? '已保存,这台机器会自动重新下发' : '已保存,记得下发这个 Mieru 入口')
+    message.success(res.auto_deploy ? '已保存,这台机器会自动重新下发' : '已保存,这个 Mieru 入口会自动 reload')
     emit('saved')
     close()
   } catch (e) {

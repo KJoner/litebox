@@ -774,6 +774,22 @@ export interface NodeInboundInput {
   public_remark?: string
 }
 
+/**
+ * 持久化下发队列里的一行(R05):PENDING 排队中、RETRY 节点没被动过而在自动重试(多半是连不上)、
+ * BLOCKED 已经回滚过一次或有别的改动没下发,停下来等人处理。撤权要等这一行消失才算落到节点上。
+ */
+export interface QueuedApply {
+  node_id: number
+  kind: 'SINGBOX' | 'RELAYS' | 'REALM' | 'MIERU'
+  seq: number
+  state: 'PENDING' | 'RETRY' | 'BLOCKED'
+  attempts: number
+  next_attempt_at: string
+  last_error: string
+  queued_at: string
+  updated_at: string
+}
+
 export interface Node {
   id: number
   /** 内部名称,只在管理后台出现 */
@@ -899,6 +915,8 @@ export interface Node {
    * 那正是需要那个选项去救的情形。
    */
   uses_custom_key?: boolean
+  /** 这台机器欠着的下发(R05);旧数据或模拟数据里可能没有这一项 */
+  pending_applies?: QueuedApply[]
   created_at: string
   updated_at: string
   /**

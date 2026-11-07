@@ -87,6 +87,10 @@ type MieruInbound struct {
 	DeployedMTU             int                `json:"deployed_mtu"`
 	DeployedListenPortStart int                `json:"deployed_listen_port_start"`
 	DeployedListenPortEnd   int                `json:"deployed_listen_port_end"`
+	// DeployedConfigSHA256 / DeployedShapeSHA256 是节点上生效的那份 mita 配置的哈希,
+	// 以及去掉用户列表之后的哈希(迁移 0054,R05)。自动下发只在形状没变时做。存量行为空串。
+	DeployedConfigSHA256 string `json:"-"`
+	DeployedShapeSHA256  string `json:"-"`
 
 	AccessTierID    int64  `json:"access_tier_id"`
 	AccessTierCode  string `json:"access_tier_code"`
@@ -159,7 +163,7 @@ const mieruColumns = `m.id, m.node_id, n.name, n.display_name,
 	m.ipv6_enabled, m.ipv6_display_name,
 	m.transport, m.multiplexing, m.mtu,
 	m.deployed_transport, m.deployed_multiplexing, m.deployed_mtu,
-	m.deployed_listen_port_start, m.deployed_listen_port_end,
+	m.deployed_listen_port_start, m.deployed_listen_port_end, m.deployed_config_sha256, m.deployed_shape_sha256,
 	m.egress_socks_port, m.chain_target_kind,
 	m.chain_target_inbound_id, m.chain_target_external_id,
 	m.chain_code, m.chain_uuid_encrypted, m.chain_ss_password_encrypted,
@@ -187,7 +191,7 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 		&m.IPv6Enabled, &m.IPv6DisplayName,
 		&m.Transport, &m.Multiplexing, &m.MTU,
 		&m.DeployedTransport, &m.DeployedMultiplexing, &m.DeployedMTU,
-		&m.DeployedListenPortStart, &m.DeployedListenPortEnd,
+		&m.DeployedListenPortStart, &m.DeployedListenPortEnd, &m.DeployedConfigSHA256, &m.DeployedShapeSHA256,
 		&m.EgressSocksPort, &m.ChainTargetKind,
 		&chainInboundID, &chainExternalID,
 		&m.ChainCode, &chainUUIDEnc, &chainSSEnc,
@@ -624,13 +628,15 @@ func (s *Store) ClearMieruDeployed(ctx context.Context, id int64) error {
 		       deployed_mtu = 0,
 		       deployed_listen_port_start = 0,
 		       deployed_listen_port_end = 0,
+		       deployed_config_sha256 = '',
+		       deployed_shape_sha256 = '',
 		       updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
 		time.Now().UTC().Format(time.RFC3339), id)
 	return err
 }
 
-func (s *Store) MarkMieruDeployed(ctx context.Context, id int64) error {
+func (s *Store) MarkMieruDeployed(ctx context.Context, id int64, configSHA, shapeSHA string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE node_mieru_inbounds
@@ -639,8 +645,10 @@ func (s *Store) MarkMieruDeployed(ctx context.Context, id int64) error {
 		       deployed_mtu = mtu,
 		       deployed_listen_port_start = listen_port_start,
 		       deployed_listen_port_end = listen_port_end,
+		       deployed_config_sha256 = ?,
+		       deployed_shape_sha256 = ?,
 		       updated_at = ?
-		 WHERE id = ? AND deleted_at IS NULL`, now, id)
+		 WHERE id = ? AND deleted_at IS NULL`, configSHA, shapeSHA, now, id)
 	if err != nil {
 		return err
 	}

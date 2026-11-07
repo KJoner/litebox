@@ -161,10 +161,16 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	enforced, err := s.enforcer.Enforce(ctx, time.Now())
 	if err != nil {
 		s.logger.Error("额度与到期检查失败", "error", err)
-	} else if len(enforced.AffectedNodes) > 0 && s.trigger != nil {
+	} else if s.trigger != nil {
 		// 状态改了还不够 —— 用户能否连接取决于节点配置,
 		// 必须重新部署把他们从 users 列表里摘掉。
-		s.trigger.MarkDirty(enforced.AffectedNodes...)
+		if len(enforced.AffectedNodes) > 0 {
+			s.trigger.MarkDirty(enforced.AffectedNodes...)
+		}
+		// Mieru 入口同理(R05),走协调器的 Mieru 那一种下发(只 reload 只动了用户的入口)。
+		if t, ok := s.trigger.(interface{ MarkMieruDirty(...int64) }); ok && len(enforced.AffectedMieruNodes) > 0 {
+			t.MarkMieruDirty(enforced.AffectedMieruNodes...)
+		}
 	}
 
 	s.mu.Lock()

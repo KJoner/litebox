@@ -248,7 +248,10 @@ func (s *Service) DeployMieruWith(
 	//
 	// 每一步都记进结果:自动不等于不告知,尤其是"顺带重启了 sing-box"
 	// 这种会踢掉别人连接的事。
-	preSteps, err := s.prepareEgressHop(ctx, m, n)
+	var preSteps []deployment.Step
+	if !opts.autoUsers {
+		preSteps, err = s.prepareEgressHop(ctx, m, n)
+	}
 	preSteps = append(binSteps, preSteps...)
 	if err != nil {
 		// 前置步骤失败时也要把已经做完的那几步带回去 —— 管理员要看得出
@@ -284,7 +287,7 @@ func (s *Service) DeployMieruWith(
 	if err != nil {
 		return deployment.Result{}, err
 	}
-	if len(cfg.Users) == 0 {
+	if len(cfg.Users) == 0 && !(usersOnly && opts.autoUsers && m.Deployed()) {
 		// 放在同步流量【之后】、动节点之前:同步是只读的,而且这个入口
 		// 上仍然可能有历史流量没落库。
 		return deployment.Result{}, fmt.Errorf(
@@ -294,7 +297,16 @@ func (s *Service) DeployMieruWith(
 				"或者在用户那边把这台机器授权给他",
 			ErrMieruNoUsers)
 	}
+	if len(cfg.Users) == 0 {
+		// 自动收回最后一个人的凭据(R05):mita 不能以空用户启动,而让旧配置继续跑等于他还能连。
+		// 换成一个谁都没拿到过口令的占位用户 —— 节点上从此没有任何真实用户的凭据。
+		cfg.Users = []mieru.User{s.mieruIdleUser(m.ID)}
+	}
 	raw, err := cfg.MarshalIndent()
+	if err != nil {
+		return deployment.Result{}, err
+	}
+	configSHA, shapeSHA, err := mieruHashes(cfg, raw)
 	if err != nil {
 		return deployment.Result{}, err
 	}
@@ -329,7 +341,7 @@ func (s *Service) DeployMieruWith(
 	s.logMieruResult(m, result, deployErr)
 	s.saveMieruRecord(ctx, m.NodeID, result)
 	if deployErr == nil {
-		if err := s.store.MarkMieruDeployed(ctx, m.ID); err != nil {
+		if err := s.store.MarkMieruDeployed(ctx, m.ID, configSHA, shapeSHA); err != nil {
 			s.logger.Error("标记 Mieru 入口已下发失败",
 				"mieru_inbound_id", m.ID, "error", err)
 		}

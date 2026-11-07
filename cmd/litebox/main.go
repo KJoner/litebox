@@ -625,9 +625,12 @@ func cmdServe(args []string) error {
 	notifier := notify.New(settingsStore, logger)
 	go notifier.Run(ctx)
 
+	applyQueue := deployment.NewSQLApplyQueue(db)
 	coordinator := deployment.NewCoordinator(deployment.CoordinatorOptions{
 		Deployer: nodeService,
 		Logger:   logger,
+		// 标脏先落库(R05):节点离线时自动重试、面板重启后接着做,撤权不会因为一次失败就悄悄搁下。
+		Queue:    applyQueue,
 		Debounce: cfg.Node.DeployDebounce,
 		MaxDelay: cfg.Node.DeployMaxDelay,
 		OnFailure: func(nodeID int64, kind string, result deployment.Result, err error) {

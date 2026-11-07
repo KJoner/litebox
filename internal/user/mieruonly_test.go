@@ -59,3 +59,65 @@ func TestMieruOnlyNodeStillHasUsers(t *testing.T) {
 		t.Errorf("用户名 = %q,期望 %q", users[0].Name, u.UserCode)
 	}
 }
+
+// mieruRecorder 同时记两种标脏。
+type mieruRecorder struct {
+	recordingTrigger
+	mieru []int64
+}
+
+func (r *mieruRecorder) MarkMieruDirty(nodeIDs ...int64) { r.mieru = append(r.mieru, nodeIDs...) }
+
+// R05:一台只有 Mieru 入口的机器上,停用、删除、改额度到超额都要把它标成 Mieru 待下发 ——
+// 原来只按 user_effective_nodes 标(只认 sing-box 入口),那台机器一次都标不到,
+// 被停用的人的凭据一直留在 mita 的用户列表里。sing-box 那一类不该被标(那台机器上没有 sing-box)。
+func TestMieruOnlyNodeMarkedOnUserChanges(t *testing.T) {
+	store, db := newTestStore(t)
+	ctx := t.Context()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO nodes (id, name, host, proxy_port, reality_dest,
+			reality_privkey_encrypted, reality_pubkey, reality_short_id, status, created_at, updated_at)
+		VALUES (1,'mieru-only','192.0.2.20',443,'www.example.com','e','p','abcd','ONLINE','t','t')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO node_mieru_inbounds (id, node_id, display_name, listen_port_start, listen_port_end,
+			 transport, multiplexing, access_tier_id, created_at, updated_at)
+		VALUES (1, 1, 'JP-1', 31000, 31004, 'TCP', 'MULTIPLEXING_LOW', 1, 't', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := &mieruRecorder{}
+	svc := NewService(store, rec, nil)
+	u, err := svc.Create(ctx, CreateParams{DisplayName: "张三"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u.EffectiveMieruNodeIDs) != 1 || u.EffectiveMieruNodeIDs[0] != 1 {
+		t.Fatalf("EffectiveMieruNodeIDs = %v", u.EffectiveMieruNodeIDs)
+	}
+
+	for name, act := range map[string]func() error{
+		"停用": func() error { _, err := svc.SetEnabled(ctx, u.ID, false); return err },
+		"启用": func() error { _, err := svc.SetEnabled(ctx, u.ID, true); return err },
+	} {
+		rec.reset()
+		rec.mieru = nil
+		if err := act(); err != nil {
+			t.Fatal(err)
+		}
+		if len(rec.mieru) != 1 || rec.mieru[0] != 1 {
+			t.Fatalf("%s:Mieru 机器没有被标脏:%v", name, rec.mieru)
+		}
+		if len(rec.marked) != 0 {
+			t.Fatalf("%s:只有 Mieru 入口的机器不该被当成 sing-box 标脏:%v", name, rec.marked)
+		}
+	}
+
+	rec.mieru = nil
+	if err := svc.Delete(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.mieru) != 1 || rec.mieru[0] != 1 {
+		t.Fatalf("删除用户:Mieru 机器没有被标脏(要在打 deleted_at 之前取):%v", rec.mieru)
+	}
+}

@@ -27,6 +27,9 @@ type EnforceResult struct {
 	// 状态变化只改了数据库,用户实际能否连接取决于节点配置,
 	// 必须重新部署才会生效。
 	AffectedNodes []int64 `json:"affected_nodes"`
+	// AffectedMieruNodes 是这些用户有 Mieru 入口的机器(R05):user_effective_nodes 只认 sing-box 入口,
+	// 一台只有 Mieru 入口的机器不在上面那个集合里。
+	AffectedMieruNodes []int64 `json:"affected_mieru_nodes"`
 	// Reset 是本轮执行了周期重置的用户。
 	Reset []string `json:"reset"`
 }
@@ -94,6 +97,7 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 
 	nowStr := now.UTC().Format(time.RFC3339)
 	nodeSet := make(map[int64]bool)
+	mieruSet := make(map[int64]bool)
 	for _, id := range pending {
 		// 事务外选出来的只是候选(C01):从那一刻到这里,管理员可能停用了他、改了额度或到期、
 		// 流量同步也可能又记了一笔。所以在事务里重读、重判,UPDATE 还要带上读到的旧状态 ——
@@ -127,6 +131,13 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 		for _, n := range nodes {
 			nodeSet[n] = true
 		}
+		mnodes, err := access.MieruNodesForUser(ctx, tx, c.id)
+		if err != nil {
+			return result, err
+		}
+		for _, n := range mnodes {
+			mieruSet[n] = true
+		}
 		result.Changes = append(result.Changes, StatusChange{
 			UserCode: c.userCode, From: c.from, To: c.to, Reason: c.reason,
 		})
@@ -137,6 +148,9 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 
 	for nodeID := range nodeSet {
 		result.AffectedNodes = append(result.AffectedNodes, nodeID)
+	}
+	for nodeID := range mieruSet {
+		result.AffectedMieruNodes = append(result.AffectedMieruNodes, nodeID)
 	}
 	for _, c := range result.Changes {
 		e.logger.Info("用户状态自动迁移",

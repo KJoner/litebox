@@ -115,6 +115,9 @@ type User struct {
 	// 配置生成、订阅与部署脏标记一律看这个,不看 NodeIDs ——
 	// 只按额外授权标脏会漏掉"改等级"带来的全部变化。
 	EffectiveNodeIDs []int64 `json:"effective_node_ids"`
+	// EffectiveMieruNodeIDs 是他有 Mieru 入口的机器(R05)。只有单个用户的读取(Get 等)会填,
+	// 列表里恒为空数组 —— 它只给标脏用,不给界面展示。
+	EffectiveMieruNodeIDs []int64 `json:"effective_mieru_node_ids"`
 
 	// 外部代理的两个集合,与上面两个逐条对应。
 	//
@@ -459,8 +462,16 @@ func (s *Store) loadNodes(ctx context.Context, u *User) error {
 	if u.NodeIDs, err = s.nodeIDs(ctx, u.ID); err != nil {
 		return err
 	}
-	u.EffectiveNodeIDs, err = access.NodesForUser(ctx, s.db, u.ID)
+	if u.EffectiveNodeIDs, err = access.NodesForUser(ctx, s.db, u.ID); err != nil {
+		return err
+	}
+	u.EffectiveMieruNodeIDs, err = access.MieruNodesForUser(ctx, s.db, u.ID)
 	return err
+}
+
+// MieruNodesForUser 是 access.MieruNodesForUser 的包装。
+func (s *Store) MieruNodesForUser(ctx context.Context, userID int64) ([]int64, error) {
+	return access.MieruNodesForUser(ctx, s.db, userID)
 }
 
 // GetBySubTokenHash 按订阅 Token 的哈希查找用户,供公开订阅路由使用。
@@ -536,6 +547,7 @@ func (s *Store) List(ctx context.Context) ([]*User, error) {
 		if u.EffectiveNodeIDs == nil {
 			u.EffectiveNodeIDs = []int64{}
 		}
+		u.EffectiveMieruNodeIDs = []int64{}
 	}
 	return users, nil
 }

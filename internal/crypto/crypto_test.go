@@ -188,3 +188,21 @@ func TestGenerateTokenEnforcesMinimumLength(t *testing.T) {
 		t.Error("两次生成的 Token 相同")
 	}
 }
+
+// Derive:同一把主密钥同一个标签恒定;换标签、换主密钥都不同。
+func TestDeriveIsDeterministicAndSeparated(t *testing.T) {
+	k1, _ := GenerateMasterKey()
+	k2, _ := GenerateMasterKey()
+	c1, _ := NewCipher(k1)
+	c1b, _ := NewCipher(k1)
+	c2, _ := NewCipher(k2)
+	if string(c1.Derive("a")) != string(c1b.Derive("a")) {
+		t.Fatal("同一把主密钥、同一个标签派生结果不一致")
+	}
+	if string(c1.Derive("a")) == string(c1.Derive("b")) || string(c1.Derive("a")) == string(c2.Derive("a")) {
+		t.Fatal("换标签或换主密钥后派生结果仍相同")
+	}
+	if len(c1.Derive("a")) != 32 {
+		t.Fatal("派生长度应为 32 字节")
+	}
+}

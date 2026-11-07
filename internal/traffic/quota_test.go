@@ -373,3 +373,26 @@ func TestEnforceReevaluatesInsideTransaction(t *testing.T) {
 		t.Fatalf("按过时的额度判成了 %s", got)
 	}
 }
+
+// R05:超额 / 到期迁移要把这个人有 Mieru 入口的机器一起报出来(sing-box 那一类只认 sing-box 入口)。
+func TestEnforceReportsMieruNodes(t *testing.T) {
+	env := newTestEnv(t)
+	enforcer := newEnforcer(t, env)
+	if _, err := env.db.Exec(`
+		INSERT INTO node_mieru_inbounds (node_id, display_name, listen_port_start, listen_port_end,
+			 transport, multiplexing, access_tier_id, created_at, updated_at)
+		VALUES (?, 'JP-1', 31000, 31004, 'TCP', 'MULTIPLEXING_LOW', 1, 't', 't')`, env.nodeID); err != nil {
+		t.Fatal(err)
+	}
+	code := env.mkUser(t, "用户", 1000)
+	if _, err := env.db.Exec(`UPDATE proxy_users SET used_downlink = 1500 WHERE user_code = ?`, code); err != nil {
+		t.Fatal(err)
+	}
+	res, err := enforcer.Enforce(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.AffectedMieruNodes) != 1 || res.AffectedMieruNodes[0] != env.nodeID {
+		t.Fatalf("AffectedMieruNodes = %v", res.AffectedMieruNodes)
+	}
+}

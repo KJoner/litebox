@@ -16,8 +16,19 @@ type fakeDeployer struct {
 	// relayCalls 单独记:两种下发必须互不牵连 ——
 	// 用户变更只改 sing-box,nginx 的转发规则一个字都不变。
 	relayCalls []int64
+	mieruCalls []int64
 	blockCh    chan struct{}
 	err        error
+}
+
+func (f *fakeDeployer) DeployMieruChanged(ctx context.Context, nodeID int64) (Result, error) {
+	if f.blockCh != nil {
+		<-f.blockCh
+	}
+	f.mu.Lock()
+	f.mieruCalls = append(f.mieruCalls, nodeID)
+	f.mu.Unlock()
+	return Result{NodeID: nodeID, Status: StatusSuccess}, f.err
 }
 
 func (f *fakeDeployer) Deploy(ctx context.Context, nodeID int64) (Result, error) {

@@ -11,6 +11,7 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -44,6 +45,8 @@ func GenerateMasterKey() (string, error) {
 // Cipher 使用主密钥对可恢复字段做 AES-256-GCM 加密。
 type Cipher struct {
 	aead cipher.AEAD
+	// derive 是从主密钥按固定标签派生出来的 HMAC 键,只给 Derive 用 —— 不拿 AES 键本身去做 HMAC。
+	derive []byte
 }
 
 // NewCipher 从 base64 编码的主密钥构造 Cipher。
@@ -63,7 +66,19 @@ func NewCipher(masterKeyB64 string) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cipher{aead: aead}, nil
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte("litebox/derive/v1"))
+	return &Cipher{aead: aead, derive: m.Sum(nil)}, nil
+}
+
+// Derive 按标签从主密钥确定性地派生 32 字节:同一把主密钥、同一个标签永远得到同一串,
+// 换主密钥或换标签就完全不同。给「谁都没拿到过、但每次渲染都要一样」的值用
+// (例如 Mieru 入口没有用户时那个占位用户的口令,见 node.mieruIdleUser)—— 随机生成的话
+// 配置哈希每次都变,节点永远显示待下发。
+func (c *Cipher) Derive(label string) []byte {
+	m := hmac.New(sha256.New, c.derive)
+	m.Write([]byte(label))
+	return m.Sum(nil)
 }
 
 // Encrypt 加密明文,返回 base64(nonce || 密文 || 认证标签)。

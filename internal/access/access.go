@@ -227,6 +227,31 @@ func NodesForUser(ctx context.Context, q Queryer, userID int64) ([]int64, error)
 	return ids, rows.Err()
 }
 
+// MieruNodesForUser 返回这个用户有 Mieru 入口的机器(R05)。
+//
+// 与 NodesForUser 分开:user_effective_nodes 只是 sing-box 入口那一层的投影,一台只有 Mieru 入口的机器
+// 根本不在里面 —— 停用、到期、超额只按它标脏的话,那台机器上 mita 的用户列表一个字都不会变。
+// 两类分开返回,因为下发的是两个不同的进程:把 Mieru 机器当 sing-box 标脏只会白白重启 sing-box。
+func MieruNodesForUser(ctx context.Context, q Queryer, userID int64) ([]int64, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT DISTINCT m.node_id FROM user_effective_mieru_inbounds e
+		  JOIN node_mieru_inbounds m ON m.id = e.mieru_inbound_id
+		 WHERE e.proxy_user_id = ? ORDER BY m.node_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // UsersForNode 返回该节点上应当存在配置的用户 ID。
 // 只解析归属关系,不判断用户是否可服务(停用/过期/超额由调用方过滤)。
 func UsersForNode(ctx context.Context, q Queryer, nodeID int64) ([]int64, error) {

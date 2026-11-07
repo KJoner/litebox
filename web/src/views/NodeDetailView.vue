@@ -947,6 +947,14 @@ const lastNoticeText = computed(() => {
 })
 
 /** 最近一次部署失败时的顶部横幅。失败原因要提到第一屏,不能埋在 Tab 里。 */
+/** 持久化下发队列里卡住的下发(R05):重试中与停下了的。 */
+const stuckApplies = computed(() => (node.value?.pending_applies ?? []).filter((a) => a.state !== 'PENDING'))
+const applyKindLabel: Record<string, string> = {
+  SINGBOX: 'sing-box 配置',
+  RELAYS: 'nginx 转发',
+  REALM: 'realm 转发',
+  MIERU: 'Mieru 用户',
+}
 const failureBanner = computed(() => {
   const d = deployments.value[0]
   if (!d || (d.status !== 'FAILED' && d.status !== 'ROLLED_BACK')) return null
@@ -1167,6 +1175,25 @@ const needsPortForward = computed(() =>
           <div class="nd__fail-acts">
             <a-button size="small" class="lb-btn-ghost" @click="goTab('deploys')">查看完整步骤</a-button>
             <a-button size="small" class="lb-btn-ghost" @click="doDiff">配置比对</a-button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 持久化下发队列(R05):这台机器有欠着的下发时说出来 —— 撤权、停用、超额要等它清空才算落到节点上。
+           排队中(PENDING)几秒后就会自己消失,不占一行;只说重试中与停下了的。 -->
+      <div v-for="a in stuckApplies" :key="a.kind" class="lb-notice nd__fail">
+        <span class="lb-notice__icon" :class="a.state === 'BLOCKED' ? 'lb-notice__icon--bad' : 'lb-notice__icon--warn'">
+          <LbIcon name="alert-triangle" :size="18" />
+        </span>
+        <div class="lb-notice__body">
+          <div class="nd__fail-title">
+            {{ applyKindLabel[a.kind] }}的自动下发{{ a.state === 'BLOCKED' ? '停下了,要手动处理' : `没成功,会自动重试(已失败 ${a.attempts} 次)` }}
+          </div>
+          <div v-if="a.last_error" class="nd__fail-body lb-mono">{{ a.last_error }}</div>
+          <div class="nd__fail-rb">
+            在它成功之前,被停用 / 过期 / 超额 / 撤权的用户凭据仍在这台机器上。{{
+              a.state === 'RETRY' && a.next_attempt_at ? `下次重试 ${formatUTCTime(a.next_attempt_at)}。` : ''
+            }}
           </div>
         </div>
       </div>

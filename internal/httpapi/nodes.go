@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/expiry"
 	"github.com/litebox/litebox/internal/node"
 	"github.com/litebox/litebox/internal/singbox"
@@ -89,6 +91,11 @@ type nodeView struct {
 	// 与 udp_timeout、subscription_host 是同一条规矩。
 	AvailableProtocols []protocolOption `json:"available_protocols"`
 
+	// PendingApplies 是持久化下发队列里这台机器欠着的下发(R05,迁移 0054):PENDING 正在排队、
+	// RETRY 节点没被动过、等着自动重试(多半是连不上)、BLOCKED 已经回滚过一次、停下来等人处理。
+	// 撤权要等它清空才算落到节点上 —— 界面据此不把「已保存」说成「已生效」。
+	PendingApplies []deployment.QueuedApply `json:"pending_applies"`
+
 	// Cloud 是这台机器绑定的云实例(V17),没绑定时是 null —— 前端据此决定
 	// 要不要显示「云实例」那一块,不显示一个全是空值的卡片。
 	Cloud *cloudNodeView `json:"cloud"`
@@ -138,6 +145,7 @@ func newNodeView(n *node.Node, status node.NodeConfigStatus) nodeView {
 		SubscriptionHost:   subscription.SubscriptionIPv4(n.Host, n.SubIPv4Address),
 		AvailableProtocols: availableProtocols(n.SingBoxVersion),
 		UsesCustomKey:      n.SSHKey != "",
+		PendingApplies:     []deployment.QueuedApply{},
 	}
 }
 
@@ -156,10 +164,14 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	clouds := s.cloudViews(r, hosts)
 	expiries := s.expiryResolver(r.Context())
+	applies := s.pendingApplies(r.Context())
 	items := make([]nodeView, 0, len(nodes))
 	for _, n := range nodes {
 		v := newNodeView(n, status[n.ID])
 		v.Cloud = clouds[n.ID]
+		if list := applies[n.ID]; list != nil {
+			v.PendingApplies = list
+		}
 		if expiries != nil {
 			ev := expiries.View(expiry.KindNode, n.ID, nil)
 			v.Expiry = &ev
@@ -183,7 +195,28 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 	v := newNodeView(n, node.NodeConfigStatus{State: state, NeedsDeploy: needsDeploy})
 	v.Cloud = s.cloudViewFor(r, n.ID, n.Host)
 	v.Expiry = s.expiryViewFor(r.Context(), expiry.KindNode, n.ID, nil)
+	if list := s.pendingApplies(r.Context())[n.ID]; list != nil {
+		v.PendingApplies = list
+	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+// pendingApplies 按机器分组读持久化下发队列。读不到时返回空 —— 这一列是补充信息,
+// 不让它把整个节点列表拖成 500;读失败记一行日志。
+func (s *Server) pendingApplies(ctx context.Context) map[int64][]deployment.QueuedApply {
+	out := map[int64][]deployment.QueuedApply{}
+	if s.db == nil {
+		return out
+	}
+	all, err := deployment.NewSQLApplyQueue(s.db).All(ctx)
+	if err != nil {
+		s.logger.Warn("读取下发队列失败", "error", err)
+		return out
+	}
+	for _, a := range all {
+		out[a.NodeID] = append(out[a.NodeID], a)
+	}
+	return out
 }
 
 type createNodeRequest struct {

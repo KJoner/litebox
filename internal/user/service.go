@@ -15,6 +15,12 @@ type DeployTrigger interface {
 	MarkDirty(nodeIDs ...int64)
 }
 
+// MieruTrigger 是能单独标记「Mieru 入口用户变了」的触发器(部署协调器实现它,R05)。
+// 不并进 DeployTrigger:那个接口有好几个实现(测试替身),不需要 Mieru 的不必跟着改。
+type MieruTrigger interface {
+	MarkMieruDirty(nodeIDs ...int64)
+}
+
 // Service 在用户变更之后触发受影响节点的重新部署。
 //
 // 所有会改变节点配置内容的操作都必须经由这里,而不是直接调 Store ——
@@ -56,12 +62,49 @@ func (s *Service) markNodes(nodeSets ...[]int64) {
 	}
 }
 
+// markMieru 标脏这几台机器上的 Mieru 入口(只 reload 只动了用户的那几个,见 node.DeployMieruChanged)。
+func (s *Service) markMieru(nodeSets ...[]int64) {
+	t, ok := s.trigger.(MieruTrigger)
+	if !ok {
+		return
+	}
+	seen := make(map[int64]bool)
+	var all []int64
+	for _, set := range nodeSets {
+		for _, id := range set {
+			if !seen[id] {
+				seen[id] = true
+				all = append(all, id)
+			}
+		}
+	}
+	if len(all) > 0 {
+		t.MarkMieruDirty(all...)
+	}
+}
+
+// markUsers 把这几个用户(变更前后)涉及的两类机器都标脏:sing-box 按 EffectiveNodeIDs,
+// Mieru 按 EffectiveMieruNodeIDs。只标前一类的话,一台只有 Mieru 入口的机器上被停用的人
+// 照样连得上(R05)。
+func (s *Service) markUsers(users ...*User) {
+	var sb, mi [][]int64
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		sb = append(sb, u.EffectiveNodeIDs)
+		mi = append(mi, u.EffectiveMieruNodeIDs)
+	}
+	s.markNodes(sb...)
+	s.markMieru(mi...)
+}
+
 func (s *Service) Create(ctx context.Context, p CreateParams) (*User, error) {
 	u, err := s.store.Create(ctx, p)
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.EffectiveNodeIDs)
+	s.markUsers(u)
 	return u, nil
 }
 
@@ -74,7 +117,7 @@ func (s *Service) Update(ctx context.Context, id int64, p UpdateParams) (*User, 
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(before.EffectiveNodeIDs, after.EffectiveNodeIDs)
+	s.markUsers(before, after)
 	return after, nil
 }
 
@@ -83,7 +126,7 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) (*User
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.EffectiveNodeIDs)
+	s.markUsers(u)
 	return u, nil
 }
 
@@ -93,7 +136,7 @@ func (s *Service) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.markNodes(u.EffectiveNodeIDs)
+	s.markUsers(u)
 	return u, nil
 }
 
@@ -164,12 +207,23 @@ func (s *Service) RegenerateSubToken(ctx context.Context, id int64) (*User, erro
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) error {
+	// 删除之前取:打上 deleted_at 之后视图里就查不到他了(与 store.Delete 取 sing-box 那一类同理)。
+	mieruNodes, mieruErr := s.store.MieruNodesForUser(ctx, id)
 	affected, err := s.store.Delete(ctx, id)
 	if err != nil {
 		return err
 	}
 	s.markNodes(affected)
+	if mieruErr != nil && s.logger != nil {
+		s.logger.Error("删除用户前读取他的 Mieru 入口失败,这些机器要手动下发", "user_id", id, "error", mieruErr)
+	}
+	s.markMieru(mieruNodes)
 	return nil
+}
+
+// SyncMieruNode 在 Mieru 入口这一侧的用户集合变了(改等级、改入口授权)时触发一次自动下发。
+func (s *Service) SyncMieruNode(nodeID int64) {
+	s.markMieru([]int64{nodeID})
 }
 
 // SyncNode 在节点侧发生变更(新增节点、改握手目标)时触发一次部署。
@@ -209,10 +263,12 @@ func (s *Service) applyAccessDiff(diff *AccessDiff) *AccessResult {
 		}
 	}
 	seen := map[int64]bool{}
+	var mieruNodes []int64
 	for _, list := range [][]EntryInfo{diff.Added, diff.Removed} {
 		for _, e := range list {
 			if e.Kind == EntryMieru {
 				res.MieruPending = append(res.MieruPending, e)
+				mieruNodes = append(mieruNodes, e.NodeID)
 				continue
 			}
 			if !seen[e.NodeID] {
@@ -222,6 +278,8 @@ func (s *Service) applyAccessDiff(diff *AccessDiff) *AccessResult {
 		}
 	}
 	s.markNodes(res.MarkedNodes)
+	// Mieru 入口也自动下发(R05):只动了用户的入口 reload,还有别的改动没下发的入口在部署记录与推送里点名。
+	s.markMieru(mieruNodes)
 	return res
 }
 
@@ -234,6 +292,8 @@ func (s *Service) SetEntryAccess(ctx context.Context, e EntryRef, restricted boo
 	}
 	if e.Kind == EntrySingBox {
 		s.markNodes([]int64{nodeID})
+	} else {
+		s.markMieru([]int64{nodeID})
 	}
 	return nodeID, nil
 }
@@ -255,7 +315,7 @@ func (s *Service) SetBilling(ctx context.Context, id int64, next billing.Rule, i
 	}
 	now := time.Now().UTC()
 	if before.Serviceable(now) != after.Serviceable(now) {
-		s.markNodes(after.EffectiveNodeIDs)
+		s.markUsers(after)
 	}
 	return change, nil
 }

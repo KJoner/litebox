@@ -185,7 +185,9 @@ func (s *Server) handleUpdateMieruInbound(w http.ResponseWriter, r *http.Request
 	// 与 sing-box 入站一字不差的理由:拖着不下发等于权限没真正收回,
 	// 被移出的用户凭据还留在 mita 的用户列表里。
 	if effect.TierChanged && s.users != nil {
-		s.users.SyncNode(m.NodeID)
+		// 是 mita 的用户列表变了,不是 sing-box 的:走 Mieru 那一种自动下发(R05)。
+		// 只动了用户的话 reload;同时还改了端口等的话,自动下发不碰它,推送与部署记录里会点名。
+		s.users.SyncMieruNode(m.NodeID)
 	}
 	// **不向下游传播。** Mieru 入口不能当中转的落地(nginx stream 只搬 TCP,
 	// 而端口跳跃与单端口 proxy_pass 对不上),也不能被链式指向
