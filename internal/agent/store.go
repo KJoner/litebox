@@ -88,8 +88,13 @@ func (s *Store) Prepare(ctx context.Context, nodeID int64) (string, error) {
 		INSERT INTO node_agents (node_id, state, token_hash, last_boot_id, last_seq, last_error, installed_at, updated_at)
 		VALUES (?, 'PENDING', ?, '', 0, '', ?, ?)
 		ON CONFLICT(node_id) DO UPDATE SET state = 'PENDING', token_hash = excluded.token_hash,
-			last_boot_id = '', last_seq = 0, last_error = '', installed_at = excluded.installed_at,
+			last_boot_id = '', last_seq = 0, dropped_seen = 0, last_error = '', installed_at = excluded.installed_at,
 			updated_at = excluded.updated_at`, nodeID, HashToken(token), now, now)
+	if err != nil {
+		return "", err
+	}
+	// 重新安装:节点上的本地状态(序号、队列、累计丢弃数)会被清掉重建,旧的水位不再对应任何东西。
+	_, err = s.db.ExecContext(ctx, `DELETE FROM agent_boot_marks WHERE node_id = ?`, nodeID)
 	return token, err
 }
 
@@ -132,47 +137,77 @@ const (
 	maxAge     = 24 * time.Hour
 )
 
-// Accept 处理一次上报,返回入库的样本数。去重在同一个事务里做:同一次开机内只收序号更大的样本,
-// 换了 boot_id(机器重启)就从新的一段收起。重传、主控重启、网络重试都不会让同一个样本入两次库。
-func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report) (int, error) {
+// bootMarksKept 是每台机器保留多少次开机的序号水位(R08)。样本的时效是 24 小时,
+// 24 小时里重启 16 次以上的机器上,更早那几次开机的重放会被时效拦下。
+const bootMarksKept = 16
+
+// AcceptResult 是一次上报的处理结果。
+type AcceptResult struct {
+	// Accepted 是入库的样本数。
+	Accepted int
+	// Handled 是这一批里处理过的样本数(入库 + 已经收过 + 时间不可信):Agent 据此确认整批。
+	Handled int
+}
+
+// Accept 处理一次上报。去重在同一个事务里做,依据是**每个样本自己的** (boot_id, seq)(R08):
+// 主控按 (node_id, boot_id) 各记一个序号水位,每台机器保留最近 bootMarksKept 次开机。
+// 宿主重启前没发出去的旧队列跟着新开机的样本一起补发、A → B → A 的重放、主控重启、网络重试,
+// 都不会让同一个样本入两次库,也不会让新开机的样本被当成重复丢掉。
+func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report) (AcceptResult, error) {
+	var res AcceptResult
 	if rep.Protocol > agentproto.ProtocolVersion {
-		return 0, ErrProtocol
+		return res, ErrProtocol
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	defer tx.Rollback()
-	var nodeID, lastSeq int64
-	var state, lastBoot string
-	err = tx.QueryRowContext(ctx, `SELECT node_id, state, last_boot_id, last_seq FROM node_agents
+	var nodeID, droppedSeen int64
+	var state string
+	err = tx.QueryRowContext(ctx, `SELECT node_id, state, dropped_seen FROM node_agents
 		  WHERE token_hash = ? AND token_hash <> '' AND state <> 'REMOVED'`, HashToken(token)).
-		Scan(&nodeID, &state, &lastBoot, &lastSeq)
+		Scan(&nodeID, &state, &droppedSeen)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrBadToken
+		return res, ErrBadToken
 	}
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	if rep.NodeID != nodeID {
-		return 0, ErrNodeMismatch
+		return res, ErrNodeMismatch
+	}
+
+	marks, err := bootMarks(ctx, tx, nodeID)
+	if err != nil {
+		return res, err
 	}
 	samples := append([]agentproto.Sample(nil), rep.Samples...)
-	sort.Slice(samples, func(i, j int) bool { return samples[i].Seq < samples[j].Seq })
-	if rep.BootID != lastBoot {
-		lastSeq = 0 // 新的一次开机,序号从头来
-	}
-	now := s.now()
-	accepted, skipped := 0, int64(0)
-	maxSeq := lastSeq
-	for _, smp := range samples {
-		if smp.Seq <= maxSeq {
-			continue // 已经收过(重传)
+	for i := range samples {
+		if samples[i].BootID == "" {
+			samples[i].BootID = rep.BootID // 旧版本 Agent:整批按上报时的开机 ID
 		}
+	}
+	sort.SliceStable(samples, func(i, j int) bool {
+		if samples[i].BootID != samples[j].BootID {
+			return samples[i].BootID < samples[j].BootID
+		}
+		return samples[i].Seq < samples[j].Seq
+	})
+	now := s.now()
+	nowStr := now.Format(time.RFC3339)
+	skipped := int64(0)
+	touched := map[string]bool{}
+	for _, smp := range samples {
+		res.Handled++
+		if smp.Seq <= marks[smp.BootID] {
+			continue // 已经收过(重传、重放)
+		}
+		marks[smp.BootID] = smp.Seq
+		touched[smp.BootID] = true
 		at, err := time.Parse(time.RFC3339, smp.CollectedAt)
 		if err != nil || at.After(now.Add(futureSkew)) || now.Sub(at) > maxAge {
 			skipped++
-			maxSeq = smp.Seq
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -181,21 +216,102 @@ func (s *Store) Accept(ctx context.Context, token string, rep agentproto.Report)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			nodeID, smp.CPUPercent, smp.MemTotalKB, smp.MemUsedKB, smp.NetRxBps, smp.NetTxBps,
 			smp.Load1, smp.UptimeSeconds, smp.DiskTotalKB, smp.DiskUsedKB, at.UTC().Format(time.RFC3339)); err != nil {
-			return 0, err
+			return res, err
 		}
-		accepted++
-		maxSeq = smp.Seq
+		res.Accepted++
 	}
+	for boot := range touched {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_boot_marks (node_id, boot_id, last_seq, updated_at) VALUES (?,?,?,?)
+			ON CONFLICT (node_id, boot_id) DO UPDATE SET last_seq = excluded.last_seq, updated_at = excluded.updated_at`,
+			nodeID, boot, marks[boot], nowStr); err != nil {
+			return res, err
+		}
+	}
+	if len(touched) > 0 {
+		if err := pruneBootMarks(ctx, tx, nodeID); err != nil {
+			return res, err
+		}
+	}
+
+	// 丢弃数:新 Agent 报累计值,按差值加(应答丢了重发时差值为 0);累计值变小说明 Agent 的本地状态
+	// 重建过,从它报的数重新起算。旧 Agent 报的是「上次成功以来」,照旧直接加。
+	dropped := rep.Dropped
+	seen := droppedSeen
+	if rep.DroppedCum != nil {
+		cum := *rep.DroppedCum
+		if cum >= droppedSeen {
+			dropped = cum - droppedSeen
+		} else {
+			dropped = cum
+		}
+		seen = cum
+	}
+
 	lastErr := ""
 	if skipped > 0 {
 		lastErr = fmt.Sprintf("有 %d 个样本的时间不可信(比主控快 10 分钟以上或早于 24 小时),没有入库 —— 检查节点时钟", skipped)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE node_agents SET state = 'ACTIVE', version = ?, last_boot_id = ?, last_seq = ?,
-		last_seen_at = ?, rss_kb = ?, dropped_total = dropped_total + ?, last_error = ?, updated_at = ?
+		last_seen_at = ?, rss_kb = ?, dropped_total = dropped_total + ?, dropped_seen = ?, last_error = ?, updated_at = ?
 		WHERE node_id = ?`,
-		rep.Version, rep.BootID, maxSeq, now.Format(time.RFC3339), rep.RSSKB, rep.Dropped+skipped, lastErr,
-		now.Format(time.RFC3339), nodeID); err != nil {
-		return 0, err
+		rep.Version, rep.BootID, marks[rep.BootID], nowStr, rep.RSSKB, dropped+skipped, seen, lastErr,
+		nowStr, nodeID); err != nil {
+		return res, err
 	}
-	return accepted, tx.Commit()
+	return res, tx.Commit()
+}
+
+type txQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func bootMarks(ctx context.Context, q txQuerier, nodeID int64) (map[string]int64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT boot_id, last_seq FROM agent_boot_marks WHERE node_id = ?`, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var boot string
+		var seq int64
+		if err := rows.Scan(&boot, &seq); err != nil {
+			return nil, err
+		}
+		out[boot] = seq
+	}
+	return out, rows.Err()
+}
+
+// pruneBootMarks 只留最近 bootMarksKept 次开机的水位。
+func pruneBootMarks(ctx context.Context, q txQuerier, nodeID int64) error {
+	rows, err := q.QueryContext(ctx, `SELECT boot_id FROM agent_boot_marks WHERE node_id = ?
+		ORDER BY updated_at DESC, boot_id DESC`, nodeID)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	i := 0
+	for rows.Next() {
+		var boot string
+		if err := rows.Scan(&boot); err != nil {
+			rows.Close()
+			return err
+		}
+		if i >= bootMarksKept {
+			stale = append(stale, boot)
+		}
+		i++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, boot := range stale {
+		if _, err := q.ExecContext(ctx, `DELETE FROM agent_boot_marks WHERE node_id = ? AND boot_id = ?`, nodeID, boot); err != nil {
+			return err
+		}
+	}
+	return nil
 }

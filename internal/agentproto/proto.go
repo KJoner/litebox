@@ -17,7 +17,11 @@ const ProtocolVersion = 1
 // 两条路写进同一张表,口径不同的话曲线会在切换那一刻跳一下,而管理员会以为机器出了事。
 type Sample struct {
 	// Seq 在同一个 BootID 内严格递增;主控按 (BootID, Seq) 去重,重传不会重复入库。
-	Seq           int64   `json:"seq"`
+	Seq int64 `json:"seq"`
+	// BootID 是采这个样本时的开机 ID(R08)。宿主重启前没发出去的旧样本跟着新开机的样本一起补发时,
+	// 靠它分清各自属于哪一段 —— 按上报时的 BootID 整批算的话,旧样本会冒充新开机的序号。
+	// 为空(旧版本 Agent)时按 Report.BootID 算。
+	BootID        string  `json:"boot_id,omitempty"`
 	CollectedAt   string  `json:"collected_at"` // RFC3339 UTC
 	CPUPercent    float64 `json:"cpu_percent"`
 	MemTotalKB    int64   `json:"mem_total_kb"`
@@ -40,15 +44,21 @@ type Report struct {
 	BootID  string   `json:"boot_id"`
 	Samples []Sample `json:"samples"`
 	// Dropped 是本地队列满了丢掉的样本数(从上次成功上报起)。主控把它记下来,
-	// 曲线上那一段是缺口,不是 0。
+	// 曲线上那一段是缺口,不是 0。只给旧版本主控看;新主控用 DroppedCum。
 	Dropped int64 `json:"dropped"`
+	// DroppedCum 是这份 Agent 状态从建立起累计丢掉的样本数,只增不减(R08)。主控按与上一次的差值累加:
+	// 应答丢了、同一份上报重发时差值为 0,不会把同一批丢弃算两遍。nil 表示旧版本 Agent。
+	DroppedCum *int64 `json:"dropped_cum,omitempty"`
 	// RSSKB 是 Agent 自己此刻的常驻内存(/proc/self/status 的 VmRSS),AGENT06 的资源目标靠它核对。
 	RSSKB int64 `json:"rss_kb"`
 }
 
-// Reply 是主控的应答。
+// Reply 是主控的应答。Agent 只有拿到一份能解析、带 accepted 字段的应答才清掉这一批(R08):
+// 反代出错页、登录页、空响应都可能是 200,把它们当成确认的话,这一批样本就悄悄没了。
 type Reply struct {
 	Accepted int `json:"accepted"`
+	// Handled 是这一批里主控已经处理过的样本数(入库 + 重复 + 时间不可信),应当等于发出去的条数。
+	Handled int `json:"handled"`
 	// IntervalSeconds 是主控希望的采集间隔,Agent 照它调整(主控一处改,不用逐台改配置)。
 	IntervalSeconds int `json:"interval_seconds"`
 }

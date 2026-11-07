@@ -35,7 +35,7 @@ func (s *Server) handleAgentReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "上报格式不对")
 		return
 	}
-	n, err := s.agent.Store().Accept(r.Context(), token, rep)
+	res, err := s.agent.Store().Accept(r.Context(), token, rep)
 	switch {
 	case errors.Is(err, agent.ErrBadToken), errors.Is(err, agent.ErrNodeMismatch):
 		writeError(w, http.StatusUnauthorized, "令牌无效")
@@ -48,7 +48,7 @@ func (s *Server) handleAgentReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	writeJSON(w, http.StatusOK, agentproto.Reply{Accepted: n, IntervalSeconds: s.agent.Interval})
+	writeJSON(w, http.StatusOK, agentproto.Reply{Accepted: res.Accepted, Handled: res.Handled, IntervalSeconds: s.agent.Interval})
 }
 
 func (s *Server) handleNodeAgent(w http.ResponseWriter, r *http.Request) {

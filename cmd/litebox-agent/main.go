@@ -95,15 +95,19 @@ type agent struct {
 	seq     int64
 	queue   []agentproto.Sample
 	dropped int64
-	backoff time.Duration
+	// droppedCum 是这份本地状态建立以来累计丢掉的样本数,只增不减(R08)。主控按差值累加,
+	// 应答丢了重发同一份上报不会把同一批丢弃算两遍。
+	droppedCum int64
+	backoff    time.Duration
 }
 
 // persisted 是本地状态文件:序号与待补发队列。写临时文件再改名,写到一半断电不会留下半个文件。
 type persisted struct {
-	BootID  string              `json:"boot_id"`
-	Seq     int64               `json:"seq"`
-	Queue   []agentproto.Sample `json:"queue"`
-	Dropped int64               `json:"dropped"`
+	BootID     string              `json:"boot_id"`
+	Seq        int64               `json:"seq"`
+	Queue      []agentproto.Sample `json:"queue"`
+	Dropped    int64               `json:"dropped"`
+	DroppedCum int64               `json:"dropped_cum"`
 }
 
 func (a *agent) loadState() {
@@ -116,8 +120,15 @@ func (a *agent) loadState() {
 	if json.Unmarshal(b, &p) != nil {
 		return
 	}
-	a.queue, a.dropped = p.Queue, p.Dropped
-	// 同一次开机内序号接着往下数;机器重启过就从头来(主控按 boot_id 分开两段)。
+	a.queue, a.dropped, a.droppedCum = p.Queue, p.Dropped, p.DroppedCum
+	// 旧版本写的队列里样本不带开机 ID:它们都属于状态文件里记的那一次开机(R08)。
+	// 补上之后,宿主重启前没发出去的旧样本跟着新开机的样本一起补发时,不会冒充新开机的序号。
+	for i := range a.queue {
+		if a.queue[i].BootID == "" {
+			a.queue[i].BootID = p.BootID
+		}
+	}
+	// 同一次开机内序号接着往下数;机器重启过就从头来(主控按每个样本的 boot_id 分开两段)。
 	if p.BootID == a.bootID {
 		a.seq = p.Seq
 	}
@@ -128,7 +139,7 @@ func (a *agent) saveState() {
 		log.Printf("创建状态目录失败(没有可写磁盘时只在内存里排队): %v", err)
 		return
 	}
-	b, _ := json.Marshal(persisted{BootID: a.bootID, Seq: a.seq, Queue: a.queue, Dropped: a.dropped})
+	b, _ := json.Marshal(persisted{BootID: a.bootID, Seq: a.seq, Queue: a.queue, Dropped: a.dropped, DroppedCum: a.droppedCum})
 	tmp := filepath.Join(a.state, "state.json.tmp")
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		log.Printf("写状态文件失败: %v", err)
@@ -153,11 +164,12 @@ func (a *agent) run(ctx context.Context) {
 			log.Printf("采集失败: %v", err)
 		} else {
 			a.seq++
-			s.Seq = a.seq
+			s.Seq, s.BootID = a.seq, a.bootID
 			a.queue = append(a.queue, s)
 			if over := len(a.queue) - agentproto.QueueLimit; over > 0 {
 				a.queue = a.queue[over:]
 				a.dropped += int64(over)
+				a.droppedCum += int64(over)
 			}
 		}
 		next := a.interval
@@ -196,8 +208,9 @@ func (a *agent) flush(ctx context.Context) error {
 	if len(batch) > 120 {
 		batch = batch[:120]
 	}
+	cum := a.droppedCum
 	rep := agentproto.Report{Protocol: agentproto.ProtocolVersion, NodeID: a.cfg.NodeID, Version: Version,
-		BootID: a.bootID, Samples: batch, Dropped: a.dropped, RSSKB: selfRSSKB()}
+		BootID: a.bootID, Samples: batch, Dropped: a.dropped, DroppedCum: &cum, RSSKB: selfRSSKB()}
 	body, _ := json.Marshal(rep)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.cfg.Server, "/")+agentproto.ReportPath, bytes.NewReader(body))
 	if err != nil {
@@ -214,14 +227,35 @@ func (a *agent) flush(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("主控回 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
-	var reply agentproto.Reply
-	_ = json.Unmarshal(raw, &reply)
+	reply, err := parseReply(raw, len(batch))
+	if err != nil {
+		return err
+	}
 	a.queue = a.queue[len(batch):]
 	a.dropped = 0
 	if reply.IntervalSeconds >= 10 && reply.IntervalSeconds <= 3600 {
 		a.interval = time.Duration(reply.IntervalSeconds) * time.Second
 	}
 	return nil
+}
+
+// parseReply 校验主控的应答(R08):只有能解析、带 accepted 字段、而且处理条数对得上的应答才算确认。
+// 反代的出错页、登录页、空响应都可能是 200,把它们当成确认的话,这一批样本就悄悄没了。
+// 旧版本主控不带 handled:那时只要求 accepted 在,其余照旧。
+func parseReply(raw []byte, sent int) (agentproto.Reply, error) {
+	var probe struct {
+		Accepted *int `json:"accepted"`
+		Handled  *int `json:"handled"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || probe.Accepted == nil {
+		return agentproto.Reply{}, fmt.Errorf("主控的应答不是一份可识别的确认(%d 字节),这一批留在队列里", len(raw))
+	}
+	var reply agentproto.Reply
+	_ = json.Unmarshal(raw, &reply)
+	if probe.Handled != nil && *probe.Handled != sent {
+		return reply, fmt.Errorf("主控只确认了 %d / %d 条,这一批留在队列里重发", *probe.Handled, sent)
+	}
+	return reply, nil
 }
 
 // ---------- 采集:只读 /proc 与 statfs,口径与 SSH 那一路(node.CollectMetrics)一致 ----------

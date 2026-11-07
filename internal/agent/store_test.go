@@ -45,25 +45,25 @@ func TestAcceptDeduplicates(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	rep := agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-a", Samples: []agentproto.Sample{smp(1, now), smp(2, now)}}
-	if n, err := store.Accept(ctx, token, rep); err != nil || n != 2 {
-		t.Fatalf("第一次上报 = %d, %v", n, err)
+	if r, err := store.Accept(ctx, token, rep); err != nil || r.Accepted != 2 || r.Handled != 2 {
+		t.Fatalf("第一次上报 = %+v, %v", r, err)
 	}
 	if ok, _ := store.Writer(ctx, id, time.Minute); !ok {
 		t.Fatal("收到上报之后资源采集应当改由 Agent 写")
 	}
 	// 应答丢了,Agent 把 1、2 连同新的 3 一起重发:只收 3。
 	rep.Samples = []agentproto.Sample{smp(1, now), smp(2, now), smp(3, now)}
-	if n, _ := store.Accept(ctx, token, rep); n != 1 || metricRows(t, store, id) != 3 {
-		t.Fatalf("重传之后入库 %d 条,总数 %d", n, metricRows(t, store, id))
+	if r, _ := store.Accept(ctx, token, rep); r.Accepted != 1 || r.Handled != 3 || metricRows(t, store, id) != 3 {
+		t.Fatalf("重传之后入库 %d 条,总数 %d", r.Accepted, metricRows(t, store, id))
 	}
 	// 机器重启:boot_id 换了,序号从 1 起 —— 照收。
 	rep = agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-b", Samples: []agentproto.Sample{smp(1, now)}}
-	if n, _ := store.Accept(ctx, token, rep); n != 1 {
+	if r, _ := store.Accept(ctx, token, rep); r.Accepted != 1 {
 		t.Fatal("重启之后的新一段没有被收下")
 	}
 	// 时钟跳到一小时之后的样本不入库,计进丢弃数并写明原因。
 	rep.Samples = []agentproto.Sample{smp(2, now.Add(time.Hour))}
-	if n, _ := store.Accept(ctx, token, rep); n != 0 {
+	if r, _ := store.Accept(ctx, token, rep); r.Accepted != 0 {
 		t.Fatal("时间不可信的样本不该入库")
 	}
 	st, _, _ := store.Get(ctx, id)
@@ -115,5 +115,123 @@ func TestInstallRefusesSmallMachines(t *testing.T) {
 	}
 	if _, err := svc.Install(t.Context(), Machine{ID: 1, MemTotalMB: 512}, "https://panel.example.com", 0); !errors.Is(err, ErrUnknownMachine) {
 		t.Fatalf("架构未知应当拒装,得到 %v", err)
+	}
+}
+
+func bootSmp(boot string, seq int64, at time.Time) agentproto.Sample {
+	s := smp(seq, at)
+	s.BootID = boot
+	return s
+}
+
+// R08 场景一:宿主重启前没发出去的旧队列(A 的 99、100)跟着新开机 B 的 1 一起上报。
+// 旧样本按它们自己的开机 ID 入账,B 的水位只到 1,之后 B2…B100 照常收下,不会被当成重复丢掉。
+func TestAcceptOldQueueAcrossReboot(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	ctx := t.Context()
+	id := seedNode(t, store)
+	token, _ := store.Prepare(ctx, id)
+	now := time.Now().UTC()
+	rep := agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-b",
+		Samples: []agentproto.Sample{bootSmp("boot-a", 99, now), bootSmp("boot-a", 100, now), bootSmp("boot-b", 1, now)}}
+	if r, err := store.Accept(ctx, token, rep); err != nil || r.Accepted != 3 || r.Handled != 3 {
+		t.Fatalf("混着旧队列的那一次上报 = %+v, %v", r, err)
+	}
+	var later []agentproto.Sample
+	for seq := int64(2); seq <= 100; seq++ {
+		later = append(later, bootSmp("boot-b", seq, now))
+	}
+	rep = agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-b", Samples: later}
+	if r, _ := store.Accept(ctx, token, rep); r.Accepted != 99 {
+		t.Fatalf("新开机的 2…100 被当成了重复:只收下 %d 条", r.Accepted)
+	}
+	if n := metricRows(t, store, id); n != 102 {
+		t.Fatalf("总数 %d", n)
+	}
+}
+
+// R08 场景二:收过 A1、A2,再收 B1,然后重放 A1、A2 —— 不再入库(A 的水位还在)。
+func TestAcceptReplayOfEarlierBoot(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	ctx := t.Context()
+	id := seedNode(t, store)
+	token, _ := store.Prepare(ctx, id)
+	now := time.Now().UTC()
+	a := []agentproto.Sample{bootSmp("boot-a", 1, now), bootSmp("boot-a", 2, now)}
+	store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-a", Samples: a})
+	store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-b", Samples: []agentproto.Sample{bootSmp("boot-b", 1, now)}})
+	r, err := store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-a", Samples: a})
+	if err != nil || r.Accepted != 0 || r.Handled != 2 {
+		t.Fatalf("A 的重放 = %+v, %v", r, err)
+	}
+	if n := metricRows(t, store, id); n != 3 {
+		t.Fatalf("总数 %d,重放的样本又入库了", n)
+	}
+}
+
+// R08:乱序到达、旧版本 Agent(样本不带开机 ID,按上报的开机 ID 算)也照样去重。
+func TestAcceptOutOfOrderAndLegacySamples(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	ctx := t.Context()
+	id := seedNode(t, store)
+	token, _ := store.Prepare(ctx, id)
+	now := time.Now().UTC()
+	rep := agentproto.Report{Protocol: 1, NodeID: id, BootID: "boot-a",
+		Samples: []agentproto.Sample{smp(3, now), smp(1, now), smp(2, now)}}
+	if r, _ := store.Accept(ctx, token, rep); r.Accepted != 3 {
+		t.Fatalf("乱序的一批 = %+v", r)
+	}
+	rep.Samples = []agentproto.Sample{bootSmp("boot-a", 2, now), smp(4, now)}
+	if r, _ := store.Accept(ctx, token, rep); r.Accepted != 1 || r.Handled != 2 {
+		t.Fatalf("带与不带开机 ID 的样本应当是同一段:%+v", r)
+	}
+}
+
+// R08:应答丢了、Agent 重发同一份上报,丢弃数不会被算两遍;累计值变小说明本地状态重建过,从它重新起算。
+func TestAcceptDroppedCounterIdempotent(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	ctx := t.Context()
+	id := seedNode(t, store)
+	token, _ := store.Prepare(ctx, id)
+	now := time.Now().UTC()
+	cum := int64(5)
+	rep := agentproto.Report{Protocol: 1, NodeID: id, BootID: "b", Samples: []agentproto.Sample{bootSmp("b", 1, now)},
+		Dropped: 5, DroppedCum: &cum}
+	store.Accept(ctx, token, rep)
+	store.Accept(ctx, token, rep) // 应答丢了,同一份重发
+	if st, _, _ := store.Get(ctx, id); st.DroppedTotal != 5 {
+		t.Fatalf("重发之后丢弃数 = %d,期望 5", st.DroppedTotal)
+	}
+	cum = 8
+	rep.Samples = []agentproto.Sample{bootSmp("b", 2, now)}
+	store.Accept(ctx, token, rep)
+	if st, _, _ := store.Get(ctx, id); st.DroppedTotal != 8 {
+		t.Fatalf("累计 5 → 8 之后 = %d", st.DroppedTotal)
+	}
+	cum = 2 // 本地状态重建过
+	rep.Samples = []agentproto.Sample{bootSmp("b", 3, now)}
+	store.Accept(ctx, token, rep)
+	if st, _, _ := store.Get(ctx, id); st.DroppedTotal != 10 {
+		t.Fatalf("累计值变小之后 = %d,期望 8 + 2", st.DroppedTotal)
+	}
+}
+
+// R08:每台机器只留最近 bootMarksKept 次开机的水位。
+func TestBootMarksBounded(t *testing.T) {
+	store := NewStore(dbtest.Open(t))
+	ctx := t.Context()
+	id := seedNode(t, store)
+	token, _ := store.Prepare(ctx, id)
+	base := time.Now().UTC()
+	for i := 0; i < bootMarksKept+5; i++ {
+		store.now = func() time.Time { return base.Add(time.Duration(i) * time.Second) }
+		boot := "boot-" + string(rune('a'+i))
+		store.Accept(ctx, token, agentproto.Report{Protocol: 1, NodeID: id, BootID: boot,
+			Samples: []agentproto.Sample{bootSmp(boot, 1, base)}})
+	}
+	var n int
+	store.db.QueryRow(`SELECT COUNT(*) FROM agent_boot_marks WHERE node_id = ?`, id).Scan(&n)
+	if n != bootMarksKept {
+		t.Fatalf("留了 %d 次开机的水位,期望 %d", n, bootMarksKept)
 	}
 }
