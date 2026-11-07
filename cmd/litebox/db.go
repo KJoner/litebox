@@ -21,7 +21,12 @@ import (
 // **import 默认只演练**,不加 --execute 一个字节都不写。
 func cmdDB(args []string) error {
 	if len(args) == 0 {
-		return errors.New("用法:litebox db <inspect|import|verify|export> [参数],详见 docs/vnext/migration.md")
+		return errors.New(`用法:litebox db <子命令> [参数](全部是离线操作,先停掉主控)
+  inspect [--from-sqlite 文件]   查看库的版本、各表行数(不给文件时看配置里的 database)
+  import  --from-sqlite 文件      把 SQLite 搬进配置里的 PostgreSQL;默认只演练,加 --execute 才写入,目标必须是空库
+  verify  --from-sqlite 文件      逐表逐行核对 SQLite 与配置里的 PostgreSQL 是否一致
+  export  --to-sqlite 新文件      把配置里的 PostgreSQL 导出成一个新的 SQLite 文件(不覆盖已有文件)
+通用参数:--config 配置文件路径(默认 litebox.yaml)`)
 	}
 	sub, rest := args[0], args[1:]
 	fs := flag.NewFlagSet("db "+sub, flag.ExitOnError)
