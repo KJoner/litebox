@@ -453,6 +453,12 @@ func (w *Watchdog) recover(ctx context.Context, n *Node, report *HealthReport) {
 		report.RecoverError = fmt.Sprintf("上一次没救回来,退避中(还剩 %d 轮)", left)
 		return
 	}
+	// 恢复主控库之后暂停自动下发(R03):重新下发用的是库里那份配置,而库是一份旧快照 ——
+	// 快照之后撤掉的凭据会被一起推回节点。只报告,不动手。
+	if h := deployment.ReadHold(ctx, w.service.store.db); h.Held {
+		report.RecoverError = "自动下发已暂停(" + h.Reason + "),巡检只报告不恢复;核对之后在面板上解除"
+		return
+	}
 
 	var errs []string
 	if report.SingBox == ServiceStopped {

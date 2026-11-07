@@ -72,6 +72,9 @@ type Coordinator struct {
 	onFailure func(nodeID int64, kind string, result Result, err error)
 	// queue 不为 nil 时标脏先落库、成功才删,失败按 Retryable 分重试与停下(R05)。
 	queue ApplyQueue
+	// held 返回真时只排队、不下发(恢复之后的「暂停自动下发」,R03)。
+	held    func() bool
+	wasHeld bool
 
 	wake   chan struct{}
 	done   chan struct{}
@@ -100,6 +103,8 @@ type CoordinatorOptions struct {
 	OnFailure func(nodeID int64, kind string, result Result, err error)
 	// Queue 是持久化的下发队列(可以为 nil,那时与原来一样只在内存里排队)。
 	Queue ApplyQueue
+	// Held 返回真时协调器只排队、不下发(见 hold.go)。可以为 nil。
+	Held func() bool
 }
 
 func NewCoordinator(opts CoordinatorOptions) *Coordinator {
@@ -123,6 +128,7 @@ func NewCoordinator(opts CoordinatorOptions) *Coordinator {
 		clock:     clock,
 		onFailure: opts.OnFailure,
 		queue:     opts.Queue,
+		held:      opts.Held,
 		pending:   make(map[int64]*pendingNode),
 		inflight:  make(map[int64]bool),
 		wake:      make(chan struct{}, 1),
@@ -250,6 +256,20 @@ func (c *Coordinator) loadDue(ctx context.Context) {
 
 // dispatchReady 取出已到期的节点并逐个部署。
 func (c *Coordinator) dispatchReady(ctx context.Context) {
+	if c.held != nil {
+		held := c.held()
+		if held != c.wasHeld {
+			if held {
+				c.logger.Warn("自动下发已暂停(恢复之后要先核对配置版本与撤权),标脏的机器只排队、不下发")
+			} else {
+				c.logger.Info("自动下发已恢复")
+			}
+			c.wasHeld = held
+		}
+		if held {
+			return
+		}
+	}
 	now := c.clock()
 
 	c.mu.Lock()

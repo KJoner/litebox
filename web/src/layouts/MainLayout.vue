@@ -2,10 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { api, type TrafficStatus } from '@/api/client'
+import { api, ApiError, type DeployHold, type TrafficStatus } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore, type ThemePreference } from '@/stores/theme'
-import { LbIcon, LbTimeText, type LbIconName } from '@/components/lb'
+import { LbIcon, LbTimeText, lbDangerConfirm, type LbIconName } from '@/components/lb'
 import { summarizeSync, SYNC_DOT, SYNC_STALE_MS } from './syncStatus'
 
 /**
@@ -193,8 +193,38 @@ async function loadMeta() {
     counts.value.nodes = c.value.nodes
     counts.value.external = c.value.external || undefined
     counts.value.failedDeploys = c.value.failed_deploys_7d || undefined
+    deployHold.value = c.value.deploy_hold?.held ? c.value.deploy_hold : null
   }
   applySync(s)
+}
+
+/**
+ * 「暂停自动下发」(R03):从备份恢复主控库之后,协调器只排队不下发、巡检只报告不恢复 ——
+ * 库是一份旧快照,快照之后撤掉的凭据会被一起推回节点。核对完再解除,所以确认框里把要核对的东西列出来。
+ */
+const deployHold = ref<DeployHold | null>(null)
+function releaseHold() {
+  lbDangerConfirm({
+    title: '恢复自动下发?',
+    okText: '核对完毕,恢复',
+    impacts: [
+      '**库是从备份恢复的:快照之后撤掉的用户与凭据,库里可能又是「有效」的** —— 先在用户列表里核对一遍',
+      '排着的下发会马上做掉,巡检恢复自动拉起与重新下发:节点上的配置会换成库里这一份',
+      '节点上比库更新的改动(快照之后加的入口、换的端口)会被覆盖',
+    ],
+    onOk: () => {
+      void doReleaseHold()
+    },
+  })
+}
+async function doReleaseHold() {
+  try {
+    await api.releaseDeployHold()
+    deployHold.value = null
+    message.success('已恢复自动下发')
+  } catch (e) {
+    message.error(e instanceof ApiError ? e.message : '恢复失败')
+  }
 }
 
 function applySync(r: PromiseSettledResult<TrafficStatus>) {
@@ -379,6 +409,14 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
       </header>
 
       <main id="lb-main" class="ml__content">
+        <div v-if="deployHold" class="lb-notice ml__hold" role="alert">
+          <span class="lb-notice__icon lb-notice__icon--warn"><LbIcon name="alert-triangle" :size="18" /></span>
+          <div class="lb-notice__body">
+            <b>自动下发已暂停</b>:{{ deployHold.reason }}。标脏的机器只排队、不下发,巡检只报告不恢复 ——
+            核对用户、撤权与节点配置之后再恢复。手动「部署」不受影响。
+          </div>
+          <a-button size="small" @click="releaseHold">核对完毕,恢复自动下发</a-button>
+        </div>
         <RouterView />
       </main>
     </div>
@@ -820,6 +858,16 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
   max-width: var(--content-max);
   padding: var(--page-pad) var(--page-pad) var(--sp-12);
   box-sizing: border-box;
+  min-width: 0;
+}
+.ml__hold {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.ml__hold .lb-notice__body {
+  flex: 1;
   min-width: 0;
 }
 

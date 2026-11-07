@@ -102,8 +102,10 @@ func run() error {
 		return cmdDB(args)
 	case "manifest":
 		return cmdManifest(args)
+	case "deploy-hold":
+		return cmdDeployHold(args)
 	default:
-		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check db manifest genkey ssh-key reset-password version)", command)
+		return fmt.Errorf("未知命令 %q(可用:serve migrate backup check db manifest deploy-hold genkey ssh-key reset-password version)", command)
 	}
 }
 
@@ -143,6 +145,48 @@ func cmdSSHKey(args []string) error {
 	if *rotate {
 		fmt.Fprintln(os.Stderr,
 			"\n密钥已轮换。旧公钥在所有节点上立即失效,必须逐个节点重新引导,否则面板连不上它们。")
+	}
+	return nil
+}
+
+// cmdDeployHold 是 `litebox deploy-hold on|off|status`(R03):恢复脚本在启动主控之前打开它,
+// 让旧快照一启动不会把已经撤掉的凭据重新推回节点;管理员核对之后在面板上解除(或用 off)。
+func cmdDeployHold(args []string) error {
+	if len(args) == 0 {
+		return errors.New("用法:litebox deploy-hold on|off|status [--reason 原因] [--config 文件]")
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("deploy-hold", flag.ExitOnError)
+	reason := fs.String("reason", "从备份恢复了主控库", "暂停的原因(on 时用)")
+	cfg, logger, db, err := setup(fs, args[1:])
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := ensureSchemaForWrite(ctx, cfg, db, logger); err != nil {
+		return err
+	}
+	switch sub {
+	case "on":
+		if err := deployment.SetHold(ctx, db, *reason); err != nil {
+			return err
+		}
+		fmt.Println("已暂停自动下发:" + *reason)
+	case "off":
+		if err := deployment.ClearHold(ctx, db); err != nil {
+			return err
+		}
+		fmt.Println("已恢复自动下发")
+	case "status":
+	default:
+		return fmt.Errorf("未知的子命令 %q(on / off / status)", sub)
+	}
+	h := deployment.ReadHold(ctx, db)
+	if h.Held {
+		fmt.Printf("状态:已暂停(%s,自 %s)\n", h.Reason, h.Since)
+	} else {
+		fmt.Println("状态:正常")
 	}
 	return nil
 }
@@ -633,7 +677,13 @@ func cmdServe(args []string) error {
 		Deployer: nodeService,
 		Logger:   logger,
 		// 标脏先落库(R05):节点离线时自动重试、面板重启后接着做,撤权不会因为一次失败就悄悄搁下。
-		Queue:    applyQueue,
+		Queue: applyQueue,
+		// 恢复主控库之后暂停自动下发,核对之后在面板上解除(R03)。
+		Held: func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			return deployment.ReadHold(ctx, db).Held
+		},
 		Debounce: cfg.Node.DeployDebounce,
 		MaxDelay: cfg.Node.DeployMaxDelay,
 		OnFailure: func(nodeID int64, kind string, result deployment.Result, err error) {

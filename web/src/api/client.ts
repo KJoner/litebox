@@ -237,12 +237,21 @@ export interface Admin {
   username: string
 }
 
+/** 「暂停自动下发」(R03):从备份恢复主控库之后由恢复脚本打开,核对完再解除。 */
+export interface DeployHold {
+  held: boolean
+  reason: string
+  since: string
+}
+
 export interface SidebarCounts {
   users: number
   nodes: number
   /** 外部代理没接入时为 null */
   external: number | null
   failed_deploys_7d: number
+  /** 旧版本后端没有这一项 */
+  deploy_hold?: DeployHold
 }
 
 export interface DashboardSummary {
@@ -3795,6 +3804,8 @@ export const api = {
   dashboardSummary: () => request<DashboardSummary>('/api/dashboard/summary'),
   // 侧栏的几个数字:每个只做一次 COUNT,不再为它拉五个完整列表(VNext PERF03)。
   sidebarCounts: () => request<SidebarCounts>('/api/sidebar-counts'),
+  /** 解除「暂停自动下发」:协调器把排着的下发做掉,巡检恢复自动拉起(R03)。 */
+  releaseDeployHold: () => request<DeployHold>('/api/deploy-hold', { method: 'DELETE' }),
   dashboardAlerts: () => request<{ items: DashboardAlert[] }>('/api/dashboard/alerts'),
 
   auditLogs: (params: { limit?: number; targetType?: string; targetId?: string } = {}) =>

@@ -248,6 +248,7 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	authed.HandleFunc("GET /api/dashboard/summary", s.handleDashboardSummary)
 	authed.HandleFunc("GET /api/sidebar-counts", s.handleSidebarCounts)
+	authed.HandleFunc("DELETE /api/deploy-hold", s.handleReleaseDeployHold)
 	authed.HandleFunc("GET /api/release-manifest", s.handleReleaseManifest)
 	if s.tasks != nil {
 		authed.HandleFunc("GET /api/tasks", s.handleListTasks)

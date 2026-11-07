@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/deployment"
 	"net/http"
 	"time"
 )
@@ -18,6 +20,8 @@ type sidebarCounts struct {
 	// External 在外部代理功能没接入时为 null,不报 0 —— 0 读起来像「一条都没配」。
 	External        *int `json:"external"`
 	FailedDeploys7d int  `json:"failed_deploys_7d"`
+	// DeployHold 是「暂停自动下发」(R03):恢复主控库之后由恢复脚本打开,界面据此显示横幅与解除按钮。
+	DeployHold *deployment.HoldInfo `json:"deploy_hold,omitempty"`
 }
 
 func (s *Server) handleSidebarCounts(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +37,10 @@ func (s *Server) handleSidebarCounts(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("读取侧栏计数失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
+	}
+	if s.db != nil {
+		h := deployment.ReadHold(ctx, s.db)
+		out.DeployHold = &h
 	}
 	if s.external != nil {
 		var n int
@@ -51,4 +59,24 @@ func (s *Server) handleSidebarCounts(w http.ResponseWriter, r *http.Request) {
 // 开发环境没有清单时 manifest 为 null,而不是一份空清单 —— 后者读起来像「这个版本什么都没带」。
 func (s *Server) handleReleaseManifest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"panel_version": s.version, "manifest": s.manifest})
+}
+
+// handleReleaseDeployHold 解除「暂停自动下发」(R03)。管理员核对过配置版本、撤权与计量之后点它;
+// 之后协调器把排着的下发做掉,巡检恢复自动拉起。写审计。
+func (s *Server) handleReleaseDeployHold(w http.ResponseWriter, r *http.Request) {
+	before := deployment.ReadHold(r.Context(), s.db)
+	if err := deployment.ClearHold(r.Context(), s.db); err != nil {
+		s.logger.Error("解除暂停自动下发失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if before.Held {
+		admin := adminFromContext(r.Context())
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: "settings.deploy_hold_release", TargetType: "system", TargetID: "deploy_hold",
+			Detail:   "解除暂停自动下发(原因:" + before.Reason + ",自 " + before.Since + ")",
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+		})
+	}
+	writeJSON(w, http.StatusOK, deployment.ReadHold(r.Context(), s.db))
 }

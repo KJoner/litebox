@@ -66,6 +66,7 @@ const actionNames: Record<string, string> = {
   'portal.revoke_sessions': '撤销门户会话',
   'traffic.sync': '同步流量',
   'settings.update': '修改面板设置',
+  'settings.deploy_hold_release': '恢复自动下发(恢复备份之后)',
   'tier.update': '修改访问等级',
   // 以下是 V7 之后陆续加的动作。缺了中文名的话,这一列直接显示 external_proxy.update
   // 这样的内部标识 —— 能看懂,但与上面那些对不齐。

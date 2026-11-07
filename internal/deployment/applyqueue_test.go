@@ -252,3 +252,42 @@ func TestQueueDoneRespectsSeq(t *testing.T) {
 		t.Fatalf("旧 seq 的失败盖掉了新改动:%+v", row)
 	}
 }
+
+// R03:暂停自动下发期间协调器只排队不下发(队列里那一行留着);解除之后接着做。
+func TestCoordinatorHoldsDeploys(t *testing.T) {
+	db, q, nodeID := queueEnv(t)
+	ctx := context.Background()
+	if err := SetHold(ctx, db, "从备份恢复了主控库"); err != nil {
+		t.Fatal(err)
+	}
+	if h := ReadHold(ctx, db); !h.Held || h.Reason == "" || h.Since == "" {
+		t.Fatalf("暂停状态 = %+v", h)
+	}
+	d := &scriptedDeployer{}
+	c := NewCoordinator(CoordinatorOptions{
+		Deployer: d, Queue: q, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Debounce: 50 * time.Millisecond, MaxDelay: time.Second,
+		Held: func() bool { return ReadHold(context.Background(), db).Held },
+	})
+	runCtx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { c.Run(runCtx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	c.MarkDirty(nodeID)
+	time.Sleep(400 * time.Millisecond)
+	if d.count(DirtySingBox) != 0 {
+		t.Fatal("暂停期间不该下发")
+	}
+	if queueRow(t, q, nodeID, "SINGBOX") == nil {
+		t.Fatal("暂停期间排着的下发应当留在队列里")
+	}
+	if err := ClearHold(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if ReadHold(ctx, db).Held {
+		t.Fatal("解除之后仍是暂停")
+	}
+	c.MarkDirty(nodeID) // 唤醒一次(真实场景里有 30 秒的捞取与持续的 tick)
+	waitFor(t, 3*time.Second, func() bool { return d.count(DirtySingBox) == 1 && queueRow(t, q, nodeID, "SINGBOX") == nil })
+}
