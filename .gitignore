@@ -46,8 +46,12 @@ litebox.local.yaml
 # IDE
 .idea/
 .vscode/
-/docs/开发计划/
-/docs/配置模板/
+
+# 文档一律只留在本地,不进 Git(2026-11-07 起;公开仓库,文档里容易带出测试环境的细节)
+/docs/
+
+# curl 的 cookie jar(里面是会话 Cookie,绝不能提交)
+/*.jar
 
 # realm 的官方 musl 静态二进制(各约 5-7MB,由 scripts/fetch-realm.sh 拉取)
 assets/realm/realm-linux-*
