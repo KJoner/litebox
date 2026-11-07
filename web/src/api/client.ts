@@ -3768,10 +3768,18 @@ export interface QuickChainBody {
 
 // —— 能力矩阵与客户端兼容预览(VNext §14.1 / CLIENT02)——
 
+/** 证据分级(R09):可生成 / 已解析 / 已真连,带验证用的客户端版本与日期。 */
+export interface EvidenceRecord {
+  level: 'GENERATED' | 'PARSED' | 'CONNECTED'
+  client?: string
+  date?: string
+}
 export interface CapabilityCell {
   ok: boolean
   note?: string
   verified: boolean
+  /** 只在客户端那几列上有 */
+  evidence?: EvidenceRecord
 }
 export interface CapabilityReport {
   columns: { key: string; label: string }[]
@@ -3784,9 +3792,9 @@ export type CompatClient = 'sing-box' | 'clash' | 'stash' | 'surge' | 'loon' | '
 export interface CompatReport {
   client: CompatClient
   label: string
-  /** sing-box 与 mihomo 经过真实客户端验证;另外四种是实验性的 */
+  /** 只有每一条导出的线路都有真连证据时才为真(R09);逐条看 exported[i].evidence */
   verified: boolean
-  exported: { name: string; protocol: string }[]
+  exported: { name: string; protocol: string; evidence?: EvidenceRecord }[]
   skipped: { name: string; protocol: string; reason: string }[]
 }
 

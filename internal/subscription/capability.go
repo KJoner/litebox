@@ -17,6 +17,9 @@ type CapabilityCell struct {
 	OK       bool   `json:"ok"`
 	Note     string `json:"note,omitempty"`
 	Verified bool   `json:"verified"`
+	// Evidence 只在客户端那几列上有(R09):可生成 / 已解析 / 已真连,带验证的客户端版本与日期。
+	// Verified 在这几列上等于「已真连」。
+	Evidence *EvidenceRecord `json:"evidence,omitempty"`
 }
 
 // CapabilityRow 是一种协议(或一种协议的一个变体)。
@@ -63,8 +66,11 @@ func clientCells(e Entry, cols map[string]CapabilityCell) {
 	for _, k := range []ClientKind{"sing-box", "clash", ClientStash, ClientSurge, ClientLoon, ClientQuanX} {
 		r := Compat(k, []Entry{e})
 		if len(r.Exported) == 1 {
-			// sing-box 与 mihomo 两种格式经过真实客户端解析与连接;另外四种是实验性的。
-			cols[string(k)] = yes("", r.Verified)
+			// 证据按「客户端 × 协议 × TLS 形态 × 传输层」查(R09),不再按客户端一律记已验证。
+			ev := r.Exported[0].Evidence
+			c := yes(ev.Note(), ev.Level == EvidenceConnected)
+			c.Evidence = ev
+			cols[string(k)] = c
 		} else {
 			cols[string(k)] = no(r.Skipped[0].Reason)
 		}
@@ -126,9 +132,13 @@ func CapabilityMatrix() []CapabilityRow {
 	mieruCols := map[string]CapabilityCell{
 		"selfhost": yes("mita,一个入口一个实例", true), "metering": yes("", true), "import": no(""), "outbound": no(""),
 		"chain_landing": no("一条转发只指一个上游端口,而客户端会在整段里跳"), "relay": no("端口段对单端口"),
-		"uri": yes("mierus://", false), "sing-box": no("sing-box 没有 mieru 出站"), "clash": yes("", true),
-		"stash": no("Stash 不支持 Mieru"), "surge": no("Surge 不支持 Mieru"), "loon": no("Loon 不支持 Mieru"),
-		"quanx": no("Quantumult X 不支持 Mieru"),
+		"uri": yes("mierus://", false), "sing-box": no("sing-box 没有 mieru 出站"),
+		"clash": {OK: true, Note: EvidenceRecord{Level: EvidenceGenerated}.Note(), Evidence: &EvidenceRecord{Level: EvidenceGenerated}},
+		// 「没有写法」是 LiteBox 这一侧的适配缺口,不等于客户端没有这个能力(Stash 的文档就列有 Mieru,R09)。
+		"stash": no("LiteBox 的 Stash 适配器还没有 Mieru 的写法(未实现、未验证)"),
+		"surge": no("LiteBox 的 Surge 适配器还没有 Mieru 的写法(未实现、未验证)"),
+		"loon":  no("LiteBox 的 Loon 适配器还没有 Mieru 的写法(未实现、未验证)"),
+		"quanx": no("LiteBox 的 Quantumult X 适配器还没有 Mieru 的写法(未实现、未验证)"),
 	}
 	rows = append(rows, CapabilityRow{Key: "MIERU", Label: "Mieru", Kind: "SELF", Columns: mieruCols,
 		Comments: "可以有出口(经本机 sing-box 的回环 socks 入站)"})

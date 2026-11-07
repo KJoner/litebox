@@ -24,9 +24,11 @@ async function load() {
   }
 }
 
-function mark(c: { ok: boolean; verified: boolean } | undefined) {
+/** 客户端那几列按证据分级(R09):✓ 已真连 · ◐ 已解析没真连 · ○ 只是写得出来;其余列沿用「真机验过」。 */
+function mark(c: { ok: boolean; verified: boolean; evidence?: { level: string } } | undefined) {
   if (!c) return '—'
   if (!c.ok) return '✕'
+  if (c.evidence) return c.evidence.level === 'CONNECTED' ? '✓' : c.evidence.level === 'PARSED' ? '◐' : '○'
   return c.verified ? '✓' : '○'
 }
 </script>
@@ -39,7 +41,10 @@ function mark(c: { ok: boolean; verified: boolean } | undefined) {
     <a-skeleton v-else-if="loading" active :paragraph="{ rows: 4 }" />
     <LbEmptyState v-else-if="error" variant="error" title="能力矩阵读不到" :description="error" @retry="load" />
     <template v-else-if="data">
-      <div class="cm__legend">✓ 支持并经过真实验证 · ○ 写得出来但没有人工验证(实验性) · ✕ 不支持(悬停看原因)</div>
+      <div class="cm__legend">
+        ✓ 支持并经过真实验证(客户端列:真实客户端导入并连通过)· ◐ 真实客户端解析过、没有真连 ·
+        ○ 写得出来但没有人工验证(实验性)· ✕ 不支持或 LiteBox 还没有适配(悬停看原因、验证用的客户端版本与日期)
+      </div>
       <div class="cm__scroll">
         <table class="cm__table">
           <thead>

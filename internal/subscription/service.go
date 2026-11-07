@@ -85,6 +85,9 @@ type Result struct {
 	NodeCount int
 	UserCode  string
 	Filename  string
+	// Experimental 非空表示这是实验性的客户端格式(Surge / Loon / Quantumult X / Stash,R09),
+	// 值是客户端名;响应头带上它,下载下来的东西自己说明自己是什么。
+	Experimental string
 }
 
 // Service 组装订阅内容。
@@ -200,8 +203,10 @@ func (s *Service) Build(ctx context.Context, token string, format Format) (Resul
 		result.Filename = u.UserCode + ".conf"
 		if kind == ClientStash {
 			result.ContentType = "text/yaml; charset=utf-8"
-			result.Filename = u.UserCode + ".yaml"
+			// 与 ?format=clash 的 .yaml 区分开(R09):两份都是 Clash 写法,但 Stash 这一份的字段按 Stash 映射过。
+			result.Filename = u.UserCode + ".stash.yaml"
 		}
+		result.Experimental = string(kind)
 	case FormatURI:
 		result.Body = []byte(strings.Join(uriList(entries), "\n"))
 		result.ContentType = "text/plain; charset=utf-8"

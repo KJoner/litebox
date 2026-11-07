@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { api, ApiError, type CompatClient, type CompatReport } from '@/api/client'
+import { api, ApiError, type CompatClient, type CompatReport, type EvidenceRecord } from '@/api/client'
 
 /**
  * 客户端兼容预览(VNext CLIENT02):这个用户在某个客户端里能拿到哪几条、少了哪几条、为什么。
@@ -34,6 +34,14 @@ async function load() {
   }
 }
 watch([client, () => props.userId], load, { immediate: true })
+function evidenceMark(ev?: EvidenceRecord) {
+  return ev?.level === 'CONNECTED' ? '✓' : ev?.level === 'PARSED' ? '◐' : '○'
+}
+function evidenceNote(ev?: EvidenceRecord) {
+  if (ev?.level === 'CONNECTED') return `已真连:${ev.client}(${ev.date})`
+  if (ev?.level === 'PARSED') return `已解析:${ev.client}(${ev.date}),没有真连`
+  return '写得出来,没有在真实客户端上验证过'
+}
 </script>
 
 <template>
@@ -43,11 +51,15 @@ watch([client, () => props.userId], load, { immediate: true })
     <a-skeleton v-else-if="loading && !report" active :paragraph="{ rows: 3 }" />
     <template v-else-if="report">
       <div v-if="!report.verified" class="uc__warn">
-        {{ report.label }} 的输出是实验性的:写得出来,但没有在真实客户端上人工验证过。要给用户用之前先自己导入试一次。
+        {{ report.label }} 的输出里有没在真实客户端上连通过的线路(标 ○ 的):写得出来,但没有人工验证过。
+        要给用户用之前先自己导入试一次。
       </div>
       <div class="uc__head">能导出 {{ report.exported.length }} 条</div>
       <div class="uc__list">
-        <span v-for="e in report.exported" :key="e.name" class="uc__chip">{{ e.name }}</span>
+        <!-- 证据逐条看(R09):同一个客户端里,真机验过的只是其中几种线路形状。 -->
+        <span v-for="e in report.exported" :key="e.name" class="uc__chip" :title="evidenceNote(e.evidence)">
+          {{ evidenceMark(e.evidence) }} {{ e.name }}
+        </span>
         <span v-if="!report.exported.length" class="uc__bad">一条都导不出来 —— 这个客户端的订阅会直接报错,不会给一份空配置。</span>
       </div>
       <template v-if="report.skipped.length">
