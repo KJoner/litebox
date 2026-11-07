@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -17,7 +19,10 @@ import (
 // 先下发落地、再下发入口机并真实拨测,走的是已有的 POST /api/inbounds/{id}/chain(两阶段有序部署)——
 // 两条路共用一份编排,否则「快速创建的链」与「手工设出口的链」迟早按不同的顺序下发。
 
-const actionChainQuick = "chain.quick_create"
+const (
+	actionChainQuick  = "chain.quick_create"
+	actionChainLinear = "chain.linear_apply"
+)
 
 func (s *Server) handleChainPath(w http.ResponseWriter, r *http.Request) {
 	kind := strings.ToUpper(r.PathValue("kind"))
@@ -126,4 +131,48 @@ func (s *Server) handleQuickChainCreate(w http.ResponseWriter, r *http.Request) 
 		ClientIP: clientIP(r, s.trustProxy), Succeeded: accessErr == "",
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"inbound": in, "preview": pv, "access_error": accessErr})
+}
+
+// handleLinearChainPreview 预览一条线性多跳路径(复核批次三):逐段校验、下发顺序,不写库。
+func (s *Server) handleLinearChainPreview(w http.ResponseWriter, r *http.Request) {
+	var req node.LinearChain
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	plan, err := s.nodes.Store().PlanLinearChain(r.Context(), req)
+	if err != nil {
+		s.writeInboundError(w, err, "预览失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// handleLinearChainApply 写入整条路径并从落地往入口逐台下发(长操作)。路径通不过时 409 + 预览,一段都不写。
+func (s *Server) handleLinearChainApply(w http.ResponseWriter, r *http.Request) {
+	var req node.LinearChain
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	admin := adminFromContext(r.Context())
+	plan, err := s.nodes.ApplyLinearChain(r.Context(), req)
+	if errors.Is(err, node.ErrLinearInvalid) {
+		writeJSON(w, http.StatusConflict, plan)
+		return
+	}
+	detail := fmt.Sprintf("线性多跳:%d 跳入口,落地 %s #%d", len(req.Hops), req.LandingKind, req.LandingID)
+	s.audit.Record(context.WithoutCancel(r.Context()), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionChainLinear, TargetType: "inbound",
+		TargetID: fmt.Sprint(req.Hops), Detail: detail, ClientIP: clientIP(r, s.trustProxy), Succeeded: err == nil,
+	})
+	if err != nil {
+		if plan == nil {
+			s.writeInboundError(w, err, "应用多跳路径失败")
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "plan": plan})
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
 }

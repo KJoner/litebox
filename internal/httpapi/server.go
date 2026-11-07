@@ -365,6 +365,8 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/chain-path/{kind}/{id}", s.handleChainPath)
 		authed.HandleFunc("POST /api/chains/quick-preview", s.handleQuickChainPreview)
 		authed.HandleFunc("POST /api/chains/quick", s.handleQuickChainCreate)
+		authed.HandleFunc("POST /api/chains/linear/preview", s.handleLinearChainPreview)
+		authed.HandleFunc("POST /api/chains/linear", s.longOperation(s.handleLinearChainApply))
 		authed.HandleFunc("DELETE /api/inbounds/{id}/chain", s.longOperation(s.handleClearChain))
 		authed.HandleFunc("GET /api/nodes/{id}/deployments", s.handleNodeDeployments)
 		authed.HandleFunc("GET /api/nodes/{id}/config-diff", s.longOperation(s.handleNodeConfigDiff))

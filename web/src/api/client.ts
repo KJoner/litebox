@@ -92,6 +92,7 @@ const ASYNC_LONG_OPS: RegExp[] = [
   /^\/api\/proxy-sources\/\d+\/preview$/,
   /^\/api\/nodes\/health\/run$/,
   /^\/api\/inbounds\/\d+\/chain$/,
+  /^\/api\/chains\/linear$/,
   /^\/api\/proxy-sources\/(preview|import|\d+\/sync)$/,
   /^\/api\/boce\/(verify|balance|vantages\/sync|tasks\/\d+\/run)$/,
   /^\/api\/settings\/notify\/test$/,
@@ -239,6 +240,20 @@ export interface Admin {
 
 /** 「暂停自动下发」(R03):从备份恢复主控库之后由恢复脚本打开,核对完再解除。 */
 export type UserResetCycle = 'NONE' | 'MONTHLY' | 'DAYS'
+
+/** 线性多跳(复核批次三):入口 → 中间跳 → 落地,最多四台机器;ok 为假时一段都没写 */
+export interface LinearChainInput {
+  hops: number[]
+  landing_kind: 'INBOUND' | 'EXTERNAL'
+  landing_id: number
+}
+export interface LinearChainPlan {
+  ok: boolean
+  problems: string[]
+  segments: { from_inbound_id: number; from_name: string; from_node: string; to_kind: string; to_id: number; to_name: string; error?: string }[]
+  deploy_order: { node_id: number; node_name: string; why: string }[]
+  note: string
+}
 
 /** 一个中转配多个落地的预览 / 结果(复核批次三):ok 为假时整批一条都没写 */
 export interface RelayBatchPlan {
@@ -4031,6 +4046,11 @@ export const api = {
       body,
     }),
   /** 给 Snell 入口换新 psk 并立刻下发(R04):共享凭据入口上真正收回凭据的办法,所有人一起换。 */
+  linearChainPreview: (body: LinearChainInput) =>
+    request<LinearChainPlan>('/api/chains/linear/preview', { method: 'POST', body }),
+  /** 写入整条路径并从落地往入口逐台下发(长操作,走后台任务) */
+  linearChainApply: (body: LinearChainInput) =>
+    request<LinearChainPlan>('/api/chains/linear', { method: 'POST', body }),
   /** dry_run 为真只预览;否则整批写入,任何一条通不过时 409 + 预览、一条都不写。 */
   relayBatch: (nodeId: number, body: { dry_run?: boolean; items: Record<string, unknown>[] }) =>
     request<RelayBatchPlan>(`/api/nodes/${nodeId}/relays/batch`, { method: 'POST', body }),

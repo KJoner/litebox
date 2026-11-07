@@ -30,6 +30,7 @@ import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
 import MieruChainModal from './MieruChainModal.vue'
 import RelayBatchModal from './RelayBatchModal.vue'
+import LinearChainModal from './LinearChainModal.vue'
 import NodeOpProgressModal from './NodeOpProgressModal.vue'
 import ServiceCard, { type ServiceCardAction, type ServiceCardModel } from './ServiceCard.vue'
 import { servicePhase, servicePhaseMeta, type ServicePhase } from './serviceState'
@@ -109,6 +110,15 @@ const landingInbounds = computed(() =>
 
 /** 一个中转配多个落地(复核批次三)。 */
 const batchOpen = ref(false)
+
+/** 线性多跳编辑(复核批次三):从这个入口出发,按顺序编排中间跳与落地。 */
+const linearOpen = ref(false)
+const linearEntry = ref<{ id: number; name: string; nodeId: number; nodeName: string } | null>(null)
+function openLinear(i: NodeInbound) {
+  linearEntry.value = { id: i.id, name: i.display_name, nodeId: props.node.id, nodeName: nodeLabel.value }
+  void loadTargets()
+  linearOpen.value = true
+}
 
 const relays = ref<NodeRelay[]>([])
 const loading = ref(false)
@@ -1693,6 +1703,9 @@ onMounted(async () => {
               握手目标
             </a-button>
             <a-button size="small" type="link" @click="openChain(row.inbound)">出口</a-button>
+            <a-button size="small" type="link" title="按顺序编排入口 → 中间跳 → 落地(最多四台机器)" @click="openLinear(row.inbound)">
+              多跳
+            </a-button>
             <a-button
               v-if="row.inbound.protocol === 'SNELL'"
               size="small"
@@ -1804,6 +1817,9 @@ onMounted(async () => {
               握手目标
             </a-button>
             <a-button size="small" type="link" @click="openChain(record.inbound)">出口</a-button>
+            <a-button size="small" type="link" title="按顺序编排入口 → 中间跳 → 落地(最多四台机器)" @click="openLinear(record.inbound)">
+              多跳
+            </a-button>
             <a-button
               v-if="record.inbound.protocol === 'SNELL'"
               size="small"
@@ -1960,6 +1976,13 @@ onMounted(async () => {
       @busy="(l: string) => emit('busy', l)"
     />
 
+    <LinearChainModal
+      v-model:open="linearOpen"
+      :entry="linearEntry"
+      :nodes="landingNodes"
+      :externals="externalProxies"
+      @changed="emit('changed')"
+    />
     <RelayBatchModal
       v-model:open="batchOpen"
       :node-id="node.id"

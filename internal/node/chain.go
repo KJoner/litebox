@@ -130,15 +130,24 @@ func nextChainCode(ctx context.Context, tx *sql.Tx) (string, error) {
 func (s *Store) SetChain(
 	ctx context.Context, inboundID int64, kind ChainTargetKind, targetID int64,
 ) error {
-	if !kind.Enabled() {
-		return errors.New("链式去向不能为空,清除请用 ClearChain")
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.setChainTx(ctx, tx, inboundID, kind, targetID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// setChainTx 是 SetChain 在一个已开的事务里做的那一份:校验与写入全在里面。线性多跳(SetChainPath)
+// 把每一段放进同一个事务,预览时整体回滚、提交时整体写入;成环检查也看得到同一条路径前面几段刚写的去向。
+func (s *Store) setChainTx(ctx context.Context, tx *sql.Tx, inboundID int64, kind ChainTargetKind, targetID int64) error {
+	if !kind.Enabled() {
+		return errors.New("链式去向不能为空,清除请用 ClearChain")
+	}
+	var err error
 	var existingCode string
 	var nodeID int64
 	if err := tx.QueryRowContext(ctx,
@@ -237,10 +246,7 @@ func (s *Store) SetChain(
 			 WHERE id = ?`,
 			string(kind), inboundTarget, externalTarget, now, inboundID)
 	}
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 // ClearChain 把一个入站的出站改回 direct。
