@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"math/big"
 	"strings"
 	"time"
 
@@ -455,9 +457,10 @@ func (s *Service) nodesFor(ctx context.Context, userID int64) ([]Node, error) {
 // 这是机场客户端的事实标准:客户端解析后在界面上显示流量与到期。
 // total=0 表示不限量,expire 省略表示不过期。
 func userInfoHeader(u *user.User) string {
+	up, down := UserInfoTraffic(*u)
 	parts := []string{
-		fmt.Sprintf("upload=%d", u.UsedUplink),
-		fmt.Sprintf("download=%d", u.UsedDownlink),
+		fmt.Sprintf("upload=%d", up),
+		fmt.Sprintf("download=%d", down),
 		fmt.Sprintf("total=%d", u.QuotaBytes),
 	}
 	if u.ExpiresAt != nil && *u.ExpiresAt != "" {
@@ -466,6 +469,42 @@ func userInfoHeader(u *user.User) string {
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+// UserInfoTraffic 是 Subscription-Userinfo 里 upload / download 两个数(R07)。
+//
+// 客户端把 upload + download 当作「已用」去和 total 比,而 total 是计费额度 —— 所以这两个数之和必须是
+// **计费流量**(BilledBytes),与门户、额度执行同一个口径。原来直接写原始上下行:双向取大 ×1、U = D = 60、
+// 额度 100 时门户说 60 / 100,客户端却显示 120 / 100(已经超了);双向合计 ×2、U = D = 20 时反过来,
+// 门户 80 / 100,客户端 40 / 100。
+//
+// 投影规则固定:计费流量等于原始 U + D 时(默认规则、没有封存段)原样输出原始上下行,与升级前逐字节相同;
+// 否则按原始上下行的比例把计费流量拆开,upload = ⌊计费 × U ÷ (U + D)⌋,download = 计费 − upload;
+// 本周期原始流量为 0(计费全在封存段里)时全部记在 download。拆出来的两个数**不是真实方向**,
+// 只保证和是对的;真实的上下行在门户与管理端另外展示。
+func UserInfoTraffic(u user.User) (upload, download int64) {
+	billed := u.BilledBytes()
+	up, down := u.UsedUplink, u.UsedDownlink
+	if up < 0 {
+		up = 0
+	}
+	if down < 0 {
+		down = 0
+	}
+	raw := up + down
+	if raw < 0 { // 溢出:按饱和处理
+		raw = math.MaxInt64
+	}
+	if billed == raw {
+		return up, down
+	}
+	if raw == 0 {
+		return 0, billed
+	}
+	q := new(big.Int).Mul(big.NewInt(billed), big.NewInt(up))
+	q.Quo(q, big.NewInt(raw))
+	upload = q.Int64()
+	return upload, billed - upload
 }
 
 func statusReason(u *user.User) string {
