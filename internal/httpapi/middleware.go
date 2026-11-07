@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/auth"
+	"github.com/litebox/litebox/internal/sshx"
 )
 
 type contextKey string
@@ -143,6 +144,8 @@ func longOperation(next http.HandlerFunc) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(
 			context.WithoutCancel(r.Context()), LongOperationTimeout)
 		defer cancel()
+		// 一次长操作里可能有好几次 Do:都要求开始时那一代运行锁(G02)。
+		ctx = sshx.PinFence(ctx)
 		next(w, r.WithContext(ctx))
 	}
 }

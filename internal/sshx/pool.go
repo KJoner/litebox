@@ -70,16 +70,13 @@ func (p *Pool) TryDo(ctx context.Context, nodeID int64, fn func(*Client) error) 
 	return p.doLocked(ctx, nodeID, entry, fn)
 }
 
-// Fence 是「现在能不能去节点上做事」的闸门(C02):主控在 serve 里把它设成 database.CheckWriteFence。
-// 返回错误时一切 Do / TryDo 不连节点直接返回 —— 失去单活动主控锁的实例不该再碰任何一台机器。
-// 不直接依赖 database 包:sshx 是底层,谁来提供闸门由上层决定。
-var Fence func() error
-
+// doLocked 在闸门开着时执行 fn(C02 / G02):进门问一次;fn 里每一条远程操作经 Client 再各问一次;
+// 连接断了要重连重试之前还要再问一次 —— 那一刻闸门可能已经关了,重试就是在失去锁之后接着写。
+// 这一次 Do 要求的世代取自 ctx(PinFence),没记过就是进门这一刻的。
 func (p *Pool) doLocked(ctx context.Context, nodeID int64, entry *pooledConn, fn func(*Client) error) error {
-	if Fence != nil {
-		if err := Fence(); err != nil {
-			return err
-		}
+	gen := generationFor(ctx)
+	if err := checkFence(gen); err != nil {
+		return err
 	}
 	p.dropIfDomainMoved(ctx, nodeID, entry)
 
@@ -87,6 +84,12 @@ func (p *Pool) doLocked(ctx context.Context, nodeID int64, entry *pooledConn, fn
 	if err != nil {
 		return err
 	}
+	client.fenceGen = gen
+	defer func() {
+		if entry.client != nil {
+			entry.client.fenceGen = 0
+		}
+	}()
 
 	err = fn(client)
 	if err == nil {
@@ -95,8 +98,12 @@ func (p *Pool) doLocked(ctx context.Context, nodeID int64, entry *pooledConn, fn
 
 	// 传输层错误(连接被对端关掉、节点重启过)重连后重试一次。
 	// 业务错误不会命中这里,因为远程命令的非零退出码由 Result.Err 表达。
-	if !isConnectionError(err) {
+	// 闸门关上造成的失败不重试:重试就是在失去锁之后接着写。
+	if IsFenced(err) || !isConnectionError(err) {
 		return err
+	}
+	if ferr := checkFence(gen); ferr != nil {
+		return ferr
 	}
 	p.logger.Warn("SSH 连接异常,尝试重连", "node_id", nodeID, "error", err)
 	entry.closeLocked()
@@ -105,6 +112,7 @@ func (p *Pool) doLocked(ctx context.Context, nodeID int64, entry *pooledConn, fn
 	if dialErr != nil {
 		return dialErr
 	}
+	client.fenceGen = gen
 	return fn(client)
 }
 

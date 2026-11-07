@@ -855,6 +855,13 @@ func (s *Service) DeployWith(ctx context.Context, nodeID int64, opts DeployOptio
 	s.saveDeployRecord(done, result)
 
 	if deployErr != nil {
+		// 失去单活动主控锁而停在中途(G02):节点的事实由新的持锁实例去协调,这个实例不再改节点状态 ——
+		// 「部署失败」那一档的意思是下发过、坏了、可能已回滚,而这里两件事都不确定。
+		if sshx.IsFenced(deployErr) {
+			s.logger.Warn("失去单活动主控锁,这次下发停在中途;不标记部署失败,由新的持锁实例重新协调",
+				"node_id", nodeID, "error", firstLine(deployErr.Error(), 200))
+			return result, deployErr
+		}
 		if err := s.store.MarkDeployFailed(done, nodeID); err != nil {
 			s.logger.Error("标记节点部署失败状态出错", "node_id", nodeID, "error", err)
 		}

@@ -485,6 +485,9 @@ func (d *Deployer) rollback(
 	// 真机上因此跑过两轮、重启两次。
 	// 写配置【之前】的失败不打标:那时节点一个字节都没动过,
 	// 而连接陈旧正是 pool.Do 那次重连要救的场景。
+	if err, fenced := fencedRollback(client, rec, result, cause); fenced {
+		return err
+	}
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer cancel()
 
@@ -601,3 +604,16 @@ func (d *Deployer) finish(result Result, rec *stepRecorder, status Status, err e
 
 // ErrNoProbeUser 供上层区分"拨测被跳过"与"拨测失败"。
 var ErrNoProbeUser = errNoProbeUser
+
+// fencedRollback 在回滚之前问一次闸门(G02)。失去单活动主控锁之后不回滚:回滚同样是对节点的写入,
+// 而另一个实例这时可能已经接管、下发了更新的配置 —— 旧实例以「善后」为由把备份拷回去,就是拿旧状态
+// 覆盖新状态。这与拨测失败、超时之后的正常回滚是两回事,步骤与结果里分开说。
+func fencedRollback(client *sshx.Client, rec *stepRecorder, result *Result, cause error) (error, bool) {
+	ferr := client.CheckFence()
+	if ferr == nil {
+		return nil, false
+	}
+	result.RollbackResult = "失去单活动主控锁,没有回滚:节点停在这次下发写到一半的状态,由新的持锁实例按最新状态重新下发"
+	rec.skip("回滚", result.RollbackResult)
+	return sshx.RemoteFailure(fmt.Errorf("%w(下发途中:%w)", ferr, cause)), true
+}

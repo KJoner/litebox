@@ -590,6 +590,9 @@ func (d *Deployer) rollbackMieru(
 		rec.skip("回滚", "配置还没下发到节点上,没有需要恢复的东西")
 		return wrapped
 	}
+	if err, fenced := fencedRollback(client, rec, result, cause); fenced {
+		return err
+	}
 
 	id := req.InboundID
 	err := rec.run("回滚", func() (string, error) {

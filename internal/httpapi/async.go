@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/litebox/litebox/internal/sshx"
 	"github.com/litebox/litebox/internal/task"
 )
 
@@ -68,6 +69,8 @@ func (s *Server) runAsync(w http.ResponseWriter, r *http.Request, next http.Hand
 
 	// 与 longOperation 同一条道理:ctx 与请求解绑(请求马上就结束了),管理员身份照常带下去。
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), LongOperationTimeout)
+	// 一个后台任务里可能有好几次 Do(多跳逐台下发、组链两台机器):都要求同一代运行锁(G02)。
+	ctx = sshx.PinFence(ctx)
 	id := t.ID
 	var (
 		reportMu   sync.Mutex

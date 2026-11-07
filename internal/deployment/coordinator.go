@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/litebox/litebox/internal/sshx"
 )
 
 // NodeDeployer 是协调器需要的部署能力,由 node.Service 实现。
@@ -316,6 +318,8 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 	// 中途放弃会把节点留在不确定状态。
 	deployCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 	defer cancel()
+	// 记下这一轮是在哪一代运行锁下开始的(G02):锁断过又拿回来之后,这一轮剩下的远程操作一步都不再做。
+	deployCtx = sshx.PinFence(deployCtx)
 
 	// 下发之前记下各种下发的 seq:成功时只删 seq 没变的那一行 —— 下发途中又有新改动进来的话,
 	// 那一行要留着等下一轮,不能被这一次的成功顺手删掉。
@@ -333,6 +337,11 @@ func (c *Coordinator) deployOne(ctx context.Context, nodeID int64, kinds DirtyKi
 		}
 		seq, ok := seqs[kind]
 		if !ok {
+			return
+		}
+		// 失去管理权而停下的不回写队列(G02):那一行原样留给新的持锁实例,它会按最新状态再做一次。
+		if sshx.IsFenced(err) {
+			c.logger.Warn("失去单活动主控锁,这一轮下发停在中途,队列里那一行留给新的持锁实例", "node_id", nodeID)
 			return
 		}
 		var qerr error
@@ -444,7 +453,8 @@ func firstLine(s string) string {
 }
 
 func (c *Coordinator) notifyFailure(nodeID int64, kind string, result Result, err error) {
-	if c.onFailure == nil {
+	// 失去管理权的实例不推送(G02):那不是这台机器坏了,而新的持锁实例会接着做。
+	if c.onFailure == nil || sshx.IsFenced(err) {
 		return
 	}
 	c.onFailure(nodeID, kind, result, err)

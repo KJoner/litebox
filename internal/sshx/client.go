@@ -110,6 +110,9 @@ type Client struct {
 	// dialedIP 是本次实际连上的地址。Host 是 IP 字面量时与它相同;
 	// Host 是域名时它是那一刻解析到的结果 —— 连接池靠它发现域名改指向了。
 	dialedIP string
+	// fenceGen 是这条连接此刻在为哪一代运行锁干活(G02):连接池在每次 Do 期间设上,用完清零。
+	// 0 表示不比世代(连接池以外直接拨的连接:验证候选地址、引导)。
+	fenceGen uint64
 }
 
 // Host 返回连接目标里配置的地址,可能是 IP 字面量,也可能是域名。
@@ -337,6 +340,9 @@ func (c *Client) RunInput(ctx context.Context, cmd Command, stdin []byte) (Resul
 	if c == nil || c.ssh == nil {
 		return Result{}, ErrNotConnected
 	}
+	if err := checkFence(c.fenceGen); err != nil {
+		return Result{Command: cmd.String()}, err
+	}
 	session, err := c.ssh.NewSession()
 	if err != nil {
 		return Result{}, fmt.Errorf("创建 SSH 会话: %w", err)
@@ -395,6 +401,9 @@ func (c *Client) DialThrough(network, addr string) (net.Conn, error) {
 	if c == nil || c.ssh == nil {
 		return nil, ErrNotConnected
 	}
+	if err := checkFence(c.fenceGen); err != nil {
+		return nil, err
+	}
 	conn, err := c.ssh.Dial(network, addr)
 	if err != nil && strings.Contains(err.Error(), "administratively prohibited") {
 		// sshd 关掉 AllowTcpForwarding 时给的原文是
@@ -422,6 +431,9 @@ func (c *Client) Upload(ctx context.Context, remotePath string, data []byte, mod
 func (c *Client) UploadReader(ctx context.Context, remotePath string, r io.Reader, mode uint32) error {
 	if c == nil || c.ssh == nil {
 		return ErrNotConnected
+	}
+	if err := checkFence(c.fenceGen); err != nil {
+		return err
 	}
 	// 开启并发写:sing-box 二进制约 28MB,串行写(每次一个 32KB 请求、
 	// 等一个往返)在跨洲链路上要跑两分多钟,并发后受带宽而非 RTT 限制。
@@ -490,6 +502,9 @@ func (c *Client) Download(ctx context.Context, remotePath string) ([]byte, error
 	if c == nil || c.ssh == nil {
 		return nil, ErrNotConnected
 	}
+	if err := checkFence(c.fenceGen); err != nil {
+		return nil, err
+	}
 	client, err := sftp.NewClient(c.ssh)
 	if err != nil {
 		return nil, fmt.Errorf("建立 SFTP 会话: %w", err)
@@ -516,7 +531,14 @@ func (c *Client) Redial(ctx context.Context, timeout time.Duration) (*Client, er
 	if timeout <= 0 {
 		timeout = DefaultDialTimeout
 	}
-	return Dial(ctx, c.target, timeout)
+	if err := checkFence(c.fenceGen); err != nil {
+		return nil, err
+	}
+	nc, err := Dial(ctx, c.target, timeout)
+	if nc != nil {
+		nc.fenceGen = c.fenceGen
+	}
+	return nc, err
 }
 
 // Alive 通过一次轻量远程命令确认连接仍然可用。

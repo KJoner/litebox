@@ -33,6 +33,10 @@ func TestRunLockFenceClosesWhenLockLost(t *testing.T) {
 	if err := database.CheckWriteFence(); err != nil {
 		t.Fatalf("持有锁时闸门应当开着:%v", err)
 	}
+	gen0 := database.FenceGeneration()
+	if gen0 == 0 {
+		t.Fatal("装上闸门之后世代不该是 0")
+	}
 
 	lockPID := func() int64 {
 		var pid int64
@@ -66,6 +70,10 @@ func TestRunLockFenceClosesWhenLockLost(t *testing.T) {
 	})
 	if lost.Load() != 0 {
 		t.Fatal("没人抢锁时不该判成失去锁")
+	}
+	// G02:重新取得锁是新的一代 —— 断开之前开始的任务凭旧世代不能接着写。
+	if database.FenceGeneration() <= gen0 {
+		t.Fatalf("重新取得锁之后世代没变:%d → %d", gen0, database.FenceGeneration())
 	}
 
 	// 第二种:断了、B 马上拿到锁 —— A 的闸门关上并保持关着,onLost 被调用。

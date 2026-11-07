@@ -41,6 +41,16 @@ type RunLock struct {
 	// held 是「此刻能确认自己持有锁」:PG 下看门狗发现锁连接断了就先置假,重取成功再置真。
 	// SQLite 的文件锁随进程存在,不会中途丢,恒为真。
 	held atomic.Bool
+	// gen 是取得锁的次数(世代,G02):每一次(重新)取得都加一。一个任务开始时记下世代,
+	// 之后每一步远程操作都要求世代没变 —— 锁断过一次又重新拿回来,中间可能已经有另一个实例
+	// 接管并下发过更新的配置;旧任务凭它开始时渲染的那份接着写,就是用旧状态覆盖新状态。
+	gen atomic.Uint64
+}
+
+// acquired 标记一次(重新)取得锁:世代加一,开闸。
+func (l *RunLock) acquired() {
+	l.gen.Add(1)
+	l.held.Store(true)
 }
 
 // Held 回答此刻能不能确认自己持有锁。
@@ -63,6 +73,14 @@ func CheckWriteFence() error {
 	return nil
 }
 
+// FenceGeneration 是装上闸门的那把锁当前的世代(G02);没装闸门时恒为 0(命令行工具、测试)。
+func FenceGeneration() uint64 {
+	if l := fence.Load(); l != nil {
+		return l.gen.Load()
+	}
+	return 0
+}
+
 // Release 释放运行锁(进程退出时也会自动释放)。
 func (l *RunLock) Release() {
 	if l != nil && l.release != nil {
@@ -80,7 +98,7 @@ func AcquireRunLock(ctx context.Context, db *sql.DB, sqlitePath string, logger *
 		}
 		// 只关文件、不删:删掉的话,等在旧文件上的进程与新建同名文件的进程会同时拿到「锁」。
 		l := &RunLock{release: func() { f.Close() }}
-		l.held.Store(true)
+		l.acquired()
 		return l, nil
 	}
 	conn, err := tryAdvisory(ctx, db)
@@ -88,11 +106,11 @@ func AcquireRunLock(ctx context.Context, db *sql.DB, sqlitePath string, logger *
 		return nil, err
 	}
 	l := &RunLock{}
-	l.held.Store(true)
+	l.acquired()
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		watchAdvisory(db, conn, stop, logger, onLost, &l.held)
+		watchAdvisory(db, conn, stop, logger, onLost, l)
 	}()
 	// 释放要等看门狗把锁真的放掉再返回:否则紧接着接手的那个进程(升级时的新版本、测试里的下一步)
 	// 会在这几毫秒里撞上「锁被占用」。
@@ -124,7 +142,7 @@ func tryAdvisory(ctx context.Context, db *sql.DB) (*sql.Conn, error) {
 
 // watchAdvisory 每 runLockCheckEvery 确认一次锁连接还活着;断了就**先关闸**(held 置假,一切对节点的
 // 写操作立刻停下),再重取;重取成功开闸,取不回来就 onLost。
-func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slog.Logger, onLost func(error), held *atomic.Bool) {
+func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slog.Logger, onLost func(error), l *RunLock) {
 	t := time.NewTicker(runLockCheckEvery)
 	defer t.Stop()
 	defer func() {
@@ -147,7 +165,7 @@ func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slo
 		if err == nil {
 			continue
 		}
-		held.Store(false)
+		l.held.Store(false)
 		conn.Close()
 		conn = nil
 		if logger != nil {
@@ -160,7 +178,8 @@ func watchAdvisory(db *sql.DB, conn *sql.Conn, stop <-chan struct{}, logger *slo
 			cancel()
 			if err == nil {
 				conn = c
-				held.Store(true)
+				// 重新取得锁是新的一代:断开之前开始的任务不能凭旧世代接着写(G02)。
+				l.acquired()
 				if logger != nil {
 					logger.Info("已重新取得运行锁,恢复对节点的操作")
 				}

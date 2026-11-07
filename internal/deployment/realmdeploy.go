@@ -280,6 +280,9 @@ func (d *Deployer) rollbackRealm(
 	hadBackup bool, backupPath string, cause error,
 ) error {
 	ctx = context.WithoutCancel(ctx)
+	if err, fenced := fencedRollback(client, rec, result, cause); fenced {
+		return err
+	}
 	if !hadBackup {
 		rec.run("回滚", func() (string, error) {
 			if err := realmInit.StopRealm(ctx, client, d.layout); err != nil {

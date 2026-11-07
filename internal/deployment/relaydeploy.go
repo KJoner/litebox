@@ -375,6 +375,9 @@ func (d *Deployer) rollbackRelay(
 	ctx context.Context, client *sshx.Client, relayInit RelayInit, req RelayRequest,
 	rec *stepRecorder, result *Result, hadBackup bool, backupPath string, cause error,
 ) error {
+	if err, fenced := fencedRollback(client, rec, result, cause); fenced {
+		return err
+	}
 	if !hadBackup {
 		rec.run("回滚", func() (string, error) {
 			if err := relayInit.StopRelay(ctx, client, d.layout); err != nil {

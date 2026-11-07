@@ -475,6 +475,8 @@ func cmdServe(args []string) error {
 	// 写入闸门(C02):锁连接一断就停下对节点的一切操作,不等 onLost 退出进程。
 	database.InstallWriteFence(runLock)
 	sshx.Fence = database.CheckWriteFence
+	// 世代(G02):锁断过又重新拿回来之后,断开之前开始的任务不能凭旧世代接着写。
+	sshx.FenceGeneration = database.FenceGeneration
 	if err := database.Migrate(db, logger); err != nil {
 		return err
 	}
