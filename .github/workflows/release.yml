@@ -130,10 +130,15 @@ jobs:
           v="${{ needs.image.outputs.version }}"
           ref="${IMAGE}@${{ needs.image.outputs.digest }}"
           mkdir -p dist
+          # 按每个架构自己的 manifest digest 取:拿索引的 digest 连取两个架构,本地镜像库会报
+          # 「cannot overwrite digest」(同一个 digest 不能对应两份镜像)。
+          idx="$(docker buildx imagetools inspect "$ref" --raw)"
           for arch in amd64 arm64; do
+            pd="$(printf '%s' "$idx" | jq -r --arg a "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest' | head -n 1)"
+            [ -n "$pd" ] || { echo "镜像索引里没有 linux/${arch}"; exit 1; }
             root="litebox_${v}_linux_${arch}"
             mkdir -p "$root/bin" "$root/scripts"
-            cid="$(docker create --platform "linux/${arch}" "$ref")"
+            cid="$(docker create --platform "linux/${arch}" "${IMAGE}@${pd}")"
             docker cp "$cid:/usr/local/bin/litebox" "$root/bin/litebox"
             docker cp "$cid:/opt/litebox/assets" "$root/assets"
             docker rm "$cid"
