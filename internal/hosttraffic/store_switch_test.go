@@ -178,3 +178,56 @@ func TestNoSwitchWritesEverything(t *testing.T) {
 		t.Fatalf("指定同一块网卡不该记分界:%+v", st)
 	}
 }
+
+// 复核 F03(审查回归):同一个桶里 A → B → A。第一次切换冻结的 A 那一截不能被换回 A 之后的整桶数改写。
+func TestReviewSwitchBackWithinBucketKeepsFrozenBoundary(t *testing.T) {
+	s, nodeID := newSwitchEnv(t)
+	start := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	h := start.Unix()
+	d := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC).Unix()
+	m := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC).Unix()
+	dump := func(rx int64) Dump {
+		return Dump{Hours: []Point{{h, rx, 0}}, Days: []Point{{d, rx, 0}}, Months: []Point{{m, rx, 0}}}
+	}
+	syncAt(t, s, nodeID, "eth0", dump(100), start.Add(10*time.Minute))
+	syncAt(t, s, nodeID, "eth1", dump(1000), start.Add(20*time.Minute))
+	for gran, ts := range map[Granularity]int64{Hour: h, Day: d, Month: m} {
+		b := readBuckets(t, s, nodeID, gran)[ts]
+		if b.rx != 100 || !b.boundary {
+			t.Fatalf("first switch fixture: %v %+v", gran, b)
+		}
+	}
+	syncAt(t, s, nodeID, "eth0", dump(300), start.Add(30*time.Minute))
+	syncAt(t, s, nodeID, "eth0", dump(400), start.Add(40*time.Minute))
+	for gran, ts := range map[Granularity]int64{Hour: h, Day: d, Month: m} {
+		b := readBuckets(t, s, nodeID, gran)[ts]
+		if b.rx != 100 || !b.boundary {
+			t.Errorf("%v frozen boundary changed after A -> B -> A within bucket: expected rx=100, got %+v", gran, b)
+		}
+	}
+}
+
+// F03:新网卡第一次写进来、旧网卡这个桶本来就没有数据(空旧桶)—— 这一行随新网卡继续涨;
+// 再换一次网卡(包括默认路由改名)之后它也冻结。
+func TestEmptyOldBucketFollowsNewIfaceUntilNextSwitch(t *testing.T) {
+	s, nodeID := newSwitchEnv(t)
+	start := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	h := start.Unix()
+	// 旧网卡在 9 点那个桶有数,10 点那个桶没有。
+	syncAt(t, s, nodeID, "eth0", Dump{Hours: []Point{{h - 3600, 50, 0}}}, start.Add(5*time.Minute))
+	syncAt(t, s, nodeID, "eth1", Dump{Hours: []Point{{h, 10, 0}}}, start.Add(20*time.Minute))
+	syncAt(t, s, nodeID, "eth1", Dump{Hours: []Point{{h, 30, 0}}}, start.Add(30*time.Minute))
+	if b := readBuckets(t, s, nodeID, Hour)[h]; b.rx != 30 || !b.boundary || b.iface != "eth1" {
+		t.Fatalf("空旧桶应当随新网卡继续涨:%+v", b)
+	}
+	// 默认路由改名(eth1 → ens3):又是一次切换,这一行就此冻结。
+	syncAt(t, s, nodeID, "ens3", Dump{Hours: []Point{{h, 999, 0}}}, start.Add(40*time.Minute))
+	syncAt(t, s, nodeID, "eth1", Dump{Hours: []Point{{h, 777, 0}}}, start.Add(50*time.Minute))
+	if b := readBuckets(t, s, nodeID, Hour)[h]; b.rx != 30 {
+		t.Fatalf("再换网卡之后应当冻结在 30:%+v", b)
+	}
+	// 9 点那个桶整个在第一次切换之前,一直是旧网卡的数。
+	if b := readBuckets(t, s, nodeID, Hour)[h-3600]; b.rx != 50 || b.iface != "eth0" {
+		t.Fatalf("切换之前的桶被改了:%+v", b)
+	}
+}

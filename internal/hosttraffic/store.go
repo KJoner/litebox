@@ -137,14 +137,22 @@ func (s *Store) Upsert(ctx context.Context, nodeID int64, iface string, since in
 		return 0, err
 	}
 	defer before.Close()
+	// 跨在切换时刻上的桶(F03):只有「同一块网卡、而且仍在让它成为边界桶的那一次切换之后」才能更新它 ——
+	// 那是新网卡第一次写进来、旧网卡这个桶本来就没有数据的情形。别的一律冻结:旧网卡在切换那一刻的值
+	// 不能被新网卡的整桶数顶替,换回旧网卡(A → B → A)也是一次新的切换,同样不能把冻结的那一截改写掉。
+	// 第一次成为边界桶时记下 boundary_since;已经是边界桶的,boundary_since 不再变。
 	edge, err := tx.PrepareContext(ctx, `
-		INSERT INTO host_traffic (node_id, granularity, bucket_ts, rx_bytes, tx_bytes, updated_at, iface, boundary)
-		VALUES (?,?,?,?,?,?,?,1)
+		INSERT INTO host_traffic (node_id, granularity, bucket_ts, rx_bytes, tx_bytes, updated_at, iface, boundary, boundary_since)
+		VALUES (?,?,?,?,?,?,?,1,?)
 		ON CONFLICT(node_id, granularity, bucket_ts) DO UPDATE SET
 			rx_bytes = CASE WHEN host_traffic.iface = excluded.iface AND host_traffic.boundary = 1
+			                     AND host_traffic.boundary_since = excluded.boundary_since
 			                THEN excluded.rx_bytes ELSE host_traffic.rx_bytes END,
 			tx_bytes = CASE WHEN host_traffic.iface = excluded.iface AND host_traffic.boundary = 1
+			                     AND host_traffic.boundary_since = excluded.boundary_since
 			                THEN excluded.tx_bytes ELSE host_traffic.tx_bytes END,
+			boundary_since = CASE WHEN host_traffic.boundary = 1 THEN host_traffic.boundary_since
+			                      ELSE excluded.boundary_since END,
 			updated_at = excluded.updated_at, boundary = 1`)
 	if err != nil {
 		return 0, err
@@ -167,7 +175,7 @@ func (s *Store) Upsert(ctx context.Context, nodeID int64, iface string, since in
 			case end <= since:
 				res, err = before.ExecContext(ctx, p.Rx, p.Tx, now, nodeID, string(g.gran), p.At, iface)
 			default:
-				res, err = edge.ExecContext(ctx, nodeID, string(g.gran), p.At, p.Rx, p.Tx, now, iface)
+				res, err = edge.ExecContext(ctx, nodeID, string(g.gran), p.At, p.Rx, p.Tx, now, iface, since)
 			}
 			if err != nil {
 				return 0, err

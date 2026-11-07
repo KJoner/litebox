@@ -1,0 +1,12 @@
+-- 复核 F03:同一个桶里 A → B → A 换回原来的网卡,不能把第一次切换时冻结的那一截改写掉。
+--
+-- 跨在切换时刻上的桶(boundary = 1)原来只按「网卡名相同 + boundary」判断能不能再更新:那是为了让
+-- 「新网卡第一次写进来、旧网卡这个桶本来就没有数据」的那一行能随新网卡继续涨。可换回 A 之后,
+-- 第一次切换时冻结的 A 那一行同样是「iface = A、boundary = 1」—— 于是 A 的整桶数把冻结值盖掉了,
+-- 小时、日、月三个桶都从 100 变成 300(审查回归 TestReviewSwitchBackWithinBucketKeepsFrozenBoundary)。
+--
+-- boundary_since 记下「这一行是哪一次切换让它成为边界桶的」(那次切换的 iface_since,unix 秒)。
+-- 之后只有同一块网卡、而且仍在同一次切换之后(iface_since 没变)才能更新它;换回 A 是一次新的切换,
+-- 冻结的那一截原样留着。存量的边界桶填 0:它们是哪一次切换造成的已经无从得知,一律按冻结处理 ——
+-- 宁可那一个桶少算升级之后的那一截,也不拿一块网卡的整桶数顶替。
+ALTER TABLE host_traffic ADD COLUMN boundary_since INTEGER NOT NULL DEFAULT 0;
