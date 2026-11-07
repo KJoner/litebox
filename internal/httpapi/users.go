@@ -298,16 +298,18 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateUserRequest struct {
-	DisplayName      *string  `json:"display_name"`
-	Remark           *string  `json:"remark"`
-	QuotaBytes       *int64   `json:"quota_bytes"`
-	ExpiresAt        *string  `json:"expires_at"`
-	ClearExpiry      bool     `json:"clear_expiry"`
-	ResetCycle       *string  `json:"reset_cycle"`
-	ResetDay         *int     `json:"reset_day"`
-	ResetPeriodDays  *int     `json:"reset_period_days"`
-	ResetAnchorAt    *string  `json:"reset_anchor_at"`
-	ResetTimezone    *string  `json:"reset_timezone"`
+	DisplayName     *string `json:"display_name"`
+	Remark          *string `json:"remark"`
+	QuotaBytes      *int64  `json:"quota_bytes"`
+	ExpiresAt       *string `json:"expires_at"`
+	ClearExpiry     bool    `json:"clear_expiry"`
+	ResetCycle      *string `json:"reset_cycle"`
+	ResetDay        *int    `json:"reset_day"`
+	ResetPeriodDays *int    `json:"reset_period_days"`
+	ResetAnchorAt   *string `json:"reset_anchor_at"`
+	ResetTimezone   *string `json:"reset_timezone"`
+	// ResetApply 是改重置规则的生效方式(F01):空 / NEXT = 下一周期生效,NOW = 立即生效(不追溯清零)。
+	ResetApply       string   `json:"reset_apply"`
 	NodeIDs          *[]int64 `json:"node_ids"`
 	ExternalProxyIDs *[]int64 `json:"external_proxy_ids"`
 	// AccessTierID 为 nil 表示不改等级。改了它会让该用户可用的节点集合整体变化,
@@ -335,9 +337,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		ResetPeriodDays:  req.ResetPeriodDays,
 		ResetAnchorAt:    req.ResetAnchorAt,
 		ResetTimezone:    req.ResetTimezone,
+		ResetApply:       req.ResetApply,
 		NodeIDs:          req.NodeIDs,
 		ExternalProxyIDs: req.ExternalProxyIDs,
 		AccessTierID:     req.AccessTierID,
+	}
+	if req.ResetApply != "" && req.ResetApply != user.ResetApplyNext && req.ResetApply != user.ResetApplyNow {
+		writeError(w, http.StatusBadRequest, "reset_apply 只能是 NEXT 或 NOW")
+		return
 	}
 	// clear_expiry 与 expires_at 分开表达:JSON 里的 null 无法区分
 	// "不修改"和"清除到期时间"。
@@ -552,4 +559,36 @@ func (s *Server) expiringSoonCount(r *http.Request) int {
 		return 0
 	}
 	return count
+}
+
+// handlePreviewResetRule 回答「改成这样的重置规则会在什么时候生效、之后头两次重置在哪里」(F01),
+// 只读、不写库。界面在保存之前把它摆给管理员:改规则从不清零当前用量,清零只在重置点发生。
+func (s *Server) handlePreviewResetRule(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.userIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req updateUserRequest
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	params := user.UpdateParams{
+		ResetDay: req.ResetDay, ResetPeriodDays: req.ResetPeriodDays,
+		ResetAnchorAt: req.ResetAnchorAt, ResetTimezone: req.ResetTimezone, ResetApply: req.ResetApply,
+	}
+	if req.ResetCycle != nil {
+		cycle := user.ResetCycle(*req.ResetCycle)
+		params.ResetCycle = &cycle
+	}
+	plan, err := s.users.Store().PreviewCycleChange(r.Context(), id, params)
+	if err != nil {
+		if errors.Is(err, user.ErrNotFound) {
+			s.writeUserError(w, err, "预览重置规则失败")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
 }

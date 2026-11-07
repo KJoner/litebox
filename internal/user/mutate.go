@@ -28,6 +28,8 @@ type UpdateParams struct {
 	ResetPeriodDays *int
 	ResetAnchorAt   *string
 	ResetTimezone   *string
+	// ResetApply 是规则改动的生效方式(F01):空 / NEXT = 下一周期生效(默认),NOW = 立即生效(不追溯清零)。
+	ResetApply string
 	// AccessTierID 改变后,该用户继承到的节点集合整体变化,
 	// 调用方必须按变更前后的有效节点并集标脏。
 	AccessTierID *int64
@@ -83,39 +85,36 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*User, er
 			add("expires_at = ?", **p.ExpiresAt)
 		}
 	}
-	if p.ResetCycle != nil || p.ResetDay != nil || p.ResetPeriodDays != nil || p.ResetAnchorAt != nil || p.ResetTimezone != nil {
-		// 合并成一整份规则再校验:单看一项说明不了「改成 DAYS 却没给天数」这种组合。
-		// 改规则只影响以后的边界,本周期已经用掉的流量不追溯重算。
-		rule := current.CycleRule()
-		if p.ResetCycle != nil {
-			rule.Cycle = *p.ResetCycle
-		}
-		if p.ResetDay != nil {
-			rule.Day = *p.ResetDay
-		}
-		if p.ResetPeriodDays != nil {
-			rule.PeriodDays = *p.ResetPeriodDays
-		}
-		if p.ResetAnchorAt != nil {
-			rule.Anchor = *p.ResetAnchorAt
-		}
-		if p.ResetTimezone != nil {
-			rule.Timezone = *p.ResetTimezone
-		}
-		if rule.Cycle != ResetDays {
-			rule.PeriodDays, rule.Anchor = 0, ""
-		}
-		if err := rule.Validate(); err != nil {
+	if p.resetGiven() {
+		rule, err := mergeCycle(current, p)
+		if err != nil {
 			return nil, err
 		}
-		if rule.Day == 0 {
-			rule.Day = 1
+		cur := current.CycleRule()
+		switch {
+		case rule.Equal(cur):
+			// 改回与当前相同 = 撤销待生效的那一份(与计费规则同一个约定)。
+			add("reset_next_cycle = ?", "")
+		default:
+			plan := PlanCycleChange(cur, rule, p.ResetApply, time.Now().UTC(), current.LastResetAt, current.CreatedAt)
+			if plan.Apply == ResetApplyNext {
+				// 默认下一周期生效(F01):当前规则不动,本周期的用量不受影响,换规则发生在下一个重置点。
+				add("reset_next_cycle = ?", rule.Cycle)
+				add("reset_next_day = ?", rule.Day)
+				add("reset_next_period_days = ?", rule.PeriodDays)
+				add("reset_next_anchor_at = ?", rule.Anchor)
+				add("reset_next_timezone = ?", rule.Timezone)
+			} else {
+				// 立即生效:当场换,但记下此刻 —— 此刻之前的边界不算,不追溯清零。
+				add("reset_cycle = ?", rule.Cycle)
+				add("reset_day = ?", rule.Day)
+				add("reset_period_days = ?", rule.PeriodDays)
+				add("reset_anchor_at = ?", rule.Anchor)
+				add("reset_timezone = ?", rule.Timezone)
+				add("reset_rule_since = ?", plan.EffectiveAt)
+				add("reset_next_cycle = ?", "")
+			}
 		}
-		add("reset_cycle = ?", rule.Cycle)
-		add("reset_day = ?", rule.Day)
-		add("reset_period_days = ?", rule.PeriodDays)
-		add("reset_anchor_at = ?", rule.Anchor)
-		add("reset_timezone = ?", rule.Timezone)
 	}
 	if p.AccessTierID != nil {
 		if err := access.NewStore(s.db).Validate(ctx, *p.AccessTierID); err != nil {
@@ -300,7 +299,7 @@ func (s *Store) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	// (与 traffic 包的周期重置同一条 SQL 片段,两处不会分叉)。
 	res, err := tx.ExecContext(ctx, `
 		UPDATE proxy_users SET used_uplink = 0, used_downlink = 0,
-			last_reset_at = ?, updated_at = ?, `+billing.ResetSQL+`
+			last_reset_at = ?, updated_at = ?, `+billing.ResetSQL+`, `+CycleResetSQL+`
 		WHERE id = ? AND deleted_at IS NULL`, now, now, id)
 	if err != nil {
 		return nil, err
@@ -444,4 +443,59 @@ func (s *Store) rotateCredential(ctx context.Context, id int64, column, enc stri
 		return nil, err
 	}
 	return s.Get(ctx, id)
+}
+
+func (p UpdateParams) resetGiven() bool {
+	return p.ResetCycle != nil || p.ResetDay != nil || p.ResetPeriodDays != nil || p.ResetAnchorAt != nil || p.ResetTimezone != nil
+}
+
+// mergeCycle 把这次给的几项并进当前规则,合成一整份再校验:单看一项说明不了「改成 DAYS 却没给天数」这种组合。
+// 合并的基础是**当前**规则(不是待生效的那份):表单回显的是当前规则。Update 与预览共用这一处。
+func mergeCycle(current *User, p UpdateParams) (CycleRule, error) {
+	rule := current.CycleRule()
+	rule.Since = ""
+	if p.ResetCycle != nil {
+		rule.Cycle = *p.ResetCycle
+	}
+	if p.ResetDay != nil {
+		rule.Day = *p.ResetDay
+	}
+	if p.ResetPeriodDays != nil {
+		rule.PeriodDays = *p.ResetPeriodDays
+	}
+	if p.ResetAnchorAt != nil {
+		rule.Anchor = *p.ResetAnchorAt
+	}
+	if p.ResetTimezone != nil {
+		rule.Timezone = *p.ResetTimezone
+	}
+	if rule.Cycle != ResetDays {
+		rule.PeriodDays, rule.Anchor = 0, ""
+	}
+	if err := rule.Validate(); err != nil {
+		return rule, err
+	}
+	if rule.Day == 0 {
+		rule.Day = 1
+	}
+	return rule, nil
+}
+
+// PreviewCycleChange 回答「这样改会在什么时候生效、之后头两次重置在哪里」,一个字节都不写(F01)。
+// 与 Update 走同一个 mergeCycle 与 PlanCycleChange,预览与保存不会说两样。
+func (s *Store) PreviewCycleChange(ctx context.Context, id int64, p UpdateParams) (*CycleChange, error) {
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	rule, err := mergeCycle(current, p)
+	if err != nil {
+		return nil, err
+	}
+	cur := current.CycleRule()
+	if rule.Equal(cur) {
+		return &CycleChange{Apply: "", KeepsUsage: true, NextResets: []string{}, Note: "规则与当前相同,不会改变任何东西(待生效的那一份会被撤销)"}, nil
+	}
+	plan := PlanCycleChange(cur, rule, p.ResetApply, time.Now().UTC(), current.LastResetAt, current.CreatedAt)
+	return &plan, nil
 }

@@ -225,7 +225,8 @@ func evaluate(quota, used int64, expiresAt *string, now time.Time) (status, reas
 // 把节点上的历史累计值当成新增量重复入账。
 func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT id, user_code, reset_cycle, reset_day, reset_period_days, reset_anchor_at, reset_timezone, last_reset_at, created_at
+		SELECT id, user_code, reset_cycle, reset_day, reset_period_days, reset_anchor_at, reset_timezone, reset_rule_since,
+		       last_reset_at, created_at
 		  FROM proxy_users
 		 WHERE deleted_at IS NULL AND reset_cycle IN ('MONTHLY', 'DAYS')`)
 	if err != nil {
@@ -245,7 +246,7 @@ func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]st
 		var lastResetAt *string
 		var createdAt string
 		if err := rows.Scan(&id, &userCode, &cycle, &rule.Day, &rule.PeriodDays, &rule.Anchor, &rule.Timezone,
-			&lastResetAt, &createdAt); err != nil {
+			&rule.Since, &lastResetAt, &createdAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -268,7 +269,7 @@ func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]st
 	for _, t := range due {
 		if _, err := e.db.ExecContext(ctx, `
 			UPDATE proxy_users SET used_uplink = 0, used_downlink = 0,
-				last_reset_at = ?, updated_at = ?, `+billing.ResetSQL+`
+				last_reset_at = ?, updated_at = ?, `+billing.ResetSQL+`, `+user.CycleResetSQL+`
 			WHERE id = ?`, nowStr, nowStr, t.id); err != nil {
 			return codes, err
 		}

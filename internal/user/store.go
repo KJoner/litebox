@@ -90,6 +90,15 @@ type User struct {
 	ResetPeriodDays int    `json:"reset_period_days"`
 	ResetAnchorAt   string `json:"reset_anchor_at"`
 	ResetTimezone   string `json:"reset_timezone"`
+	// ResetNext* 是「下一周期生效」的待生效规则(F01,迁移 0057);ResetNextCycle 为空表示没有。
+	// 当前规则跑到它自己的下一个重置点,那一刻重置并换成这一份。
+	ResetNextCycle      ResetCycle `json:"reset_next_cycle"`
+	ResetNextDay        int        `json:"reset_next_day"`
+	ResetNextPeriodDays int        `json:"reset_next_period_days"`
+	ResetNextAnchorAt   string     `json:"reset_next_anchor_at"`
+	ResetNextTimezone   string     `json:"reset_next_timezone"`
+	// ResetRuleSince 是当前规则从何时起算(立即生效换上时记下);那之前的边界不触发重置。
+	ResetRuleSince string `json:"reset_rule_since"`
 
 	// AccessTier* 是该用户的访问等级。等级决定他自动继承哪些节点。
 	AccessTierID    int64  `json:"access_tier_id"`
@@ -201,6 +210,8 @@ const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypt
 	u.snell_password_encrypted, u.sub_token_encrypted,
 	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
 	u.reset_cycle, u.reset_day, u.last_reset_at, u.reset_period_days, u.reset_anchor_at, u.reset_timezone,
+	u.reset_next_cycle, u.reset_next_day, u.reset_next_period_days, u.reset_next_anchor_at, u.reset_next_timezone,
+	u.reset_rule_since,
 	u.created_at, u.updated_at,
 	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
 	u.access_tier_id, t.code, t.name, t.level, u.access_mode,
@@ -223,6 +234,8 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 		&mieruEnc, &snellEnc, &tokenEnc,
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
 		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.ResetPeriodDays, &u.ResetAnchorAt, &u.ResetTimezone,
+		&u.ResetNextCycle, &u.ResetNextDay, &u.ResetNextPeriodDays, &u.ResetNextAnchorAt, &u.ResetNextTimezone,
+		&u.ResetRuleSince,
 		&u.CreatedAt, &u.UpdatedAt,
 		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
 		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel, &u.AccessMode,

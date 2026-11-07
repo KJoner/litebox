@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node, type ProxyUser, type UserResetCycle } from '@/api/client'
+import { api, ApiError, type AccessTier, type Node, type ProxyUser, type ResetRulePreview, type UserResetCycle } from '@/api/client'
 import { checkLoginUsername, checkPassword } from '@/utils/validate'
 import { LbInfoTip } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from './quota'
@@ -77,7 +77,7 @@ watch(
         reset_cycle: u.reset_cycle,
         reset_day: u.reset_day,
         reset_period_days: u.reset_period_days || 30,
-        reset_anchor_at: u.reset_anchor_at ? u.reset_anchor_at.slice(0, 10) : '',
+        reset_anchor_at: anchorLocalDate(u.reset_anchor_at, u.reset_timezone || 'UTC'),
         reset_timezone: u.reset_timezone || 'UTC',
         access_tier_id: u.access_tier_id,
         // 只回填额外授权:等级继承来的节点不在这里改,
@@ -99,6 +99,9 @@ const dirtyFields = computed(() => {
     expires_at: '到期时间',
     reset_cycle: '流量重置',
     reset_day: '重置日',
+    reset_period_days: '重置周期',
+    reset_anchor_at: '对齐日',
+    reset_timezone: '重置时区',
     access_tier_id: '访问等级',
     node_ids: '额外授权节点',
   }
@@ -213,9 +216,11 @@ async function submit() {
         remark: form.remark,
         quota_bytes,
         ...(expiresAt ? { expires_at: expiresAt } : { clear_expiry: true }),
-        reset_cycle: form.reset_cycle,
-        reset_day: form.reset_day,
-        ...cycleExtras(),
+        // 重置规则只在那一栏真的改过时才发(F01):表单回显的是当前规则,原样发回去会被当成
+        // 「改回当前规则」,顺手把已经排好的下一周期规则撤销掉 —— 而管理员改的只是备注。
+        ...(cycleDirty.value || cancelPending.value
+          ? { reset_cycle: form.reset_cycle, reset_day: form.reset_day, ...cycleExtras(), reset_apply: resetApply.value }
+          : {}),
         access_tier_id: form.access_tier_id,
         node_ids: form.node_ids,
       })
@@ -234,14 +239,88 @@ async function submit() {
 const timezoneOptions = ['UTC', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Asia/Singapore',
   'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles'].map((v) => ({ value: v, label: v }))
 
-/** 周期规则的另外三项:对齐日是本地日期,转成那一天 0 点的 RFC3339(时区由后端按 reset_timezone 解释)。 */
+/**
+ * 周期规则的另外三项。对齐日发**当地日期**(YYYY-MM-DD),由后端按 reset_timezone 的零点解释(F01)。
+ * 原来拼成 …T00:00:00Z 发上去,后端再换到用户时区 —— 纽约、洛杉矶的起点会早一天。
+ */
 function cycleExtras() {
   const anchor = form.reset_anchor_at.trim()
   return {
     reset_period_days: form.reset_cycle === 'DAYS' ? form.reset_period_days : 0,
-    reset_anchor_at: form.reset_cycle === 'DAYS' && anchor ? `${anchor}T00:00:00Z` : '',
+    reset_anchor_at: form.reset_cycle === 'DAYS' && anchor ? anchor : '',
     reset_timezone: form.reset_timezone || 'UTC',
   }
+}
+
+/** 库里的对齐日换成当地日期显示:新数据本来就是 YYYY-MM-DD;老的 RFC3339 时刻按所选时区取那一天。 */
+function anchorLocalDate(anchor: string, tz: string): string {
+  if (!anchor) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return anchor
+  const d = new Date(anchor)
+  if (Number.isNaN(d.getTime())) return anchor.slice(0, 10)
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+  } catch {
+    return anchor.slice(0, 10)
+  }
+}
+
+// ---- 改重置规则的生效方式与预览(F01)----
+const CYCLE_KEYS = ['reset_cycle', 'reset_day', 'reset_period_days', 'reset_anchor_at', 'reset_timezone'] as const
+const cycleDirty = computed(() => {
+  if (!isEdit.value) return false
+  const before = JSON.parse(snapshot) as typeof form
+  return CYCLE_KEYS.some((k) => JSON.stringify(before[k]) !== JSON.stringify(form[k]))
+})
+/** 默认下一周期生效;立即生效是单独的显式选择,保存之前看得到它的后果。 */
+const resetApply = ref<'NEXT' | 'NOW'>('NEXT')
+const cancelPending = ref(false)
+const resetPreview = ref<ResetRulePreview | null>(null)
+const resetPreviewError = ref('')
+let previewSeq = 0
+watch(
+  () => [cycleDirty.value, resetApply.value, ...CYCLE_KEYS.map((k) => form[k])],
+  () => {
+    resetPreview.value = null
+    resetPreviewError.value = ''
+    if (!isEdit.value || !cycleDirty.value || !props.user) return
+    const seq = ++previewSeq
+    const id = props.user.id
+    setTimeout(async () => {
+      if (seq !== previewSeq) return
+      try {
+        const p = await api.previewResetRule(id, {
+          reset_cycle: form.reset_cycle, reset_day: form.reset_day, ...cycleExtras(), reset_apply: resetApply.value,
+        })
+        if (seq === previewSeq) resetPreview.value = p
+      } catch (e) {
+        if (seq === previewSeq) resetPreviewError.value = e instanceof ApiError ? e.message : '预览失败'
+      }
+    }, 300)
+  },
+)
+const pendingRule = computed(() => {
+  const u = props.user
+  if (!u || !u.reset_next_cycle) return ''
+  return describeRule(u.reset_next_cycle, u.reset_next_day ?? 0, u.reset_next_period_days ?? 0, u.reset_next_anchor_at ?? '', u.reset_next_timezone ?? '')
+})
+function describeRule(cycle: string, day: number, period: number, anchor: string, tz: string): string {
+  if (cycle === 'NONE') return '不重置'
+  if (cycle === 'MONTHLY') return `每月 ${day} 日(${tz || 'UTC'})`
+  return `每 ${period} 天(对齐 ${anchor || '创建那天'},${tz || 'UTC'})`
+}
+function fmtUTC(s: string): string {
+  return s ? s.replace('T', ' ').replace(/:00Z$/, ' UTC').replace(/Z$/, ' UTC') : ''
+}
+/** 撤销已经排好的下一周期规则:把当前规则原样发回去(后端把「改回与当前相同」当成撤销)。 */
+function undoPending() {
+  const u = props.user
+  if (!u) return
+  Object.assign(form, {
+    reset_cycle: u.reset_cycle, reset_day: u.reset_day, reset_period_days: u.reset_period_days || 30,
+    reset_anchor_at: anchorLocalDate(u.reset_anchor_at, u.reset_timezone || 'UTC'), reset_timezone: u.reset_timezone || 'UTC',
+  })
+  cancelPending.value = true
 }
 </script>
 
@@ -361,6 +440,35 @@ function cycleExtras() {
           <span class="lb-group__label">时区</span>
           <a-select v-model:value="form.reset_timezone" :options="timezoneOptions" show-search class="uf__tz" />
         </div>
+        <div v-if="isEdit && pendingRule && !cycleDirty" class="lb-group__row uf__row uf__pending">
+          <span class="lb-group__label">待生效</span>
+          <div>
+            下一周期起改为 {{ pendingRule }}(当前周期结束时换,本周期用量不受影响)
+            <button v-if="!cancelPending" type="button" class="lb-linkbtn" @click="undoPending">撤销</button>
+            <span v-else>· 保存后撤销</span>
+          </div>
+        </div>
+        <template v-if="isEdit && cycleDirty">
+          <div v-if="props.user && props.user.reset_cycle !== 'NONE'" class="lb-group__row uf__row">
+            <span class="lb-group__label">生效方式</span>
+            <a-radio-group v-model:value="resetApply" class="uf__seg">
+              <a-radio-button value="NEXT">下一周期生效</a-radio-button>
+              <a-radio-button value="NOW">立即生效</a-radio-button>
+            </a-radio-group>
+          </div>
+          <div class="lb-group__row uf__row uf__pending">
+            <span class="lb-group__label">改动后果</span>
+            <div v-if="resetPreview">
+              <div>{{ resetPreview.note }}</div>
+              <div v-if="resetPreview.next_resets.length">
+                之后的重置:{{ resetPreview.next_resets.map(fmtUTC).join('、') }}
+              </div>
+              <div>改规则本身不清零当前已用的流量,清零只在重置点发生。</div>
+            </div>
+            <div v-else-if="resetPreviewError" class="uf__err">{{ resetPreviewError }}</div>
+            <div v-else>正在计算…</div>
+          </div>
+        </template>
       </div>
 
       <template v-if="!isEdit">
@@ -453,6 +561,13 @@ function cycleExtras() {
 .uf__err-note {
   color: var(--text2);
   margin-left: 4px;
+}
+.uf__pending {
+  font-size: var(--fs-sm);
+  color: var(--text2);
+}
+.uf__err {
+  color: var(--bad);
 }
 
 .uf__row {

@@ -273,6 +273,15 @@ export interface RelayBatchPlan {
   created?: NodeRelay[]
 }
 
+/** 改重置规则的预览(F01)。apply 为空表示规则与当前相同。 */
+export interface ResetRulePreview {
+  apply: '' | 'NEXT' | 'NOW'
+  effective_at: string
+  next_resets: string[]
+  keeps_usage: boolean
+  note: string
+}
+
 export interface DeployHold {
   held: boolean
   reason: string
@@ -369,10 +378,18 @@ export interface ProxyUser {
   /** MONTHLY:1–31,超出当月天数时落到月末 */
   reset_day: number
   reset_period_days: number
-  /** DAYS 的对齐点(RFC3339),空串 = 创建那天 */
+  /** DAYS 的对齐日:当地日期 YYYY-MM-DD(老数据可能是 RFC3339 时刻),空串 = 创建那天 */
   reset_anchor_at: string
   /** 周期边界按哪个时区的零点切(IANA 名),存量是 UTC */
   reset_timezone: string
+  /** 「下一周期生效」的待生效规则(F01);reset_next_cycle 为空表示没有 */
+  reset_next_cycle?: UserResetCycle | ''
+  reset_next_day?: number
+  reset_next_period_days?: number
+  reset_next_anchor_at?: string
+  reset_next_timezone?: string
+  /** 当前规则从何时起算(立即生效时记下):那之前的边界不触发重置 */
+  reset_rule_since?: string
   last_reset_at: string | null
   /** 管理员单独追加的节点,编辑页面改的就是它 */
   node_ids: number[]
@@ -3877,6 +3894,9 @@ export const api = {
     request<ProxyUser>('/api/users', { method: 'POST', body }),
   updateUser: (id: number, body: Record<string, unknown>) =>
     request<ProxyUser>(`/api/users/${id}`, { method: 'PATCH', body }),
+  /** 改重置规则之前的预览(F01):什么时候生效、之后头两次重置在哪里;只读。 */
+  previewResetRule: (id: number, body: Record<string, unknown>) =>
+    request<ResetRulePreview>(`/api/users/${id}/reset-rule/preview`, { method: 'POST', body }),
   deleteUser: (id: number) =>
     request<{ message: string }>(`/api/users/${id}`, { method: 'DELETE' }),
   setUserEnabled: (id: number, enabled: boolean) =>
