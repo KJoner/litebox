@@ -17,6 +17,7 @@ ENV_FILE="$CONFIG_DIR/litebox.env"
 BINARY="${BINARY:-}"
 
 log() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m警告:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m错误:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "请以 root 执行"
@@ -60,6 +61,30 @@ BACKUP_FILE="$BACKUP_DIR/pre-upgrade-$STAMP.db"
 FINAL_FILE="$BACKUP_DIR/final-$STAMP.db"
 OLD_BIN="$BACKUP_DIR/litebox-$STAMP.bin"
 
+# supports_hold BIN:这个二进制有没有 deploy-hold 子命令(不碰数据库:不带参数时它只打印用法)。
+# 先把输出收下来再看:管道 + pipefail 时 grep 的结果会被二进制自己的非零退出码盖掉。
+supports_hold() {
+    local out
+    out="$("$1" deploy-hold 2>&1 || true)"
+    case "$out" in *未知命令*) return 1 ;; esac
+    return 0
+}
+
+# hold_or_stay_stopped BIN WHY:暂停自动下发写进去了返回 0;写不进去或版本不支持时返回非 0,
+# 调用方据此**不启动**主控(G03):旧快照一启动就会把快照之后撤掉的凭据推回节点。
+hold_or_stay_stopped() {
+    if ! supports_hold "$1"; then
+        warn "$2:这个版本没有「暂停自动下发」的开关,主控保持停止。核对用户与撤权之后手动 systemctl start litebox"
+        return 2
+    fi
+    # LITEBOX_FAULT=hold-write 只给故障注入回归用(scripts/test/deploy/)。
+    if [ "${LITEBOX_FAULT:-}" = hold-write ] || ! runas "$1" deploy-hold on --reason "$2" --config "$CONFIG_FILE"; then
+        warn "$2:暂停自动下发没写进去,主控保持停止。排查之后先 $1 deploy-hold on --config $CONFIG_FILE,再 systemctl start litebox"
+        return 1
+    fi
+    return 0
+}
+
 # check_copy FILE:在一份临时副本上跑只读自检(check 不迁移、不改被检查的那份)。
 check_copy() {
     local tmp; tmp="$(mktemp -d)"
@@ -78,44 +103,48 @@ runas "$INSTALL_DIR/litebox" backup --config "$CONFIG_FILE" --output "$BACKUP_FI
 # 旧二进制也留一份,回退时不必再去找发布包。
 cp -a "$INSTALL_DIR/litebox" "$OLD_BIN"
 log "旧二进制已保存到 $OLD_BIN"
+# 新二进制在停服之前先落到同目录(G03 收尾):停服之后只剩一次 rename,失败也走回滚。
+install -m 0755 "$BINARY" "$INSTALL_DIR/litebox.new" || die "新二进制放不进 $INSTALL_DIR,什么都没有动"
 
 # ---- 2. 进入维护:停服,做最终恢复点 ----
 log "停止服务"
 systemctl stop litebox
 log "最终恢复点(停写之后的一致性快照):$FINAL_FILE"
 if ! runas "$OLD_BIN" backup --config "$CONFIG_FILE" --output "$FINAL_FILE" >/dev/null || ! check_copy "$FINAL_FILE" "$OLD_BIN"; then
+    rm -f "$INSTALL_DIR/litebox.new"
     systemctl start litebox || true
     die "最终恢复点没做成或没有通过自检,已按原版本重新启动,没有升级"
 fi
 
 # rollback WHY:换回旧二进制、把库恢复到最终恢复点、暂停自动下发、启动并确认。
+# 每一步都显式判断(它可能在 `|| rollback` 里被调用,那时 set -e 不生效)。
 rollback() {
     log "$1,回滚:旧二进制 + 最终恢复点的库"
     systemctl stop litebox || true
-    install -m 0755 "$OLD_BIN" "$INSTALL_DIR/litebox.new"
-    mv "$INSTALL_DIR/litebox.new" "$INSTALL_DIR/litebox"
+    rm -f "$INSTALL_DIR/litebox.new"
+    { install -m 0755 "$OLD_BIN" "$INSTALL_DIR/litebox.new" && mv "$INSTALL_DIR/litebox.new" "$INSTALL_DIR/litebox"; } ||
+        die "$1;回滚时旧二进制放不回去,主控保持停止。旧二进制:$OLD_BIN,最终恢复点:$FINAL_FILE"
     rm -f "$DB_PATH" "$DB_PATH-wal" "$DB_PATH-shm"
-    cp "$FINAL_FILE" "$DB_PATH"
-    chown "$LITEBOX_USER:$LITEBOX_USER" "$DB_PATH"
-    chmod 0600 "$DB_PATH"
-    # 恢复的是升级前的库:暂停自动下发,核对之后在面板上解除(旧版本没有这个命令时只能提醒)。
-    if ! runas "$INSTALL_DIR/litebox" deploy-hold on --reason "升级失败回滚" --config "$CONFIG_FILE" >/dev/null 2>&1; then
-        log "旧版本不支持暂停自动下发:启动之后先核对用户与撤权"
+    { cp "$FINAL_FILE" "$DB_PATH" && chown "$LITEBOX_USER:$LITEBOX_USER" "$DB_PATH" && chmod 0600 "$DB_PATH"; } ||
+        die "$1;回滚时库放不回去,主控保持停止。最终恢复点:$FINAL_FILE"
+    # 恢复的是升级前的库:先暂停自动下发,写不进去或旧版本没有这个开关时主控保持停止(G03)。
+    local rc=0
+    hold_or_stay_stopped "$INSTALL_DIR/litebox" "升级失败回滚到 $OLD_VERSION" || rc=$?
+    if [ "$rc" != 0 ]; then
+        die "$1;已换回 $OLD_VERSION 的二进制与升级前的库($FINAL_FILE),主控保持停止(原因见上面)"
     fi
-    systemctl start litebox
+    systemctl start litebox || true
     sleep 3
     if systemctl is-active --quiet litebox; then
-        die "$1;已回滚到 $OLD_VERSION,库回到了升级前的状态($FINAL_FILE)。日志:journalctl -u litebox -n 50"
+        die "$1;已回滚到 $OLD_VERSION,库回到了升级前的状态($FINAL_FILE),自动下发已暂停,核对之后在面板顶部恢复。日志:journalctl -u litebox -n 50"
     fi
     die "$1;回滚之后旧版本也没有起来,需要人工处理。最终恢复点:$FINAL_FILE,旧二进制:$OLD_BIN"
 }
 
 # ---- 3. 替换二进制 ----
 log "替换二进制"
-# 先落到同目录再 rename:直接覆盖正在使用的文件会得到 text file busy,
-# 而 rename 只是换 inode。
-install -m 0755 "$BINARY" "$INSTALL_DIR/litebox.new"
-mv "$INSTALL_DIR/litebox.new" "$INSTALL_DIR/litebox"
+# 停服之前已经落到同目录:这里只剩一次 rename(直接覆盖正在使用的文件会得到 text file busy)。
+{ [ "${LITEBOX_FAULT:-}" != replace-binary ] && mv "$INSTALL_DIR/litebox.new" "$INSTALL_DIR/litebox"; } || rollback "替换二进制失败"
 
 # ---- 4. 迁移 ----
 log "执行数据库迁移"
@@ -138,7 +167,7 @@ done
 [ "$healthy" = 1 ] || rollback "新版本健康检查未通过"
 
 log "数据库自检"
-runas "$INSTALL_DIR/litebox" check --config "$CONFIG_FILE"
+runas "$INSTALL_DIR/litebox" check --config "$CONFIG_FILE" || rollback "新版本的数据库自检未通过"
 
 echo
 log "升级完成:$OLD_VERSION → $NEW_VERSION"

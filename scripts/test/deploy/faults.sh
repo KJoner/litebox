@@ -22,6 +22,8 @@ compose_args() {
     echo "${a[@]}"
 }
 dc() { (cd "$DIR" && docker compose $(compose_args) "$@"); }
+running() { [ -n "$(dc ps -q --status running litebox 2>/dev/null)" ]; }
+held() { api http://litebox:8080/api/sidebar-counts | grep -q '"held":true'; }
 
 COOKIE=/tmp/cj-$MODE
 api() { curl -s -b "$COOKIE" -c "$COOKIE" -H 'Content-Type: application/json' "$@"; }
@@ -79,11 +81,25 @@ connect_net
 api -o /dev/null -X POST http://litebox:8080/api/users -d '{"display_name":"甲","quota_bytes":0,"reset_cycle":"NONE"}'
 [[ "$(user_names)" == *甲* ]] && ok "建了用户甲" || bad "建用户甲失败"
 
-for broken in broken-migrate broken-up broken-health; do
-    step "[$MODE] 升级到 v23.1.0-$broken(故障注入)"
-    lb update --version "v23.1.0-$broken" >/tmp/up.log 2>&1 && bad "注入了故障的升级不该成功" || ok "升级被拒绝或回滚:$(grep -E '错误' /tmp/up.log | tail -1)"
+# 升级源 rc.1 没有「暂停自动下发」:停服之后才失败的那几种回滚,主控**保持停止**(G03),
+# 由管理员核对之后 start --without-hold;迁移演练失败那一种在停服之前就拒绝,主控一直在跑。
+for broken in broken-migrate broken-up broken-health apply-files; do
+    target="v23.1.0-$broken"; fault=""
+    if [ "$broken" = apply-files ]; then target="$NEW"; fault=apply-files; fi
+    step "[$MODE] 升级到 $target(故障注入:$broken)"
+    LITEBOX_FAULT="$fault" lb update --version "$target" >/tmp/up.log 2>&1 && bad "注入了故障的升级不该成功" || ok "升级被拒绝或回滚:$(grep -E '错误' /tmp/up.log | tail -1)"
     [ "$(env_version)" = "$OLD" ] && ok ".env 版本回到 $OLD" || bad ".env 版本 = $(env_version)"
-    healthy && ok "旧版本 healthy" || { bad "旧版本没有 healthy"; tail -30 /tmp/up.log; }
+    if [ "$broken" = broken-migrate ]; then
+        healthy && ok "演练失败在停服之前:旧版本一直 healthy" || { bad "旧版本没有 healthy"; tail -30 /tmp/up.log; }
+    else
+        running && bad "回滚到不支持暂停的 $OLD 之后不该自动启动" || ok "回滚之后主控保持停止(旧版本不能暂停自动下发)"
+        grep -q 'start --without-hold' /tmp/up.log && ok "提示了下一步:start --without-hold" || bad "没有提示下一步"
+        lb start >/tmp/st.log 2>&1 && bad "不带 --without-hold 不该启动" || ok "不带 --without-hold 拒绝启动"
+        running && bad "被拒绝之后主控却在跑" || ok "仍然停着"
+        lb start --without-hold >/tmp/st.log 2>&1 && ok "start --without-hold 启动" || { bad "start --without-hold 失败"; tail -20 /tmp/st.log; }
+        healthy && ok "旧版本 healthy" || bad "旧版本没有 healthy"
+    fi
+    [ -d "$DIR/.deploy-$target" ] && bad "暂存的部署文件没清掉" || true
     connect_net
     [ "$(login)" = 200 ] && ok "回滚后还能登录(口令与凭据一致)" || bad "回滚后登录失败"
     [[ "$(user_names)" == *甲* ]] && ok "用户甲还在" || bad "用户甲丢了"
@@ -98,6 +114,16 @@ if lb update --version "$NEW" >/tmp/up.log 2>&1; then ok "升级成功"; else ba
 connect_net
 [ "$(login)" = 200 ] && ok "升级后能登录" || bad "升级后登录失败"
 [[ "$(user_names)" == *甲* ]] && ok "用户甲还在" || bad "用户甲丢了"
+
+step "[$MODE] 从 $NEW 升级到坏版本:回滚到支持暂停的 $NEW,先暂停再自动启动"
+lb update --version v23.1.0-broken-health >/tmp/up.log 2>&1 && bad "坏版本的升级不该成功" || ok "回滚:$(grep -E '错误' /tmp/up.log | tail -1)"
+[ "$(env_version)" = "$NEW" ] && ok ".env 版本回到 $NEW" || bad ".env 版本 = $(env_version)"
+healthy && ok "$NEW healthy" || { bad "$NEW 没有 healthy"; tail -30 /tmp/up.log; }
+connect_net
+[ "$(login)" = 200 ] && ok "回滚后能登录" || bad "回滚后登录失败"
+held && ok "回滚之后自动下发处于暂停" || bad "回滚之后没有暂停自动下发"
+api -o /dev/null -X DELETE http://litebox:8080/api/deploy-hold
+held && bad "解除之后仍是暂停" || ok "解除暂停"
 
 step "[$MODE] 备份并验证"
 if lb backup >/tmp/bk.log 2>&1; then ok "备份并验证通过:$(grep 已验证 /tmp/bk.log | tail -1)"; else bad "备份失败"; tail -20 /tmp/bk.log; fi
@@ -114,13 +140,38 @@ connect_net
 [ "$(login)" = 200 ] && ok "恢复后能登录" || bad "恢复后登录失败"
 names="$(user_names)"
 [[ "$names" == *甲* && "$names" != *乙* ]] && ok "回到恢复点:甲在、乙不在" || bad "恢复后用户 = $names"
-api http://litebox:8080/api/sidebar-counts | grep -q '"held":true' && ok "恢复之后自动下发处于暂停" || bad "恢复之后没有暂停自动下发"
+held && ok "恢复之后自动下发处于暂停" || bad "恢复之后没有暂停自动下发"
 api -o /dev/null -w '%{http_code}' -X DELETE http://litebox:8080/api/deploy-hold | grep -q 200 && ok "解除暂停" || bad "解除暂停失败"
-api http://litebox:8080/api/sidebar-counts | grep -q '"held":true' && bad "解除之后仍是暂停" || ok "解除之后恢复正常"
+held && bad "解除之后仍是暂停" || ok "解除之后恢复正常"
+
+step "[$MODE] 恢复时暂停写不进去:数据恢复了,主控保持停止(G03)"
+LITEBOX_FAULT=hold-write lb restore "$BK" >/tmp/rs.log 2>&1 && bad "暂停写不进去时恢复不该报成功" || ok "恢复报失败:$(grep 错误 /tmp/rs.log | tail -1)"
+running && bad "暂停写不进去却启动了主控" || ok "主控保持停止"
+lb start >/tmp/st.log 2>&1 && ok "排查之后 start:先暂停再启动" || { bad "start 失败"; tail -20 /tmp/st.log; }
+connect_net
+[ "$(login)" = 200 ] && ok "启动后能登录" || bad "启动后登录失败"
+held && ok "start 之后自动下发处于暂停" || bad "start 之后没有暂停自动下发"
+api -o /dev/null -X DELETE http://litebox:8080/api/deploy-hold
 if [ "$MODE" = external-postgres ]; then
     [ "$(docker exec sharedpg psql -U otherapp -d otherapp -tAc 'SELECT id FROM keep_me')" = 42 ] && ok "恢复没碰共享实例上别的应用的库" || bad "别的应用的库被改了"
     ls "$DIR"/backups/before-restore-*.pgdump >/dev/null 2>&1 && ok "恢复前把当前应用库导出了一份" || bad "没有恢复前的安全导出"
 fi
+
+step "[$MODE] 数据只恢复了一半的备份:验证失败,停主控之前就拒绝(G04)"
+half="$(mktemp -d -p "$ROOT")"
+tar -C "$half" -xzf - < "$BK"
+for f in litebox.pgdump litebox.db; do
+    if [ -f "$half/$f" ]; then
+        # 结构在前、数据在后:截掉后半截就是「结构大体在、数据不全」。
+        sz="$(stat -c %s "$half/$f")"; head -c $((sz * 2 / 3)) "$half/$f" > "$half/$f.cut" && mv "$half/$f.cut" "$half/$f"
+    fi
+done
+tar -C "$half" -czf - . > "$DIR/backups/litebox-half.tar.gz"; rm -rf "$half"
+lb verify-backup "$DIR/backups/litebox-half.tar.gz" >/tmp/vb.log 2>&1 && bad "只恢复了一半的备份不该通过验证" || ok "验证失败:$(grep -E 'pg_restore|临时 PG|错误|Error|error' /tmp/vb.log | head -1 | cut -c1-120)"
+lb restore "$DIR/backups/litebox-half.tar.gz" >/tmp/rs.log 2>&1 && bad "只恢复了一半的备份不该恢复" || ok "恢复被拒绝"
+healthy && ok "主控仍然 healthy(没被停)" || bad "主控被停了"
+connect_net
+[ "$(login)" = 200 ] && [[ "$(user_names)" == *甲* ]] && ok "生产库没被动:还能登录、用户甲还在" || bad "生产库被动了"
 
 step "[$MODE] 损坏的备份:停主控之前就拒绝"
 head -c 2000 "$BK" > "$DIR/backups/litebox-broken.tar.gz"

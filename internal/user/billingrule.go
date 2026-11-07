@@ -81,6 +81,10 @@ func (s *Store) SetBilling(ctx context.Context, id int64, next billing.Rule, imm
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if immediate {
+		var before Status
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM proxy_users WHERE id = ?`, id).Scan(&before); err != nil {
+			return nil, err
+		}
 		seg := billing.Switch(u.BillingSegment(), next, u.UsedUplink, u.UsedDownlink)
 		if _, err := tx.ExecContext(ctx, `UPDATE proxy_users SET billing_mode = ?, billing_multiplier_pct = ?,
 			billing_sealed_bytes = ?, billing_base_uplink = ?, billing_base_downlink = ?,
@@ -91,6 +95,16 @@ func (s *Store) SetBilling(ctx context.Context, id int64, next billing.Rule, imm
 		}
 		if err := refreshStatus(ctx, tx, id, now); err != nil {
 			return nil, err
+		}
+		// 立即生效让他超额或解除超额时,节点上该不该有他的凭据变了:意图与改动同一个事务(G01)。
+		var after Status
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM proxy_users WHERE id = ?`, id).Scan(&after); err != nil {
+			return nil, err
+		}
+		if after != before {
+			if err := finishUserIntent(ctx, tx, &userIntent{}, id); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		// 与当前规则相同 = 撤销待生效的那一条。

@@ -455,8 +455,11 @@ func (w *Watchdog) recover(ctx context.Context, n *Node, report *HealthReport) {
 	}
 	// 恢复主控库之后暂停自动下发(R03):重新下发用的是库里那份配置,而库是一份旧快照 ——
 	// 快照之后撤掉的凭据会被一起推回节点。只报告,不动手。
-	if h := deployment.ReadHold(ctx, w.service.store.db); h.Held {
+	if h, err := deployment.ReadHold(ctx, w.service.store.db); h.Held {
 		report.RecoverError = "自动下发已暂停(" + h.Reason + "),巡检只报告不恢复;核对之后在面板上解除"
+		if err != nil {
+			report.RecoverError = "暂停自动下发的状态读不出来,按暂停处理,巡检只报告不恢复:" + err.Error()
+		}
 		return
 	}
 

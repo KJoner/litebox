@@ -377,6 +377,9 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 	if err := replaceExternalProxies(ctx, tx, id, p.ExternalProxyIDs, now); err != nil {
 		return nil, err
 	}
+	if err := finishUserIntent(ctx, tx, &userIntent{}, id); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}

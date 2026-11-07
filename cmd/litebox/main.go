@@ -182,10 +182,13 @@ func cmdDeployHold(args []string) error {
 	default:
 		return fmt.Errorf("未知的子命令 %q(on / off / status)", sub)
 	}
-	h := deployment.ReadHold(ctx, db)
-	if h.Held {
+	h, err := deployment.ReadHold(ctx, db)
+	switch {
+	case err != nil:
+		return fmt.Errorf("读不出暂停状态(主控会按暂停处理): %w", err)
+	case h.Held:
 		fmt.Printf("状态:已暂停(%s,自 %s)\n", h.Reason, h.Since)
-	} else {
+	default:
 		fmt.Println("状态:正常")
 	}
 	return nil
@@ -682,7 +685,7 @@ func cmdServe(args []string) error {
 		Held: func() bool {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			return deployment.ReadHold(ctx, db).Held
+			return deployment.HeldOrUnknown(ctx, db)
 		},
 		Debounce: cfg.Node.DeployDebounce,
 		MaxDelay: cfg.Node.DeployMaxDelay,

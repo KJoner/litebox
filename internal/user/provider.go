@@ -130,7 +130,12 @@ func (s *Store) NodesForUser(ctx context.Context, userID int64) ([]int64, error)
 func (s *Store) NodesForUserWithProtocol(
 	ctx context.Context, userID int64, protocol singbox.Protocol,
 ) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return nodesWithProtocol(ctx, s.db, userID, protocol)
+}
+
+// nodesWithProtocol 是 NodesForUserWithProtocol 的实现,可以在事务里调(G01 的意图要与改动同一个事务)。
+func nodesWithProtocol(ctx context.Context, q access.Queryer, userID int64, protocol singbox.Protocol) ([]int64, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT DISTINCT i.node_id
 		  FROM node_inbounds i
 		  JOIN `+access.EffectiveInboundsView+` ei ON ei.inbound_id = i.id

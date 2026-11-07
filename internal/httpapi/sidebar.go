@@ -39,7 +39,10 @@ func (s *Server) handleSidebarCounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.db != nil {
-		h := deployment.ReadHold(ctx, s.db)
+		h, err := deployment.ReadHold(ctx, s.db)
+		if err != nil {
+			s.logger.Error("读取暂停自动下发状态失败(按暂停处理)", "error", err)
+		}
 		out.DeployHold = &h
 	}
 	if s.external != nil {
@@ -64,7 +67,12 @@ func (s *Server) handleReleaseManifest(w http.ResponseWriter, r *http.Request) {
 // handleReleaseDeployHold 解除「暂停自动下发」(R03)。管理员核对过配置版本、撤权与计量之后点它;
 // 之后协调器把排着的下发做掉,巡检恢复自动拉起。写审计。
 func (s *Server) handleReleaseDeployHold(w http.ResponseWriter, r *http.Request) {
-	before := deployment.ReadHold(r.Context(), s.db)
+	before, err := deployment.ReadHold(r.Context(), s.db)
+	if err != nil {
+		s.logger.Error("读取暂停自动下发状态失败", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "暂停状态读不出来,先排查数据库再解除")
+		return
+	}
 	if err := deployment.ClearHold(r.Context(), s.db); err != nil {
 		s.logger.Error("解除暂停自动下发失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -78,5 +86,6 @@ func (s *Server) handleReleaseDeployHold(w http.ResponseWriter, r *http.Request)
 			ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
 		})
 	}
-	writeJSON(w, http.StatusOK, deployment.ReadHold(r.Context(), s.db))
+	after, _ := deployment.ReadHold(r.Context(), s.db)
+	writeJSON(w, http.StatusOK, after)
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/database/dbtest"
 	"github.com/litebox/litebox/internal/sshx"
@@ -260,14 +261,14 @@ func TestCoordinatorHoldsDeploys(t *testing.T) {
 	if err := SetHold(ctx, db, "从备份恢复了主控库"); err != nil {
 		t.Fatal(err)
 	}
-	if h := ReadHold(ctx, db); !h.Held || h.Reason == "" || h.Since == "" {
+	if h, err := ReadHold(ctx, db); err != nil || !h.Held || h.Reason == "" || h.Since == "" {
 		t.Fatalf("暂停状态 = %+v", h)
 	}
 	d := &scriptedDeployer{}
 	c := NewCoordinator(CoordinatorOptions{
 		Deployer: d, Queue: q, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Debounce: 50 * time.Millisecond, MaxDelay: time.Second,
-		Held: func() bool { return ReadHold(context.Background(), db).Held },
+		Held: func() bool { return HeldOrUnknown(context.Background(), db) },
 	})
 	runCtx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -285,9 +286,102 @@ func TestCoordinatorHoldsDeploys(t *testing.T) {
 	if err := ClearHold(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if ReadHold(ctx, db).Held {
+	if h, _ := ReadHold(ctx, db); h.Held {
 		t.Fatal("解除之后仍是暂停")
 	}
 	c.MarkDirty(nodeID) // 唤醒一次(真实场景里有 30 秒的捞取与持续的 tick)
 	waitFor(t, 3*time.Second, func() bool { return d.count(DirtySingBox) == 1 && queueRow(t, q, nodeID, "SINGBOX") == nil })
+}
+
+// G03:暂停状态读不出来(库关了、表不在)时按暂停处理,不能当成「没有暂停」。
+func TestHoldUnreadableCountsAsHeld(t *testing.T) {
+	db, _, _ := queueEnv(t)
+	ctx := context.Background()
+	if err := SetHold(ctx, db, "从备份恢复了主控库"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE system_settings RENAME TO system_settings_gone`); err != nil {
+		t.Fatal(err)
+	}
+	h, err := ReadHold(ctx, db)
+	if err == nil || !h.Held || !h.Unknown {
+		t.Fatalf("读不出来时 = %+v, %v;应当是暂停 + 未知 + 错误", h, err)
+	}
+	if !HeldOrUnknown(ctx, db) {
+		t.Fatal("读不出来时协调器的判据应当是暂停")
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE system_settings_gone RENAME TO system_settings`); err != nil {
+		t.Fatal(err)
+	}
+	// 没有这一行 / 值为空才是「没有暂停」。
+	if err := ClearHold(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := ReadHold(ctx, db); err != nil || h.Held {
+		t.Fatalf("解除之后 = %+v, %v", h, err)
+	}
+}
+
+// G03:暂停期间关闭主控不冲刷内存里排着的下发 —— 冲刷就是在暂停期间下发。行留在队列里,解除之后接着做。
+func TestCoordinatorShutdownRespectsHold(t *testing.T) {
+	db, q, nodeID := queueEnv(t)
+	ctx := context.Background()
+	if err := SetHold(ctx, db, "从备份恢复了主控库"); err != nil {
+		t.Fatal(err)
+	}
+	d := &scriptedDeployer{}
+	c := NewCoordinator(CoordinatorOptions{
+		Deployer: d, Queue: q, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Debounce: time.Hour, MaxDelay: time.Hour,
+		Held: func() bool { return HeldOrUnknown(context.Background(), db) },
+	})
+	runCtx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { c.Run(runCtx); close(done) }()
+	c.MarkDirty(nodeID)
+	cancel()
+	<-done
+	c.Wait(5 * time.Second)
+	if d.count(DirtySingBox) != 0 {
+		t.Fatal("暂停期间关闭时把排着的下发冲刷出去了")
+	}
+	if queueRow(t, q, nodeID, "SINGBOX") == nil {
+		t.Fatal("关闭之后排着的下发应当还在队列里")
+	}
+}
+
+// G01:下发途中又有一次业务改动在它自己的事务里记下了意图(applyintent.Record),这一次下发成功之后
+// 不能把那一行顺手删掉 —— 它渲染的是改动之前的配置。行留着,协调器接着再下发一次。
+func TestIntentRecordedMidDeployIsNotErased(t *testing.T) {
+	db, q, nodeID := queueEnv(t)
+	d := &scriptedDeployer{gate: make(chan struct{}), entered: make(chan struct{}, 1)}
+	c, stop := runQueued(t, d, q)
+	defer stop()
+	if err := applyintent.Record(t.Context(), db, applyintent.SingBox, nodeID); err != nil {
+		t.Fatal(err)
+	}
+	c.WakeIntent(applyintent.SingBox, nodeID)
+	select {
+	case <-d.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("第一次下发没有开始")
+	}
+	// 下发卡在中途:这时有一次改动提交了。
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyintent.Record(t.Context(), tx, applyintent.SingBox, nodeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	c.WakeIntent(applyintent.SingBox, nodeID)
+	d.mu.Lock()
+	first := d.gate
+	d.gate = nil
+	d.mu.Unlock()
+	close(first)
+	waitFor(t, 5*time.Second, func() bool { return d.count(DirtySingBox) >= 2 && queueRow(t, q, nodeID, "SINGBOX") == nil })
 }

@@ -277,6 +277,9 @@ export interface DeployHold {
   held: boolean
   reason: string
   since: string
+  /** 暂停状态读不出来(库连不上):主控按暂停处理(G03),界面要说原因,而且不让解除。 */
+  unknown?: boolean
+  error?: string
 }
 
 export interface SidebarCounts {
@@ -4054,6 +4057,9 @@ export const api = {
   /** dry_run 为真只预览;否则整批写入,任何一条通不过时 409 + 预览、一条都不写。 */
   relayBatch: (nodeId: number, body: { dry_run?: boolean; items: Record<string, unknown>[] }) =>
     request<RelayBatchPlan>(`/api/nodes/${nodeId}/relays/batch`, { method: 'POST', body }),
+  /** 每个 Mieru 入口在节点上的生效状态(G01):库里应有的 mita 配置与节点上上一次生效的那份比哈希。 */
+  mieruApplyStates: () =>
+    request<{ states: Record<string, 'NEVER_DEPLOYED' | 'IN_SYNC' | 'PENDING' | 'UNKNOWN'> }>('/api/mieru-inbounds/apply-states'),
   rotateInboundPSK: (id: number) =>
     request<{ inbound: NodeInbound; auto_deploy: boolean }>(`/api/inbounds/${id}/rotate-psk`, { method: 'POST' }),
   deleteInbound: (id: number) =>

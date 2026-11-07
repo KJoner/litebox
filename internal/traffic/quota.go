@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/billing"
 	"github.com/litebox/litebox/internal/user"
 )
@@ -142,6 +143,20 @@ func (e *Enforcer) Enforce(ctx context.Context, now time.Time) (EnforceResult, e
 		result.Changes = append(result.Changes, StatusChange{
 			UserCode: c.userCode, From: c.from, To: c.to, Reason: c.reason,
 		})
+	}
+	// 状态迁移与「去节点上落实它」同一个事务提交(G01):到期 / 超额迁移过一次之后状态不再变化,
+	// 这一轮之后再也不会进变化集合 —— 意图要是没跟着提交,那个人的凭据就一直留在节点上。
+	for _, kind := range []struct {
+		name string
+		set  map[int64]bool
+	}{{applyintent.SingBox, nodeSet}, {applyintent.Mieru, mieruSet}} {
+		ids := make([]int64, 0, len(kind.set))
+		for id := range kind.set {
+			ids = append(ids, id)
+		}
+		if err := applyintent.Record(ctx, tx, kind.name, ids...); err != nil {
+			return result, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return result, err

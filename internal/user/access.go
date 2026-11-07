@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/applyintent"
 )
 
 // 直接入口授权(VNext AUTH01–04,迁移 0049)。
@@ -140,10 +141,25 @@ func (s *Store) SetAccess(ctx context.Context, userID int64, mode string, grants
 	if err != nil {
 		return nil, err
 	}
+	diff := diffEntries(before, after)
+	// 归属变了的入口所在的机器,与授权改动同一个事务写进下发队列(G01)。
+	intent := &userIntent{}
+	for _, list := range [][]EntryInfo{diff.Added, diff.Removed} {
+		for _, e := range list {
+			if e.Kind == EntryMieru {
+				intent.mi = append(intent.mi, e.NodeID)
+			} else {
+				intent.sb = append(intent.sb, e.NodeID)
+			}
+		}
+	}
+	if err := intent.record(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return diffEntries(before, after), nil
+	return diff, nil
 }
 
 // EntryAccess 是一个入口反过来看的授权:开没开「仅指定用户」、直接授权了谁。
@@ -236,6 +252,14 @@ func (s *Store) SetEntryAccess(ctx context.Context, e EntryRef, restricted bool,
 			VALUES (?, ?, ?, ?)`, uid, e.Kind, e.ID, now); err != nil {
 			return 0, err
 		}
+	}
+	// 这个入口上谁能认证变了:它所在的机器与改动同一个事务写进下发队列(G01)。
+	kind := applyintent.SingBox
+	if e.Kind == EntryMieru {
+		kind = applyintent.Mieru
+	}
+	if err := applyintent.Record(ctx, tx, kind, nodeID); err != nil {
+		return 0, err
 	}
 	return nodeID, tx.Commit()
 }

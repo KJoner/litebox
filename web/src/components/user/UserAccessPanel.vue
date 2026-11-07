@@ -56,11 +56,14 @@ const saving = ref(false)
  */
 const lastRevoked = ref<AccessEntryInfo[]>([])
 const convergeNodes = ref<Node[]>([])
+const mieruStates = ref<Record<string, string>>({})
 const convergeError = ref(false)
 async function refreshConverge() {
   convergeError.value = false
   try {
-    convergeNodes.value = (await api.nodes()).items
+    const [nodes, states] = await Promise.all([api.nodes(), api.mieruApplyStates()])
+    convergeNodes.value = nodes.items
+    mieruStates.value = states.states
   } catch {
     convergeError.value = true
   }
@@ -87,11 +90,22 @@ function convergeText(e: AccessEntryInfo): { text: string; tone: 'ok' | 'warn' |
       tone: 'bad',
     }
   if (q) return { text: '撤销排队下发中:节点上还留着他的凭据', tone: 'warn' }
-  if (e.kind === 'MIERU')
-    return {
-      text: '已下发(mita reload):新连接会被拒绝;已经建立的会话可能继续存活 —— reload 不断旧会话',
-      tone: 'ok',
+  // 队列里没有这一行不等于已下发(G01):看这个入口在节点上实际生效的那份配置与库里应有的是否一致。
+  if (e.kind === 'MIERU') {
+    switch (mieruStates.value[String(e.id)]) {
+      case 'IN_SYNC':
+        return {
+          text: '已下发(mita reload):新连接会被拒绝;已经建立的会话可能继续存活 —— reload 不断旧会话',
+          tone: 'ok',
+        }
+      case 'PENDING':
+        return { text: '撤销待下发:节点上生效的 mita 配置还是旧的,他的凭据仍在上面', tone: 'warn' }
+      case 'NEVER_DEPLOYED':
+        return { text: '这个 Mieru 入口还没上过节点:节点上没有它的任何凭据', tone: 'ok' }
+      default:
+        return { text: '这个 Mieru 入口的生效状态读不到,不能确认已撤销', tone: 'warn' }
     }
+  }
   switch (n.config_state) {
     case 'IN_SYNC':
       return { text: '已撤销:凭据已从节点配置删除,新连接会被拒绝;下发时 sing-box 重启,已建立的连接随之断开', tone: 'ok' }

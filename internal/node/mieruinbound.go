@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/subscription"
@@ -501,6 +502,12 @@ func (s *Store) UpdateMieruInbound(
 		p.AccessTierID, p.SortOrder, subEnabled, p.PublicRemark, enabled,
 		time.Now().UTC().Format(time.RFC3339), id); err != nil {
 		return nil, effect, err
+	}
+	// 等级变了 = mita 上谁能认证变了:与改动同一个事务写进下发队列(G01,走 Mieru 那一种自动下发)。
+	if effect.TierChanged {
+		if err := applyintent.Record(ctx, tx, applyintent.Mieru, cur.NodeID); err != nil {
+			return nil, effect, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, effect, err

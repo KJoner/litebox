@@ -26,21 +26,39 @@ type HoldInfo struct {
 	Held   bool   `json:"held"`
 	Reason string `json:"reason"`
 	Since  string `json:"since"`
+	// Unknown 表示暂停状态读不出来(库连不上、表不在)。这时 Held 也是真:读不到不能当成「没有暂停」(G03)。
+	Unknown bool   `json:"unknown,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
-// ReadHold 读暂停状态。读不到(表不在、库连不上)按没有暂停算 —— 这个开关只在恢复流程里打开,
-// 读失败时把整个面板的自动下发停掉,换来的是另一种看不见的故障。
-func ReadHold(ctx context.Context, db *sql.DB) HoldInfo {
+// ReadHold 读暂停状态。没有这一行、或值为空,是「没有暂停」;**读不出来是另一回事**(G03):
+// 返回 Held + Unknown 并带上错误,调用方一律按暂停处理 —— 恢复之后正是靠这个开关挡住旧快照,
+// 一次读库失败就把它当成解除,协调器与巡检会立刻把旧配置(连同已经撤掉的凭据)推回节点上去。
+// 代价是库抖一下时自动下发也停一下,界面上照实说原因;那是一次看得见的停顿,而不是一个看不见的洞。
+func ReadHold(ctx context.Context, db *sql.DB) (HoldInfo, error) {
 	var raw string
-	if err := db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key = ?`, HoldSettingKey).Scan(&raw); err != nil || raw == "" {
-		return HoldInfo{}
+	err := db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key = ?`, HoldSettingKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HoldInfo{}, nil
+	}
+	if err != nil {
+		return HoldInfo{Held: true, Unknown: true, Reason: "暂停状态读不出来,按暂停处理", Error: err.Error()}, err
+	}
+	if raw == "" {
+		return HoldInfo{}, nil
 	}
 	var h HoldInfo
 	if json.Unmarshal([]byte(raw), &h) != nil {
-		return HoldInfo{Held: true, Reason: raw}
+		return HoldInfo{Held: true, Reason: raw}, nil
 	}
 	h.Held = true
-	return h
+	return h, nil
+}
+
+// HeldOrUnknown 是协调器与巡检用的判据:暂停着,或者读不出来,都不自动下发。
+func HeldOrUnknown(ctx context.Context, db *sql.DB) bool {
+	h, err := ReadHold(ctx, db)
+	return h.Held || err != nil
 }
 
 // SetHold 打开暂停。

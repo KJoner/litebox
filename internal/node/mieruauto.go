@@ -148,3 +148,40 @@ func (s *Service) DeployMieruChanged(ctx context.Context, nodeID int64) (deploym
 	}
 	return result, nil
 }
+
+// Mieru 入口在节点上的生效状态(G01:界面判断撤权有没有落到节点上,要看实际生效的版本,
+// 不能拿「队列里没有这一行」当成「已下发」—— 队列空了也可能是那一行从来没写进去)。
+const (
+	MieruApplyNeverDeployed = "NEVER_DEPLOYED"
+	MieruApplyInSync        = "IN_SYNC"
+	MieruApplyPending       = "PENDING"
+	MieruApplyUnknown       = "UNKNOWN"
+)
+
+// MieruApplyState 比的是「库里现在应有的那份 mita 配置」与「节点上上一次生效的那份」的哈希。
+// 应有的那份没有真实用户时按自动下发的写法换上占位用户 —— 节点上生效的正是那一份。
+// 渲染不出来是 UNKNOWN:说明不了已下发,也说明不了没下发。
+func (s *Service) MieruApplyState(ctx context.Context, m *MieruInbound) string {
+	if !m.Deployed() || m.DeployedConfigSHA256 == "" {
+		return MieruApplyNeverDeployed
+	}
+	cfg, err := s.DesiredMieruConfig(ctx, m)
+	if err != nil {
+		return MieruApplyUnknown
+	}
+	if len(cfg.Users) == 0 {
+		cfg.Users = []mieru.User{s.mieruIdleUser(m.ID)}
+	}
+	raw, err := cfg.MarshalIndent()
+	if err != nil {
+		return MieruApplyUnknown
+	}
+	configSHA, _, err := mieruHashes(cfg, raw)
+	if err != nil {
+		return MieruApplyUnknown
+	}
+	if configSHA == m.DeployedConfigSHA256 {
+		return MieruApplyInSync
+	}
+	return MieruApplyPending
+}

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/litebox/litebox/internal/database"
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/sshx"
 )
 
@@ -61,7 +61,7 @@ type ApplyQueue interface {
 }
 
 var kindNames = map[DirtyKind]string{
-	DirtySingBox: "SINGBOX", DirtyRelays: "RELAYS", DirtyRealm: "REALM", DirtyMieru: "MIERU",
+	DirtySingBox: applyintent.SingBox, DirtyRelays: applyintent.Relays, DirtyRealm: applyintent.Realm, DirtyMieru: applyintent.Mieru,
 }
 
 // KindOf 把队列里的种类名换回 DirtyKind;认不出的返回 0。
@@ -114,16 +114,8 @@ func (q *SQLApplyQueue) Enqueue(ctx context.Context, nodeID int64, kind DirtyKin
 		if kind&k == 0 {
 			continue
 		}
-		now := q.now()
-		if _, err := q.db.ExecContext(ctx, `
-			INSERT INTO apply_queue (node_id, kind, seq, state, queued_at, updated_at) VALUES (?, ?, 1, 'PENDING', ?, ?)
-			ON CONFLICT (node_id, kind) DO UPDATE SET seq = apply_queue.seq + 1, state = 'PENDING',
-				next_attempt_at = '', updated_at = excluded.updated_at`,
-			nodeID, name, now, now); err != nil {
-			// 外键失败说明机器已经硬删了 —— 没有东西可下发,不是错误。
-			if database.IsForeignKeyViolation(err) {
-				continue
-			}
+		// 与业务事务里记意图的是同一句 SQL(G01):已删除的机器跳过,不靠外键报错。
+		if err := applyintent.Record(ctx, q.db, name, nodeID); err != nil {
 			return err
 		}
 	}

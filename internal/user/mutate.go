@@ -11,6 +11,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/crypto"
+	"github.com/litebox/litebox/internal/singbox"
 
 	"github.com/litebox/litebox/internal/database"
 )
@@ -129,6 +130,10 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*User, er
 		return nil, err
 	}
 	defer tx.Rollback()
+	intent, err := beginUserIntent(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 
 	if len(set) > 0 {
 		add("updated_at = ?", now)
@@ -153,6 +158,9 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*User, er
 	}
 	// 额度或到期时间变化后,原本因超额/过期被停的用户可能重新可用,反之亦然。
 	if err := refreshStatus(ctx, tx, id, now); err != nil {
+		return nil, err
+	}
+	if err := finishUserIntent(ctx, tx, intent, id); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -239,6 +247,10 @@ func (s *Store) SetEnabled(ctx context.Context, id int64, enabled bool) (*User, 
 	}
 	defer tx.Rollback()
 
+	intent, err := beginUserIntent(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 	status := StatusDisabled
 	if enabled {
 		status = StatusActive
@@ -258,6 +270,10 @@ func (s *Store) SetEnabled(ctx context.Context, id int64, enabled bool) (*User, 
 			return nil, err
 		}
 	}
+	// 停用的意图与停用本身同一个事务提交(G01):提交之后主控立刻退出,重启时队列里也有这一行。
+	if err := finishUserIntent(ctx, tx, intent, id); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -276,6 +292,10 @@ func (s *Store) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	}
 	defer tx.Rollback()
 
+	intent, err := beginUserIntent(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 	// 手工重置等于开一个新周期:封存段与起点一并清零,待生效的「下一周期」规则在这一刻套用
 	// (与 traffic 包的周期重置同一条 SQL 片段,两处不会分叉)。
 	res, err := tx.ExecContext(ctx, `
@@ -289,6 +309,9 @@ func (s *Store) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 		return nil, ErrNotFound
 	}
 	if err := refreshStatus(ctx, tx, id, now); err != nil {
+		return nil, err
+	}
+	if err := finishUserIntent(ctx, tx, intent, id); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -307,16 +330,9 @@ func (s *Store) RegenerateUUID(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE proxy_users SET uuid_encrypted = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-		enc, time.Now().UTC().Format(time.RFC3339), id)
-	if err != nil {
-		return nil, err
-	}
-	if affected, _ := res.RowsAffected(); affected == 0 {
-		return nil, ErrNotFound
-	}
-	return s.Get(ctx, id)
+	// Trojan 入口用的也是 UUID(当 password),两种协议的机器都要重新下发。
+	return s.rotateCredential(ctx, id, "uuid_encrypted", enc, false,
+		singbox.ProtocolVLESSReality, singbox.ProtocolTrojan)
 }
 
 // RegenerateSubToken 重新生成订阅 Token,旧订阅地址立即失效。
@@ -361,6 +377,11 @@ func (s *Store) Delete(ctx context.Context, id int64) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 打 deleted_at 之前取(之后视图里查不到他了),与删除同一个事务写进下发队列(G01)。
+	intent, err := beginUserIntent(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := tx.ExecContext(ctx,
@@ -375,6 +396,9 @@ func (s *Store) Delete(ctx context.Context, id int64) ([]int64, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_nodes WHERE proxy_user_id = ?`, id); err != nil {
 		return nil, err
 	}
+	if err := intent.record(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -384,4 +408,40 @@ func (s *Store) Delete(ctx context.Context, id int64) ([]int64, error) {
 func isUniqueViolation(err error) bool {
 	// SQLite 认错误文本,PG 认 SQLSTATE 23505 —— 判据只在 database.IsUniqueViolation 一处。
 	return database.IsUniqueViolation(err)
+}
+
+// rotateCredential 换掉一份凭据,并在同一个事务里把用这份凭据的机器写进下发队列(G01)。
+// protocols 是用这份凭据的 sing-box 协议(只标脏跑这几种协议的机器,见 Service.RegenerateUUID);
+// mieru 为真时是 Mieru 口令,标的是他有 Mieru 入口的机器。
+func (s *Store) rotateCredential(ctx context.Context, id int64, column, enc string, mieru bool, protocols ...singbox.Protocol) (*User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE proxy_users SET `+column+` = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		enc, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return nil, err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return nil, ErrNotFound
+	}
+	intent := &userIntent{}
+	if err := intent.addProtocols(ctx, tx, id, protocols...); err != nil {
+		return nil, err
+	}
+	if mieru {
+		if intent.mi, err = access.MieruNodesForUser(ctx, tx, id); err != nil {
+			return nil, err
+		}
+	}
+	if err := intent.record(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
 }

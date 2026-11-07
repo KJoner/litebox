@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/billing"
 
 	"github.com/litebox/litebox/internal/singbox"
@@ -83,10 +84,41 @@ func (s *Service) markMieru(nodeSets ...[]int64) {
 	}
 }
 
-// markUsers 把这几个用户(变更前后)涉及的两类机器都标脏:sing-box 按 EffectiveNodeIDs,
-// Mieru 按 EffectiveMieruNodeIDs。只标前一类的话,一台只有 Mieru 入口的机器上被停用的人
-// 照样连得上(R05)。
-func (s *Service) markUsers(users ...*User) {
+// wake 在意图已经与业务改动同一个事务落进下发队列之后(G01),让协调器立刻知道这几台机器欠着下发。
+// 协调器实现 applyintent.Waker 时只在内存里排队(不再写一次库);测试替身不实现它时回落到 MarkDirty。
+// 这一步失败或者根本没调到都不要紧:行已经在队列里,协调器 30 秒一次从库里捞。
+func (s *Service) wake(kind string, nodeSets ...[]int64) {
+	if s.trigger == nil {
+		return
+	}
+	seen := make(map[int64]bool)
+	var all []int64
+	for _, set := range nodeSets {
+		for _, id := range set {
+			if !seen[id] {
+				seen[id] = true
+				all = append(all, id)
+			}
+		}
+	}
+	if len(all) == 0 {
+		return
+	}
+	if w, ok := s.trigger.(applyintent.Waker); ok {
+		w.WakeIntent(kind, all...)
+		return
+	}
+	if kind == applyintent.Mieru {
+		if t, ok := s.trigger.(MieruTrigger); ok {
+			t.MarkMieruDirty(all...)
+		}
+		return
+	}
+	s.trigger.MarkDirty(all...)
+}
+
+// wakeUsers 是 wake 的用户版:两类机器各醒一次(意图已经在 Store 的事务里写下了)。
+func (s *Service) wakeUsers(users ...*User) {
 	var sb, mi [][]int64
 	for _, u := range users {
 		if u == nil {
@@ -95,8 +127,8 @@ func (s *Service) markUsers(users ...*User) {
 		sb = append(sb, u.EffectiveNodeIDs)
 		mi = append(mi, u.EffectiveMieruNodeIDs)
 	}
-	s.markNodes(sb...)
-	s.markMieru(mi...)
+	s.wake(applyintent.SingBox, sb...)
+	s.wake(applyintent.Mieru, mi...)
 }
 
 func (s *Service) Create(ctx context.Context, p CreateParams) (*User, error) {
@@ -104,7 +136,7 @@ func (s *Service) Create(ctx context.Context, p CreateParams) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.markUsers(u)
+	s.wakeUsers(u)
 	return u, nil
 }
 
@@ -117,7 +149,7 @@ func (s *Service) Update(ctx context.Context, id int64, p UpdateParams) (*User, 
 	if err != nil {
 		return nil, err
 	}
-	s.markUsers(before, after)
+	s.wakeUsers(before, after)
 	return after, nil
 }
 
@@ -126,7 +158,7 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) (*User
 	if err != nil {
 		return nil, err
 	}
-	s.markUsers(u)
+	s.wakeUsers(u)
 	return u, nil
 }
 
@@ -136,7 +168,7 @@ func (s *Service) ResetTraffic(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.markUsers(u)
+	s.wakeUsers(u)
 	return u, nil
 }
 
@@ -188,17 +220,19 @@ func (s *Service) RegenerateSnellKey(ctx context.Context, id int64) (*User, erro
 // 查询失败时回落到全部有效节点:宁可多重启几台,也不能漏标 ——
 // 漏标的表现是数据库里凭据已经换了,而节点上旧凭据还在继续可用,
 // 那是权限没有真正收回。多重启是一次可见的抖动,漏标是一个静默的洞。
+//
+// 意图已经在 Store 的事务里按协议写进下发队列了(G01),这里只是让协调器立刻知道;
+// 查不出来时不再回落到「全部有效节点」—— 那一份意图已经在库里了,多醒几台只是白白重启。
 func (s *Service) markProtocolNodes(ctx context.Context, userID int64, protocol singbox.Protocol) {
 	ids, err := s.store.NodesForUserWithProtocol(ctx, userID, protocol)
 	if err != nil {
-		s.logger.Error("按协议筛选受影响节点失败,回落到全部有效节点",
-			"user_id", userID, "protocol", protocol, "error", err)
-		if all, allErr := s.store.NodesForUser(ctx, userID); allErr == nil {
-			s.markNodes(all)
+		if s.logger != nil {
+			s.logger.Warn("按协议筛选受影响节点失败(意图已在队列里,协调器稍后会捞到)",
+				"user_id", userID, "protocol", protocol, "error", err)
 		}
 		return
 	}
-	s.markNodes(ids)
+	s.wake(applyintent.SingBox, ids)
 }
 
 // RegenerateSubToken 只换订阅地址,不影响节点配置,因此不触发部署。
@@ -213,11 +247,11 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	s.markNodes(affected)
-	if mieruErr != nil && s.logger != nil {
-		s.logger.Error("删除用户前读取他的 Mieru 入口失败,这些机器要手动下发", "user_id", id, "error", mieruErr)
+	// 两类机器的意图都已经在删除的事务里写下了(G01);这里只是叫醒协调器。
+	s.wake(applyintent.SingBox, affected)
+	if mieruErr == nil {
+		s.wake(applyintent.Mieru, mieruNodes)
 	}
-	s.markMieru(mieruNodes)
 	return nil
 }
 
@@ -277,9 +311,10 @@ func (s *Service) applyAccessDiff(diff *AccessDiff) *AccessResult {
 			}
 		}
 	}
-	s.markNodes(res.MarkedNodes)
-	// Mieru 入口也自动下发(R05):只动了用户的入口 reload,还有别的改动没下发的入口在部署记录与推送里点名。
-	s.markMieru(mieruNodes)
+	// 意图已经在授权改动的事务里写下了(G01)。Mieru 入口也自动下发(R05):只动了用户的入口 reload,
+	// 还有别的改动没下发的入口在部署记录与推送里点名。
+	s.wake(applyintent.SingBox, res.MarkedNodes)
+	s.wake(applyintent.Mieru, mieruNodes)
 	return res
 }
 
@@ -291,9 +326,9 @@ func (s *Service) SetEntryAccess(ctx context.Context, e EntryRef, restricted boo
 		return 0, err
 	}
 	if e.Kind == EntrySingBox {
-		s.markNodes([]int64{nodeID})
+		s.wake(applyintent.SingBox, []int64{nodeID})
 	} else {
-		s.markMieru([]int64{nodeID})
+		s.wake(applyintent.Mieru, []int64{nodeID})
 	}
 	return nodeID, nil
 }
@@ -315,7 +350,7 @@ func (s *Service) SetBilling(ctx context.Context, id int64, next billing.Rule, i
 	}
 	now := time.Now().UTC()
 	if before.Serviceable(now) != after.Serviceable(now) {
-		s.markUsers(after)
+		s.wakeUsers(after)
 	}
 	return change, nil
 }

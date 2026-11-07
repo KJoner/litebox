@@ -13,6 +13,7 @@
       "metrics_writer": "SSH",
       "min_memory_mb": 256
     },
+    "GET /api/mieru-inbounds/apply-states": { "states": {} },
     "GET /api/sidebar-counts": {
       "users": 1,
       "nodes": 2,

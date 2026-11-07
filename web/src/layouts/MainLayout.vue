@@ -203,15 +203,45 @@ async function loadMeta() {
  * 库是一份旧快照,快照之后撤掉的凭据会被一起推回节点。核对完再解除,所以确认框里把要核对的东西列出来。
  */
 const deployHold = ref<DeployHold | null>(null)
-function releaseHold() {
+const holdChecking = ref(false)
+/**
+ * 解除之前先把「解除之后马上会发生什么」读出来放进确认框(G03):排着的下发会下到哪几台机器、
+ * 哪几台的配置与库不一致。读不到就照实说读不到,不按「什么都不会发生」写。
+ */
+async function releaseHold() {
+  holdChecking.value = true
+  let queued: string[] = []
+  let drifted: string[] = []
+  let readFailed = false
+  try {
+    const { items } = await api.nodes()
+    const label = (n: (typeof items)[number]) => n.display_name || n.name
+    queued = items.filter((n) => (n.pending_applies ?? []).length > 0).map(label)
+    drifted = items.filter((n) => n.config_state && n.config_state !== 'IN_SYNC' && n.config_state !== 'NOT_APPLICABLE').map(label)
+  } catch {
+    readFailed = true
+  } finally {
+    holdChecking.value = false
+  }
+  const list = (xs: string[]) => (xs.length > 6 ? `${xs.slice(0, 6).join('、')} 等 ${xs.length} 台` : xs.join('、'))
+  const impacts = [
+    '**库是从备份恢复的:快照之后撤掉的用户与凭据,库里可能又是「有效」的** —— 先在用户列表里核对一遍',
+    readFailed
+      ? '**机器列表没有读到:解除之后会下发到哪几台,这里说不出来** —— 先刷新再解除'
+      : queued.length
+        ? `**解除之后马上下发**:${list(queued)}(排着的下发)`
+        : '队列里没有排着的下发',
+    readFailed
+      ? ''
+      : drifted.length
+        ? `配置与库不一致的机器:${list(drifted)} —— 巡检恢复之后,停了的服务会按库里这一份重新下发`
+        : '每台机器的配置都与库一致',
+    '节点上比库更新的改动(快照之后加的入口、换的端口)会被覆盖',
+  ].filter(Boolean)
   lbDangerConfirm({
     title: '恢复自动下发?',
     okText: '核对完毕,恢复',
-    impacts: [
-      '**库是从备份恢复的:快照之后撤掉的用户与凭据,库里可能又是「有效」的** —— 先在用户列表里核对一遍',
-      '排着的下发会马上做掉,巡检恢复自动拉起与重新下发:节点上的配置会换成库里这一份',
-      '节点上比库更新的改动(快照之后加的入口、换的端口)会被覆盖',
-    ],
+    impacts,
     onOk: () => {
       void doReleaseHold()
     },
@@ -412,10 +442,16 @@ const initials = computed(() => (auth.admin?.username ?? '?').slice(0, 2).toUppe
         <div v-if="deployHold" class="lb-notice ml__hold" role="alert">
           <span class="lb-notice__icon lb-notice__icon--warn"><LbIcon name="alert-triangle" :size="18" /></span>
           <div class="lb-notice__body">
-            <b>自动下发已暂停</b>:{{ deployHold.reason }}。标脏的机器只排队、不下发,巡检只报告不恢复 ——
-            核对用户、撤权与节点配置之后再恢复。手动「部署」不受影响。
+            <template v-if="deployHold.unknown">
+              <b>自动下发已停下</b>:暂停状态读不出来({{ deployHold.error }}),按暂停处理 ——
+              排查数据库之后刷新页面。
+            </template>
+            <template v-else>
+              <b>自动下发已暂停</b>:{{ deployHold.reason }}。标脏的机器只排队、不下发,巡检只报告不恢复 ——
+              核对用户、撤权与节点配置之后再恢复。手动「部署」不受影响。
+            </template>
           </div>
-          <a-button size="small" @click="releaseHold">核对完毕,恢复自动下发</a-button>
+          <a-button v-if="!deployHold.unknown" size="small" :loading="holdChecking" @click="releaseHold">核对完毕,恢复自动下发</a-button>
         </div>
         <RouterView />
       </main>

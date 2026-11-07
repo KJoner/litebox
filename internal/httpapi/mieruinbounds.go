@@ -431,3 +431,19 @@ func (s *Server) handleClearMieruChain(w http.ResponseWriter, r *http.Request) {
 		"needs_deploy": true, "needs_singbox_deploy": true,
 	})
 }
+
+// handleMieruApplyStates 回答每个 Mieru 入口在节点上的生效状态(G01):撤权之后界面要据此说「已下发」
+// 还是「待下发」,而不是看队列里还有没有那一行 —— 只读库,不连节点。
+func (s *Server) handleMieruApplyStates(w http.ResponseWriter, r *http.Request) {
+	list, err := s.nodes.Store().AllMieruInbounds(r.Context())
+	if err != nil {
+		s.logger.Error("读取 Mieru 入口失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	out := make(map[string]string, len(list))
+	for _, m := range list {
+		out[strconv.FormatInt(m.ID, 10)] = s.nodes.MieruApplyState(r.Context(), m)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"states": out})
+}

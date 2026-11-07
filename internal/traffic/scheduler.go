@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/litebox/litebox/internal/hosttraffic"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/litebox/litebox/internal/applyintent"
+	"github.com/litebox/litebox/internal/hosttraffic"
 )
 
 // DeployTrigger 把节点标记为待部署。由 deployment.Coordinator 实现。
@@ -161,6 +163,14 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	enforced, err := s.enforcer.Enforce(ctx, time.Now())
 	if err != nil {
 		s.logger.Error("额度与到期检查失败", "error", err)
+	} else if w, ok := s.trigger.(applyintent.Waker); ok {
+		// 意图已经和状态迁移同一个事务写进下发队列了(G01),这里只叫醒协调器。
+		if len(enforced.AffectedNodes) > 0 {
+			w.WakeIntent(applyintent.SingBox, enforced.AffectedNodes...)
+		}
+		if len(enforced.AffectedMieruNodes) > 0 {
+			w.WakeIntent(applyintent.Mieru, enforced.AffectedMieruNodes...)
+		}
 	} else if s.trigger != nil {
 		// 状态改了还不够 —— 用户能否连接取决于节点配置,
 		// 必须重新部署把他们从 users 列表里摘掉。

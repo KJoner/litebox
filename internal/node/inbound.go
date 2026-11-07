@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/litebox/litebox/internal/access"
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/singbox"
@@ -672,7 +673,12 @@ func (s *Store) UpdateInbound(
 		onOffLabel(cur.SubscriptionEnabled), onOffLabel(subEnabled))
 	track("启用", enabled != cur.Enabled, onOffLabel(cur.Enabled), onOffLabel(enabled))
 
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, InboundEffect{}, err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 		UPDATE node_inbounds SET display_name = ?, protocol = ?, ss_method = ?,
 		       snell_version = ?, snell_obfs_mode = ?, snell_obfs_host = ?,
 		       snell_v6_mode = ?, snell_shared_psk = ?, unmetered = ?,
@@ -696,6 +702,16 @@ func (s *Store) UpdateInbound(
 			return nil, InboundEffect{}, fmt.Errorf("%w:该机器上已有入站监听 %d",
 				ErrInboundPortConflict, p.ListenPort)
 		}
+		return nil, InboundEffect{}, err
+	}
+	// 等级变了 = 这个入口上谁能认证变了:与改动同一个事务写进下发队列(G01)。
+	// 其余改动(协议、端口……)只置 NeedsDeploy、等管理员挑时机,不在这里排队。
+	if effect.TierChanged {
+		if err := applyintent.Record(ctx, tx, applyintent.SingBox, cur.NodeID); err != nil {
+			return nil, InboundEffect{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, InboundEffect{}, err
 	}
 	updated, err := s.GetInbound(ctx, id)
@@ -724,13 +740,25 @@ func (s *Store) RotateSnellPSK(ctx context.Context, id int64) (*Inbound, error) 
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE node_inbounds SET snell_psk_encrypted = ?, updated_at = ?
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE node_inbounds SET snell_psk_encrypted = ?, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL AND protocol = 'SNELL'`, enc, time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, ErrInboundNotFound
+	}
+	// 换 psk 就是为了收回凭据:下发意图与新 psk 同一个事务提交(G01),主控随后退出也不会漏下发。
+	if err := applyintent.Record(ctx, tx, applyintent.SingBox, in.NodeID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.GetInbound(ctx, id)
 }

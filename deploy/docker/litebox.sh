@@ -8,6 +8,7 @@
 #   litebox.sh verify-backup FILE [--dir DIR]       # 在隔离容器里真的恢复一遍:库能读、结构完整、密文能解
 #   litebox.sh restore  FILE [--exact] [--dir DIR]  # 停主控 → 当前数据留一份 → 恢复 → 暂停自动下发 → 启动
 #   litebox.sh update   [--version vX.Y.Z] [--dir DIR]
+#   litebox.sh start    [--without-hold] [--dir DIR]   # 恢复 / 回滚之后主控停着时由管理员启动(先暂停自动下发)
 #   litebox.sh logs     [--dir DIR]
 #
 # restore 的两种范围:
@@ -32,6 +33,7 @@ PORT=""
 DSN_FILE=""
 PG_NETWORK=""
 EXACT=0
+WITHOUT_HOLD=0
 KEEP_BACKUPS=3
 # 快捷 PG 镜像里 postgres 用户的 uid(alpine 变体):初始化脚本以它的身份读应用口令文件(C03)。
 PG_UID=70
@@ -52,6 +54,7 @@ while [ $# -gt 0 ]; do
         --dsn-file) DSN_FILE="$2"; shift 2 ;;
         --pg-network) PG_NETWORK="$2"; shift 2 ;;
         --exact) EXACT=1; shift ;;
+        --without-hold) WITHOUT_HOLD=1; shift ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) POS+=("$1"); shift ;;
     esac
@@ -93,16 +96,40 @@ compose_files() {
 
 dc() { (cd "$DIR" && docker compose $(compose_files) "$@"); }
 
-# extract_deploy_files 从指定版本的镜像里取出同版本的 Compose 文件与初始化脚本。
+# extract_deploy_files REF [DEST]:从指定版本的镜像里取出同版本的 Compose 文件与初始化脚本(默认放进 $DIR)。
+# 每一步都显式判断:它会在 `if` 里被调用,那时 set -e 不生效(G04 同一类问题)。
+DEPLOY_FILES="compose.yaml compose.postgres.yaml compose.external-postgres.yaml compose.pg-network.yaml pg-init/10-litebox.sh"
 extract_deploy_files() {
-    local ref="$1" cid
-    cid="$(docker create "$ref")"
-    for f in compose.yaml compose.postgres.yaml compose.external-postgres.yaml compose.pg-network.yaml; do
-        docker cp "$cid:/opt/litebox/deploy/$f" "$DIR/$f" >/dev/null
+    local ref="$1" dest="${2:-$DIR}" cid f
+    cid="$(docker create "$ref")" || { echo "从 $ref 取部署文件失败:建不出临时容器" >&2; return 1; }
+    mkdir -p "$dest/pg-init" || { docker rm "$cid" >/dev/null 2>&1; return 1; }
+    for f in $DEPLOY_FILES; do
+        if ! docker cp "$cid:/opt/litebox/deploy/$f" "$dest/$f" >/dev/null; then
+            echo "从 $ref 取 $f 失败" >&2
+            docker rm "$cid" >/dev/null 2>&1
+            return 1
+        fi
     done
-    mkdir -p "$DIR/pg-init"
-    docker cp "$cid:/opt/litebox/deploy/pg-init/10-litebox.sh" "$DIR/pg-init/10-litebox.sh" >/dev/null
-    docker rm "$cid" >/dev/null
+    docker rm "$cid" >/dev/null 2>&1 || true
+}
+
+# copy_deploy_files SRC DEST:把一套部署文件整套复制过去(升级前暂存的、回滚时另存的)。
+copy_deploy_files() {
+    local src="$1" dest="$2" f
+    mkdir -p "$dest/pg-init" || return 1
+    for f in $DEPLOY_FILES; do
+        [ -f "$src/$f" ] || { echo "部署文件里缺 $f($src)" >&2; return 1; }
+        { cp "$src/$f" "$dest/$f.new" && mv "$dest/$f.new" "$dest/$f"; } || { echo "放置 $f 失败" >&2; return 1; }
+    done
+}
+
+# fault_point NAME:只给故障注入回归用(scripts/test/deploy/)—— LITEBOX_FAULT=NAME 时在这一点上失败。
+fault_point() {
+    if [ "${LITEBOX_FAULT:-}" = "$1" ]; then
+        echo "故障注入:$1" >&2
+        return 1
+    fi
+    return 0
 }
 
 random_secret() { head -c 24 /dev/urandom | base64 | tr -d '/+=\n' | head -c 32; }
@@ -182,20 +209,31 @@ pg_client_check() {
 # temp_pg_start DUMP:在一个 --internal 网络(不通外网)里起一个临时 PG,把 DUMP 恢复进去。
 # 设好 TMP_NET / TMP_PG / TMP_DSN;用完调 temp_pg_stop。
 TMP_NET=""; TMP_PG=""; TMP_DSN=""
+# 它在调用方的 `if temp_pg_start …` 里跑,set -e 在函数里不生效(G04):每一步都必须显式判断,
+# 否则 pg_restore 失败之后后面那行赋值照样成功,一份只恢复了一半的备份会被报告成「可用」。
 temp_pg_start() {
-    local dump="$1" i
+    local dump="$1" i ready=0 rc=0
     TMP_NET="litebox-verify-$$-$RANDOM"
     TMP_PG="$TMP_NET-pg"
-    docker network create --internal "$TMP_NET" >/dev/null
+    TMP_DSN=""
+    docker network create --internal "$TMP_NET" >/dev/null || { echo "临时 PG:建隔离网络失败" >&2; return 1; }
     docker run -d --name "$TMP_PG" --network "$TMP_NET" -e POSTGRES_PASSWORD=verify -e POSTGRES_DB=litebox \
-        "$(pg_client_image)" >/dev/null
+        "$(pg_client_image)" >/dev/null || { echo "临时 PG:容器起不来" >&2; return 1; }
     # 入口脚本初始化时会先起一个只听 Unix socket 的临时实例:等到 TCP 也通了才算就绪。
-    for i in $(seq 1 60); do
-        docker exec "$TMP_PG" psql -h 127.0.0.1 -U postgres -d litebox -tAc 'SELECT 1' >/dev/null 2>&1 && break
+    for i in $(seq 1 "${LITEBOX_TEMP_PG_WAIT:-60}"); do
+        if docker exec "$TMP_PG" psql -h 127.0.0.1 -U postgres -d litebox -tAc 'SELECT 1' >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
         sleep 1
     done
-    docker cp "$dump" "$TMP_PG:/tmp/restore.pgdump" >/dev/null
-    docker exec "$TMP_PG" pg_restore -U postgres -d litebox --no-owner --no-privileges --exit-on-error /tmp/restore.pgdump
+    [ "$ready" = 1 ] || { echo "临时 PG:${LITEBOX_TEMP_PG_WAIT:-60} 秒内没有就绪" >&2; return 1; }
+    docker cp "$dump" "$TMP_PG:/tmp/restore.pgdump" >/dev/null || { echo "临时 PG:把备份复制进去失败" >&2; return 1; }
+    docker exec "$TMP_PG" pg_restore -U postgres -d litebox --no-owner --no-privileges --exit-on-error /tmp/restore.pgdump || rc=$?
+    if [ "$rc" != 0 ]; then
+        echo "临时 PG:pg_restore 失败(退出码 $rc)—— 这份备份恢复不完整,结构可能在、数据不全" >&2
+        return 1
+    fi
     TMP_DSN="postgres://postgres:verify@$TMP_PG:5432/litebox?sslmode=disable"
 }
 temp_pg_stop() {
@@ -318,25 +356,47 @@ SQL'
     rm -rf "$work"
 }
 
-# hold_deploys:恢复之后、启动之前暂停自动下发(主控以外的一次性容器,用与主控相同的配置与网络)。
-# 比这个功能更早的版本没有 deploy-hold 命令:那时只能提醒,不能替它暂停(它本来也不认这个开关)。
-HELD=0
+# hold_deploys REASON:恢复之后、启动之前暂停自动下发(主控以外的一次性容器,用与主控相同的配置与网络)。
+# 返回 0 = 已暂停;2 = 这个版本没有这个开关(比 v23.1 更早);1 = 写不进去。
+# 后两种**都不自动启动主控**(G03):它会照库里那份旧快照下发,快照之后撤掉的凭据会被推回节点。
 hold_deploys() {
-    local out
-    HELD=0
-    if out="$(dc run --rm --no-deps -T litebox deploy-hold on --reason "$1" --config /data/litebox.yaml 2>&1)"; then
+    local out=""
+    if fault_point hold-write && out="$(dc run --rm --no-deps -T litebox deploy-hold on --reason "$1" --config /data/litebox.yaml 2>&1)"; then
         echo "$out"
-        HELD=1
         return 0
     fi
     if echo "$out" | grep -q '未知命令 "deploy-hold"'; then
-        warn "这个版本不支持暂停自动下发:启动之后它会照库里的配置下发 —— 先核对用户与撤权"
-        return 0
+        return 2
     fi
-    echo "$out" >&2
+    [ -z "$out" ] || echo "$out" >&2
     return 1
 }
-held_note() { if [ "$HELD" = 1 ]; then echo "自动下发已暂停,核对之后在面板顶部恢复"; else echo "这个版本没有暂停自动下发的开关,先核对用户与撤权"; fi; }
+
+# start_after_recovery WHAT:恢复 / 回滚之后启动主控 —— 只有暂停写进去了才启动。
+# 返回 0 = 已暂停并启动且 healthy;2 = 版本不支持暂停,主控保持停止;1 = 暂停写不进去,主控保持停止;
+# 3 = 暂停写进去了但主控起不来。
+start_after_recovery() {
+    local what="$1" rc=0
+    hold_deploys "$what" || rc=$?
+    case "$rc" in
+        0) ;;
+        2) warn "$what:这个版本没有「暂停自动下发」的开关,主控保持停止(启动之后它会照这份旧快照往节点下发)"
+           warn "核对用户与撤权之后,用 litebox.sh start --without-hold 启动"
+           return 2 ;;
+        *) warn "$what:暂停自动下发没写进去,主控保持停止。排查之后用 litebox.sh start 重试"
+           return 1 ;;
+    esac
+    if ! dc up -d; then
+        dc logs --tail=80 litebox || true
+        warn "$what:主控启动失败(自动下发处于暂停状态)"
+        return 3
+    fi
+    if ! wait_healthy; then
+        warn "$what:主控没有变成 healthy(自动下发处于暂停状态)"
+        return 3
+    fi
+    return 0
+}
 
 # ---------------------------------------------------------------- 命令
 
@@ -491,19 +551,46 @@ cmd_restore() {
     fi
     if [ "$(mode)" = "external-postgres" ]; then pg_client_check; fi
     cmd_verify_backup "$file" || die "备份没有通过验证,不恢复(主控没有动)"
+    # --exact 要用恢复点那个版本的部署文件:在停主控之前取到暂存目录,停了之后只剩复制。
+    local stage=""
+    if [ "$EXACT" = 1 ]; then
+        stage="$DIR/.deploy-restore-$bver"; rm -rf "$stage"
+        extract_deploy_files "$(image_ref):$bver" "$stage" || die "取 $bver 的部署文件失败,主控没有动"
+    fi
 
     info "停主控(恢复主控库不会回滚节点上的东西)"
     dc stop litebox
-    if [ "$EXACT" = 1 ]; then extract_deploy_files "$(image_ref):$bver"; fi
-    restore_into_place "$file"
-    if [ "$EXACT" = 1 ]; then info "已回到恢复点的版本 $(envget LITEBOX_VERSION) 与配置"; fi
-    hold_deploys "从备份恢复了主控库($(basename "$file"))" || die "恢复之后没能暂停自动下发 —— 为了不把旧快照推到节点上,主控没有启动"
-    if ! dc up -d; then
-        dc logs --tail=80 litebox || true
-        die "恢复之后主控启动失败(数据已恢复、自动下发处于暂停状态),日志在上面"
+    if [ -n "$stage" ]; then
+        if ! copy_deploy_files "$stage" "$DIR"; then
+            # 数据还没动:按原样重新启动是安全的(不是旧快照)。
+            dc up -d || true
+            die "放置 $bver 的部署文件失败,数据没有动,已按原样重新启动"
+        fi
+        rm -rf "$stage"
     fi
-    wait_healthy || die "恢复之后主控没有变成 healthy($(held_note))"
-    info "已恢复并启动。$(held_note)(核对用户、撤权与节点配置版本)"
+    # 从这里起数据开始被替换:中途失败时 set -e 会停下,主控保持停止(不会带着半份数据启动)。
+    trap 'warn "恢复中途失败:主控保持停止。原数据留在旁边(data.before-restore-* / litebox_before_restore / backups/before-restore-*)"' ERR
+    restore_into_place "$file"
+    trap - ERR
+    if [ "$EXACT" = 1 ]; then info "已回到恢复点的版本 $(envget LITEBOX_VERSION) 与配置"; fi
+    start_after_recovery "从备份恢复了主控库($(basename "$file"))" || die "数据已恢复;主控没有启动或没有健康(原因见上面)"
+    info "已恢复并启动。自动下发已暂停:核对用户、撤权与节点配置版本之后在面板顶部恢复"
+}
+
+# cmd_start:恢复 / 回滚之后主控停着时由管理员显式启动。先暂停自动下发;版本太旧没有这个开关时
+# 要 --without-hold 才启动 —— 那是管理员核对过节点之后的显式决定,不由脚本替他做。
+cmd_start() {
+    local rc=0
+    start_after_recovery "管理员手动启动(恢复或回滚之后)" || rc=$?
+    case "$rc" in
+        0) info "已启动。自动下发已暂停:核对之后在面板顶部恢复" ;;
+        2) [ "$WITHOUT_HOLD" = 1 ] || die "没有启动:这个版本不支持暂停自动下发,核对节点之后加 --without-hold"
+           warn "按 --without-hold 启动:没有暂停自动下发,它会照库里的配置下发"
+           dc up -d || die "启动失败"
+           wait_healthy || die "没有变成 healthy"
+           info "已启动(没有暂停自动下发)" ;;
+        *) die "没有启动或没有健康(原因见上面)" ;;
+    esac
 }
 
 # rehearse_migration REF:在当前数据的副本上用 REF 跑一遍迁移,线上一个字节都不动。
@@ -559,6 +646,13 @@ cmd_update() {
     info "在数据副本上演练迁移"
     rehearse_migration "$ref" || die "新版本在数据副本上迁移失败,没有动线上的任何东西"
 
+    # 能在停服之前做完的准备都放在这里:新版本的部署文件先取到暂存目录,当前这一套另存一份 ——
+    # 回滚时直接用它,不再依赖「从旧镜像里再取一次」也能成功。
+    STAGE_NEW="$DIR/.deploy-$new"; SAVED_OLD="$DIR/.deploy-$old"
+    rm -rf "$STAGE_NEW" "$SAVED_OLD"
+    extract_deploy_files "$ref" "$STAGE_NEW" || die "取新版本的部署文件失败,没有动线上的任何东西"
+    copy_deploy_files "$DIR" "$SAVED_OLD" || die "另存当前部署文件失败,没有动线上的任何东西"
+
     info "进入维护:停主控,做最终恢复点"
     dc stop litebox
     if ! final="$(make_backup "$oldref")"; then
@@ -572,33 +666,42 @@ cmd_update() {
     fi
     info "最终恢复点:$final"
 
-    extract_deploy_files "$ref"
-    envset LITEBOX_VERSION "$new"
+    # 从这里起任何一步失败都走同一个回滚。
+    if ! { fault_point apply-files && copy_deploy_files "$STAGE_NEW" "$DIR" && envset LITEBOX_VERSION "$new"; }; then
+        update_rollback "$old" "$final" "换版本失败(部署文件或 .env 没写进去)"
+    fi
     if ! dc up -d; then
         update_rollback "$old" "$final" "启动命令失败"
     fi
     if ! wait_healthy; then
         update_rollback "$old" "$final" "没有在 3 分钟内变成 healthy"
     fi
+    rm -rf "$STAGE_NEW" "$SAVED_OLD"
     ls -1t "$DIR"/backups/litebox-*.tar.gz | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
     info "已升级到 $new(升级前的恢复点:$final)"
 }
 
 update_rollback() {
-    local old="$1" final="$2" why="$3"
+    local old="$1" final="$2" why="$3" rc=0
     warn "新版本$why,回滚到 $old 并恢复最终恢复点 $final"
     dc logs --tail=80 litebox || true
     dc stop litebox || true
-    envset LITEBOX_VERSION "$old"
-    extract_deploy_files "$(image_ref):$old"
+    # 部署文件用升级前另存的那一套(回滚不该依赖再从镜像里取一次也成功)。
+    if ! copy_deploy_files "$SAVED_OLD" "$DIR"; then
+        warn "另存的部署文件放不回去,改从 $old 的镜像里取"
+        extract_deploy_files "$(image_ref):$old" || die "回滚失败:部署文件放不回去。数据在 $final,需要人工处理"
+    fi
+    envset LITEBOX_VERSION "$old" || die "回滚失败:.env 写不进去。数据在 $final,需要人工处理"
+    rm -rf "${STAGE_NEW:-}" "${SAVED_OLD:-}"
     EXACT=1
     restore_into_place "$final"
-    hold_deploys "升级失败回滚到 $old,恢复了升级前的主控库" || warn "没能暂停自动下发:启动之后先核对节点配置"
-    if ! dc up -d || ! wait_healthy; then
-        dc logs --tail=80 litebox || true
-        die "回滚之后旧版本 $old 也没有起来。数据在 $final,原数据留在旁边(见上面的提示),需要人工处理"
-    fi
-    die "升级失败($why),已回滚到 $old;$(held_note)"
+    start_after_recovery "升级失败回滚到 $old,恢复了升级前的主控库" || rc=$?
+    case "$rc" in
+        0) die "升级失败($why),已回滚到 $old;自动下发已暂停,核对之后在面板顶部恢复" ;;
+        2) die "升级失败($why),已回滚到 $old 的文件与升级前的库;主控保持停止(这个版本不能暂停自动下发),核对之后 litebox.sh start --without-hold" ;;
+        1) die "升级失败($why),已回滚到 $old 的文件与升级前的库;暂停自动下发写不进去,主控保持停止,排查之后 litebox.sh start" ;;
+        *) die "回滚之后旧版本 $old 也没有起来。数据在 $final,原数据留在旁边(见上面的提示),需要人工处理" ;;
+    esac
 }
 
 case "$cmd" in
@@ -608,6 +711,7 @@ case "$cmd" in
     verify-backup) cmd_verify_backup "${POS[0]:-}" && info "备份可用" ;;
     restore) cmd_restore ;;
     update) cmd_update ;;
+    start) cmd_start ;;
     logs) dc logs -f --tail=200 litebox ;;
     *) sed -n '2,25p' "$0"; exit 1 ;;
 esac

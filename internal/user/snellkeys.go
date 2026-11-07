@@ -95,15 +95,5 @@ func (s *Store) RegenerateSnellKey(ctx context.Context, id int64) (*User, error)
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE proxy_users SET snell_password_encrypted = ?, updated_at = ?
-		  WHERE id = ? AND deleted_at IS NULL`,
-		enc, time.Now().UTC().Format(time.RFC3339), id)
-	if err != nil {
-		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, ErrNotFound
-	}
-	return s.Get(ctx, id)
+	return s.rotateCredential(ctx, id, "snell_password_encrypted", enc, false, singbox.ProtocolSnell)
 }

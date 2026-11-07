@@ -174,6 +174,14 @@ func (c *Coordinator) mark(kind DirtyKind, nodeIDs ...int64) {
 	c.markMemory(kind, nodeIDs...)
 }
 
+// WakeIntent 实现 applyintent.Waker:意图已经和业务改动在同一个事务里落进队列了(G01),
+// 这里只在内存里排队,让协调器不必等下一次从库里捞。认不出的种类忽略 —— 那一行仍在队列里,30 秒后会被捞起。
+func (c *Coordinator) WakeIntent(kind string, nodeIDs ...int64) {
+	if k := KindOf(kind); k != 0 {
+		c.markMemory(k, nodeIDs...)
+	}
+}
+
 // markMemory 只在内存里排队(从持久化队列里捞出来重试的那些走这里,不再加 seq)。
 func (c *Coordinator) markMemory(kind DirtyKind, nodeIDs ...int64) {
 	now := c.clock()
@@ -451,6 +459,16 @@ func (c *Coordinator) shutdown() {
 		return
 	}
 	c.closed = true
+	// 暂停自动下发期间(或暂停状态读不出来)不冲刷(G03):冲刷就是在暂停期间下发。
+	// 排着的那些都在持久化队列里,解除之后由下一个进程接着做。
+	if c.held != nil && c.held() {
+		c.pending = make(map[int64]*pendingNode)
+		c.mu.Unlock()
+		c.logger.Warn("自动下发处于暂停,关闭时不冲刷排着的下发(它们留在队列里)")
+		c.wg.Wait()
+		close(c.done)
+		return
+	}
 	remaining := make(map[int64]DirtyKind, len(c.pending))
 	for id, entry := range c.pending {
 		if !c.inflight[id] {

@@ -325,6 +325,7 @@ func (s *Server) Handler() http.Handler {
 		// 某处判断写漏时把请求打到另一类对象上。
 		authed.HandleFunc("GET /api/nodes/{id}/mieru-inbounds", s.handleListNodeMieruInbounds)
 		authed.HandleFunc("POST /api/nodes/{id}/mieru-inbounds", s.handleCreateMieruInbound)
+		authed.HandleFunc("GET /api/mieru-inbounds/apply-states", s.handleMieruApplyStates)
 		authed.HandleFunc("PUT /api/mieru-inbounds/{id}", s.handleUpdateMieruInbound)
 		authed.HandleFunc("DELETE /api/mieru-inbounds/{id}", s.handleDeleteMieruInbound)
 		// 安装、下发与改出口都挂 longOperation:它们在改节点上的东西,
