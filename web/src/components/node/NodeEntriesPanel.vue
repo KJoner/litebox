@@ -29,6 +29,7 @@ import InboundChainModal from './InboundChainModal.vue'
 import InboundDestModal from './InboundDestModal.vue'
 import InboundFormModal from './InboundFormModal.vue'
 import MieruChainModal from './MieruChainModal.vue'
+import RelayBatchModal from './RelayBatchModal.vue'
 import NodeOpProgressModal from './NodeOpProgressModal.vue'
 import ServiceCard, { type ServiceCardAction, type ServiceCardModel } from './ServiceCard.vue'
 import { servicePhase, servicePhaseMeta, type ServicePhase } from './serviceState'
@@ -105,6 +106,9 @@ const landingInbounds = computed(() =>
     })),
   ),
 )
+
+/** 一个中转配多个落地(复核批次三)。 */
+const batchOpen = ref(false)
 
 const relays = ref<NodeRelay[]>([])
 const loading = ref(false)
@@ -1630,6 +1634,7 @@ onMounted(async () => {
             <a-menu-item v-if="!isRelayHost" @click="openCreateMieru">Mieru 入口</a-menu-item>
             <a-menu-item @click="openCreate('NGINX')">nginx 转发入口</a-menu-item>
             <a-menu-item @click="openCreate('REALM')">realm 转发入口</a-menu-item>
+            <a-menu-item @click="batchOpen = true">一次配多个落地(批量转发)</a-menu-item>
           </a-menu>
         </template>
       </a-dropdown-button>
@@ -1955,6 +1960,13 @@ onMounted(async () => {
       @busy="(l: string) => emit('busy', l)"
     />
 
+    <RelayBatchModal
+      v-model:open="batchOpen"
+      :node-id="node.id"
+      :node-label="nodeLabel"
+      :landings="landingInbounds"
+      @changed="emit('changed')"
+    />
     <InboundChainModal
       v-model:open="chainOpen"
       :inbound="chainTarget"

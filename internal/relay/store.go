@@ -38,10 +38,14 @@ const relayColumns = `r.id, r.node_id, n.name, r.engine,
 	     ELSE COALESCE(tin.display_name || ' / ' || ti.display_name, tp.display_name, '')
 	     END AS target_name,
 	CASE r.target_kind
-	     WHEN 'INBOUND'  THEN (ti.id IS NOT NULL AND ti.deployed_protocol != '')
-	     WHEN 'EXTERNAL' THEN (tp.id IS NOT NULL)
+	     WHEN 'INBOUND'  THEN CASE WHEN ti.id IS NOT NULL AND ti.deployed_protocol <> '' THEN 1 ELSE 0 END
+	     WHEN 'EXTERNAL' THEN CASE WHEN tp.id IS NOT NULL THEN 1 ELSE 0 END
 	     WHEN 'ADDRESS'  THEN 1
 	     ELSE 0 END AS target_ready`
+
+// target_ready 每个分支都写成整数(复核批次三在 PG 上撞到):原来 INBOUND / EXTERNAL 两支是布尔表达式、
+// 另外两支是 1 / 0,SQLite 不在乎,PG 报 「CASE types integer and boolean cannot be matched」——
+// PG 部署上任何读转发规则的接口(列表、详情、新增之后读回)都会失败。
 
 // relayFrom 固定带上等级表与落地表。
 //
@@ -151,6 +155,28 @@ type CreateParams struct {
 }
 
 func (s *Store) Create(ctx context.Context, p CreateParams) (*Relay, error) {
+	pr, err := s.prepare(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	id, err := insertRelay(ctx, s.db, pr)
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
+}
+
+// prepared 是校验通过、归一化之后的一条新规则。
+type prepared struct {
+	p      CreateParams
+	name   string
+	kind   TargetKind
+	engine Engine
+	target targetSpec
+}
+
+// prepare 做 Create 的全部校验,不写库。批量创建与单条创建共用这一份(一个中转配多个落地)。
+func (s *Store) prepare(ctx context.Context, p CreateParams) (*prepared, error) {
 	name, err := validateName(p.DisplayName)
 	if err != nil {
 		return nil, err
@@ -188,25 +214,33 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*Relay, error) {
 	if err := s.checkPortFree(ctx, p.NodeID, p.ListenPort, 0); err != nil {
 		return nil, err
 	}
+	return &prepared{p: p, name: name, kind: kind, engine: engine, target: target}, nil
+}
 
+type execer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func insertRelay(ctx context.Context, q execer, pr *prepared) (int64, error) {
+	p := pr.p
 	now := time.Now().UTC().Format(time.RFC3339)
-	id, err := database.InsertID(ctx, s.db, `
+	id, err := database.InsertID(ctx, q, `
 		INSERT INTO node_relays (node_id, engine, display_name, listen_port, public_port,
 			target_kind, target_inbound_id, target_external_id, target_host, target_port,
 			access_tier_id, sort_order, subscription_enabled, public_remark, enabled,
 			created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		p.NodeID, string(engine), name, p.ListenPort, p.PublicPort,
-		string(kind), target.inboundArg(), target.externalArg(), target.host, target.port,
+		p.NodeID, string(pr.engine), pr.name, p.ListenPort, p.PublicPort,
+		string(pr.kind), pr.target.inboundArg(), pr.target.externalArg(), pr.target.host, pr.target.port,
 		p.AccessTierID, p.SortOrder, boolOr(p.SubscriptionEnabled, true),
 		strings.TrimSpace(p.PublicRemark), boolOr(p.Enabled, true), now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return nil, fmt.Errorf("%w:该主机上已有规则监听 %d", ErrPortConflict, p.ListenPort)
+			return 0, fmt.Errorf("%w:该主机上已有规则监听 %d", ErrPortConflict, p.ListenPort)
 		}
-		return nil, err
+		return 0, err
 	}
-	return s.Get(ctx, id)
+	return id, nil
 }
 
 // UpdateParams 是可修改的字段。

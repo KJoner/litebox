@@ -300,6 +300,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("GET /api/relays", s.handleListRelays)
 		authed.HandleFunc("GET /api/nodes/{id}/relays", s.handleListNodeRelays)
 		authed.HandleFunc("POST /api/nodes/{id}/relays", s.handleCreateRelay)
+		authed.HandleFunc("POST /api/nodes/{id}/relays/batch", s.handleCreateRelayBatch)
 		authed.HandleFunc("PUT /api/relays/{id}", s.handleUpdateRelay)
 		authed.HandleFunc("DELETE /api/relays/{id}", s.handleDeleteRelay)
 		authed.HandleFunc("POST /api/nodes/{id}/relays/deploy", s.longOperation(s.handleDeployRelays))

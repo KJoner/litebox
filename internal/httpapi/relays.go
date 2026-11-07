@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -131,6 +132,64 @@ func (s *Server) handleCreateRelay(w http.ResponseWriter, r *http.Request) {
 	// **不标 sing-box** —— 转发规则一个字都不进它的配置。
 	s.nodes.MarkEngineDirty(item.Engine, nodeID)
 	writeJSON(w, http.StatusCreated, map[string]any{"relay": item})
+}
+
+// handleCreateRelayBatch 一个中转配多个落地(复核批次三):dry_run 为真时只预览(每一条会生成什么、
+// 哪一条有什么问题);否则整批在一个事务里写入,任何一条通不过就一条都不写(409 + 预览)。
+// 写入之后按涉及的引擎各标脏一次,协调器合并下发(nginx 只 reload,realm 要重启)。
+func (s *Server) handleCreateRelayBatch(w http.ResponseWriter, r *http.Request) {
+	nodeID, ok := s.nodeIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		DryRun bool           `json:"dry_run"`
+		Items  []relayRequest `json:"items"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	params := make([]relay.CreateParams, 0, len(req.Items))
+	for _, it := range req.Items {
+		params = append(params, relay.CreateParams{
+			NodeID: nodeID, Engine: strings.TrimSpace(it.Engine), DisplayName: strings.TrimSpace(it.DisplayName),
+			ListenPort: it.ListenPort, PublicPort: it.PublicPort, TargetKind: strings.TrimSpace(it.TargetKind),
+			TargetInboundID: it.TargetInboundID, TargetExternalID: it.TargetExternalID,
+			TargetHost: strings.TrimSpace(it.TargetHost), TargetPort: it.TargetPort,
+			AccessTierID: it.AccessTierID, SortOrder: it.SortOrder, SubscriptionEnabled: it.SubscriptionEnabled,
+			PublicRemark: strings.TrimSpace(it.PublicRemark), Enabled: it.Enabled,
+		})
+	}
+	if req.DryRun {
+		plan, _, err := s.relays.PlanBatch(r.Context(), nodeID, params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	admin := adminFromContext(r.Context())
+	plan, err := s.relays.CreateBatch(r.Context(), nodeID, params)
+	if plan != nil && plan.OK {
+		s.audit.Record(r.Context(), audit.Entry{
+			AdminUserID: &admin.ID, Action: actionRelayCreate,
+			TargetType: "node", TargetID: strconv.FormatInt(nodeID, 10),
+			Detail:   fmt.Sprintf("批量新增 %d 条转发规则(一个中转配多个落地)", len(plan.Created)),
+			ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+		})
+		for _, e := range plan.Engines {
+			s.nodes.MarkEngineDirty(relay.Engine(e), nodeID)
+		}
+		writeJSON(w, http.StatusCreated, plan)
+		return
+	}
+	if errors.Is(err, relay.ErrBatchInvalid) {
+		writeJSON(w, http.StatusConflict, plan)
+		return
+	}
+	writeError(w, http.StatusBadRequest, "批量新增转发规则失败:"+err.Error())
 }
 
 func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request) {

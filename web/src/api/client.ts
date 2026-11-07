@@ -240,6 +240,24 @@ export interface Admin {
 /** 「暂停自动下发」(R03):从备份恢复主控库之后由恢复脚本打开,核对完再解除。 */
 export type UserResetCycle = 'NONE' | 'MONTHLY' | 'DAYS'
 
+/** 一个中转配多个落地的预览 / 结果(复核批次三):ok 为假时整批一条都没写 */
+export interface RelayBatchPlan {
+  node_id: number
+  ok: boolean
+  engines: string[]
+  items: {
+    index: number
+    display_name: string
+    engine: string
+    listen_port: number
+    public_port: number
+    target_kind: string
+    access_tier_id: number
+    problem?: string
+  }[]
+  created?: NodeRelay[]
+}
+
 export interface DeployHold {
   held: boolean
   reason: string
@@ -4013,6 +4031,9 @@ export const api = {
       body,
     }),
   /** 给 Snell 入口换新 psk 并立刻下发(R04):共享凭据入口上真正收回凭据的办法,所有人一起换。 */
+  /** dry_run 为真只预览;否则整批写入,任何一条通不过时 409 + 预览、一条都不写。 */
+  relayBatch: (nodeId: number, body: { dry_run?: boolean; items: Record<string, unknown>[] }) =>
+    request<RelayBatchPlan>(`/api/nodes/${nodeId}/relays/batch`, { method: 'POST', body }),
   rotateInboundPSK: (id: number) =>
     request<{ inbound: NodeInbound; auto_deploy: boolean }>(`/api/inbounds/${id}/rotate-psk`, { method: 'POST' }),
   deleteInbound: (id: number) =>
