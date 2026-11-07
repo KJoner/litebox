@@ -69,6 +69,14 @@ function convergeText(e: AccessEntryInfo): { text: string; tone: 'ok' | 'warn' |
   const n = convergeNodes.value.find((x) => x.id === e.node_id)
   if (!n) return { text: '状态读不到', tone: 'warn' }
   if (n.status === 'OFFLINE') return { text: '机器离线:不能声称已经阻止任何连接,恢复连接后会优先下发', tone: 'bad' }
+  // 共享凭据(R04):节点上没有他的逐用户身份可删,配置状态「已同步」说明不了他连不上。
+  if (e.shared_credential)
+    return {
+      text:
+        '没有撤销:这个入口用共享 psk,节点上没有他的单独凭据 —— 只是订阅里不再给他这个入口,他手里的 psk 仍然能连。' +
+        '要真正收回:在入口上「轮换 psk」(所有人一起换、都要重新拉订阅)、改成逐用户凭据,或停用这个入口',
+      tone: 'bad',
+    }
   if (e.kind === 'MIERU')
     return { text: '要在入口管理里下发这个 Mieru 入口;下发后新连接会被拒绝,已建立的会话可能继续存活(mita reload 不断旧会话)', tone: 'warn' }
   switch (n.config_state) {
@@ -197,6 +205,12 @@ function save() {
     const singbox = [...new Set([...d.added, ...d.removed].filter((e) => e.kind === 'SINGBOX').map((e) => e.node_id))]
     if (singbox.length)
       impacts.push(`会自动重新下发 sing-box 的机器:${singbox.map(nodeNameOf).join('、')} —— 重启时这些机器上**全部入口**的在线连接会断一下`)
+    const shared = d.removed.filter((e) => e.shared_credential)
+    if (shared.length)
+      impacts.unshift(
+        `**${shared.map((e) => `${e.node_name}/${e.name}`).join('、')} 用的是共享 psk:移出授权收不回他手里的凭据**,` +
+          '只是订阅里不再出现;要真正收回请轮换那个入口的 psk 或停用它',
+      )
     const mieru = [...d.added, ...d.removed].filter((e) => e.kind === 'MIERU')
     if (mieru.length) impacts.push(`Mieru 入口要逐入口下发才生效(不会自动做):${mieru.map((e) => `${e.node_name}/${e.name}`).join('、')}`)
   }
@@ -219,11 +233,14 @@ async function doSave() {
     const res = await api.setUserAccess(props.userId, { access_mode: mode.value, grants: grantsBody() })
     lastRevoked.value = res.removed
     if (res.removed.length) void refreshConverge()
-    message.success(
-      res.mieru_pending.length
-        ? `已保存。另有 ${res.mieru_pending.length} 个 Mieru 入口需要到节点上逐个下发`
-        : '已保存',
-    )
+    if (res.shared_revoked?.length)
+      message.warning(`已保存,但 ${res.shared_revoked.length} 个共享 psk 入口没有真正收回凭据,见下方「撤权收敛」`)
+    else
+      message.success(
+        res.mieru_pending.length
+          ? `已保存。另有 ${res.mieru_pending.length} 个 Mieru 入口需要到节点上逐个下发`
+          : '已保存',
+      )
     await load()
     emit('changed')
   } catch (e) {

@@ -47,6 +47,10 @@ type EntryInfo struct {
 	Enabled  bool   `json:"enabled"`
 	// Restricted 是「仅指定用户」。
 	Restricted bool `json:"restricted"`
+	// SharedCredential 是「这个入口没有逐用户身份,所有人共用一份凭据」(共享 psk 的 Snell,R04)。
+	// 期望配置与节点上已生效的配置任何一边是共享就算:撤掉一个人的授权只让订阅里不再出现它,
+	// 他手里那份 psk 照样连得上 —— 节点配置可能一个字节都没变,配置状态仍是「已同步」。
+	SharedCredential bool `json:"shared_credential"`
 }
 
 // AccessView 是一个用户的入口授权现状。
@@ -146,6 +150,8 @@ func (s *Store) SetAccess(ctx context.Context, userID int64, mode string, grants
 type EntryAccess struct {
 	Restricted bool          `json:"restricted"`
 	Users      []GrantedUser `json:"users"`
+	// SharedCredential 见 EntryInfo:为真时改授权收不回已经拿到凭据的人(R04)。
+	SharedCredential bool `json:"shared_credential"`
 }
 
 // GrantedUser 是被直接授权的一个用户。
@@ -172,6 +178,13 @@ func (s *Store) EntryAccessOf(ctx context.Context, e EntryRef) (*EntryAccess, in
 	}
 	defer rows.Close()
 	out := &EntryAccess{Restricted: restricted, Users: []GrantedUser{}}
+	if e.Kind == EntrySingBox {
+		var shared int
+		if err := s.db.QueryRowContext(ctx, `SELECT `+sharedCredentialSQL+` FROM node_inbounds i WHERE i.id = ?`, e.ID).Scan(&shared); err != nil {
+			return nil, 0, err
+		}
+		out.SharedCredential = shared == 1
+	}
 	for rows.Next() {
 		var g GrantedUser
 		if err := rows.Scan(&g.ID, &g.UserCode, &g.DisplayName); err != nil {
@@ -290,15 +303,18 @@ func entryState(ctx context.Context, q queryer, e EntryRef) (int64, bool, error)
 	return nodeID, restricted == 1, err
 }
 
+// sharedCredentialSQL 是「这个 sing-box 入站是不是共享凭据」(列别名 i 指 node_inbounds)。
+const sharedCredentialSQL = `CASE WHEN (i.protocol = 'SNELL' AND i.snell_shared_psk = 1) OR (i.deployed_protocol = 'SNELL' AND i.deployed_snell_shared_psk = 1) THEN 1 ELSE 0 END`
+
 func (s *Store) grantInfos(ctx context.Context, q queryer, userID int64) ([]EntryInfo, error) {
 	return entryInfos(ctx, q, `
-		SELECT 'SINGBOX', i.id, i.display_name, i.node_id, n.name, i.enabled, i.restricted
+		SELECT 'SINGBOX', i.id, i.display_name, i.node_id, n.name, i.enabled, i.restricted, `+sharedCredentialSQL+`
 		  FROM user_inbound_grants g
 		  JOIN node_inbounds i ON i.id = g.entry_id AND i.deleted_at IS NULL
 		  JOIN nodes n ON n.id = i.node_id AND n.deleted_at IS NULL
 		 WHERE g.proxy_user_id = ? AND g.entry_kind = 'SINGBOX'
 		UNION ALL
-		SELECT 'MIERU', m.id, m.display_name, m.node_id, n.name, m.enabled, m.restricted
+		SELECT 'MIERU', m.id, m.display_name, m.node_id, n.name, m.enabled, m.restricted, 0
 		  FROM user_inbound_grants g
 		  JOIN node_mieru_inbounds m ON m.id = g.entry_id AND m.deleted_at IS NULL
 		  JOIN nodes n ON n.id = m.node_id AND n.deleted_at IS NULL
@@ -307,13 +323,13 @@ func (s *Store) grantInfos(ctx context.Context, q queryer, userID int64) ([]Entr
 
 func effectiveEntries(ctx context.Context, q queryer, userID int64) ([]EntryInfo, error) {
 	return entryInfos(ctx, q, `
-		SELECT 'SINGBOX', i.id, i.display_name, i.node_id, n.name, i.enabled, i.restricted
+		SELECT 'SINGBOX', i.id, i.display_name, i.node_id, n.name, i.enabled, i.restricted, `+sharedCredentialSQL+`
 		  FROM `+access.EffectiveInboundsView+` e
 		  JOIN node_inbounds i ON i.id = e.inbound_id
 		  JOIN nodes n ON n.id = i.node_id
 		 WHERE e.proxy_user_id = ?
 		UNION ALL
-		SELECT 'MIERU', m.id, m.display_name, m.node_id, n.name, m.enabled, m.restricted
+		SELECT 'MIERU', m.id, m.display_name, m.node_id, n.name, m.enabled, m.restricted, 0
 		  FROM user_effective_mieru_inbounds e
 		  JOIN node_mieru_inbounds m ON m.id = e.mieru_inbound_id
 		  JOIN nodes n ON n.id = m.node_id
@@ -329,11 +345,11 @@ func entryInfos(ctx context.Context, q queryer, query string, args ...any) ([]En
 	out := []EntryInfo{}
 	for rows.Next() {
 		var e EntryInfo
-		var enabled, restricted int
-		if err := rows.Scan(&e.Kind, &e.ID, &e.Name, &e.NodeID, &e.NodeName, &enabled, &restricted); err != nil {
+		var enabled, restricted, shared int
+		if err := rows.Scan(&e.Kind, &e.ID, &e.Name, &e.NodeID, &e.NodeName, &enabled, &restricted, &shared); err != nil {
 			return nil, err
 		}
-		e.Enabled, e.Restricted = enabled == 1, restricted == 1
+		e.Enabled, e.Restricted, e.SharedCredential = enabled == 1, restricted == 1, shared == 1
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool {

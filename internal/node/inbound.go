@@ -46,6 +46,8 @@ var (
 	ErrInboundPortConflict = nodeport.ErrConflict
 	// ErrInboundNotOnLanding 中转机上没有 sing-box,谈不上入站。
 	ErrInboundNotOnLanding = errors.New("中转角色的节点没有 sing-box 入站")
+	// ErrNotSnellInbound 表示要轮换 psk 的入口不是 Snell。
+	ErrNotSnellInbound = errors.New("只有 Snell 入口有 psk 可以轮换")
 )
 
 // Inbound 是一台机器上的一个 sing-box 入站。
@@ -698,6 +700,39 @@ func (s *Store) UpdateInbound(
 	}
 	updated, err := s.GetInbound(ctx, id)
 	return updated, effect, err
+}
+
+// RotateSnellPSK 给一个 Snell 入口换一把新的 psk(R04)。
+//
+// 共享凭据的入口上它是唯一真正收得回凭据的办法:节点上没有逐用户身份,撤掉一个人的授权
+// 节点配置一个字节都不变,他手里那份 psk 照样能用。代价是**所有人一起换**:下发之后旧 psk
+// 全部作废,每个仍有权限的人都要重新拉一次订阅。逐用户模式下 psk 也在每个人的配置里,换了同样要重新拉。
+// 只写库,下发由调用方触发(撤权是安全问题,调用方应当立刻标脏,而不是等管理员挑时机)。
+func (s *Store) RotateSnellPSK(ctx context.Context, id int64) (*Inbound, error) {
+	in, err := s.GetInbound(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if in.Protocol != singbox.ProtocolSnell {
+		return nil, ErrNotSnellInbound
+	}
+	psk, err := singbox.GenerateSnellKey()
+	if err != nil {
+		return nil, err
+	}
+	enc, err := s.cipher.Encrypt(psk)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE node_inbounds SET snell_psk_encrypted = ?, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL AND protocol = 'SNELL'`, enc, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrInboundNotFound
+	}
+	return s.GetInbound(ctx, id)
 }
 
 // DeleteInbound 软删除一个入站。

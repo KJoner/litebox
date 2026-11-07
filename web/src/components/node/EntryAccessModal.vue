@@ -24,6 +24,8 @@ const userIds = ref<number[]>([])
 const users = ref<ProxyUser[]>([])
 const saving = ref(false)
 const original = ref<{ restricted: boolean; ids: number[] }>({ restricted: false, ids: [] })
+/** 共享 psk 的 Snell(R04):改授权只改订阅可见性,收不回已经拿到 psk 的人。 */
+const shared = ref(false)
 
 const options = computed(() =>
   users.value.map((u) => ({ value: u.id, label: `${u.display_name}(${u.user_code})` })),
@@ -39,6 +41,7 @@ watch(
       const [ea, us] = await Promise.all([api.entryAccess(t.kind, t.id), api.users()])
       users.value = us.items
       restricted.value = ea.restricted
+      shared.value = ea.shared_credential
       userIds.value = ea.users.map((u) => u.id)
       original.value = { restricted: ea.restricted, ids: [...userIds.value] }
     } catch (e) {
@@ -66,7 +69,16 @@ function save() {
       : '这是 Mieru 入口,要在列表上「下发这个 Mieru 入口」之后才生效(不会自动做)',
     '直接授权越过的只是等级门槛:账号停用、过期、超额照样生效',
   ]
-  if (restricted.value && !userIds.value.length) impacts.unshift('**一个用户都没选:这个入口将对所有人不可用**')
+  if (shared.value) {
+    impacts.unshift(
+      '**这个入口用共享 psk:这里的改动只决定订阅里给谁这个入口,收不回已经拿到 psk 的人**。' +
+        '要真正收回,保存之后在入口上「轮换 psk」(所有人一起换)、改成逐用户凭据,或停用入口',
+    )
+    if (restricted.value && !userIds.value.length)
+      impacts.unshift('**一个用户都没选:订阅里对所有人不再出现,但持有 psk 的人仍然连得上**')
+  } else if (restricted.value && !userIds.value.length) {
+    impacts.unshift('**一个用户都没选:这个入口将对所有人不可用**')
+  }
   lbDangerConfirm({
     title: `保存「${t.name}」的入口授权?`,
     okText: '保存',
@@ -116,6 +128,10 @@ async function doSave(t: NonNullable<typeof props.target>) {
         开着时这个入口只经直接授权出现,等级继承与整机授权都不算。关着时按访问等级开放,
         下面的用户是在等级之外额外授权的。
       </div>
+      <div v-if="shared" class="ea__warn">
+        共享 psk 入口:节点上没有逐用户身份,这里只管订阅里给谁。拿到过 psk 的人(包括被移出的)都还连得上 ——
+        收回要在入口上「轮换 psk」,所有仍有权限的人都要重新拉一次订阅。
+      </div>
       <a-select
         v-model:value="userIds"
         mode="multiple"
@@ -148,5 +164,9 @@ async function doSave(t: NonNullable<typeof props.target>) {
 }
 .ea__bad {
   color: var(--bad);
+}
+.ea__warn {
+  font-size: var(--fs-xs);
+  color: var(--warn);
 }
 </style>

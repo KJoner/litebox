@@ -3664,6 +3664,11 @@ export interface AccessEntryInfo extends EntryRef {
   node_name: string
   enabled: boolean
   restricted: boolean
+  /**
+   * 共享凭据(共享 psk 的 Snell,R04):节点上没有逐用户身份,撤掉一个人的授权只让订阅里不再出现它,
+   * 他手里那份 psk 照样连得上 —— 节点配置可能一个字节都不变,配置状态仍是「已同步」。
+   */
+  shared_credential: boolean
 }
 export interface UserAccessView {
   access_mode: AccessMode
@@ -3682,10 +3687,14 @@ export interface AccessResult extends AccessDiff {
   marked_node_ids: number[]
   /** 归属变了的 Mieru 入口:要逐入口下发,不自动做 */
   mieru_pending: AccessEntryInfo[]
+  /** 被移出、而用的是共享凭据的入口:不能说成已撤销(R04) */
+  shared_revoked: AccessEntryInfo[]
 }
 export interface EntryAccess {
   restricted: boolean
   users: { id: number; user_code: string; display_name: string }[]
+  /** 见 AccessEntryInfo.shared_credential */
+  shared_credential: boolean
 }
 
 // —— 链路路径与快速组链(VNext CHAIN02–05)——
@@ -3957,6 +3966,9 @@ export const api = {
       method: 'PUT',
       body,
     }),
+  /** 给 Snell 入口换新 psk 并立刻下发(R04):共享凭据入口上真正收回凭据的办法,所有人一起换。 */
+  rotateInboundPSK: (id: number) =>
+    request<{ inbound: NodeInbound; auto_deploy: boolean }>(`/api/inbounds/${id}/rotate-psk`, { method: 'POST' }),
   deleteInbound: (id: number) =>
     request<{ deleted: boolean; needs_deploy: boolean }>(`/api/inbounds/${id}`, {
       method: 'DELETE',

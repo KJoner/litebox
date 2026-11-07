@@ -103,6 +103,7 @@ const actionNames: Record<string, string> = {
   'inbound.update': '编辑入口',
   'inbound.delete': '删除入口',
   'inbound.dest_check': '实测握手目标',
+  'inbound.rotate_psk': '轮换 Snell psk',
   'inbound.endpoints': '修改入口地址条目',
   'inbound.access': '修改入口授权',
   'mieru_inbound.create': '新增 Mieru 入口',

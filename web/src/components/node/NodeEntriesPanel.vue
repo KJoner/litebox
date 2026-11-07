@@ -450,6 +450,37 @@ function removeInbound(i: NodeInbound) {
   confirmRemoveInbound(i, nodeLabel.value, runWithBusy, () => emit('changed'))
 }
 
+/**
+ * 给 Snell 入口换一把新 psk(R04)。共享凭据入口上这是真正收回凭据的唯一办法:撤掉一个人的授权
+ * 节点配置一个字节都不变,他手里的 psk 照样能用。代价是所有人一起换,所以走 lbDangerConfirm 逐条列出来。
+ */
+function rotatePSK(i: NodeInbound) {
+  const impacts = [
+    i.snell_shared_psk
+      ? '**这个入口所有人共用一份 psk:换掉之后,每个人(包括仍有权限的)手里的旧配置都连不上,都要重新拉一次订阅**'
+      : '**psk 在每个人的 Snell 配置里:换掉之后所有人都要重新拉一次订阅**',
+    `会立刻重新下发「${nodeLabel.value}」的 sing-box —— 重启时这台机器上全部入口的在线连接会断一下`,
+    '被移出授权的人拉不到新 psk:这是收回共享凭据的办法。只想给少数人换的话,改成逐用户凭据更合适',
+  ]
+  lbDangerConfirm({
+    title: `轮换「${i.display_name}」的 psk?`,
+    okText: '轮换并下发',
+    okType: 'danger',
+    impacts,
+    onOk: () => {
+      runWithBusy(async () => {
+        try {
+          await api.rotateInboundPSK(i.id)
+          message.success('已换新 psk,这台机器会自动重新下发;下发完成后旧 psk 作废')
+          emit('changed')
+        } catch (e) {
+          message.error(e instanceof ApiError ? e.message : '轮换 psk 失败')
+        }
+      })
+    },
+  })
+}
+
 // ---------------------------------------------------------------- Mieru 入口
 //
 // 与 sing-box 那一组分开:它们改动之后的后果不一样(重启的是两个不同的进程),
@@ -1657,6 +1688,15 @@ onMounted(async () => {
               握手目标
             </a-button>
             <a-button size="small" type="link" @click="openChain(row.inbound)">出口</a-button>
+            <a-button
+              v-if="row.inbound.protocol === 'SNELL'"
+              size="small"
+              type="link"
+              :title="row.inbound.snell_shared_psk ? '共享凭据入口上收回凭据的唯一办法:所有人一起换' : '换新 psk,所有人都要重新拉订阅'"
+              @click="rotatePSK(row.inbound)"
+            >
+              轮换 psk
+            </a-button>
             <a-button size="small" type="link" danger @click="removeInbound(row.inbound)">
               删除
             </a-button>
@@ -1759,6 +1799,15 @@ onMounted(async () => {
               握手目标
             </a-button>
             <a-button size="small" type="link" @click="openChain(record.inbound)">出口</a-button>
+            <a-button
+              v-if="record.inbound.protocol === 'SNELL'"
+              size="small"
+              type="link"
+              :title="record.inbound.snell_shared_psk ? '共享凭据入口上收回凭据的唯一办法:所有人一起换' : '换新 psk,所有人都要重新拉订阅'"
+              @click="rotatePSK(record.inbound)"
+            >
+              轮换 psk
+            </a-button>
             <a-button size="small" type="link" danger @click="removeInbound(record.inbound)">
               删除
             </a-button>

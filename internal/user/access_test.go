@@ -153,3 +153,54 @@ func TestEntryAccessRestricted(t *testing.T) {
 		t.Fatal("直接授权越过了「账号停用」这个硬条件")
 	}
 }
+
+// R04:共享 psk 的 Snell 入口上撤权收不回凭据 —— 结果里单列出来,入口反查也要标出是共享凭据,
+// 界面据此不说「已撤销」。期望值与已生效值任何一边是共享都算。
+func TestSharedCredentialRevokeIsReported(t *testing.T) {
+	store, db := newTestStore(t)
+	nodes := seedNodes(t, db, 1)
+	in := inboundOf(t, db, nodes[0])
+	svc := NewService(store, &recordingTrigger{}, nil)
+	u, err := svc.Create(t.Context(), CreateParams{DisplayName: "甲"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetAccess(t.Context(), u.ID, AccessInherit, []EntryRef{{Kind: EntrySingBox, ID: in}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, sql := range map[string]string{
+		"期望是共享":    `UPDATE node_inbounds SET protocol = 'SNELL', snell_shared_psk = 1, snell_version = 5 WHERE id = ?`,
+		"已生效是共享":   `UPDATE node_inbounds SET protocol = 'VLESS_REALITY', snell_shared_psk = 0, deployed_protocol = 'SNELL', deployed_snell_shared_psk = 1 WHERE id = ?`,
+		"不是共享(对照)": `UPDATE node_inbounds SET protocol = 'VLESS_REALITY', snell_shared_psk = 0, deployed_protocol = 'VLESS_REALITY', deployed_snell_shared_psk = 0 WHERE id = ?`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := db.Exec(sql, in); err != nil {
+				t.Fatal(err)
+			}
+			wantShared := name != "不是共享(对照)"
+			ea, _, err := store.EntryAccessOf(t.Context(), EntryRef{Kind: EntrySingBox, ID: in})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ea.SharedCredential != wantShared {
+				t.Fatalf("入口反查 shared_credential = %v", ea.SharedCredential)
+			}
+			// 改成仅直接授权、一个都不给:甲被移出这个入口。
+			res, err := svc.SetAccess(t.Context(), u.ID, AccessDirectOnly, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wantShared && (len(res.SharedRevoked) != 1 || !res.SharedRevoked[0].SharedCredential) {
+				t.Fatalf("共享凭据入口的撤权没有单列:%+v", res)
+			}
+			if !wantShared && len(res.SharedRevoked) != 0 {
+				t.Fatalf("逐用户凭据的入口不该进 shared_revoked:%+v", res.SharedRevoked)
+			}
+			// 复原,给下一个子测试用。
+			if _, err := svc.SetAccess(t.Context(), u.ID, AccessInherit, []EntryRef{{Kind: EntrySingBox, ID: in}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

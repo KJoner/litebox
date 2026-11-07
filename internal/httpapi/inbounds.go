@@ -19,6 +19,7 @@ const (
 	actionInboundUpdate = "inbound.update"
 	actionInboundDelete = "inbound.delete"
 	actionInboundDest   = "inbound.dest_check"
+	actionInboundPSK    = "inbound.rotate_psk"
 )
 
 func (s *Server) inboundIDFromPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -224,6 +225,43 @@ func (s *Server) handleUpdateInbound(w http.ResponseWriter, r *http.Request) {
 		"inbound":      in,
 		"needs_deploy": effect.NeedsDeploy || effect.TierChanged,
 	})
+}
+
+// handleRotateInboundPSK 给 Snell 入口换一把新 psk 并立刻标脏下发(R04)。
+//
+// 这是共享凭据入口上真正收回凭据的办法,所以与改等级同档:立刻下发,不等管理员挑时机 ——
+// 拖着不下发,被移出的人手里的旧 psk 就一直能用。审计只写「换了」,不写 psk 本身。
+func (s *Server) handleRotateInboundPSK(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.inboundIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	in, err := s.nodes.Store().RotateSnellPSK(r.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, node.ErrNotSnellInbound):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			s.writeInboundError(w, err, "轮换 psk 失败")
+		}
+		return
+	}
+	if s.users != nil {
+		s.users.SyncNode(in.NodeID)
+	}
+	s.nodes.PropagateInboundChange(r.Context(), in.ID)
+	admin := adminFromContext(r.Context())
+	mode := "逐用户凭据"
+	if in.SnellSharedPSK {
+		mode = "共享凭据"
+	}
+	s.audit.Record(r.Context(), audit.Entry{
+		AdminUserID: &admin.ID, Action: actionInboundPSK,
+		TargetType: "inbound", TargetID: strconv.FormatInt(id, 10),
+		Detail:   "节点 " + in.NodeName + " 的 Snell 入口 " + in.DisplayName + "(" + mode + ")换了新 psk,旧 psk 下发后作废",
+		ClientIP: clientIP(r, s.trustProxy), Succeeded: true,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"inbound": in, "auto_deploy": true})
 }
 
 // handleDeleteInbound 软删除一个入口。

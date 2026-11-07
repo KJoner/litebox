@@ -317,6 +317,7 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/inbounds", s.handleCreateInbound)
 		authed.HandleFunc("PUT /api/inbounds/{id}", s.handleUpdateInbound)
 		authed.HandleFunc("DELETE /api/inbounds/{id}", s.handleDeleteInbound)
+		authed.HandleFunc("POST /api/inbounds/{id}/rotate-psk", s.handleRotateInboundPSK)
 		// Mieru 入口走独立路由:它与 sing-box 入站的 id 空间会撞,
 		// 共用路由要么加类型参数、要么靠请求体分辨,两种做法都会在
 		// 某处判断写漏时把请求打到另一类对象上。

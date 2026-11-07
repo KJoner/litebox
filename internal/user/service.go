@@ -185,6 +185,10 @@ type AccessResult struct {
 	// MieruPending 是归属变了的 Mieru 入口:Mieru 一个入口一个实例、逐入口下发,不自动做,
 	// 被移出的人的凭据要等那个入口下发一次才真正删掉 —— 界面要把这几条列出来。
 	MieruPending []EntryInfo `json:"mieru_pending"`
+	// SharedRevoked 是被移出、而用的是共享凭据的入口(R04):节点上没有他的逐用户身份可删,
+	// 他手里那份 psk 照样连得上。界面上不能把这几条说成「已撤销」,要给出轮换 psk、
+	// 改成逐用户凭据或停用入口三条真正收得回的路。
+	SharedRevoked []EntryInfo `json:"shared_revoked"`
 }
 
 // SetAccess 换掉一个用户的授权模式与直接授权集合。
@@ -198,7 +202,12 @@ func (s *Service) SetAccess(ctx context.Context, id int64, mode string, grants [
 }
 
 func (s *Service) applyAccessDiff(diff *AccessDiff) *AccessResult {
-	res := &AccessResult{AccessDiff: diff, MarkedNodes: []int64{}, MieruPending: []EntryInfo{}}
+	res := &AccessResult{AccessDiff: diff, MarkedNodes: []int64{}, MieruPending: []EntryInfo{}, SharedRevoked: []EntryInfo{}}
+	for _, e := range diff.Removed {
+		if e.SharedCredential {
+			res.SharedRevoked = append(res.SharedRevoked, e)
+		}
+	}
 	seen := map[int64]bool{}
 	for _, list := range [][]EntryInfo{diff.Added, diff.Removed} {
 		for _, e := range list {

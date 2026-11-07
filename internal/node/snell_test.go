@@ -440,3 +440,49 @@ func TestSharedInboundsForNodeUsesDeployedState(t *testing.T) {
 	}
 	_ = db
 }
+
+// R04:轮换 psk 换一把新的、格式合法的 psk;不是 Snell 的入口拒绝,不改任何东西。
+func TestRotateSnellPSK(t *testing.T) {
+	store, _ := newTestStore(t)
+	n, err := store.Create(t.Context(), defaultCreateParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := store.CreateInbound(t.Context(), n.ID, snellInboundParams(28443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := store.RotateSnellPSK(t.Context(), in.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.SnellPSK == in.SnellPSK {
+		t.Fatal("psk 没有变")
+	}
+	if err := singbox.ValidateSnellKey(rotated.SnellPSK); err != nil {
+		t.Fatalf("新 psk 格式不对:%v", err)
+	}
+
+	others, err := store.InboundsForNode(t.Context(), n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, o := range others {
+		if o.Protocol == singbox.ProtocolSnell {
+			continue
+		}
+		checked++
+		before := o.SnellPSK
+		if _, err := store.RotateSnellPSK(t.Context(), o.ID); !errors.Is(err, ErrNotSnellInbound) {
+			t.Fatalf("非 Snell 入口应被拒绝,得到 %v", err)
+		}
+		after, _ := store.GetInbound(t.Context(), o.ID)
+		if after.SnellPSK != before {
+			t.Fatal("被拒绝的轮换改了库")
+		}
+	}
+	if checked == 0 {
+		t.Fatal("测试数据里没有非 Snell 的入口,拒绝那一支没测到")
+	}
+}
