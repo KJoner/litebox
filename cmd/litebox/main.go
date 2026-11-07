@@ -114,11 +114,14 @@ func run() error {
 func cmdSSHKey(args []string) error {
 	fs := flag.NewFlagSet("ssh-key", flag.ExitOnError)
 	rotate := fs.Bool("rotate", false, "重新生成密钥(旧公钥在所有节点上立即失效)")
-	cfg, _, db, err := setup(fs, args)
+	cfg, logger, db, err := setup(fs, args)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	if err := ensureSchemaForWrite(context.Background(), cfg, db, logger); err != nil {
+		return err
+	}
 
 	cipher, err := crypto.NewCipher(cfg.Security.MasterKey)
 	if err != nil {
@@ -155,7 +158,10 @@ func cmdGenKey() error {
 	return nil
 }
 
-// setup 完成配置加载、日志、数据库连接与迁移,是各子命令的共同前置。
+// setup 完成配置加载、日志与数据库连接,是各子命令的共同前置。**它不迁移**(R01):
+// 迁移会改结构,必须在单活动主控锁之内做 —— 原来 setup 先迁移、serve 再取锁,
+// 于是旧主控还开着这个库时,新程序会先把结构改了,然后才因为拿不到锁退出。
+// 各命令按自己的需要调 migrateExclusive / ensureSchemaForWrite,只读的命令(check、backup)一律不迁移。
 func setup(fs *flag.FlagSet, args []string) (config.Config, *slog.Logger, *sql.DB, error) {
 	configPath := fs.String("config", "litebox.yaml", "配置文件路径")
 	if err := fs.Parse(args); err != nil {
@@ -173,11 +179,38 @@ func setup(fs *flag.FlagSet, args []string) (config.Config, *slog.Logger, *sql.D
 	if err != nil {
 		return cfg, logger, nil, err
 	}
-	if err := database.Migrate(db, logger); err != nil {
-		db.Close()
-		return cfg, logger, nil, err
-	}
 	return cfg, logger, db, nil
+}
+
+// migrateExclusive 先取单活动主控锁,再迁移,迁移完释放。取不到锁就一个迁移都不跑 ——
+// 另一个主控正开着这个库,结构在它脚下变掉,它写进去的东西会悄悄丢字段或失败。
+//
+// 只能约束同样认这把锁的进程:VNext 之前的二进制没有运行锁,升级时由部署脚本先停掉旧进程。
+func migrateExclusive(ctx context.Context, cfg config.Config, db *sql.DB, logger *slog.Logger) error {
+	lock, err := database.AcquireRunLock(ctx, db, cfg.Database.Path, logger, nil)
+	if err != nil {
+		return fmt.Errorf("迁移之前要独占这个库,而它正被别的主控使用(先停掉它,或让它自己完成迁移):%w", err)
+	}
+	defer lock.Release()
+	return database.Migrate(db, logger)
+}
+
+// ensureSchemaForWrite 给会写库、但本身不是迁移的小命令用(重置密码、面板公钥)。
+// 库已经是最新:直接用,不取锁 —— 主控开着时照样能重置密码,那是这两个命令最常见的用法。
+// 还有待执行的迁移:先取锁再迁移;取不到锁说明主控开着而它的版本与这个程序不一致,拒绝,
+// 不替它改结构。库比程序新:拒绝(与 Migrate 同一条规矩)。
+func ensureSchemaForWrite(ctx context.Context, cfg config.Config, db *sql.DB, logger *slog.Logger) error {
+	st, err := database.ReadSchemaStatus(ctx, db)
+	if err != nil {
+		return err
+	}
+	if st.Newer && os.Getenv(database.AllowNewerSchemaEnv) != "1" {
+		return fmt.Errorf("%w:数据库已迁移到版本 %d,而这个程序只认识到 %d", database.ErrSchemaNewer, st.Current, st.Latest)
+	}
+	if st.Pending == 0 {
+		return nil
+	}
+	return migrateExclusive(ctx, cfg, db, logger)
 }
 
 // openDatabase 按配置打开 SQLite 或 PostgreSQL(VNext DB01)。PG 连不上直接报错,不回落。
@@ -216,11 +249,14 @@ func newLogger(cfg config.LogConfig) *slog.Logger {
 
 func cmdMigrate(args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
-	_, logger, db, err := setup(fs, args)
+	cfg, logger, db, err := setup(fs, args)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	if err := migrateExclusive(context.Background(), cfg, db, logger); err != nil {
+		return err
+	}
 
 	if err := database.CheckIntegrity(db); err != nil {
 		return err
@@ -237,6 +273,9 @@ func cmdResetPassword(args []string) error {
 		return err
 	}
 	defer db.Close()
+	if err := ensureSchemaForWrite(context.Background(), cfg, db, logger); err != nil {
+		return err
+	}
 
 	password, err := crypto.GenerateToken(12)
 	if err != nil {
@@ -309,6 +348,22 @@ func cmdCheck(args []string) error {
 	if err != nil {
 		return err
 	}
+	// 只读(R01):check 常被拿来检查一份备份或刚恢复出来的库,它自己顺手迁移的话,
+	// 被检查的那份东西就已经不是原来的样子了。版本差几个由这里报,迁移留给 migrate / serve。
+	st, err := database.ReadSchemaStatus(context.Background(), db)
+	if err != nil {
+		return err
+	}
+	switch {
+	case st.Current == 0:
+		result.IntegrityOK = false
+		result.Problems = append(result.Problems, "这个库从没被 LiteBox 迁移过(没有 schema_migrations):不是一份 LiteBox 数据")
+	case st.Newer:
+		result.Problems = append(result.Problems, fmt.Sprintf("库的结构版本 %d 比这个程序认识的 %d 新:用与它匹配的程序版本", st.Current, st.Latest))
+		result.IntegrityOK = false
+	case st.Pending > 0:
+		fmt.Printf("待执行迁移  : %d 个(程序认识到 %d;启动主控或 litebox migrate 时执行,本命令不迁移)\n", st.Pending, st.Latest)
+	}
 	// 密文抽查(VNext DEPLOY07):备份里的主密钥必须解得开库里的密文 —— 只验证「库能打开」不够,
 	// 主密钥对不上的备份恢复出来,用户凭据与节点私钥全都用不了。
 	if cipher, cerr := crypto.NewCipher(cfg.Security.MasterKey); cerr == nil {
@@ -361,6 +416,7 @@ func cmdServe(args []string) error {
 
 	// 单活动主控锁(VNext §03.2):第二个实例拿不到就拒绝启动,不跑调度、不碰节点。
 	// PG 下锁所在的连接断了又取不回来时退出进程 —— 失去锁之后继续提交变更正是它要防的事。
+	// **先取锁再迁移**(R01):拿不到锁的那个实例一个迁移都不能跑。
 	runLock, err := database.AcquireRunLock(context.Background(), db, cfg.Database.Path, logger, func(err error) {
 		logger.Error("失去单活动主控锁,进程退出以免两个主控同时写", "error", err)
 		os.Exit(3)
@@ -369,6 +425,9 @@ func cmdServe(args []string) error {
 		return err
 	}
 	defer runLock.Release()
+	if err := database.Migrate(db, logger); err != nil {
+		return err
+	}
 	if cfg.Database.IsPostgres() {
 		logger.Info("存储引擎", "driver", "postgres")
 	} else {

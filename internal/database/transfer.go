@@ -520,3 +520,88 @@ func joinQuoted(cols []string) string {
 }
 
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// ImportPlan 是 `litebox db import` 的预检结论(R02)。**只读地算出来**:演练只看它,
+// 执行时先算一遍、没有问题才迁移目标并复制 —— 空库、归属与版本检查都在动目标库之前。
+type ImportPlan struct {
+	Source SchemaStatus `json:"source"`
+	Target SchemaStatus `json:"target"`
+	// TargetEmpty 表示目标还没有任何表(执行时从第一个迁移开始建)。
+	TargetEmpty bool `json:"target_empty"`
+	// MigrateTarget 是执行时目标要先跑的迁移个数。
+	MigrateTarget int `json:"migrate_target"`
+	// Tables / Rows 是源库里要复制的表数与行数。
+	Tables int   `json:"tables"`
+	Rows   int64 `json:"rows"`
+	// Problems 非空时执行一定会被拒绝 —— 演练要把它们全部报出来,而不是让执行在半路撞上第一个。
+	Problems []string `json:"problems"`
+}
+
+// OK 表示可以执行。
+func (p ImportPlan) OK() bool { return len(p.Problems) == 0 }
+
+// PlanImport 只读地检查一次 SQLite → PG 导入能不能做、会做什么。不建表、不迁移、不写种子数据。
+func PlanImport(ctx context.Context, src, dst *sql.DB) (ImportPlan, error) {
+	p := ImportPlan{Problems: []string{}}
+	var err error
+	if p.Source, err = ReadSchemaStatus(ctx, src); err != nil {
+		return p, fmt.Errorf("读源库版本: %w", err)
+	}
+	if p.Target, err = ReadSchemaStatus(ctx, dst); err != nil {
+		return p, fmt.Errorf("读目标库版本: %w", err)
+	}
+	switch {
+	case p.Source.Current == 0:
+		p.Problems = append(p.Problems, "源库从没被 LiteBox 迁移过,不是一份 LiteBox 数据")
+	case p.Source.Newer:
+		p.Problems = append(p.Problems, fmt.Sprintf("源库结构版本 %d 比这个程序认识的 %d 新:用与它匹配的程序版本导入", p.Source.Current, p.Source.Latest))
+	case p.Source.Pending > 0:
+		p.Problems = append(p.Problems, fmt.Sprintf("源库结构版本 %d,程序认识到 %d:先用这个版本的程序对源库(或它的副本)执行一次 litebox migrate",
+			p.Source.Current, p.Source.Latest))
+	}
+
+	switch {
+	case p.Target.Newer:
+		p.Problems = append(p.Problems, fmt.Sprintf("目标库结构版本 %d 比这个程序新,不是要导入的那个库", p.Target.Current))
+	case p.Target.Current == 0 && p.Target.Tables > 0:
+		p.Problems = append(p.Problems, fmt.Sprintf("目标库里已经有 %d 张表,却不是 LiteBox 迁移出来的:换一个专给 LiteBox 用的空库", p.Target.Tables))
+	case p.Target.Current == 0:
+		p.TargetEmpty = true
+		p.MigrateTarget = p.Target.Pending
+	default:
+		p.MigrateTarget = p.Target.Pending
+		tables, err := userTables(ctx, dst)
+		if err != nil {
+			return p, err
+		}
+		for _, t := range tables {
+			if seedTables[t] {
+				continue
+			}
+			var n int64
+			if err := dst.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoteIdent(t)).Scan(&n); err != nil {
+				return p, fmt.Errorf("数目标表 %s: %w", t, err)
+			}
+			if n > 0 {
+				p.Problems = append(p.Problems, fmt.Sprintf("%v:表 %s 里已有 %d 行。导入只往一个刚建好的空库里导,不会清库", ErrTargetNotEmpty, t, n))
+			}
+		}
+	}
+	if p.MigrateTarget > 0 && IsPostgres(dst) {
+		var can sql.NullBool
+		if err := dst.QueryRowContext(ctx, `SELECT has_schema_privilege(current_schema(), 'CREATE')`).Scan(&can); err != nil {
+			return p, fmt.Errorf("查目标库的建表权限: %w", err)
+		}
+		if !can.Valid || !can.Bool {
+			p.Problems = append(p.Problems, "连接目标库的账号在当前 schema 上没有 CREATE 权限,建不了表")
+		}
+	}
+
+	if rep, err := Inspect(ctx, src); err == nil {
+		p.Tables = len(rep.Tables)
+		p.Rows = rep.TotalRows
+	} else {
+		return p, fmt.Errorf("数源库: %w", err)
+	}
+	return p, nil
+}

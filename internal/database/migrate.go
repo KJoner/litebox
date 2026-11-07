@@ -276,3 +276,73 @@ func applyMigration(db *sql.DB, m Migration) error {
 	}
 	return tx.Commit()
 }
+
+// SchemaStatus 是一个库离这个程序还差几个迁移(R01)。
+type SchemaStatus struct {
+	// Current 是库里已应用的最高版本;0 表示这个库还没被 LiteBox 迁移过(schema_migrations 不存在或为空)。
+	Current int `json:"current"`
+	// Latest 是这个程序认识的最高版本。
+	Latest int `json:"latest"`
+	// Pending 是程序认识、库里还没应用的迁移个数。
+	Pending int `json:"pending"`
+	// Newer 表示库已被更新版本的程序迁移过。
+	Newer bool `json:"newer"`
+	// Tables 是 schema_migrations 之外已有的表数 —— Current 为 0 而它不为 0,说明这不是一个 LiteBox 库。
+	Tables int `json:"tables"`
+}
+
+// ReadSchemaStatus 只读地回答「这个库要不要迁移」:不建 schema_migrations、不取迁移锁、不写任何东西。
+//
+// 它存在的理由是迁移必须在单活动主控锁之内做,而「要不要拿那把锁」本身得先有一个不写库的答案 ——
+// 拿 Migrate 去试的话,试的那一下就已经把结构改了。
+func ReadSchemaStatus(ctx context.Context, db *sql.DB) (SchemaStatus, error) {
+	var st SchemaStatus
+	dir := sqliteMigrationDir
+	if IsPostgres(db) {
+		dir = postgresMigrationDir
+	}
+	migrations, err := loadMigrationsFrom(dir)
+	if err != nil {
+		return st, err
+	}
+	st.Latest = migrations[len(migrations)-1].Version
+
+	tables, err := userTables(ctx, db)
+	if err != nil {
+		return st, fmt.Errorf("列出库里的表: %w", err)
+	}
+	st.Tables = len(tables)
+	exists, err := migrationTableExists(ctx, db)
+	if err != nil {
+		return st, err
+	}
+	applied := map[int]string{}
+	if exists {
+		if applied, err = appliedMigrations(db); err != nil {
+			return st, err
+		}
+	}
+	for v := range applied {
+		st.Current = max(st.Current, v)
+	}
+	st.Newer = st.Current > st.Latest
+	for _, m := range migrations {
+		if _, ok := applied[m.Version]; !ok {
+			st.Pending++
+		}
+	}
+	return st, nil
+}
+
+func migrationTableExists(ctx context.Context, db *sql.DB) (bool, error) {
+	q := `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`
+	if IsPostgres(db) {
+		q = `SELECT COUNT(*) FROM information_schema.tables
+		      WHERE table_schema = current_schema() AND table_name = 'schema_migrations'`
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+		return false, fmt.Errorf("查 schema_migrations 是否存在: %w", err)
+	}
+	return n > 0, nil
+}

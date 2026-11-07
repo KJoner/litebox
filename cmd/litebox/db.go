@@ -75,18 +75,24 @@ func cmdDB(args []string) error {
 			return fmt.Errorf("目标库上有主控在跑,先停掉它:%w", err)
 		}
 		defer lock.Release()
-		if err := database.Migrate(dst, nil); err != nil {
-			return fmt.Errorf("准备目标结构: %w", err)
+		// 预检只读(R02):演练一个字节都不写;执行时也先过这一关,空库与版本检查都在迁移目标之前。
+		plan, err := database.PlanImport(ctx, src, dst)
+		if err != nil {
+			return err
 		}
 		if err := printInspect("源(SQLite)", src); err != nil {
 			return err
 		}
-		if err := printInspect("目标(PostgreSQL)", dst); err != nil {
-			return err
+		printImportPlan(plan)
+		if !plan.OK() {
+			return fmt.Errorf("预检没有通过(%d 个问题),源库与目标库都没有被改动", len(plan.Problems))
 		}
 		if !*execute {
-			fmt.Println("\n这是演练:没有写入任何东西。确认无误后加 --execute 再执行一次。")
+			fmt.Println("\n这是演练:源库与目标库都没有被改动(没有建表、没有迁移)。确认无误后加 --execute 再执行一次。")
 			return nil
+		}
+		if err := database.Migrate(dst, nil); err != nil {
+			return fmt.Errorf("准备目标结构: %w", err)
 		}
 		start := time.Now()
 		rep, err := database.CopyAll(ctx, src, dst, func(table string, rows int64) {
@@ -113,6 +119,12 @@ func cmdDB(args []string) error {
 			return err
 		}
 		defer dst.Close()
+		// 比对期间不能有主控在写目标库(R02):一边比一边被改,结论是哪一刻的都说不清。
+		lock, err := database.AcquireRunLock(ctx, dst, "", nil, nil)
+		if err != nil {
+			return fmt.Errorf("目标库上有主控在跑,先停掉它再比对:%w", err)
+		}
+		defer lock.Release()
 		return verifyAndReport(ctx, cfg, src, dst)
 
 	case "export":
@@ -181,6 +193,25 @@ func openSourceSQLite(path string) (*sql.DB, func(), error) {
 		return nil, nil, fmt.Errorf("主控正在用 %s,先停掉它或者对 litebox backup 做出来的快照操作:%w", path, err)
 	}
 	return db, lock.Release, nil
+}
+
+func printImportPlan(p database.ImportPlan) {
+	fmt.Printf("\n目标(PostgreSQL):")
+	switch {
+	case p.TargetEmpty:
+		fmt.Printf("空库,执行时先建全部结构(%d 个迁移)\n", p.MigrateTarget)
+	case p.MigrateTarget > 0:
+		fmt.Printf("结构版本 %d,执行时先迁移 %d 个版本到 %d\n", p.Target.Current, p.MigrateTarget, p.Target.Latest)
+	default:
+		fmt.Printf("结构版本 %d,已是最新\n", p.Target.Current)
+	}
+	fmt.Printf("执行时将复制 %d 张表、%d 行(迁移带进来的初始数据换成源库的)\n", p.Tables, p.Rows)
+	if len(p.Problems) > 0 {
+		fmt.Println("\n预检发现的问题:")
+		for _, pr := range p.Problems {
+			fmt.Println("  ✗ " + pr)
+		}
+	}
 }
 
 func printInspect(title string, db *sql.DB) error {

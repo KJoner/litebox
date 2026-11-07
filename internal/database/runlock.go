@@ -53,10 +53,16 @@ func AcquireRunLock(ctx context.Context, db *sql.DB, sqlitePath string, logger *
 	if err != nil {
 		return nil, err
 	}
-	stop := make(chan struct{})
-	go watchAdvisory(db, conn, stop, logger, onLost)
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		watchAdvisory(db, conn, stop, logger, onLost)
+	}()
+	// 释放要等看门狗把锁真的放掉再返回:否则紧接着接手的那个进程(升级时的新版本、测试里的下一步)
+	// 会在这几毫秒里撞上「锁被占用」。
 	return &RunLock{release: func() {
 		close(stop)
+		<-done
 	}}, nil
 }
 
