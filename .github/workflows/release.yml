@@ -2,7 +2,9 @@ name: release
 
 # 正式发布(VNext DEPLOY10):只在 v* tag 上跑。普通提交与 PR 只跑 ci.yml,不发布任何镜像。
 #
-#   测试(SQLite + PostgreSQL)→ 多架构镜像构建并推送 → 冒烟 → 核对推送后的 digest 与两种架构都在 →
+#   测试(SQLite + PostgreSQL)→ 多架构镜像构建,**只推候选标签** sha-<提交> → 核对 digest 与两种架构都在 →
+#   逐架构用各自的 digest 冒烟(版本、Agent 版本与发布清单一致、起一个主控看健康)→ 全部通过之后才把
+#   vX.Y.Z / latest 指到同一个 digest(复核 6.1:先验后提升,稳定标签不会指向一份没验过的镜像)→
 #   从镜像里取出主控与节点产物打成发布包 → SHA256SUMS + SBOM → GitHub Release
 #
 # 需要仓库 secrets:DOCKERHUB_USERNAME、DOCKERHUB_TOKEN(Docker Hub 的访问令牌,只给推送 kjoner/litebox 的权限)。
@@ -65,6 +67,8 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       digest: ${{ steps.build.outputs.digest }}
+      digest_amd64: ${{ steps.arch.outputs.amd64 }}
+      digest_arm64: ${{ steps.arch.outputs.arm64 }}
     steps:
       - uses: actions/checkout@v4
       - id: meta
@@ -72,14 +76,12 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME}"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          tags="${IMAGE}:${v},${IMAGE}:sha-${GITHUB_SHA::12}"
+          echo "candidate=${IMAGE}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           if [[ "$v" == *-* ]]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            tags="${tags},${IMAGE}:latest"
           fi
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -87,38 +89,68 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: build
+        name: 构建并只推候选标签
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.candidate }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
           provenance: mode=max
           sbom: true
-      - name: 核对推送后的 digest 与架构
+      - id: arch
+        name: 核对推送后的 digest 与架构
         run: |
           want="${{ steps.build.outputs.digest }}"
-          got="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          got="$(docker buildx imagetools inspect "${{ steps.meta.outputs.candidate }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           [ "$want" = "$got" ] || { echo "推送后的 digest $got 与构建的 $want 不一致"; exit 1; }
+          idx="$(docker buildx imagetools inspect "${IMAGE}@${want}" --raw)"
           for arch in amd64 arm64; do
-            docker buildx imagetools inspect "${IMAGE}@${want}" | grep -q "linux/${arch}" || { echo "缺少 linux/${arch}"; exit 1; }
+            pd="$(printf '%s' "$idx" | jq -r --arg a "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest' | head -n 1)"
+            [ -n "$pd" ] || { echo "缺少 linux/${arch}"; exit 1; }
+            echo "${arch}=${pd}" >> "$GITHUB_OUTPUT"
           done
-      - name: 冒烟:用推送的那个 digest 起一个主控
+      - name: 逐架构冒烟(各用自己的 digest;arm64 走 QEMU)
         run: |
-          ref="${IMAGE}@${{ steps.build.outputs.digest }}"
-          docker run --rm "$ref" version
-          key="$(docker run --rm "$ref" genkey 2>/dev/null)"
-          docker run -d --name smoke -e LITEBOX_MASTER_KEY="$key" -p 127.0.0.1:18080:8080 "$ref"
-          for i in $(seq 1 30); do
-            curl -fsS 127.0.0.1:18080/api/health && break
-            sleep 2
+          v="${{ steps.meta.outputs.version }}"
+          for arch in amd64 arm64; do
+            if [ "$arch" = amd64 ]; then pd="${{ steps.arch.outputs.amd64 }}"; else pd="${{ steps.arch.outputs.arm64 }}"; fi
+            ref="${IMAGE}@${pd}"
+            echo "== linux/${arch} ${pd}"
+            out="$(docker run --rm --platform "linux/${arch}" "$ref" version)"
+            echo "$out"
+            case "$out" in *"$v"*) ;; *) echo "主控版本不是 $v"; exit 1 ;; esac
+            # 包里的 Agent 与发布清单要说同一个版本(复核 6.1)。
+            av="$(docker run --rm --platform "linux/${arch}" --entrypoint "/opt/litebox/assets/agent/litebox-agent-linux-${arch}" "$ref" -version)"
+            [ "$av" = "litebox-agent $v" ] || { echo "Agent 版本是「$av」,不是 $v"; exit 1; }
+            cid="$(docker create --platform "linux/${arch}" "$ref")"
+            docker cp "$cid:/opt/litebox/assets/release-manifest.json" "manifest-${arch}.json"
+            docker rm "$cid" >/dev/null
+            jq -e --arg v "$v" '.version == $v' "manifest-${arch}.json" >/dev/null || { echo "发布清单的版本不是 $v"; exit 1; }
+            key="$(docker run --rm --platform "linux/${arch}" "$ref" genkey 2>/dev/null)"
+            docker run -d --name "smoke-${arch}" --platform "linux/${arch}" -e LITEBOX_MASTER_KEY="$key" -p "127.0.0.1:0:8080" "$ref"
+            port="$(docker port "smoke-${arch}" 8080/tcp | head -1 | sed 's/.*://')"
+            ok=0
+            for i in $(seq 1 90); do
+              if curl -fsS "127.0.0.1:${port}/api/health" | grep -q '"status":"ok"'; then ok=1; break; fi
+              sleep 2
+            done
+            [ "$ok" = 1 ] || { docker logs "smoke-${arch}" | tail -40; exit 1; }
+            docker exec "smoke-${arch}" sh -c 'test -s /opt/litebox/assets/release-manifest.json'
+            docker rm -f "smoke-${arch}"
           done
-          curl -fsS 127.0.0.1:18080/api/health | grep -q '"status":"ok"'
-          docker exec smoke sh -c 'test -s /opt/litebox/assets/release-manifest.json'
-          docker rm -f smoke
+      - name: 验过之后才提升 vX.Y.Z / latest(指向同一个 digest)
+        run: |
+          v="${{ steps.meta.outputs.version }}"
+          digest="${{ steps.build.outputs.digest }}"
+          tags=(-t "${IMAGE}:${v}")
+          [ "${{ steps.meta.outputs.prerelease }}" = "true" ] || tags+=(-t "${IMAGE}:latest")
+          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${digest}"
+          got="$(docker buildx imagetools inspect "${IMAGE}:${v}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [ "$got" = "$digest" ] || { echo "${IMAGE}:${v} 指向 $got,不是验过的 $digest"; exit 1; }
 
   release:
     needs: image
@@ -163,7 +195,11 @@ jobs:
           flags=()
           [ "${{ needs.image.outputs.prerelease }}" = "true" ] && flags+=(--prerelease)
           cat > notes.md <<EOF
-          镜像:\`${IMAGE}:${v}\`(digest \`${{ needs.image.outputs.digest }}\`,linux/amd64 + linux/arm64)
+          镜像:\`${IMAGE}:${v}\`(索引 digest \`${{ needs.image.outputs.digest }}\`)
+          - linux/amd64:\`${{ needs.image.outputs.digest_amd64 }}\`
+          - linux/arm64:\`${{ needs.image.outputs.digest_arm64 }}\`
+
+          两种架构都用各自的 digest 冒烟过(arm64 在 QEMU 下);vX.Y.Z / latest 是验过之后才指过来的。
 
           源码提交:\`${GITHUB_SHA}\`。节点产物的版本、能力与 sha256 见发布包里的 \`assets/release-manifest.json\`。
           部署与升级见仓库根目录的 \`README.md\` 与 \`deploy/\` 目录。

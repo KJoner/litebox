@@ -3753,11 +3753,11 @@ SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/desig
   只允许同一块网卡更新,跨在分界上的冻结在旧网卡的数并标 boundary。`SetPinned` 不记分界;
 * **Subscription-Userinfo 的 upload + download 等于计费流量**(`subscription.UserInfoTraffic`):默认规则原样,
   否则按原始上下行比例拆开,upload 向下取整;两条订阅路径共用;
-* **Agent 样本按各自的 boot_id 去重**(`agent_boot_marks`,迁移 0055,每台留 16 次开机);丢弃数按累计值差值加;
+* **Agent 样本按各自的 boot_id 去重**(`agent_boot_marks`,迁移 0055;水位按时效裁,见 v23.2 的 F04);丢弃数按累计值差值加;
   Agent 只有拿到能解析、带 accepted、handled 对得上的应答才清队列;
 * **额度自动迁移在事务里重读重判、按旧状态 CAS**,不冲掉管理员的停用;
 * **用户额度周期边界只有 `user.CycleRule` 一处**(迁移 0056):NONE / MONTHLY(1–31,超出当月落到月末)/
-  DAYS(以对齐日为基准、按时区的日历日切);改规则不追溯;
+  DAYS(以对齐日为基准、按时区的日历日切);改规则默认下一周期生效,见 v23.2 的 F01;
 * **重建被引用的 SQLite 表要在迁移第一行写 `-- litebox:foreign-keys-off`**:迁移框架在专用连接上关外键执行、
   提交前跑 foreign_key_check。外键开着时 DROP TABLE 会把 ON DELETE CASCADE 的子表级联删光;
 * **批量转发(一个中转配多个落地)与线性多跳都是整批的**:预览不写库;提交时任何一条 / 一段通不过就都不写。
@@ -3770,6 +3770,47 @@ SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/desig
   (pg_app_password 给快捷 PG 的 uid 70);原生 `upgrade.sh` 只支持 SQLite,失败时把库与旧二进制一起恢复。
   回归在 `scripts/test/deploy/`;
 * 转发规则查询里 CASE 的每个分支都写成整数(PG 不认布尔与整数混用)。
+
+## VNext 发布收尾约束(v23.2)
+
+依据 `docs/开发计划/v23.2.0/LiteBox_v23.1_Production_Readiness_Review.md`(本地文档)。迁移 0057–0058。
+
+* **撤权意图与业务改动同一个事务提交(G01,`internal/applyintent`)**。凡是改变「谁在这台机器上能认证」的改动 ——
+  用户新建 / 修改 / 停用 / 重置流量 / 换凭据 / 删除 / 改授权 / 入口授权 / 立即生效的计费规则、额度与到期的状态迁移、
+  入口改等级、换 Snell psk、Mieru 入口改等级 —— 都在**自己的事务里**调 `applyintent.Record` 把机器写进 apply_queue;
+  意图写不进去整个改动回滚。之后只用 `WakeIntent` 叫醒协调器(不再写一次库)。**只给 MarkDirty 加错误返回值消不掉
+  「提交之后、入队之前退出」的窗口**。新加一种这样的改动,要在它的事务里补 Record;
+* **「队列里没有这一行」不等于已下发**:撤权界面看 sing-box 的配置状态与 Mieru 入口的实际生效哈希
+  (`GET /api/mieru-inbounds/apply-states`,`Service.MieruApplyState`);
+* **失去运行锁之后已经在跑的任务一步远程操作都不再做(G02)**:每一条远程操作(命令、通道、传文件、读文件、重开连接)
+  之前 `sshx.checkFence` 问两件事 —— 此刻持不持锁、锁还是不是这个任务开始时那一代(`database.FenceGeneration`,
+  每次(重新)取得锁加一)。协调器每一轮、后台任务、长操作开始时 `sshx.PinFence`。重连重试之前再问一次;
+  四种下发的回滚先问闸门(`fencedRollback`),失去管理权时不回滚并写明;因失锁停下的下发不标部署失败、不回写队列、
+  不推送。测试用 `internal/sshx/sshtest` 的进程内 SSH 服务端在任务中途注入失锁;
+* **暂停状态读不出来按暂停处理(G03)**:`ReadHold` 返回错误时 `HeldOrUnknown` 为真,界面说原因、不让解除;
+  暂停期间关闭主控不冲刷排着的下发。恢复与回滚(Docker 与原生)**只有暂停写进去了才启动**;写不进去、或版本太旧
+  没有这个开关时主控保持停止,由管理员 `litebox.sh start [--without-hold]` / `systemctl start` 显式启动。
+  **恢复之后的「配置状态」说明不了节点上实际跑的是什么**:恢复出来的库里「已下发的版本」也来自同一份快照,与库里
+  应有的配置正好相等,于是显示「已同步」—— 而节点上跑的是快照之后撤过权的新配置(djj-ph 实测撞到)。解除暂停之前
+  用「比对配置」读节点上的实际配置,确认框里照这个意思写;
+* **部署脚本里被 `if` / `||` 调用的函数每一步都显式判断**(G04):那时 set -e 不生效。`temp_pg_start` 曾经把
+  pg_restore 失败报成成功;能在停服之前做完的准备(取新版本部署文件、暂存新二进制、另存当前一套)都在停服之前做,
+  停服之后的失败一律走回滚。`LITEBOX_FAULT=<点>` 只给故障注入回归用(`scripts/test/deploy/`,run.sh 在 Git Bash 上也能跑);
+* **改重置规则默认下一周期生效(F01,迁移 0057)**:新规则记在 `reset_next_*`,当前规则跑到它自己的下一个重置点时
+  照常重置并换上(`user.CycleResetSQL`,自动与手工重置共用);立即生效是显式的 `reset_apply=NOW`,记下
+  `reset_rule_since`,那之前的边界不算 —— 不追溯清零。判据只在 `user.PlanCycleChange`,保存之前经
+  `POST /api/users/{id}/reset-rule/preview` 给出后果。表单只在重置那一栏改过时才发重置规则(原样发回会撤销排好的规则);
+* **固定天数的对齐日存当地日期 YYYY-MM-DD**,按 `reset_timezone` 的零点解释;RFC3339 时刻仍收(按时刻换算);
+* **多跳写入前先摘掉路径上每一跳的去向再逐段写(F02)**:在最终的图上校验,合法的重排不会被新旧边混着的图判成环;
+  摘掉只动去向,链路凭据复用。中间跳也是别的入口的出口时预览提醒。逐台下发不是跨机器的事务,结果逐台写
+  DEPLOYED / FAILED / NOT_RUN,不说「入口没动、旧路径不受影响」。Mieru 入口作为多跳起点在界面与接口上明确拒绝;
+* **主机流量的边界桶记 `boundary_since`(F03,迁移 0058)**:只有同一块网卡、而且仍在那一次切换之后才能更新;
+  换回原网卡(A → B → A)是一次新的切换,冻结值不动。存量边界桶按冻结处理;
+* **Agent 开机水位按时效裁、不按个数(F04)**:留到那次开机的样本都过了时效(maxAge + futureSkew + 1 小时);
+  个数上限 256,满了时没有水位的开机的样本拒收并写明原因,不删还在时效里的水位;
+* **发布先验后提升(6.1)**:release.yml 只推候选标签 `sha-<提交>`,逐架构用各自的 digest 冒烟(主控版本、Agent 版本
+  与发布清单一致、起一个主控看健康,arm64 在 QEMU 下),通过之后才把 vX.Y.Z / latest 指到同一个 digest;
+  Dockerfile 的 assets 阶段把 VERSION 传给 build-agent.sh。
 
 ## 工程约束
 
@@ -4654,5 +4695,15 @@ VNext 复核收尾(v23.1,分支 fix/vnext-review,依据本地 `docs/开发计划
   **SSH / Agent 共用执行器与 Agent 结构化任务(长轮询 / WSS、apply_config 等)、客户端快速组链与候选组没有做**
 * 批次四 客户端与验收 —— R09 序列化修正与证据分级已完成;**四种新客户端真机、64 / 128 MiB 24 小时、参考环境页面性能、
   真实后端纵向流程没有做**(需要真实设备与长时间运行);djj-ph 只读核对已做(节点上没有 S7 之前的快照)
+
+VNext 发布收尾(v23.2,分支 fix/v23.2-readiness,依据本地 `docs/开发计划/v23.2.0/LiteBox_v23.1_Production_Readiness_Review.md`):
+
+* 代码修复 —— 已完成:G01(意图与改动同一个事务)、G02(任务世代闸门)、G03(暂停状态与恢复路径)、G04(临时 PG
+  错误传播与停服后失败回滚)、F01(下一周期生效与当地日期,迁移 0057)、F02(多跳重排与逐台状态)、F03(边界桶,
+  迁移 0058)、F04(开机水位按时效)、6.1(Agent 版本注入、先验后提升)
+* 真实环境:djj-ph 上由唯一测试主控跑了 G01(停用后提交、未下发即强杀主控 → 重启后经一次重试落到节点,
+  旧凭据新连接被拒、别的用户照常)与 G03(恢复撤权之前的快照 + 暂停,150 秒内没有任何下发,旧凭据仍被拒)
+* **没做**:生产数据副本演练、真实 systemd / 真实 Linux 主机上的部署脚本、PG 失锁真机注入、Mieru / Snell / 多跳真机、
+  参考环境页面性能、64 / 128 MiB 24 小时、四种新客户端真机;Agent 命令执行 / WSS、客户端候选组按复核报告延期
 
 未完成当前阶段前,不要提前开发后续阶段的功能。

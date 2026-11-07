@@ -25,6 +25,9 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS assets
 ARG GOPROXY
 ENV GOPROXY=${GOPROXY}
+# Agent 把版本编进二进制(litebox-agent -version、上报里的 version),要与发布清单里写的同一个 ——
+# 不传的话 build-agent.sh 编成 dev,清单却写着发布版本,包里两个说法对不上(复核 6.1)。
+ARG VERSION=dev
 RUN apk add --no-cache bash git curl coreutils tar
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -33,7 +36,7 @@ COPY . .
 # sing-box 用固定版本与固定构建标签(with_v2ray_api 是整套流量统计的前提,见 CLAUDE.md);
 # mita / mieru / realm 是上游发布的原样二进制,脚本里写死了版本与校验和。
 RUN bash scripts/build-probe.sh \
- && bash scripts/build-agent.sh \
+ && VERSION="${VERSION}" bash scripts/build-agent.sh \
  && bash scripts/build-singbox.sh \
  && bash scripts/fetch-mieru.sh \
  && bash scripts/fetch-realm.sh
