@@ -251,7 +251,10 @@ export interface LinearChainPlan {
   ok: boolean
   problems: string[]
   segments: { from_inbound_id: number; from_name: string; from_node: string; to_kind: string; to_id: number; to_name: string; error?: string }[]
-  deploy_order: { node_id: number; node_name: string; why: string }[]
+  /** 不拦提交的提醒(F02):中间跳也被别的入口当成出口,改它的去向会一起改变那些入口的路径 */
+  warnings?: string[]
+  /** state 只在执行之后有:DEPLOYED 已下发 / FAILED 这一台失败 / NOT_RUN 在失败那一台之后,没有下发 */
+  deploy_order: { node_id: number; node_name: string; why: string; state?: 'DEPLOYED' | 'FAILED' | 'NOT_RUN'; error?: string }[]
   note: string
 }
 

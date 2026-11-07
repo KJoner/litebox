@@ -55,11 +55,13 @@ type HostTrafficInstaller interface {
 
 // Service 组合节点存储、SSH 连接池与部署器,对外提供节点操作。
 type Service struct {
-	store       *Store
-	pool        *sshx.Pool
-	deployer    *deployment.Deployer
-	deployStore *deployment.Store
-	users       UserProvider
+	store *Store
+	// linearDeploy 只给测试用:替换多跳逐台下发里的那一步(真实的 Deploy 要连节点)。
+	linearDeploy func(ctx context.Context, nodeID int64) (deployment.Result, error)
+	pool         *sshx.Pool
+	deployer     *deployment.Deployer
+	deployStore  *deployment.Store
+	users        UserProvider
 	// binaries 是 sing-box 二进制来源。
 	//
 	// 服务自己也要它:一个带出口的 Mieru 入口要借道本机 sing-box,

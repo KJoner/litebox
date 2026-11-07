@@ -13,6 +13,8 @@ import { lbDangerConfirm } from '@/components/lb'
  *
  * 「预览」逐段校验(与单跳组链同一份规则),给出从落地到入口的下发顺序;「应用」整条路径一次写入,
  * 再按那个顺序逐台下发 —— 每一台都会重启 sing-box,确认框里逐台写出来。
+ * 逐台下发**不是跨机器的事务**(F02):某一台失败时逐台显示「已下发 / 失败 / 没下发」,
+ * 不说「入口没动、旧路径不受影响」—— 中间跳先换了出口的话,旧路径的出口也跟着变了。
  */
 const props = defineProps<{
   open: boolean
@@ -45,6 +47,9 @@ const middle = ref<number[]>([])
 const landingKind = ref<'INBOUND' | 'EXTERNAL'>('INBOUND')
 const landingId = ref<number | null>(null)
 const plan = ref<LinearChainPlan | null>(null)
+/** 应用之后(逐台下发停在中途时)每一台的状态。 */
+const applied = ref<LinearChainPlan | null>(null)
+const stateText: Record<string, string> = { DEPLOYED: '已下发', FAILED: '失败', NOT_RUN: '没有下发' }
 const busy = ref(false)
 const dragFrom = ref<number | null>(null)
 
@@ -56,6 +61,7 @@ watch(
     landingKind.value = 'INBOUND'
     landingId.value = null
     plan.value = null
+    applied.value = null
   },
 )
 watch([middle, landingKind, landingId], () => (plan.value = null), { deep: true })
@@ -113,7 +119,8 @@ function apply() {
     okType: 'danger',
     impacts: [
       `**按这个顺序逐台下发,每一台都会重启 sing-box、断开它上面全部入口的在线连接**:${p.deploy_order.map((s) => s.node_name).join(' → ')}`,
-      '某一台下发失败就停下:它之前的已经下发,入口那一侧还没动,用户连的仍是原来的配置',
+      '某一台下发失败就停下:它之前的机器已经换上新配置,它与之后的还没有。这不是跨机器的事务 —— 中间跳先换了出口的话,还没下发的入口的旧路径出口也跟着变了',
+      ...(p.warnings ?? []),
       p.note,
     ],
     onOk: () => {
@@ -134,6 +141,11 @@ async function doApply() {
     if (e instanceof ApiError && e.status === 409 && e.payload && typeof e.payload === 'object') {
       plan.value = e.payload as LinearChainPlan
       message.warning('路径通不过,一段都没有写入')
+    } else if (e instanceof ApiError && e.status === 502 && e.payload && typeof e.payload === 'object' && 'plan' in e.payload) {
+      // 路径已经写进库,逐台下发停在中途:把每一台的状态摆出来,修好之后再应用一次同一条路径。
+      applied.value = (e.payload as { plan: LinearChainPlan }).plan
+      message.error('逐台下发停在中途,每台机器的状态见下面')
+      emit('changed')
     } else {
       message.error(e instanceof ApiError ? e.message : '应用失败')
     }
@@ -225,8 +237,21 @@ async function doApply() {
         <div v-for="p in plan.problems.filter((x) => !plan!.segments.some((s) => s.error && x.includes(s.error)))" :key="p" class="lc__bad">
           {{ p }}
         </div>
+        <div v-for="w in plan.warnings ?? []" :key="w" class="lc__warn">{{ w }}</div>
         <div v-if="plan.ok" class="lc__ok">
           可以应用。下发顺序(从落地到入口):{{ plan.deploy_order.map((s) => s.node_name).join(' → ') }}。{{ plan.note }}
+        </div>
+      </template>
+      <template v-if="applied">
+        <div class="lc__hint">路径已经写入。逐台下发的结果(从落地到入口):</div>
+        <ul class="lc__segs">
+          <li v-for="s in applied.deploy_order" :key="s.node_id" :class="{ lc__bad: s.state === 'FAILED' }">
+            {{ s.node_name }}:{{ stateText[s.state ?? ''] ?? '未知' }}<span v-if="s.error">({{ s.error }})</span>
+          </li>
+        </ul>
+        <div class="lc__warn">
+          已下发的机器上是新配置;没下发的入口仍把流量送往它原来的下一跳 —— 那一跳要是已经下发,旧路径的出口也变了。
+          修好之后再应用一次同一条路径。
         </div>
       </template>
     </div>
@@ -299,6 +324,10 @@ async function doApply() {
 }
 .lc__ok {
   color: var(--ok);
+  font-size: var(--fs-sm);
+}
+.lc__warn {
+  color: var(--warn);
   font-size: var(--fs-sm);
 }
 </style>

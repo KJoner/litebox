@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/deployment"
@@ -15,10 +16,17 @@ import (
 // 每一跳都是上一跳的链式出口,所以这条路径就是几次 SetChain;编辑器要做的是**把它们当成一件事**:
 //   - 每一段的校验与单跳组链一字不差(落地已部署、协议能当链式出口、没停用、不成环、不同机),
 //     另外要求整条路径上的机器两两不同 —— A → B → A 是一个环,只是隔了一跳;
+//   - 先在事务里摘掉路径上每一跳原来的出口,再逐段写(复核 F02):逐段写在新旧边混着的图上校验,
+//     会把一次合法的重排(A → B → C → D 改成 A → C → B → D)误判成环 —— 写 C → B 的那一刻,
+//     旧的 B → C 还在。摘掉只动去向、不动链路凭据(chain_code 原样留着,写回去时复用);
+//     最后一段写完的那一刻,图就是最终的图,环只会出现在真正成环的那一段上;
 //   - 预览在事务里逐段写(每段一个保存点,一段失败不影响看下一段),最后整体回滚;
 //   - 提交时整条路径在一个事务里写入,任何一段通不过就一段都不写;
 //   - 下发从落地往入口走,每台机器只下发一次:每一台下发时,它的出口那一跳都已经就绪
 //     (与 ApplyChain「先落地后中转」同一条道理,checkChainTargetsReady 会把顺序反了的拦下来)。
+//     **这不是跨机器的事务**:某一台失败时,它之前的机器已经换上新配置。还没下发的入口仍按旧配置
+//     把流量送往它原来的下一跳 —— 那一跳要是已经换了出口,旧路径的出口也跟着变了。所以结果逐台写出
+//     「已下发 / 失败 / 没下发」,不说「用户连的仍是原来的配置」。
 //
 // 入口这一版只收 sing-box 入站:Mieru 入口的出口要经本机 sing-box 的回环 socks,改它要下发三样
 // (MieruChainModal),它的第一跳仍走那个对话框,后面的路径可以从它的落地起在这里编。
@@ -54,12 +62,25 @@ type LinearDeployStep struct {
 	NodeID   int64  `json:"node_id"`
 	NodeName string `json:"node_name"`
 	Why      string `json:"why"`
+	// State 只在执行时有:DEPLOYED(已下发,节点上是新配置)/ FAILED(这一台失败)/ NOT_RUN(在失败那一台之后,没有下发)。
+	State string `json:"state,omitempty"`
+	// Error 是这一台失败的原因(第一行)。
+	Error string `json:"error,omitempty"`
 }
+
+// 每一台的执行状态。
+const (
+	LinearStepDeployed = "DEPLOYED"
+	LinearStepFailed   = "FAILED"
+	LinearStepNotRun   = "NOT_RUN"
+)
 
 // LinearPlan 是预览(或执行)的结果。
 type LinearPlan struct {
-	OK       bool            `json:"ok"`
-	Problems []string        `json:"problems"`
+	OK       bool     `json:"ok"`
+	Problems []string `json:"problems"`
+	// Warnings 不拦提交:比如路径上的中间跳也被别的入口当成出口 —— 改它的去向会一起改变那些入口的路径。
+	Warnings []string        `json:"warnings"`
 	Segments []LinearSegment `json:"segments"`
 	// DeployOrder 是提交之后的下发顺序(从落地到入口)。每一步都会重启那台机器的 sing-box。
 	DeployOrder []LinearDeployStep `json:"deploy_order"`
@@ -73,7 +94,7 @@ type LinearPlan struct {
 var ErrLinearInvalid = errors.New("这条多跳路径通不过,一段都没有写入")
 
 func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, commit bool) (*LinearPlan, error) {
-	plan := &LinearPlan{Problems: []string{}, Segments: []LinearSegment{}, DeployOrder: []LinearDeployStep{},
+	plan := &LinearPlan{Problems: []string{}, Warnings: []string{}, Segments: []LinearSegment{}, DeployOrder: []LinearDeployStep{},
 		Note: "链路拨测只验 TCP;UDP 在这条路径上没有实测"}
 	if len(c.Hops) == 0 {
 		plan.Problems = append(plan.Problems, "至少要有一个入口")
@@ -122,6 +143,19 @@ func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, comm
 		return plan, nil
 	}
 
+	// 中间跳被别的入口当成出口:改它的去向会一起改变那些入口的路径(一个入站只有一个出口)。只提醒不拦。
+	if err := s.sharedHopWarnings(ctx, tx, hops, plan); err != nil {
+		return nil, err
+	}
+	// 先摘掉路径上每一跳原来的去向(F02):在最终的图上校验,而不是新旧边混着的图。只动去向,链路凭据不动。
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, h := range hops {
+		if _, err := tx.ExecContext(ctx, `UPDATE node_inbounds SET chain_target_kind = '', chain_target_inbound_id = NULL,
+			chain_target_external_id = NULL, updated_at = ? WHERE id = ?`, now, h.ID); err != nil {
+			return nil, err
+		}
+	}
+
 	for i, from := range hops {
 		seg := LinearSegment{FromInbound: from.ID, FromName: from.DisplayName, FromNodeID: from.NodeID, FromNode: from.NodeName}
 		kind, target := ChainTargetInbound, int64(0)
@@ -166,6 +200,40 @@ func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, comm
 	return plan, nil
 }
 
+// sharedHopWarnings 列出把路径上某个中间跳当成出口、而自己不在这条路径上的入口。
+func (s *Store) sharedHopWarnings(ctx context.Context, tx *sql.Tx, hops []*Inbound, plan *LinearPlan) error {
+	inPath := map[int64]bool{}
+	for _, h := range hops {
+		inPath[h.ID] = true
+	}
+	for _, mid := range hops[1:] {
+		rows, err := tx.QueryContext(ctx, `SELECT i.id, i.display_name, n.name FROM node_inbounds i
+			  JOIN nodes n ON n.id = i.node_id
+			 WHERE i.chain_target_kind = 'INBOUND' AND i.chain_target_inbound_id = ? AND i.deleted_at IS NULL`, mid.ID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id int64
+			var name, node string
+			if err := rows.Scan(&id, &name, &node); err != nil {
+				rows.Close()
+				return err
+			}
+			if !inPath[id] {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+					"「%s / %s」也把「%s / %s」当成出口:这条路径改了它的去向,那个入口的流量也会跟着走新的路径",
+					node, name, mid.NodeName, mid.DisplayName))
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PlanLinearChain 只读地预览一条多跳路径(在事务里试写、整体回滚)。
 func (s *Store) PlanLinearChain(ctx context.Context, c LinearChain) (*LinearPlan, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -193,21 +261,34 @@ func (s *Store) SetChainPath(ctx context.Context, c LinearChain) (*LinearPlan, e
 	return plan, tx.Commit()
 }
 
-// ApplyLinearChain 写入整条路径,再从落地往入口逐台下发。一台失败就停下并说清楚:它之前的机器已经下发过,
-// 它与它之后的(更靠近入口的)还没有 —— 用户连的入口仍跑着旧配置,不会被半条路径接管。
+// ApplyLinearChain 写入整条路径,再从落地往入口逐台下发。一台失败就停下,逐台写出状态(F02):
+// 它之前的机器已经换上新配置,它与它之后的还没有。这**不是**跨机器的事务 —— 还没下发的入口仍按旧配置
+// 把流量送往原来的下一跳,那一跳要是已经换了出口,旧路径的出口也跟着变了;界面照实说,不说「没受影响」。
+// 修好之后再应用一次同一条路径:库里已经是这条路径,已经下发过、配置一致的机器不会再重启。
 func (s *Service) ApplyLinearChain(ctx context.Context, c LinearChain) (*LinearPlan, error) {
 	ctx = context.WithoutCancel(ctx)
 	plan, err := s.store.SetChainPath(ctx, c)
 	if err != nil {
 		return plan, err
 	}
+	deploy := s.Deploy
+	if s.linearDeploy != nil {
+		deploy = s.linearDeploy
+	}
+	for i := range plan.DeployOrder {
+		plan.DeployOrder[i].State = LinearStepNotRun
+	}
 	for i, step := range plan.DeployOrder {
-		result, err := s.Deploy(ctx, step.NodeID)
+		result, err := deploy(ctx, step.NodeID)
 		plan.Deploys = append(plan.Deploys, result)
 		if err != nil {
-			return plan, fmt.Errorf("第 %d 步下发「%s」失败(%s):%w。在它之前的 %d 台已经下发;入口那一侧还没动,"+
-				"用户连的仍是原来的配置 —— 修好之后再应用一次这条路径", i+1, step.NodeName, step.Why, err, i)
+			plan.DeployOrder[i].State = LinearStepFailed
+			plan.DeployOrder[i].Error = firstLine(err.Error(), 200)
+			return plan, fmt.Errorf("第 %d 步下发「%s」失败(%s):%w。在它之前的 %d 台已经换上新配置,它与之后的 %d 台还没有;"+
+				"还没下发的入口仍把流量送往原来的下一跳 —— 那一跳要是已经下发,旧路径的出口也变了。修好之后再应用一次这条路径",
+				i+1, step.NodeName, step.Why, err, i, len(plan.DeployOrder)-i)
 		}
+		plan.DeployOrder[i].State = LinearStepDeployed
 	}
 	return plan, nil
 }

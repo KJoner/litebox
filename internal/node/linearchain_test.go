@@ -1,8 +1,12 @@
 package node
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/litebox/litebox/internal/deployment"
 )
 
 // chainTriple 在 chainPair 之外再建一台中间跳:host → mid → landing。
@@ -97,6 +101,123 @@ func TestLinearChainLimits(t *testing.T) {
 		}
 		if plan.OK || len(plan.Problems) == 0 {
 			t.Errorf("%s 应当被拒绝:%+v", name, plan)
+		}
+	}
+}
+
+// chainQuad 在 chainTriple 之外再建一台中间跳:host、mid、mid2、landing。
+func chainQuad(t *testing.T) (svc *Service, a, b, c, d int64) {
+	t.Helper()
+	svc, host, firstMid, landing := chainTriple(t)
+	p := defaultCreateParams()
+	p.Name, p.DisplayName, p.Host, p.ProxyPort = "node-mid-two", "第二中间跳", "192.0.2.40", 24446
+	secondMid, err := svc.store.Create(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markDeployedWithCurrent(t, svc, secondMid.ID)
+	return svc, only(t, host).ID, only(t, firstMid).ID, only(t, secondMid).ID, only(t, landing).ID
+}
+
+// 复核 F02(审查回归):已有的 A → B → C → D,把两个中间跳对调成 A → C → B → D。最终的图没有环,
+// 但逐段写在新旧边混着的图上 —— 写 C → B 时旧的 B → C 还在 —— 原来会被误判成环。
+func TestReviewLinearChainReorderExistingPath(t *testing.T) {
+	svc, a, b, c, d := chainQuad(t)
+	oldPath := LinearChain{Hops: []int64{a, b, c}, LandingKind: ChainTargetInbound, LandingID: d}
+	if _, err := svc.store.SetChainPath(t.Context(), oldPath); err != nil {
+		t.Fatalf("create original A -> B -> C -> D: %v", err)
+	}
+	var codeB string
+	svc.store.db.QueryRow(`SELECT chain_code FROM node_inbounds WHERE id = ?`, b).Scan(&codeB)
+	newPath := LinearChain{Hops: []int64{a, c, b}, LandingKind: ChainTargetInbound, LandingID: d}
+	plan, err := svc.store.PlanLinearChain(t.Context(), newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.OK {
+		t.Fatalf("valid reordered path A -> C -> B -> D rejected: %v", plan.Problems)
+	}
+	// 预览不写库:旧路径原样。
+	if chainTarget(t, svc, a) != b || chainTarget(t, svc, b) != c || chainTarget(t, svc, c) != d {
+		t.Fatal("预览改了库")
+	}
+	if _, err := svc.store.SetChainPath(t.Context(), newPath); err != nil {
+		t.Fatalf("commit valid reordered path: %v", err)
+	}
+	if chainTarget(t, svc, a) != c || chainTarget(t, svc, c) != b || chainTarget(t, svc, b) != d {
+		t.Fatal("reordered path did not replace all edges")
+	}
+	// 摘掉再写回只动去向:链路凭据不换(换了就要白白多下发一轮、所有链路一起断)。
+	var codeB2 string
+	svc.store.db.QueryRow(`SELECT chain_code FROM node_inbounds WHERE id = ?`, b).Scan(&codeB2)
+	if codeB == "" || codeB2 != codeB {
+		t.Fatalf("重排之后中间跳的链路代码变了:%q → %q", codeB, codeB2)
+	}
+	// 真正的环仍然拦得住:落地反指入口(D → A)之后,A → B → C → D 就是一个环。
+	svc.store.db.Exec(`UPDATE node_inbounds SET chain_target_kind = 'INBOUND', chain_target_inbound_id = ? WHERE id = ?`, a, d)
+	if plan, _ := svc.store.PlanLinearChain(t.Context(), oldPath); plan.OK {
+		t.Fatal("落地反指入口时应当判成环")
+	}
+}
+
+// F02:中间跳也被别的入口当成出口时,预览要说出来(改它的去向会一起改变那些入口的路径);不拦提交。
+func TestLinearChainWarnsAboutSharedMiddleHop(t *testing.T) {
+	svc, a, b, c, d := chainQuad(t)
+	// c → b 是另一条已有的链:b 是它的出口。
+	if err := svc.store.SetChain(t.Context(), c, ChainTargetInbound, b); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := svc.store.PlanLinearChain(t.Context(), LinearChain{Hops: []int64{a, b}, LandingKind: ChainTargetInbound, LandingID: d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.OK || len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "第二中间跳") {
+		t.Fatalf("应当提醒共享的中间跳:%+v", plan)
+	}
+}
+
+// F02:逐台下发不是跨机器的事务。某一台失败时逐台写出状态 —— 之前的已下发、这一台失败、之后的没下发;
+// 再应用一次同一条路径会接着做(库里已经是这条路径)。
+func TestLinearChainPartialDeployReportsEachMachine(t *testing.T) {
+	svc, a, b, _, d := chainQuad(t)
+	_ = b
+	path := LinearChain{Hops: []int64{a, b}, LandingKind: ChainTargetInbound, LandingID: d}
+	var called []int64
+	failOn := int64(0)
+	svc.linearDeploy = func(_ context.Context, nodeID int64) (deployment.Result, error) {
+		called = append(called, nodeID)
+		if nodeID == failOn {
+			return deployment.Result{}, errors.New("拨测失败")
+		}
+		return deployment.Result{}, nil
+	}
+	plan, err := svc.store.PlanLinearChain(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failOn = plan.DeployOrder[1].NodeID // 中间跳失败
+	plan, err = svc.ApplyLinearChain(t.Context(), path)
+	if err == nil {
+		t.Fatal("中间跳失败时应当报错")
+	}
+	states := []string{plan.DeployOrder[0].State, plan.DeployOrder[1].State, plan.DeployOrder[2].State}
+	if states[0] != LinearStepDeployed || states[1] != LinearStepFailed || states[2] != LinearStepNotRun {
+		t.Fatalf("逐台状态 = %v", states)
+	}
+	if len(called) != 2 || plan.DeployOrder[1].Error == "" {
+		t.Fatalf("失败之后不该再下发入口:called=%v err=%q", called, plan.DeployOrder[1].Error)
+	}
+	if !strings.Contains(err.Error(), "旧路径的出口也变了") || strings.Contains(err.Error(), "仍是原来的配置") {
+		t.Fatalf("报错不该说「用户连的仍是原来的配置」:%v", err)
+	}
+	// 修好之后再应用一次:三台都下发。
+	failOn, called = 0, nil
+	if plan, err = svc.ApplyLinearChain(t.Context(), path); err != nil || len(called) != 3 {
+		t.Fatalf("重试:%v called=%v", err, called)
+	}
+	for _, st := range plan.DeployOrder {
+		if st.State != LinearStepDeployed {
+			t.Fatalf("重试之后 = %+v", plan.DeployOrder)
 		}
 	}
 }
