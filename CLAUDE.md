@@ -3727,6 +3727,50 @@ SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/desig
   与发布清单里各组件的版本;没有清单时如实说;
 * **兼容预览与真正下发走同一份条目**(`Service.CompatFor` 复用 `buildEntries`,权限过滤已经做完)。
 
+## VNext 复核收尾约束(v23.1)
+
+依据 `docs/开发计划/v23.1.0/LiteBox_VNext_Code_Review_and_CC_Tasks.md`(本地文档)。迁移 0053–0056。
+
+* **迁移只在单活动主控锁之内做**:`setup` 不迁移;serve 先取锁再迁移,`migrate` 取锁迁移,`reset-password` /
+  `ssh-key` / `deploy-hold` 只在确有待执行迁移时才取锁迁移(库已最新时主控开着也能用),`check` / `backup` **只读**。
+  「要不要迁移」用 `database.ReadSchemaStatus` 回答(不建 schema_migrations);
+* **`litebox db import` 的演练一个字节都不写**:`database.PlanImport` 只读预检(版本、空库、外来库、建表权限),
+  执行时预检通过才迁移目标;`db verify` 比对期间持有目标库的运行锁;
+* **PG 运行锁一失联就关上写入闸门**(`database.CheckWriteFence`,serve 装上;`sshx.Fence` 让 `Pool.Do / TryDo` 在
+  连节点之前问它,四种下发在「替换配置」那一步再问一次)。不能只靠稍后的 `os.Exit`;
+* **标脏先落库**(`apply_queue`,迁移 0054):成功按 seq 删;节点没被动过的失败转 RETRY(1 分钟起翻倍、封顶 30 分钟),
+  已经回滚过的(`sshx.RemoteFailure` 或有回滚结果)转 BLOCKED、不再自动重启服务;启动时把欠着的捞回来。
+  节点接口带 `pending_applies`,撤权要等它清空才算落到节点上;
+* **用户变更要把 Mieru 机器一起标脏**(`access.MieruNodesForUser`,`User.EffectiveMieruNodeIDs`,
+  `MieruTrigger.MarkMieruDirty`):`user_effective_nodes` 只认 sing-box 入口。`DeployMieruChanged` **只 reload
+  只动了用户的入口**(形状哈希不变;存量行按 deployed_* 判),端口 / 传输层 / 出口也改了的不碰、点名;
+  最后一个用户被移出时换上主密钥派生的占位用户(`crypto.Cipher.Derive`),手动下发仍按 ErrMieruNoUsers 拒绝;
+* **恢复主控库之后暂停自动下发**(`deploy_hold`,`litebox deploy-hold on|off|status`):协调器只排队、巡检只报告,
+  管理员核对之后在后台顶部解除。旧快照里「快照之后撤掉的人」又是有效的;
+* **共享 psk 的 Snell 入口撤权收不回凭据**:授权结果与入口反查带 `shared_credential`,撤权结果单列 `shared_revoked`,
+  界面不说「已撤销」;收回的办法是 `POST /api/inbounds/{id}/rotate-psk`(立刻标脏,所有人一起换);
+* **主机流量的桶记来源网卡**(迁移 0053):换网卡(管理员改选或默认路由自己变了)时先记分界再写桶;整个在分界之前的桶
+  只允许同一块网卡更新,跨在分界上的冻结在旧网卡的数并标 boundary。`SetPinned` 不记分界;
+* **Subscription-Userinfo 的 upload + download 等于计费流量**(`subscription.UserInfoTraffic`):默认规则原样,
+  否则按原始上下行比例拆开,upload 向下取整;两条订阅路径共用;
+* **Agent 样本按各自的 boot_id 去重**(`agent_boot_marks`,迁移 0055,每台留 16 次开机);丢弃数按累计值差值加;
+  Agent 只有拿到能解析、带 accepted、handled 对得上的应答才清队列;
+* **额度自动迁移在事务里重读重判、按旧状态 CAS**,不冲掉管理员的停用;
+* **用户额度周期边界只有 `user.CycleRule` 一处**(迁移 0056):NONE / MONTHLY(1–31,超出当月落到月末)/
+  DAYS(以对齐日为基准、按时区的日历日切);改规则不追溯;
+* **重建被引用的 SQLite 表要在迁移第一行写 `-- litebox:foreign-keys-off`**:迁移框架在专用连接上关外键执行、
+  提交前跑 foreign_key_check。外键开着时 DROP TABLE 会把 ON DELETE CASCADE 的子表级联删光;
+* **批量转发(一个中转配多个落地)与线性多跳都是整批的**:预览不写库;提交时任何一条 / 一段通不过就都不写。
+  多跳下发从落地往入口逐台做,每台一次;最多四台机器、机器两两不同;
+* **客户端兼容按证据分级**(`subscription/evidence.go`):可生成 / 已解析 / 已真连,按「客户端 × 协议 × TLS 形态 × 传输层」
+  查一张只登记实测组合的表;「没有写法」写成 LiteBox 适配器的缺口,不写成客户端没有这个能力。
+  一行一条的格式里名字不能当格式串,固定组名与内置策略名先占位,ALPN 这类表达不了的参数跳过并说明;
+* **部署脚本**:`litebox.sh update` 是状态机(预检 → 副本演练 → 停写最终恢复点 → 换版本 → 启动 → 就绪,任何失败走同一个
+  回滚);PG 的 verify-backup 在 --internal 网络的临时库里真的恢复一遍;已有 PG 支持应用库级恢复;秘密文件按组件授权
+  (pg_app_password 给快捷 PG 的 uid 70);原生 `upgrade.sh` 只支持 SQLite,失败时把库与旧二进制一起恢复。
+  回归在 `scripts/test/deploy/`;
+* 转发规则查询里 CASE 的每个分支都写成整数(PG 不认布尔与整数混用)。
+
 ## 工程约束
 
 * 不假设 VLESS 用户可动态热更新,用户变化必须通过配置生成和安全重启生效;
@@ -4598,5 +4642,17 @@ VNext 大版本(需求基线 `docs/vnext/requirements.md`,批次 S0–S8;S8 的 
 * S7 协议与客户端 —— 已完成(迁移 0052:自建 Trojan + REALITY,真机部署拨测与 mihomo / sing-box 真连;
   `?format=surge|loon|quanx|stash` 实验性输出,支持不了的逐条写原因;能力矩阵现算、版本可查;用户详情的客户端兼容预览。
   Surge / Loon / Quantumult X / Stash 没有人工验证;Hysteria2 / TUIC / AnyTLS 自建没有做(精简构建不含 QUIC))
+
+VNext 复核收尾(v23.1,分支 fix/vnext-review,依据本地 `docs/开发计划/v23.1.0/LiteBox_VNext_Code_Review_and_CC_Tasks.md`):
+
+* 批次一 数据与权限 —— 已完成(R01 迁移在锁内、R02 只读演练、R04 共享 psk 撤权语义与轮换、R05 Mieru 自动下发与持久化队列、
+  R06 换网卡不改旧账、R07 订阅头计费口径、C01 额度迁移 CAS)
+* 批次二 部署恢复与 Agent —— 已完成(R03 升级 / 验证 / 恢复状态机与暂停自动下发、R08 Agent 按开机去重与确认、
+  C02 写入闸门、C03 秘密文件按组件授权并在 Linux 权限语义下复现与验证;已发布的 v23.0.0-rc.1 双架构 digest 都能起、
+  arm64 在 QEMU 下健康检查通过)
+* 批次三 原定功能 —— 部分完成:固定天数周期(迁移 0056)、一个中转配多个落地、线性多跳编辑已完成;
+  **SSH / Agent 共用执行器与 Agent 结构化任务(长轮询 / WSS、apply_config 等)、客户端快速组链与候选组没有做**
+* 批次四 客户端与验收 —— R09 序列化修正与证据分级已完成;**四种新客户端真机、64 / 128 MiB 24 小时、参考环境页面性能、
+  真实后端纵向流程没有做**(需要真实设备与长时间运行);djj-ph 只读核对已做(节点上没有 S7 之前的快照)
 
 未完成当前阶段前,不要提前开发后续阶段的功能。
