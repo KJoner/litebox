@@ -76,7 +76,7 @@ func (s *Syncer) SyncNode(ctx context.Context, nodeID int64, install bool) (Sync
 			return err
 		}
 		result.TotalRx, result.TotalTx = dump.TotalRx, dump.TotalTx
-		result.RowsUpserted, err = s.store.Upsert(ctx, nodeID, dump)
+		result.RowsUpserted, err = s.store.ApplyDump(ctx, &st, facts.Iface, dump, time.Now().UTC())
 		return err
 	})
 

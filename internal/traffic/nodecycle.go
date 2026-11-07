@@ -144,6 +144,8 @@ type hostSample struct {
 	syncedAt  string
 	lastError string
 	iface     string
+	// ifaceSince 是当前这块计量网卡开始计量的时刻(unix 秒,0 = 没换过),见 hosttraffic.Store.Upsert。
+	ifaceSince int64
 }
 
 // NodePeriod 是一个节点当前额度周期的时间边界。
@@ -275,6 +277,11 @@ func buildNodeCycleUsageWith(q NodeCycleQuery, period NodePeriod, uplink, downli
 		}
 		used = estimate + hostBytes
 		quality, note = hostQuality(host, now)
+		// 本周期里换过计量网卡(R06):交界那个小时桶只保留了旧网卡记下的部分,数字比两块网卡的真实合计略少。
+		if note == "" && host.ifaceSince > hostStart(period.Start, q.SourceSince).Unix() {
+			note = "本周期内换过计量网卡(" + time.Unix(host.ifaceSince, 0).UTC().Format("2006-01-02 15:04") +
+				" UTC 起计量 " + host.iface + "),交界那一小时只计了换之前那块网卡的部分"
+		}
 	}
 
 	usage := NodeCycleUsage{
@@ -618,20 +625,20 @@ func (q *Querier) hostSamples(ctx context.Context, starts map[int64]time.Time) (
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	srows, err := q.db.QueryContext(ctx, `SELECT node_id, installed, synced_at, last_error, iface FROM host_traffic_state`)
+	srows, err := q.db.QueryContext(ctx, `SELECT node_id, installed, synced_at, last_error, iface, iface_since FROM host_traffic_state`)
 	if err != nil {
 		return nil, err
 	}
 	defer srows.Close()
 	for srows.Next() {
-		var id int64
+		var id, since int64
 		var installed int
 		var synced, lastErr, iface string
-		if err := srows.Scan(&id, &installed, &synced, &lastErr, &iface); err != nil {
+		if err := srows.Scan(&id, &installed, &synced, &lastErr, &iface, &since); err != nil {
 			return nil, err
 		}
 		if h := out[id]; h != nil {
-			h.installed, h.syncedAt, h.lastError, h.iface = installed == 1, synced, lastErr, iface
+			h.installed, h.syncedAt, h.lastError, h.iface, h.ifaceSince = installed == 1, synced, lastErr, iface, since
 		}
 	}
 	return out, srows.Err()
