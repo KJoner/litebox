@@ -161,6 +161,6 @@ jobs:
           镜像:\`${IMAGE}:${v}\`(digest \`${{ needs.image.outputs.digest }}\`,linux/amd64 + linux/arm64)
 
           源码提交:\`${GITHUB_SHA}\`。节点产物的版本、能力与 sha256 见发布包里的 \`assets/release-manifest.json\`。
-          部署与升级见 \`docs/vnext/deploy.md\`,数据库迁移见 \`docs/vnext/migration.md\`。
+          部署与升级见仓库根目录的 \`README.md\` 与 \`deploy/\` 目录。
           EOF
           gh release create "$v" dist/* --title "LiteBox $v" --notes-file notes.md "${flags[@]}"
