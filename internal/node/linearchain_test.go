@@ -90,10 +90,11 @@ func TestLinearChainLimits(t *testing.T) {
 	svc, host, mid, landing := chainTriple(t)
 	a, m, l := only(t, host).ID, only(t, mid).ID, only(t, landing).ID
 	for name, c := range map[string]LinearChain{
-		"没有入口":    {LandingKind: ChainTargetInbound, LandingID: l},
-		"没有落地":    {Hops: []int64{a}},
-		"超过四台机器":  {Hops: []int64{a, m, a, m}, LandingKind: ChainTargetInbound, LandingID: l},
-		"同一台机器两次": {Hops: []int64{a, a}, LandingKind: ChainTargetInbound, LandingID: l},
+		"没有入口":     {LandingKind: ChainTargetInbound, LandingID: l},
+		"没有落地":     {Hops: []int64{a}},
+		"超过四台机器":   {Hops: []int64{a, m, a, m}, LandingKind: ChainTargetInbound, LandingID: l},
+		"同一台机器两次":  {Hops: []int64{a, a}, LandingKind: ChainTargetInbound, LandingID: l},
+		"Mieru 起点": {EntryKind: "MIERU", Hops: []int64{a}, LandingKind: ChainTargetInbound, LandingID: l},
 	} {
 		plan, err := svc.store.PlanLinearChain(t.Context(), c)
 		if err != nil {

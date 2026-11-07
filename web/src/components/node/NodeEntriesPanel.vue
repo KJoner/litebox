@@ -1722,6 +1722,7 @@ onMounted(async () => {
           <template v-else-if="row.kind === 'mieru'">
             <a-button size="small" type="link" @click="openEditMieru(row.mieru)">编辑</a-button>
             <a-button size="small" type="link" @click="openMieruChain(row.mieru)">出口</a-button>
+            <a-button size="small" type="link" disabled title="Mieru 入口暂不能作为多跳的起点:它的出口要经本机 sing-box 的回环 socks,改出口要按顺序下发三样(落地 → 本机 sing-box → 这个入口)。要链式出口用「出口」">多跳</a-button>
             <a-button size="small" type="link" @click="deployMieru(row.mieru)">下发</a-button>
             <a-button size="small" type="link" danger @click="removeMieru(row.mieru)">删除</a-button>
           </template>
@@ -1842,6 +1843,7 @@ onMounted(async () => {
             <a-button size="small" type="link" @click="openMieruChain(record.mieru)">
               出口
             </a-button>
+            <a-button size="small" type="link" disabled title="Mieru 入口暂不能作为多跳的起点:它的出口要经本机 sing-box 的回环 socks,改出口要按顺序下发三样(落地 → 本机 sing-box → 这个入口)。要链式出口用「出口」">多跳</a-button>
             <!-- 「下发」逐入口一个,不是整台机器一起:一个入口一个 mita 实例。 -->
             <a-button size="small" type="link" @click="deployMieru(record.mieru)">
               下发

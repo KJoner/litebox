@@ -37,6 +37,10 @@ const MaxLinearMachines = 4
 
 // LinearChain 是一条要写入的线性路径。
 type LinearChain struct {
+	// EntryKind 是起点入口的种类。只收 SINGBOX(空串同义);MIERU 明确拒绝 —— 它的出口要经本机 sing-box 的
+	// 回环 socks、改出口要下发三样,这一版的逐台下发编排不了它。不收这一项的话,一个 Mieru 入口的 id
+	// 会被当成同号的 sing-box 入站去解析,那是另一个毫不相干的入口。
+	EntryKind string `json:"entry_kind,omitempty"`
 	// Hops[0] 是用户连的入口,Hops[i] 的出口是 Hops[i+1];都是 sing-box 入站 id。
 	Hops []int64 `json:"hops"`
 	// Landing 是最后一跳的出口:另一台机器上的入站,或者一条外部代理。
@@ -96,6 +100,11 @@ var ErrLinearInvalid = errors.New("这条多跳路径通不过,一段都没有�
 func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, commit bool) (*LinearPlan, error) {
 	plan := &LinearPlan{Problems: []string{}, Warnings: []string{}, Segments: []LinearSegment{}, DeployOrder: []LinearDeployStep{},
 		Note: "链路拨测只验 TCP;UDP 在这条路径上没有实测"}
+	if c.EntryKind != "" && c.EntryKind != "SINGBOX" {
+		plan.Problems = append(plan.Problems, "Mieru 入口暂不能作为多跳的起点:它的出口要经本机 sing-box 的回环 socks,"+
+			"改出口要按顺序下发落地、本机 sing-box 与这个入口三样 —— 用入口上的「出口」设置链式出口")
+		return plan, nil
+	}
 	if len(c.Hops) == 0 {
 		plan.Problems = append(plan.Problems, "至少要有一个入口")
 		return plan, nil

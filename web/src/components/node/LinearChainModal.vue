@@ -94,7 +94,7 @@ function onDrop(i: number) {
 
 const body = computed(() =>
   props.entry && landingId.value
-    ? { hops: [props.entry.id, ...middle.value], landing_kind: landingKind.value, landing_id: landingId.value }
+    ? { entry_kind: 'SINGBOX' as const, hops: [props.entry.id, ...middle.value], landing_kind: landingKind.value, landing_id: landingId.value }
     : null,
 )
 

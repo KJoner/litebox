@@ -243,6 +243,8 @@ export type UserResetCycle = 'NONE' | 'MONTHLY' | 'DAYS'
 
 /** 线性多跳(复核批次三):入口 → 中间跳 → 落地,最多四台机器;ok 为假时一段都没写 */
 export interface LinearChainInput {
+  /** 起点入口的种类:只收 SINGBOX;Mieru 入口暂不能作为多跳起点,接口明确拒绝 */
+  entry_kind?: 'SINGBOX' | 'MIERU'
   hops: number[]
   landing_kind: 'INBOUND' | 'EXTERNAL'
   landing_id: number
