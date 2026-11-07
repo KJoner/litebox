@@ -114,7 +114,7 @@ cmd_install() {
     [ -n "$MODE" ] || MODE="sqlite"
     case "$MODE" in sqlite|postgres|external-postgres) ;; *) die "--mode 只认 sqlite / postgres / external-postgres" ;; esac
     if [ -n "$(envget LITEBOX_MODE)" ] && [ "$(envget LITEBOX_MODE)" != "$MODE" ]; then
-        die "这个目录已经按 $(envget LITEBOX_MODE) 模式装过;换存储引擎请看 docs/vnext/migration.md,不要直接改模式"
+        die "这个目录已经按 $(envget LITEBOX_MODE) 模式装过;不要直接改模式 —— 换存储引擎要停掉主控、在新目录按新模式装好,再用 litebox db import / verify 把数据离线搬过去"
     fi
     [ -n "$VERSION" ] || VERSION="$(envget LITEBOX_VERSION)"
     [ -n "$VERSION" ] || die "第一次安装要给 --version(例如 v1.0.0);不提供 latest,版本必须明确"
