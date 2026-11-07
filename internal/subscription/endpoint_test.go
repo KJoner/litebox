@@ -47,7 +47,7 @@ func TestEndpointPathMultipleAddresses(t *testing.T) {
 	p.Endpoints = []Endpoint{
 		{Family: FamilyV4, Address: "192.0.2.10"},                                   // 跟随端口 443、跟随名
 		{Family: FamilyV4, Address: "198.51.100.7", Port: 8443, NameOverride: "备用"}, // 各自端口与名
-		{Family: FamilyV6, Address: "2001:db8::1", Port: 8080},                     // V6 各自端口
+		{Family: FamilyV6, Address: "2001:db8::1", Port: 8080},                      // V6 各自端口
 	}
 	nodes := p.Expand()
 	if len(nodes) != 3 {
