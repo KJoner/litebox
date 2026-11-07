@@ -227,8 +227,12 @@ func TestCreateRejectsInvalidParams(t *testing.T) {
 		"名称过长":   {DisplayName: strings.Repeat("好", 65)},
 		"额度为负":   {DisplayName: "x", QuotaBytes: -1},
 		"重置周期非法": {DisplayName: "x", ResetCycle: "WEEKLY"},
-		"重置日超范围": {DisplayName: "x", ResetDay: 31},
-		"到期时间非法": {DisplayName: "x", ExpiresAt: &expiry},
+		// 1–31 合法(超出当月天数落到月末,TRAFFIC08),32 不合法。
+		"重置日超范围":    {DisplayName: "x", ResetCycle: ResetMonthly, ResetDay: 32},
+		"固定周期没给天数":  {DisplayName: "x", ResetCycle: ResetDays},
+		"固定周期天数超范围": {DisplayName: "x", ResetCycle: ResetDays, ResetPeriodDays: 4000},
+		"时区不认识":     {DisplayName: "x", ResetCycle: ResetMonthly, ResetTimezone: "Mars/Olympus"},
+		"到期时间非法":    {DisplayName: "x", ExpiresAt: &expiry},
 	}
 	for name, p := range cases {
 		t.Run(name, func(t *testing.T) {

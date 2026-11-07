@@ -258,8 +258,22 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// foreignKeysOffDirective 写在迁移文件里时,这一份 SQLite 迁移按官方的「通用改表流程」执行
+// (https://www.sqlite.org/lang_altertable.html 第 7 节):在一条专用连接上先关外键、再开事务、
+// 迁移、跑 foreign_key_check、提交,最后把外键打开。
+//
+// 只有重建一张**被别的表引用**的表时才需要(R 批次三:proxy_users 的 reset_cycle 要多收一个取值)。
+// 外键开着的时候 DROP TABLE 会先隐式 DELETE 全部行,而引用它的五张表都是 ON DELETE CASCADE ——
+// 用户的门户账号、额外授权、直接授权、调整记录会被一起删光。PRAGMA foreign_keys 在事务里改不了,
+// 所以不能放进普通的迁移事务。legacy_alter_table 同时打开:改名那一步不去重新校验依赖这张表的视图
+// (视图按表名引用,新表是旧表的超集,不需要重建)。
+const foreignKeysOffDirective = "-- litebox:foreign-keys-off"
+
 // applyMigration 在单个事务内执行迁移并记录版本,保证要么全成功要么全回滚。
 func applyMigration(db *sql.DB, m Migration) error {
+	if !IsPostgres(db) && strings.Contains(m.SQL, foreignKeysOffDirective) {
+		return applyMigrationFKOff(db, m)
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -345,4 +359,54 @@ func migrationTableExists(ctx context.Context, db *sql.DB) (bool, error) {
 		return false, fmt.Errorf("查 schema_migrations 是否存在: %w", err)
 	}
 	return n > 0, nil
+}
+
+// applyMigrationFKOff 见 foreignKeysOffDirective。
+func applyMigrationFKOff(db *sql.DB, m Migration) (err error) {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table = ON`); err != nil {
+		return err
+	}
+	// 不管成败,这条连接还回连接池之前都要把两个开关恢复 —— 它是唯一那条写连接。
+	defer func() {
+		conn.ExecContext(ctx, `PRAGMA legacy_alter_table = OFF`)
+		if _, ferr := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); ferr != nil && err == nil {
+			err = fmt.Errorf("迁移 %04d_%s 之后恢复外键检查失败: %w", m.Version, m.Name, ferr)
+		}
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
+		return fmt.Errorf("执行迁移 %04d_%s: %w", m.Version, m.Name, err)
+	}
+	// 关着外键搬完数据,提交之前把整库的外键关系核对一遍:有一行对不上就整个回滚。
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("迁移 %04d_%s 之后的外键检查: %w", m.Version, m.Name, err)
+	}
+	bad := 0
+	for rows.Next() {
+		bad++
+	}
+	rows.Close()
+	if bad > 0 {
+		return fmt.Errorf("迁移 %04d_%s 之后有 %d 行外键对不上,已回滚", m.Version, m.Name, bad)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, name, hash, applied_at) VALUES (?,?,?,?)`,
+		m.Version, m.Name, m.Hash, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("记录迁移 %04d_%s: %w", m.Version, m.Name, err)
+	}
+	return tx.Commit()
 }

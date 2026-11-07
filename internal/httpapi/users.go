@@ -190,6 +190,10 @@ type createUserRequest struct {
 	ExpiresAt   *string `json:"expires_at"`
 	ResetCycle  string  `json:"reset_cycle"`
 	ResetDay    int     `json:"reset_day"`
+	// 固定 N 天周期(TRAFFIC08):reset_cycle = DAYS 时用。时区对 MONTHLY 与 DAYS 都生效,留空是 UTC。
+	ResetPeriodDays int    `json:"reset_period_days"`
+	ResetAnchorAt   string `json:"reset_anchor_at"`
+	ResetTimezone   string `json:"reset_timezone"`
 	// AccessTierID 留 0 表示普通组。
 	AccessTierID int64 `json:"access_tier_id"`
 	// NodeIDs 是额外授权节点,不含等级继承来的那些。
@@ -238,6 +242,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:        req.ExpiresAt,
 		ResetCycle:       user.ResetCycle(req.ResetCycle),
 		ResetDay:         req.ResetDay,
+		ResetPeriodDays:  req.ResetPeriodDays,
+		ResetAnchorAt:    req.ResetAnchorAt,
+		ResetTimezone:    req.ResetTimezone,
 		AccessTierID:     req.AccessTierID,
 		NodeIDs:          req.NodeIDs,
 		ExternalProxyIDs: req.ExternalProxyIDs,
@@ -298,6 +305,9 @@ type updateUserRequest struct {
 	ClearExpiry      bool     `json:"clear_expiry"`
 	ResetCycle       *string  `json:"reset_cycle"`
 	ResetDay         *int     `json:"reset_day"`
+	ResetPeriodDays  *int     `json:"reset_period_days"`
+	ResetAnchorAt    *string  `json:"reset_anchor_at"`
+	ResetTimezone    *string  `json:"reset_timezone"`
 	NodeIDs          *[]int64 `json:"node_ids"`
 	ExternalProxyIDs *[]int64 `json:"external_proxy_ids"`
 	// AccessTierID 为 nil 表示不改等级。改了它会让该用户可用的节点集合整体变化,
@@ -322,6 +332,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Remark:           req.Remark,
 		QuotaBytes:       req.QuotaBytes,
 		ResetDay:         req.ResetDay,
+		ResetPeriodDays:  req.ResetPeriodDays,
+		ResetAnchorAt:    req.ResetAnchorAt,
+		ResetTimezone:    req.ResetTimezone,
 		NodeIDs:          req.NodeIDs,
 		ExternalProxyIDs: req.ExternalProxyIDs,
 		AccessTierID:     req.AccessTierID,

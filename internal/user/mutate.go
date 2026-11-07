@@ -23,6 +23,10 @@ type UpdateParams struct {
 	ExpiresAt   **string // 双层指针:外层 nil 不改,内层 nil 清除到期时间
 	ResetCycle  *ResetCycle
 	ResetDay    *int
+	// 以下三项与上面两项一起组成重置规则(CycleRule),任何一项给了就按合并后的整份规则校验。
+	ResetPeriodDays *int
+	ResetAnchorAt   *string
+	ResetTimezone   *string
 	// AccessTierID 改变后,该用户继承到的节点集合整体变化,
 	// 调用方必须按变更前后的有效节点并集标脏。
 	AccessTierID *int64
@@ -78,17 +82,39 @@ func (s *Store) Update(ctx context.Context, id int64, p UpdateParams) (*User, er
 			add("expires_at = ?", **p.ExpiresAt)
 		}
 	}
-	if p.ResetCycle != nil {
-		if *p.ResetCycle != ResetNone && *p.ResetCycle != ResetMonthly {
-			return nil, fmt.Errorf("重置周期 %q 非法", *p.ResetCycle)
+	if p.ResetCycle != nil || p.ResetDay != nil || p.ResetPeriodDays != nil || p.ResetAnchorAt != nil || p.ResetTimezone != nil {
+		// 合并成一整份规则再校验:单看一项说明不了「改成 DAYS 却没给天数」这种组合。
+		// 改规则只影响以后的边界,本周期已经用掉的流量不追溯重算。
+		rule := current.CycleRule()
+		if p.ResetCycle != nil {
+			rule.Cycle = *p.ResetCycle
 		}
-		add("reset_cycle = ?", *p.ResetCycle)
-	}
-	if p.ResetDay != nil {
-		if *p.ResetDay < 1 || *p.ResetDay > 28 {
-			return nil, errors.New("重置日必须在 1~28 之间")
+		if p.ResetDay != nil {
+			rule.Day = *p.ResetDay
 		}
-		add("reset_day = ?", *p.ResetDay)
+		if p.ResetPeriodDays != nil {
+			rule.PeriodDays = *p.ResetPeriodDays
+		}
+		if p.ResetAnchorAt != nil {
+			rule.Anchor = *p.ResetAnchorAt
+		}
+		if p.ResetTimezone != nil {
+			rule.Timezone = *p.ResetTimezone
+		}
+		if rule.Cycle != ResetDays {
+			rule.PeriodDays, rule.Anchor = 0, ""
+		}
+		if err := rule.Validate(); err != nil {
+			return nil, err
+		}
+		if rule.Day == 0 {
+			rule.Day = 1
+		}
+		add("reset_cycle = ?", rule.Cycle)
+		add("reset_day = ?", rule.Day)
+		add("reset_period_days = ?", rule.PeriodDays)
+		add("reset_anchor_at = ?", rule.Anchor)
+		add("reset_timezone = ?", rule.Timezone)
 	}
 	if p.AccessTierID != nil {
 		if err := access.NewStore(s.db).Validate(ctx, *p.AccessTierID); err != nil {

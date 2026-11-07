@@ -209,28 +209,19 @@ func unavailableReason(u *user.User, now time.Time) string {
 	return "账号当前不可用,请联系管理员"
 }
 
-// nextResetAt 计算下一次流量重置时刻。不是月度重置时返回空串。
 // NextResetAt 返回用户流量的下次重置时刻(RFC3339 UTC),不重置的用户返回空串。
 //
 // 导出是为了让管理端也读这一份 —— 门户上写「09-01 00:00 UTC 重置」、
-// 管理后台自己再算一遍,两边差一天时谁都说不清哪个才算数。
-// 用户的重置日限定 1~28,没有短月份问题;节点是 1~31,那一套在
-// traffic.CalculateNodePeriod 里,与这里是两条独立规则,不要互相套用。
+// 管理后台自己再算一遍,两边差一天时谁都说不清哪个才算数。边界本身只在 user.CycleRule 里实现
+// (每月 1–31 日落到月末、固定 N 天按时区的日历日),自动重置用的也是它(TRAFFIC08)。
 func NextResetAt(u *user.User, now time.Time) string { return nextResetAt(u, now) }
 
 func nextResetAt(u *user.User, now time.Time) string {
-	if u.ResetCycle != user.ResetMonthly {
+	_, next, ok := u.CycleRule().Window(now, u.CreatedAt)
+	if !ok {
 		return ""
 	}
-	day := u.ResetDay
-	if day < 1 || day > 28 {
-		day = 1
-	}
-	next := time.Date(now.Year(), now.Month(), day, 0, 0, 0, 0, time.UTC)
-	if !next.After(now) {
-		next = next.AddDate(0, 1, 0)
-	}
-	return next.Format(time.RFC3339)
+	return next.UTC().Format(time.RFC3339)
 }
 
 // buildAlerts 生成与该用户相关的预警。

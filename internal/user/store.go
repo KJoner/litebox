@@ -86,6 +86,10 @@ type User struct {
 	ResetCycle   ResetCycle `json:"reset_cycle"`
 	ResetDay     int        `json:"reset_day"`
 	LastResetAt  *string    `json:"last_reset_at"`
+	// ResetPeriodDays / ResetAnchorAt / ResetTimezone 见 CycleRule(迁移 0056)。
+	ResetPeriodDays int    `json:"reset_period_days"`
+	ResetAnchorAt   string `json:"reset_anchor_at"`
+	ResetTimezone   string `json:"reset_timezone"`
 
 	// AccessTier* 是该用户的访问等级。等级决定他自动继承哪些节点。
 	AccessTierID    int64  `json:"access_tier_id"`
@@ -196,7 +200,8 @@ const userColumns = `u.id, u.user_code, u.display_name, u.remark, u.uuid_encrypt
 	u.ss_password_encrypted, u.mieru_password_encrypted,
 	u.snell_password_encrypted, u.sub_token_encrypted,
 	u.status, u.quota_bytes, u.used_uplink, u.used_downlink, u.expires_at,
-	u.reset_cycle, u.reset_day, u.last_reset_at, u.created_at, u.updated_at,
+	u.reset_cycle, u.reset_day, u.last_reset_at, u.reset_period_days, u.reset_anchor_at, u.reset_timezone,
+	u.created_at, u.updated_at,
 	u.sub_last_access_at, u.sub_last_access_ip, u.sub_last_user_agent, u.sub_access_count,
 	u.access_tier_id, t.code, t.name, t.level, u.access_mode,
 	` + billingColumns + `, u.billing_rule_version, u.billing_next_mode, u.billing_next_multiplier_pct, u.billing_changed_at`
@@ -217,7 +222,8 @@ func (s *Store) scanUser(scan func(dest ...any) error) (*User, error) {
 	err := scan(&u.ID, &u.UserCode, &u.DisplayName, &u.Remark, &uuidEnc, &ssKeyEnc,
 		&mieruEnc, &snellEnc, &tokenEnc,
 		&u.Status, &u.QuotaBytes, &u.UsedUplink, &u.UsedDownlink, &u.ExpiresAt,
-		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.ResetCycle, &u.ResetDay, &u.LastResetAt, &u.ResetPeriodDays, &u.ResetAnchorAt, &u.ResetTimezone,
+		&u.CreatedAt, &u.UpdatedAt,
 		&u.SubLastAccessAt, &u.SubLastAccessIP, &u.SubLastUserAgent, &u.SubAccessCount,
 		&u.AccessTierID, &u.AccessTierCode, &u.AccessTierName, &u.AccessTierLevel, &u.AccessMode,
 		&u.BillingMode, &u.BillingMultiplierPct, &u.BillingSealedBytes, &u.BillingBaseUplink, &u.BillingBaseDownlink,
@@ -265,6 +271,10 @@ type CreateParams struct {
 	ExpiresAt   *string
 	ResetCycle  ResetCycle
 	ResetDay    int
+	// ResetPeriodDays / ResetAnchorAt / ResetTimezone 见 CycleRule。
+	ResetPeriodDays int
+	ResetAnchorAt   string
+	ResetTimezone   string
 	// AccessTierID 留 0 表示普通组。
 	AccessTierID int64
 	// NodeIDs 是额外授权节点,不含等级继承来的那些。
@@ -347,11 +357,13 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (*User, error) {
 		  (user_code, display_name, remark, uuid_encrypted, ss_password_encrypted,
 		   mieru_password_encrypted, snell_password_encrypted,
 		   sub_token_encrypted, sub_token_hash,
-		   status, quota_bytes, expires_at, reset_cycle, reset_day, access_tier_id, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   status, quota_bytes, expires_at, reset_cycle, reset_day, reset_period_days, reset_anchor_at, reset_timezone,
+		   access_tier_id, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		userCode, p.DisplayName, p.Remark, uuidEnc, ssKeyEnc, mieruEnc, snellEnc,
 		tokenEnc, crypto.HashToken(token),
-		StatusActive, p.QuotaBytes, p.ExpiresAt, p.ResetCycle, p.ResetDay, p.AccessTierID, now, now)
+		StatusActive, p.QuotaBytes, p.ExpiresAt, p.ResetCycle, p.ResetDay, p.ResetPeriodDays, p.ResetAnchorAt, p.ResetTimezone,
+		p.AccessTierID, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrNameConflict
@@ -410,18 +422,16 @@ func validateCreate(p *CreateParams) error {
 	if p.QuotaBytes < 0 {
 		return errors.New("流量额度不能为负数")
 	}
-	if p.ResetCycle == "" {
-		p.ResetCycle = ResetNone
+	// 周期规则整体校验(TRAFFIC08):1–31 日(超出当月天数落到月末)、固定 N 天、时区与锚点。
+	rule := CycleRule{Cycle: p.ResetCycle, Day: p.ResetDay, PeriodDays: p.ResetPeriodDays,
+		Anchor: p.ResetAnchorAt, Timezone: p.ResetTimezone}
+	if err := rule.Validate(); err != nil {
+		return err
 	}
-	if p.ResetCycle != ResetNone && p.ResetCycle != ResetMonthly {
-		return fmt.Errorf("重置周期 %q 非法", p.ResetCycle)
-	}
+	p.ResetCycle, p.ResetDay, p.ResetPeriodDays, p.ResetAnchorAt, p.ResetTimezone =
+		rule.Cycle, rule.Day, rule.PeriodDays, rule.Anchor, rule.Timezone
 	if p.ResetDay == 0 {
 		p.ResetDay = 1
-	}
-	// 只允许 1~28:29~31 在部分月份不存在,会导致重置被跳过。
-	if p.ResetDay < 1 || p.ResetDay > 28 {
-		return errors.New("重置日必须在 1~28 之间")
 	}
 	if p.ExpiresAt != nil && *p.ExpiresAt != "" {
 		if _, err := time.Parse(time.RFC3339, *p.ExpiresAt); err != nil {

@@ -85,11 +85,13 @@ func TestCreateUserValidation(t *testing.T) {
 	env.login(t)
 
 	cases := map[string]map[string]any{
-		"名称为空":   {"display_name": ""},
-		"额度为负":   {"display_name": "x", "quota_bytes": -1},
-		"重置日超范围": {"display_name": "x", "reset_day": 31},
-		"到期时间非法": {"display_name": "x", "expires_at": "2026-13-45"},
-		"节点不存在":  {"display_name": "x", "node_ids": []int64{999}},
+		"名称为空": {"display_name": ""},
+		"额度为负": {"display_name": "x", "quota_bytes": -1},
+		// 1–31 合法(TRAFFIC08),32 不合法;固定天数要给天数。
+		"重置日超范围":   {"display_name": "x", "reset_cycle": "MONTHLY", "reset_day": 32},
+		"固定周期没给天数": {"display_name": "x", "reset_cycle": "DAYS"},
+		"到期时间非法":   {"display_name": "x", "expires_at": "2026-13-45"},
+		"节点不存在":    {"display_name": "x", "node_ids": []int64{999}},
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

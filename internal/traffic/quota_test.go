@@ -184,6 +184,12 @@ func TestEnforceIsNoopWhenNothingChanges(t *testing.T) {
 
 // ---------- 月度重置 ----------
 
+// shouldReset 是 0056 之前那个函数的签名:每月、UTC。下面两个测试原样保留,
+// 证明换成 user.CycleRule 之后存量用户的重置时刻一点都没变(TRAFFIC08)。
+func shouldReset(now time.Time, resetDay int, lastResetAt *string, createdAt string) bool {
+	return user.CycleRule{Cycle: user.ResetMonthly, Day: resetDay}.ShouldReset(now, lastResetAt, createdAt)
+}
+
 func TestShouldResetLogic(t *testing.T) {
 	created := "2026-01-01T00:00:00Z"
 
@@ -394,5 +400,39 @@ func TestEnforceReportsMieruNodes(t *testing.T) {
 	}
 	if len(res.AffectedMieruNodes) != 1 || res.AffectedMieruNodes[0] != env.nodeID {
 		t.Fatalf("AffectedMieruNodes = %v", res.AffectedMieruNodes)
+	}
+}
+
+// TRAFFIC08:固定 N 天的用户由 Enforcer 按 user.CycleRule 重置一次,重复执行不再重置。
+func TestEnforceResetsFixedDaysUser(t *testing.T) {
+	env := newTestEnv(t)
+	enforcer := newEnforcer(t, env)
+	u, err := env.store.Create(t.Context(), user.CreateParams{DisplayName: "按天", QuotaBytes: 1000,
+		ResetCycle: user.ResetDays, ResetPeriodDays: 7, ResetAnchorAt: "2026-01-01T00:00:00Z", ResetTimezone: "Asia/Shanghai",
+		NodeIDs: []int64{env.nodeID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 上一次重置在三周之前、流量已经用掉一部分。
+	if _, err := env.db.Exec(`UPDATE proxy_users SET used_downlink = 500, last_reset_at = '2026-10-01T00:00:00Z',
+		created_at = '2026-01-01T00:00:00Z' WHERE id = ?`, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	res, err := enforcer.Enforce(t.Context(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Reset) != 1 {
+		t.Fatalf("应当重置一次:%+v", res.Reset)
+	}
+	var used int64
+	env.db.QueryRow(`SELECT used_uplink + used_downlink FROM proxy_users WHERE id = ?`, u.ID).Scan(&used)
+	if used != 0 {
+		t.Fatalf("重置之后流量 = %d", used)
+	}
+	res, _ = enforcer.Enforce(t.Context(), now.Add(time.Hour))
+	if len(res.Reset) != 0 {
+		t.Fatalf("同一个周期里重复执行不该再重置:%+v", res.Reset)
 	}
 }

@@ -238,6 +238,8 @@ export interface Admin {
 }
 
 /** 「暂停自动下发」(R03):从备份恢复主控库之后由恢复脚本打开,核对完再解除。 */
+export type UserResetCycle = 'NONE' | 'MONTHLY' | 'DAYS'
+
 export interface DeployHold {
   held: boolean
   reason: string
@@ -326,8 +328,15 @@ export interface ProxyUser {
   used_downlink: number
   used_total: number
   expires_at: string | null
-  reset_cycle: 'NONE' | 'MONTHLY'
+  /** DAYS 是固定 N 天(TRAFFIC08):以锚点对齐,按时区的日历日切 */
+  reset_cycle: UserResetCycle
+  /** MONTHLY:1–31,超出当月天数时落到月末 */
   reset_day: number
+  reset_period_days: number
+  /** DAYS 的对齐点(RFC3339),空串 = 创建那天 */
+  reset_anchor_at: string
+  /** 周期边界按哪个时区的零点切(IANA 名),存量是 UTC */
+  reset_timezone: string
   last_reset_at: string | null
   /** 管理员单独追加的节点,编辑页面改的就是它 */
   node_ids: number[]

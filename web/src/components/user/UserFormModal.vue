@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { api, ApiError, type AccessTier, type Node, type ProxyUser } from '@/api/client'
+import { api, ApiError, type AccessTier, type Node, type ProxyUser, type UserResetCycle } from '@/api/client'
 import { checkLoginUsername, checkPassword } from '@/utils/validate'
 import { LbInfoTip } from '@/components/lb'
 import { fromBytes, toBytes, type LbQuotaUnit } from './quota'
@@ -42,8 +42,11 @@ const blank = {
   quota_value: null as number | null,
   quota_unit: 'GB' as LbQuotaUnit,
   expires_at: '',
-  reset_cycle: 'NONE' as 'NONE' | 'MONTHLY',
+  reset_cycle: 'NONE' as UserResetCycle,
   reset_day: 1,
+  reset_period_days: 30,
+  reset_anchor_at: '',
+  reset_timezone: 'UTC',
   access_tier_id: 1,
   node_ids: [] as number[],
   login_username: '',
@@ -73,6 +76,9 @@ watch(
         expires_at: u.expires_at ? u.expires_at.slice(0, 10) : '',
         reset_cycle: u.reset_cycle,
         reset_day: u.reset_day,
+        reset_period_days: u.reset_period_days || 30,
+        reset_anchor_at: u.reset_anchor_at ? u.reset_anchor_at.slice(0, 10) : '',
+        reset_timezone: u.reset_timezone || 'UTC',
         access_tier_id: u.access_tier_id,
         // 只回填额外授权:等级继承来的节点不在这里改,
         // 塞进多选框会让管理员一保存就把继承关系固化成手工授权。
@@ -172,6 +178,7 @@ async function submit() {
         expires_at: expiresAt || undefined,
         reset_cycle: form.reset_cycle,
         reset_day: form.reset_day,
+        ...cycleExtras(),
         access_tier_id: form.access_tier_id,
         node_ids: form.node_ids,
         login_username: form.login_username,
@@ -208,6 +215,7 @@ async function submit() {
         ...(expiresAt ? { expires_at: expiresAt } : { clear_expiry: true }),
         reset_cycle: form.reset_cycle,
         reset_day: form.reset_day,
+        ...cycleExtras(),
         access_tier_id: form.access_tier_id,
         node_ids: form.node_ids,
       })
@@ -219,6 +227,20 @@ async function submit() {
     serverError.value = err instanceof ApiError ? err.message : '保存失败'
   } finally {
     submitting.value = false
+  }
+}
+
+/** 周期边界的时区(TRAFFIC08):存量用户都是 UTC。只列常用的几个,别的 IANA 名可以直接输入搜索。 */
+const timezoneOptions = ['UTC', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Asia/Singapore',
+  'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles'].map((v) => ({ value: v, label: v }))
+
+/** 周期规则的另外三项:对齐日是本地日期,转成那一天 0 点的 RFC3339(时区由后端按 reset_timezone 解释)。 */
+function cycleExtras() {
+  const anchor = form.reset_anchor_at.trim()
+  return {
+    reset_period_days: form.reset_cycle === 'DAYS' ? form.reset_period_days : 0,
+    reset_anchor_at: form.reset_cycle === 'DAYS' && anchor ? `${anchor}T00:00:00Z` : '',
+    reset_timezone: form.reset_timezone || 'UTC',
   }
 }
 </script>
@@ -299,20 +321,45 @@ async function submit() {
         <div class="lb-group__row uf__row">
           <span class="lb-group__label">
             流量重置
-            <LbInfoTip text="重置日 1~28。不支持 29~31,避开短月份歧义。边界统一取 UTC 00:00。" :width="280" />
+            <LbInfoTip
+              text="每月 1–31 日,超出当月天数时落到当月最后一天;固定 N 天按所选时区的日历日切,边界都在当地 0 点(夏令时那天照样是 0 点)。改规则只影响以后的边界,本周期已经用掉的不追溯。"
+              :width="320"
+            />
           </span>
           <a-radio-group v-model:value="form.reset_cycle" class="uf__seg">
             <a-radio-button value="NONE">不重置</a-radio-button>
             <a-radio-button value="MONTHLY">每月</a-radio-button>
+            <a-radio-button value="DAYS">固定天数</a-radio-button>
           </a-radio-group>
         </div>
         <div v-if="form.reset_cycle === 'MONTHLY'" class="lb-group__row uf__row">
           <span class="lb-group__label">重置日</span>
           <div class="uf__day">
             每月
-            <a-input-number v-model:value="form.reset_day" :min="1" :max="28" class="uf__day-num" />
+            <a-input-number v-model:value="form.reset_day" :min="1" :max="31" class="uf__day-num" />
             日
           </div>
+        </div>
+        <template v-if="form.reset_cycle === 'DAYS'">
+          <div class="lb-group__row uf__row">
+            <span class="lb-group__label">周期</span>
+            <div class="uf__day">
+              每
+              <a-input-number v-model:value="form.reset_period_days" :min="1" :max="3650" class="uf__day-num" />
+              天
+            </div>
+          </div>
+          <div class="lb-group__row uf__row">
+            <span class="lb-group__label">
+              对齐日
+              <LbInfoTip text="周期以这一天的 0 点为对齐点,往前往后每 N 天一个边界。留空 = 用户创建那天。" :width="260" />
+            </span>
+            <a-input v-model:value="form.reset_anchor_at" placeholder="YYYY-MM-DD,留空 = 创建那天" class="uf__tz" />
+          </div>
+        </template>
+        <div v-if="form.reset_cycle !== 'NONE'" class="lb-group__row uf__row">
+          <span class="lb-group__label">时区</span>
+          <a-select v-model:value="form.reset_timezone" :options="timezoneOptions" show-search class="uf__tz" />
         </div>
       </div>
 
@@ -447,6 +494,10 @@ async function submit() {
 }
 .uf__day :deep(.uf__day-num) {
   width: 90px;
+}
+.uf__tz {
+  width: 220px;
+  max-width: 100%;
 }
 
 .uf__field {

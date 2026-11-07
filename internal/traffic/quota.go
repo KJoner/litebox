@@ -10,6 +10,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/billing"
+	"github.com/litebox/litebox/internal/user"
 )
 
 // StatusChange 记录一次用户状态迁移。
@@ -209,9 +210,9 @@ func evaluate(quota, used int64, expiresAt *string, now time.Time) (status, reas
 // 把节点上的历史累计值当成新增量重复入账。
 func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT id, user_code, reset_day, last_reset_at, created_at
+		SELECT id, user_code, reset_cycle, reset_day, reset_period_days, reset_anchor_at, reset_timezone, last_reset_at, created_at
 		  FROM proxy_users
-		 WHERE deleted_at IS NULL AND reset_cycle = 'MONTHLY'`)
+		 WHERE deleted_at IS NULL AND reset_cycle IN ('MONTHLY', 'DAYS')`)
 	if err != nil {
 		return nil, err
 	}
@@ -224,15 +225,18 @@ func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]st
 
 	for rows.Next() {
 		var id int64
-		var userCode string
-		var resetDay int
+		var userCode, cycle string
+		var rule user.CycleRule
 		var lastResetAt *string
 		var createdAt string
-		if err := rows.Scan(&id, &userCode, &resetDay, &lastResetAt, &createdAt); err != nil {
+		if err := rows.Scan(&id, &userCode, &cycle, &rule.Day, &rule.PeriodDays, &rule.Anchor, &rule.Timezone,
+			&lastResetAt, &createdAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if shouldReset(now, resetDay, lastResetAt, createdAt) {
+		rule.Cycle = user.ResetCycle(cycle)
+		// 周期边界只有 user.CycleRule 一处实现(TRAFFIC08),门户与管理端的「下次重置」用的是同一份。
+		if rule.ShouldReset(now, lastResetAt, createdAt) {
 			due = append(due, target{id, userCode})
 		}
 	}
@@ -257,34 +261,4 @@ func (e *Enforcer) applyPeriodicResets(ctx context.Context, now time.Time) ([]st
 		e.logger.Info("执行月度流量重置", "user_code", t.userCode)
 	}
 	return codes, nil
-}
-
-// shouldReset 判断某个月度用户本周期是否该重置。
-//
-// 判据是"本次重置窗口的起点晚于上次重置时间"。用窗口起点而不是
-// "今天是不是重置日"来判断,可以容忍主控在重置日当天停机 ——
-// 开机后仍会补做,不会整月跳过。
-func shouldReset(now time.Time, resetDay int, lastResetAt *string, createdAt string) bool {
-	if resetDay < 1 || resetDay > 28 {
-		resetDay = 1
-	}
-	now = now.UTC()
-
-	// 本次窗口起点:本月的重置日;若今天还没到,则是上个月的重置日。
-	windowStart := time.Date(now.Year(), now.Month(), resetDay, 0, 0, 0, 0, time.UTC)
-	if now.Before(windowStart) {
-		windowStart = windowStart.AddDate(0, -1, 0)
-	}
-
-	reference := lastResetAt
-	if reference == nil || *reference == "" {
-		// 从未重置过的用户以创建时间为基准,
-		// 否则新建用户会在首次检查时被立刻重置一次。
-		reference = &createdAt
-	}
-	last, err := time.Parse(time.RFC3339, *reference)
-	if err != nil {
-		return false
-	}
-	return last.UTC().Before(windowStart)
 }
