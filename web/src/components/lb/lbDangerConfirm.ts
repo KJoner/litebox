@@ -1,5 +1,5 @@
-import { h } from 'vue'
-import { Modal } from 'ant-design-vue'
+import { defineComponent, h, ref, type Ref } from 'vue'
+import { Modal, Switch } from 'ant-design-vue'
 
 /**
  * 危险确认 —— 影响范围永远是逐条列表,不写成一段话。
@@ -33,7 +33,60 @@ export interface LbDangerConfirmOptions {
   okType?: 'primary' | 'danger'
   /** 影响范围之后的补充说明 */
   footer?: string
-  onOk: () => void | Promise<unknown>
+  /**
+   * 确认框里的一个开关(比如「下发后做真实拨测」),确认时它的值作为 onOk 的参数交回去。
+   * 关着时显示 offHint —— 关掉一项检查的代价要在点确认之前就看得见,而不是事后在记录里才发现。
+   */
+  option?: LbConfirmOption
+  onOk: (optionValue: boolean) => void | Promise<unknown>
+}
+
+export interface LbConfirmOption {
+  label: string
+  /** 默认开着还是关着 */
+  defaultValue: boolean
+  /** 开着时的说明(可选) */
+  onHint?: string
+  /** 关着时的说明 —— 写清关掉之后少了什么 */
+  offHint?: string
+}
+
+/**
+ * 开关自成一个组件:状态在它自己的渲染里读,切换时只重画这一块。
+ * Modal.confirm 的 content 什么时候重新求值由 AntD 决定,不能指望它跟着一个 ref 变。
+ */
+function optionRow(opt: LbConfirmOption, state: Ref<boolean>) {
+  return defineComponent({
+    name: 'LbConfirmOptionRow',
+    setup() {
+      return () => {
+        const hint = state.value ? opt.onHint : opt.offHint
+        return h('div', { style: 'display:flex;flex-direction:column;gap:6px' }, [
+          h('label', { style: 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:var(--fs-sm)' }, [
+            h(Switch, {
+              size: 'small',
+              checked: state.value,
+              'onUpdate:checked': (v: boolean | string | number) => {
+                state.value = !!v
+              },
+            }),
+            h('span', { style: 'color:var(--text);font-weight:500' }, opt.label),
+          ]),
+          hint
+            ? h(
+                'div',
+                {
+                  style: state.value
+                    ? 'font-size:var(--fs-xs);line-height:1.7;color:var(--text2)'
+                    : 'font-size:var(--fs-xs);line-height:1.7;color:var(--warn)',
+                },
+                emphasize(hint),
+              )
+            : null,
+        ])
+      }
+    },
+  })
 }
 
 export function lbDangerConfirm(o: LbDangerConfirmOptions) {
@@ -41,6 +94,8 @@ export function lbDangerConfirm(o: LbDangerConfirmOptions) {
   const tone = danger ? 'var(--bad)' : 'var(--warn)'
   const toneBg = danger ? 'var(--bad-bg)' : 'var(--warn-bg)'
   const toneBorder = danger ? 'var(--bad-border)' : 'var(--warn-border)'
+  const optionState = ref(o.option?.defaultValue ?? false)
+  const OptionRow = o.option ? optionRow(o.option, optionState) : null
 
   Modal.confirm({
     title: o.title,
@@ -77,8 +132,9 @@ export function lbDangerConfirm(o: LbDangerConfirmOptions) {
         o.footer
           ? h('div', { style: 'font-size:var(--fs-sm);line-height:1.7;color:var(--text2)' }, emphasize(o.footer))
           : null,
+        OptionRow ? h(OptionRow) : null,
       ]),
-    onOk: o.onOk,
+    onOk: () => o.onOk(optionState.value),
   })
 }
 

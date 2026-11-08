@@ -34,7 +34,7 @@ import LinearChainModal from './LinearChainModal.vue'
 import NodeOpProgressModal from './NodeOpProgressModal.vue'
 import ServiceCard, { type ServiceCardAction, type ServiceCardModel } from './ServiceCard.vue'
 import { servicePhase, servicePhaseMeta, type ServicePhase } from './serviceState'
-import { confirmDeployNode, confirmRestartNode } from './nodeOps'
+import { confirmDeployNode, confirmRestartNode, DIAL_OPTION, DIAL_SKIPPED_NOTE } from './nodeOps'
 import { sortByEntryOrder } from './entryOrder'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
 import EndpointsEditor from './EndpointsEditor.vue'
@@ -740,18 +740,22 @@ function uninstallSingBox() {
 }
 
 function deploySingBox(force = false) {
-  confirmDeployNode(props.node, () =>
+  confirmDeployNode(props.node, ({ skipDial }) =>
     runOp(
       force ? '强制重新下发 sing-box 配置' : '下发 sing-box 配置',
-      '正在做前置检查、下发并做健康检查(约 15~25 秒)',
+      skipDial
+        ? '正在做前置检查、下发并查服务状态与端口(这次不拨测)'
+        : '正在做前置检查、下发并做健康检查(约 15~25 秒)',
       async () => {
-        opDeploy.value = await api.deployNode(props.node.id, { force })
+        opDeploy.value = await api.deployNode(props.node.id, { force, skipDial })
         if (opDeploy.value.status !== 'SUCCESS') {
           opError.value = opDeploy.value.error_message || '下发未成功'
         } else if (opDeploy.value.unchanged) {
           // 配置一致时默认不重启:同一份配置重启一次换不来任何东西,只会踢掉在线连接。
           opNote.value =
             '节点上跑着的就是库里这一份,没有重启服务。要强制重新应用,用「重启」下拉里的「强制重新下发」。'
+        } else if (skipDial) {
+          opNote.value = DIAL_SKIPPED_NOTE
         }
       },
     ),
@@ -1375,16 +1379,19 @@ function deployMieru(m: MieruInbound) {
       ? '两跳会分开验:先单独验「本机 sing-box → 落地」那一段(不经 mita),' +
         '再验完整链路 —— 失败时看得出是哪一半断的。'
       : '失败会自动回滚到上一份配置,并把 mita 的日志带回来。',
+    option: DIAL_OPTION,
     // 不返回 Promise:AntD 会把确认框留在屏幕上转圈等它,而下发要十几秒
     // —— 那期间进度弹窗已经开着,两个 Modal 同层叠着,后开的反被压住。
-    onOk: () => {
+    onOk: (dial) => {
+      const skipDial = !dial
       void runOp(
         `下发 Mieru 入口「${m.display_name}」`,
         chained ? '正在准备本机 sing-box 那一跳,然后下发' : '正在下发并做健康检查',
         async () => {
-          const r = await api.deployMieruInbound(m.id)
+          const r = await api.deployMieruInbound(m.id, false, skipDial)
           opDeploy.value = r.result
           opError.value = r.error ?? ''
+          if (!r.error && skipDial) opNote.value = DIAL_SKIPPED_NOTE
         },
       )
     },

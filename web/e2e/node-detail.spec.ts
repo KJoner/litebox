@@ -103,11 +103,47 @@ test('下发配置:确认后只打到模拟层,进度弹窗给出逐步结果,�
   await expect(progress).toContainText('HTTP 204')
   const posts = api.requests('POST', `/api/nodes/${NODE}/deploy`)
   expect(posts).toHaveLength(1)
-  expect(posts[0].body).toEqual({ force: false })
+  expect(posts[0].body).toEqual({ force: false, skip_dial: false })
   expect(api.mutations()).toHaveLength(1)
 
   await progress.getByRole('button', { name: 'Close' }).click()
   await expect(progress).toBeHidden()
+})
+
+test('下发配置:关掉「下发后做真实拨测」,请求带 skip_dial,结果里说清没有验证过入口', async ({ page, api }) => {
+  api.on('POST', `/api/nodes/${NODE}/deploy`, {
+    json: deployResult({
+      steps: [
+        { name: '原子替换配置', status: 'SUCCESS', duration_ms: 80 },
+        { name: '健康检查:端口监听(in-1)', status: 'SUCCESS', duration_ms: 300, detail: '端口 443 正在监听' },
+        {
+          name: '健康检查:VLESS 拨测(in-1)',
+          status: 'SKIPPED',
+          duration_ms: 0,
+          detail: '管理员在下发时关掉了拨测 —— 服务状态与端口监听已通过,但面板没有验证这个入口连不连得上',
+        },
+      ],
+    }),
+  })
+  await openEntries(page)
+  await page.locator('[data-service="singbox"]').getByRole('button', { name: '下发配置' }).click()
+  const dialog = page.getByRole('dialog').filter({ hasText: /部署 rev/ })
+  const toggle = dialog.getByRole('switch')
+  await expect(toggle).toBeChecked()
+  await expect(dialog).toContainText('不通就自动回滚')
+  await toggle.click()
+  await expect(toggle).not.toBeChecked()
+  // 关掉之后,少了什么要在点确认之前看得见。
+  await expect(dialog).toContainText('不验证这个入口能不能连上')
+  await expect(dialog).toContainText('自动下发仍然会拨测')
+  await dialog.getByRole('button', { name: '部署' }).click()
+
+  const progress = page.getByRole('dialog').filter({ hasText: '下发 sing-box 配置' })
+  await expect(progress).toContainText('管理员在下发时关掉了拨测')
+  await expect(progress).toContainText('请用客户端自己测一次')
+  const posts = api.requests('POST', `/api/nodes/${NODE}/deploy`)
+  expect(posts).toHaveLength(1)
+  expect(posts[0].body).toEqual({ force: false, skip_dial: true })
 })
 
 test('下发失败并回滚:红色结论、已做完的步骤、错误原因都在', async ({ page, api }) => {

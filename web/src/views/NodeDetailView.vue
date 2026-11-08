@@ -693,18 +693,18 @@ function confirmDeploy() {
   if (!n) return
   // 影响清单在 nodeOps.ts 里 —— 入口管理页也要开同一个确认框,
   // 两处各写一份的话,某天在一处补了一条,另一处仍是旧的。
-  confirmDeployNode(n, () => {
-    void doDeploy()
+  confirmDeployNode(n, ({ skipDial }) => {
+    void doDeploy(skipDial)
   })
 }
 
-async function doDeploy() {
+async function doDeploy(skipDial: boolean) {
   deployResult.value = null
   deployOpen.value = true
   deployRunning.value = true
   running.value = '部署'
   try {
-    deployResult.value = await api.deployNode(nodeId.value!)
+    deployResult.value = await api.deployNode(nodeId.value!, { skipDial })
   } catch (err) {
     message.error(err instanceof ApiError ? err.message : '部署失败')
     deployOpen.value = false

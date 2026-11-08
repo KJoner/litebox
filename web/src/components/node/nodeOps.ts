@@ -1,5 +1,5 @@
 import type { Node } from '@/api/client'
-import { lbDangerConfirm } from '@/components/lb'
+import { lbDangerConfirm, type LbConfirmOption } from '@/components/lb'
 
 /**
  * 机器级操作的确认文案。
@@ -23,7 +23,7 @@ export function nodeLabel(n: Pick<Node, 'display_name' | 'name'>): string {
  * 摩擦按"能不能撤回"分档,给可逆操作也加打字确认的话,管理员很快会变成
  * 无脑复制粘贴,真正不可逆的那四个反而失去警示作用。
  */
-export function confirmDeployNode(n: Node, onOk: () => void) {
+export function confirmDeployNode(n: Node, onOk: (opts: DeployChoice) => void) {
   lbDangerConfirm({
     title: `部署 rev ${n.config_revision + 1} 到 ${nodeLabel(n)}?`,
     okText: '部署',
@@ -36,14 +36,40 @@ export function confirmDeployNode(n: Node, onOk: () => void) {
       `健康检查不通过时自动回滚到 rev ${n.config_revision}`,
     ],
     footer: '部署是可逆的(有自动回滚),所以不要求输入节点名称。',
+    option: DIAL_OPTION,
     // 故意不 return onOk 的 Promise。Modal.confirm 只要拿到 Promise
     // 就会把自己留在屏幕上转圈等它 resolve —— 而部署要 15~25 秒,
     // 这期间进度弹窗已经打开,两个 Modal 同层叠在一起,后开的反而被压住。
-    onOk: () => {
-      onOk()
+    onOk: (dial) => {
+      onOk({ skipDial: !dial })
     },
   })
 }
+
+/** 下发确认框交回来的选择。 */
+export interface DeployChoice {
+  /** 管理员关掉了「下发后做真实拨测」 */
+  skipDial: boolean
+}
+
+/**
+ * 「下发后做真实拨测」开关,sing-box 与 Mieru 两种下发共用一份文案。
+ *
+ * 默认开着:拨测是唯一能发现「服务在跑、端口在听,但谁都连不上」的一步(flow 写错、凭据不对)。
+ * 关掉的用途是入口机或它的落地挂了来源白名单 —— 拨测那条路走不通,而管理员打算自己用客户端去测。
+ */
+export const DIAL_OPTION: LbConfirmOption = {
+  label: '下发后做真实拨测',
+  defaultValue: true,
+  onHint: '在节点上用真实用户的凭据连一次入口并访问一次拨测地址,不通就自动回滚。',
+  offHint:
+    '只查服务状态与端口监听,**不验证这个入口能不能连上**;拨测那一步在部署记录里记为「已跳过」。' +
+    '下发完请用客户端自己测一次。只对这一次下发有效 —— 改用户、改等级触发的自动下发仍然会拨测。',
+}
+
+/** 跳过拨测的下发成功之后,结果里补的那一句。「下发成功」在这里不等于入口能用。 */
+export const DIAL_SKIPPED_NOTE =
+  '这次没有做拨测:服务在跑、端口在听,但面板没有验证入口能不能连上。请用客户端自己测一次。'
 
 /**
  * 直接重启一台机器的 sing-box。

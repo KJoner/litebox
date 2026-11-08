@@ -37,8 +37,11 @@ import (
 //
 // 返回的步骤会被拼到部署结果的最前面。err 非 nil 时,最后一条步骤就是
 // 失败的那一条 —— 与部署事务里的 stepRecorder 一致。
+//
+// skipDial 是管理员在这个入口的下发确认框里关掉拨测的选择,顺带下发本机 sing-box 时照样沿用:
+// 白名单挡住的是这台机器出去的那一类连接,只跳过 mita 那一边、本机那一跳照样拨,结果还是回滚。
 func (s *Service) prepareEgressHop(
-	ctx context.Context, m *MieruInbound, n *Node,
+	ctx context.Context, m *MieruInbound, n *Node, skipDial bool,
 ) ([]deployment.Step, error) {
 	kind, err := ParseChainTargetKind(m.ChainTargetKind)
 	if err != nil || !kind.Enabled() {
@@ -68,7 +71,7 @@ func (s *Service) prepareEgressHop(
 		}
 		// **这一下会重启 sing-box。** 那台机器上如果还有别的 sing-box 入口,
 		// 它们的在线连接会一起断 —— 所以要说出来,而不是悄悄做完。
-		result, err := s.Deploy(ctx, n.ID)
+		result, err := s.DeployWith(ctx, n.ID, DeployOptions{SkipDial: skipDial})
 		if err != nil {
 			return "", fmt.Errorf("下发本机 sing-box 配置失败(%s): %w", stateWas(state), err)
 		}

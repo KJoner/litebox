@@ -66,6 +66,25 @@ type MieruRequest struct {
 	// **不判失败**(那不是节点的错),也**绝不报成功**(那等于对一份
 	// 没验证过的配置说验证过了)。
 	Probe *MieruProbeUser
+	// SkipDial 与 Request.SkipDial 同义:管理员在下发确认框里关掉了拨测。
+	// 代理状态与端口监听照做,出口那一跳与真实拨测都记 SKIPPED。
+	SkipDial bool
+}
+
+// mieruEgressStep 是带出口的入口单独验「本机 sing-box → 落地」那一跳的步骤名。
+const mieruEgressStep = "出口那一跳(本机 sing-box → 落地)"
+
+// skipMieruDials 在管理员关掉拨测时把两步拨测记成 SKIPPED 并返回真。
+// 出口那一跳同样是一次拨测(经本机 sing-box 连到落地),白名单挡住的正是这一类连接。
+func skipMieruDials(rec *stepRecorder, req MieruRequest) bool {
+	if !req.SkipDial {
+		return false
+	}
+	if req.EgressSocksPort > 0 {
+		rec.skip(mieruEgressStep, DialSkippedByAdmin)
+	}
+	rec.skip("真实拨测", DialSkippedByAdmin)
+	return true
 }
 
 // DeployMieru 下发一个 Mieru 入口。
@@ -255,8 +274,11 @@ func (d *Deployer) runMieruTransaction(
 	// 这一跳**不经 mita**:直接连本机的那个 socks 端口。它验的是
 	// 「sing-box 的回环入站在不在、route 规则有没有把它指到落地、
 	// 落地收不收这条链路的凭据」——恰好是 mita 之外的全部环节。
+	if skipMieruDials(rec, req) {
+		return nil
+	}
 	if req.EgressSocksPort > 0 {
-		if err := rec.run("出口那一跳(本机 sing-box → 落地)", func() (string, error) {
+		if err := rec.run(mieruEgressStep, func() (string, error) {
 			return d.dialEgressHop(ctx, client, req)
 		}); err != nil {
 			return d.rollbackMieru(ctx, client, init, req, rec, result, backup, applied, err)

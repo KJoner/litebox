@@ -18,7 +18,7 @@ export { default as LbIcon } from './LbIcon.vue'
 export { default as LbUsageBar } from './LbUsageBar.vue'
 
 export { lbDangerConfirm } from './lbDangerConfirm'
-export type { LbDangerConfirmOptions } from './lbDangerConfirm'
+export type { LbDangerConfirmOptions, LbConfirmOption } from './lbDangerConfirm'
 export type { LbResultItem } from './LbResultList.vue'
 export type { LbPoint } from './LbSparkline.vue'
 export type { LbWarningLevel } from './LbQuotaBar.vue'

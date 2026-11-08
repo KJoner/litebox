@@ -4027,9 +4027,15 @@ export const api = {
     }),
   scanNodeDests: (id: number) =>
     request<{ items: DestCheckResult[] }>(`/api/nodes/${id}/dest-scan`, { method: 'POST' }),
-  /** force 为真时配置已一致也照样重启;默认一致就跳过重启。 */
-  deployNode: (id: number, opts: { force?: boolean } = {}) =>
-    request<DeployResult>(`/api/nodes/${id}/deploy`, { method: 'POST', body: { force: !!opts.force } }),
+  /**
+   * force 为真时配置已一致也照样重启;默认一致就跳过重启。
+   * skipDial 为真时健康检查不做真实拨测(只查服务状态与端口监听),拨测那一步记「已跳过」。
+   */
+  deployNode: (id: number, opts: { force?: boolean; skipDial?: boolean } = {}) =>
+    request<DeployResult>(`/api/nodes/${id}/deploy`, {
+      method: 'POST',
+      body: { force: !!opts.force, skip_dial: !!opts.skipDial },
+    }),
   restartNode: (id: number) =>
     request<{ message: string }>(`/api/nodes/${id}/restart`, { method: 'POST' }),
   resetNodeHostKey: (id: number) =>
@@ -4130,10 +4136,10 @@ export const api = {
    * 用户"时才成立:端口、传输层与出口的变更 reload 生效不了,而 reload
    * 不释放旧端口 —— 新旧两段会同时监听,旧端口上那个入口还在服务。
    */
-  deployMieruInbound: (id: number, usersOnly = false) =>
+  deployMieruInbound: (id: number, usersOnly = false, skipDial = false) =>
     request<{ result: DeployResult; error?: string }>(`/api/mieru-inbounds/${id}/deploy`, {
       method: 'POST',
-      body: { users_only: usersOnly },
+      body: { users_only: usersOnly, skip_dial: skipDial },
     }),
   setMieruChain: (id: number, body: Record<string, unknown>) =>
     request<{

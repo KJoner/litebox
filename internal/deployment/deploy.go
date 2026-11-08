@@ -91,6 +91,42 @@ type Request struct {
 	Revision int64
 	// ConfigInRAM 决定这次把配置写到磁盘还是内存文件系统。见 Layout。
 	ConfigInRAM bool
+	// SkipDial 为真时健康检查不做真实拨测 —— 只有管理员在下发确认框里显式关掉才会是真,
+	// 协调器、巡检与 Mieru 出口那一跳的自动下发一律不传它。服务状态与端口监听照做,
+	// 拨测那一步记 SKIPPED 并写明是管理员跳过的,**绝不报成功**。
+	//
+	// 用途:入口机或它的落地在商家那边挂了来源白名单,拨测那条路结构性地走不通
+	// (生产上撞到过:链式入口的第二跳被落地的白名单挡住,每次下发都回滚),
+	// 而管理员打算自己用客户端去验。
+	SkipDial bool
+}
+
+// DialSkippedByAdmin 是管理员关掉拨测时,拨测那一步的说明。它要说清两件事:
+// 前面那几步过了,而这个入口能不能用面板没有验证过 —— 只写"已跳过"会被读成"没什么事"。
+const DialSkippedByAdmin = "管理员在下发时关掉了拨测 —— 服务状态与端口监听已通过," +
+	"但面板没有验证这个入口连不连得上、连上之后能不能上网,请用客户端自己测一次"
+
+// dialSkipReason 回答这个入站这一次拨不拨:返回非空串时记 SKIPPED,并用它当说明。
+// 三种跳过各说各的原因:「管理员关掉了」要人自己去测,「没有用户」「缺参数」要人去处理。
+func dialSkipReason(req Request, inbound singbox.InboundParams) (ProbeTarget, string) {
+	if req.SkipDial {
+		return ProbeTarget{}, DialSkippedByAdmin
+	}
+	// **共享凭据的入站照样要拨测,哪怕它一个用户都没有。**
+	//
+	// 那种入站的凭据是 psk 本身,与用户列表无关 —— 按"没有用户"跳过的话,
+	// 一个完全可用(而且所有人都连得上)的入口会被记成"没验证过",
+	// 而它恰恰是最需要验的那一种:它对每一个拿到 psk 的人开放。
+	if len(inbound.Users) == 0 && !inbound.SharedCredential() {
+		// 没有用户可拨测。这不是故障,但必须显式记录,
+		// 否则会被误读成"健康检查全过"。
+		return ProbeTarget{}, "这个入站上没有用户,无法拨测"
+	}
+	probe, ok := req.probeFor(inbound.Tag)
+	if !ok {
+		return ProbeTarget{}, "缺少这个入站的拨测参数(REALITY 公钥),无法拨测"
+	}
+	return probe, ""
 }
 
 // probeFor 取出某个入站的拨测参数。
@@ -434,20 +470,9 @@ func (d *Deployer) runTransaction(
 		// 步骤名带上入站与协议:部署记录是事后排查唯一的现场,
 		// 只写"拨测失败"会让人分不清那次跑的是哪一个入口、哪一种链路。
 		dialStep := fmt.Sprintf("健康检查:%s 拨测(%s)", dialLabel(inbound.Protocol), inbound.Tag)
-		// **共享凭据的入站照样要拨测,哪怕它一个用户都没有。**
-		//
-		// 那种入站的凭据是 psk 本身,与用户列表无关 —— 按"没有用户"跳过的话,
-		// 一个完全可用(而且所有人都连得上)的入口会被记成"没验证过",
-		// 而它恰恰是最需要验的那一种:它对每一个拿到 psk 的人开放。
-		if len(inbound.Users) == 0 && !inbound.SharedCredential() {
-			// 没有用户可拨测。这不是故障,但必须显式记录,
-			// 否则会被误读成"健康检查全过"。
-			rec.skip(dialStep, "这个入站上没有用户,无法拨测")
-			continue
-		}
-		probe, ok := req.probeFor(inbound.Tag)
-		if !ok {
-			rec.skip(dialStep, "缺少这个入站的拨测参数(REALITY 公钥),无法拨测")
+		probe, skipReason := dialSkipReason(req, inbound)
+		if skipReason != "" {
+			rec.skip(dialStep, skipReason)
 			continue
 		}
 		if err := rec.run(dialStep, func() (string, error) {

@@ -49,7 +49,7 @@ import {
   inboundProtocolMeta,
   portText,
 } from '@/components/node/inboundOps'
-import { confirmDeployNode, confirmRestartNode, nodeLabel } from '@/components/node/nodeOps'
+import { confirmDeployNode, confirmRestartNode, DIAL_OPTION, nodeLabel } from '@/components/node/nodeOps'
 import { useNarrow } from '@/composables/useNarrow'
 
 /**
@@ -747,12 +747,14 @@ function deployMieru(r: MieruRow) {
       '下发前会先同步这个实例的流量:计数器随进程消失,不先同步的话那一段永久丢失。',
     ],
     footer: '要看每一步的结果,去这台机器的「入口与转发」Tab 下发 —— 那里有完整的进度弹窗。',
-    onOk: () => {
+    option: DIAL_OPTION,
+    onOk: (dial) => {
       running.value = '正在下发 Mieru 入口'
       void api
-        .deployMieruInbound(r.mieru.id)
+        .deployMieruInbound(r.mieru.id, false, !dial)
         .then((res) => {
           if (res.error) message.error(res.error)
+          else if (!dial) message.warning('Mieru 入口已下发(没有拨测,请用客户端自己测一次)')
           else message.success('Mieru 入口已下发')
         })
         .catch((e) => message.error(e instanceof ApiError ? e.message : '下发失败'))
@@ -821,18 +823,18 @@ const deployResult = ref<DeployResult | null>(null)
 const deployNode = ref<Node | null>(null)
 
 function doDeploy(n: Node) {
-  confirmDeployNode(n, () => {
-    void runDeploy(n)
+  confirmDeployNode(n, ({ skipDial }) => {
+    void runDeploy(n, skipDial)
   })
 }
 
-async function runDeploy(n: Node) {
+async function runDeploy(n: Node, skipDial: boolean) {
   deployNode.value = n
   deployResult.value = null
   deployOpen.value = true
   deployRunning.value = true
   try {
-    deployResult.value = await api.deployNode(n.id)
+    deployResult.value = await api.deployNode(n.id, { skipDial })
   } catch (e) {
     message.error(e instanceof ApiError ? e.message : '部署失败')
     deployOpen.value = false

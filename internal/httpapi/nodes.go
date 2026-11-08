@@ -901,9 +901,11 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admin := adminFromContext(r.Context())
-	// 请求体可选:老的调用方不带。force 为真时配置已一致也照样重启。
+	// 请求体可选:老的调用方不带。force 为真时配置已一致也照样重启;
+	// skip_dial 为真时健康检查不做真实拨测(管理员在确认框里关掉的,见 deployment.Request.SkipDial)。
 	var req struct {
-		Force bool `json:"force"`
+		Force    bool `json:"force"`
+		SkipDial bool `json:"skip_dial"`
 	}
 	if r.ContentLength > 0 {
 		if err := decodeJSON(r, &req); err != nil {
@@ -913,11 +915,17 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 管理员点的部署:确认框里写明了会自动补齐前置条件(装 sing-box、打开 sshd 转发)。
-	result, deployErr := s.nodes.DeployWith(r.Context(), id, node.DeployOptions{Repair: true, Force: req.Force})
+	result, deployErr := s.nodes.DeployWith(r.Context(), id,
+		node.DeployOptions{Repair: true, Force: req.Force, SkipDial: req.SkipDial})
+	detail := "revision=" + strconv.FormatInt(result.Revision, 10)
+	if req.SkipDial {
+		// 审计要留下这一条:之后有人问"这个入口怎么没验过就上线了",答案在这里。
+		detail += " 跳过拨测"
+	}
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeDeploy,
 		TargetType: "node", TargetID: strconv.FormatInt(id, 10),
-		Detail:   "revision=" + strconv.FormatInt(result.Revision, 10) + " " + result.ErrorMessage,
+		Detail:   detail + " " + result.ErrorMessage,
 		ClientIP: clientIP(r, s.trustProxy), Succeeded: deployErr == nil,
 	})
 

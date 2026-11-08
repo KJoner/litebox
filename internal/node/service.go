@@ -747,6 +747,9 @@ type DeployOptions struct {
 	// Force 为真时即使配置已一致也照样下发并重启。
 	// 默认不重启:同一份配置重启一次换不来任何东西,只会踢掉全部在线连接。
 	Force bool
+	// SkipDial 为真时健康检查不做真实拨测(服务状态与端口监听照做),见 deployment.Request.SkipDial。
+	// 只有管理员在下发确认框里显式关掉才传;自动下发一律不传 —— 没有人会去补测那个入口。
+	SkipDial bool
 	// autoUsers 只给自动收回 Mieru 凭据那条路用(DeployMieruChanged,R05):
 	//   - 已经在跑的入口上最后一个用户也被移出时,换上占位用户而不是拒绝下发。手动下发仍按
 	//     ErrMieruNoUsers 拒绝 —— 那时多半是等级配错了,应当让管理员看见;
@@ -827,6 +830,7 @@ func (s *Service) DeployWith(ctx context.Context, nodeID int64, opts DeployOptio
 		SSHPort:     n.SSHPort,
 		Revision:    revision,
 		ConfigInRAM: n.ConfigInRAM,
+		SkipDial:    opts.SkipDial,
 	}
 
 	result, deployErr := s.deployer.Deploy(ctx, req)

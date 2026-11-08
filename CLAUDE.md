@@ -85,6 +85,11 @@ V18 把管理后台与用户门户的**视觉层**换成 iOS 风格(纯白圆角
 * **部署健康检查必须包含真实 VLESS 拨测。**
   不得仅凭 systemd 状态与端口监听判定部署成功。实测 flow 写错时,
   check 通过、systemd active、端口在监听,但全部用户断线。
+  **唯一的口子是管理员在下发确认框里显式关掉「下发后做真实拨测」**(sing-box 与 Mieru,
+  `deployment.Request.SkipDial` / `MieruRequest.SkipDial`,接口字段 `skip_dial`):入口机或落地挂了
+  商家的来源白名单,拨测那条路结构性地走不通。服务状态与端口监听照做,拨测那一步记 SKIPPED
+  (`DialSkippedByAdmin`,写明面板没有验证过入口),**绝不报成功**;只对那一次下发有效,
+  协调器、巡检、自动收回凭据的下发一律照常拨测,审计里记「跳过拨测」。nginx / realm 转发的下发不提供这个开关。
 
 * **`inbound.users[].name` 与 `experimental.v2ray_api.stats.users`
   必须由同一份用户列表渲染,渲染后断言两个集合相等。**

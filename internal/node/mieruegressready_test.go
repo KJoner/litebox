@@ -11,7 +11,7 @@ import (
 // 并重启一次 —— 而管理员点的是「下发这个 Mieru 入口」。
 func TestPrepareEgressHopSkipsDirect(t *testing.T) {
 	s := &Service{}
-	steps, err := s.prepareEgressHop(t.Context(), &MieruInbound{ID: 2}, &Node{})
+	steps, err := s.prepareEgressHop(t.Context(), &MieruInbound{ID: 2}, &Node{}, false)
 	if err != nil {
 		t.Fatalf("直连入口不该走这一段:%v", err)
 	}

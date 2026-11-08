@@ -287,6 +287,8 @@ type mieruDeployRequest struct {
 	// 用户变更处理,而 reload 不释放旧端口:新旧两段同时监听,
 	// 旧端口上那个入口还在服务,而管理员以为它已经搬走了。
 	UsersOnly bool `json:"users_only"`
+	// SkipDial 为真时不做真实拨测(含出口那一跳),见 deployment.MieruRequest.SkipDial。
+	SkipDial bool `json:"skip_dial"`
 }
 
 func (s *Server) handleDeployMieru(w http.ResponseWriter, r *http.Request) {
@@ -303,10 +305,14 @@ func (s *Server) handleDeployMieru(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
-	result, err := s.nodes.DeployMieruWith(r.Context(), id, req.UsersOnly, node.DeployOptions{Repair: true})
+	result, err := s.nodes.DeployMieruWith(r.Context(), id, req.UsersOnly,
+		node.DeployOptions{Repair: true, SkipDial: req.SkipDial})
 	detail := "下发 Mieru 入口"
 	if req.UsersOnly {
 		detail = "下发 Mieru 入口(仅用户变更,不断连接)"
+	}
+	if req.SkipDial {
+		detail += "(跳过拨测)"
 	}
 	if err != nil {
 		s.audit.Record(r.Context(), audit.Entry{

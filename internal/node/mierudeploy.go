@@ -250,7 +250,7 @@ func (s *Service) DeployMieruWith(
 	// 这种会踢掉别人连接的事。
 	var preSteps []deployment.Step
 	if !opts.autoUsers {
-		preSteps, err = s.prepareEgressHop(ctx, m, n)
+		preSteps, err = s.prepareEgressHop(ctx, m, n, opts.SkipDial)
 	}
 	preSteps = append(binSteps, preSteps...)
 	if err != nil {
@@ -322,6 +322,7 @@ func (s *Service) DeployMieruWith(
 		// 非 0 时健康检查会**先单独验出口那一跳**(不经 mita),
 		// 这样失败时分得出是 sing-box 那一半还是 mita 那一半。
 		EgressSocksPort: m.EgressSocksPort,
+		SkipDial:        opts.SkipDial,
 	}
 	// 拿这个入口上的第一个用户当探测凭据。**一个都没有时留 nil** ——
 	// 部署那一侧会记 SKIPPED 并写明原因,而不是报成功。

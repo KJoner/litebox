@@ -21,7 +21,7 @@ import NodesProbeBatchModal from '@/components/probe/NodesProbeBatchModal.vue'
 import BoceBatchModal from '@/components/boce/BoceBatchModal.vue'
 import { useNodeRecheck } from '@/components/node/useNodeRecheck'
 import { summarizeHealth, type HealthSummary } from '@/components/node/healthSummary'
-import { confirmDeployNode } from '@/components/node/nodeOps'
+import { confirmDeployNode, DIAL_SKIPPED_NOTE } from '@/components/node/nodeOps'
 import {
   expiryFilterOptions,
   expiryStatusMeta,
@@ -335,14 +335,15 @@ function runPrimary(n: Node) {
 
 /** 影响清单只有 nodeOps.confirmDeployNode 一份,入口页与详情页用的也是它。 */
 function confirmDeploy(n: Node) {
-  confirmDeployNode(n, () => {
+  confirmDeployNode(n, ({ skipDial }) => {
     void run(
       n.id,
       '部署',
       async () => {
-        const r = await api.deployNode(n.id)
+        const r = await api.deployNode(n.id, { skipDial })
         if (r.status !== 'SUCCESS') throw new ApiError(0, r.error_message || '部署未成功,详情见部署记录')
         if (r.unchanged) message.info('配置已一致,没有重启服务')
+        else if (skipDial) message.warning(DIAL_SKIPPED_NOTE)
       },
       '部署已完成,详情见部署记录',
     )
