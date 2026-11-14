@@ -1,5 +1,5 @@
 import { test, expect } from './support/mock'
-import { CANDS, mockCanvas, PREVIEW } from './support/topologyData'
+import { CANDS, mockCanvas, PREVIEW, SNAP } from './support/topologyData'
 
 /**
  * v23.3 链路画布与统一的下一跳选择器。
@@ -157,4 +157,41 @@ test('预览之后数据变了:提交被 409 拒绝,提示重新确认', async (
   await dialog.getByRole('button', { name: '下一步' }).click()
   await page.getByRole('button', { name: '保存并下发' }).click()
   await expect(page.getByText('预览之后链路数据变过了,请重新确认')).toBeVisible()
+})
+
+test('刷新只换状态样式:视口与选中项都留着,不重排、不自动适应全部;刷新失败保留上一次的图', async ({ page, api }) => {
+  await page.goto('/topology')
+  const card = page.getByTestId('card-SINGBOX:2')
+  await expect(card).toBeVisible()
+  // 平移离开「适应全部」的位置,再选中落地 B。
+  const vp = page.getByTestId('topo-viewport')
+  const box = (await vp.boundingBox())!
+  await page.mouse.move(box.x + 20, box.y + box.height - 20)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 140, box.y + box.height - 80, { steps: 5 })
+  await page.mouse.up()
+  await card.click()
+  await expect(card).toHaveClass(/is-sel/)
+  const world = page.locator('.tv__world')
+  const before = await world.getAttribute('style')
+  const cardBefore = await card.boundingBox()
+
+  // 下一次读到的快照只有状态变了:B 欠着一次下发。结构签名不变,所以不重排。
+  const changed = structuredClone(SNAP)
+  const b = changed.entries.find((e) => (e as { key?: string }).key === 'SINGBOX:2')!
+  b.pending = 'PENDING'
+  api.on('GET', '/api/topology', { json: changed })
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await expect(card).toContainText('已保存待下发')
+  expect(await world.getAttribute('style')).toBe(before)
+  expect(await card.boundingBox()).toEqual(cardBefore)
+  await expect(card).toHaveClass(/is-sel/)
+
+  // 刷新读失败:说读不到,但上一次的图与视口都还在。
+  api.fail('GET', '/api/topology', 500, '数据库忙')
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('读取链路拓扑失败')
+  await expect(card).toBeVisible()
+  expect(await world.getAttribute('style')).toBe(before)
+  expect(api.mutations()).toEqual([])
 })
