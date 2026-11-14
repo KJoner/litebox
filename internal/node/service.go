@@ -60,10 +60,13 @@ type Service struct {
 	store *Store
 	// linearDeploy 只给测试用:替换多跳逐台下发里的那一步(真实的 Deploy 要连节点)。
 	linearDeploy func(ctx context.Context, nodeID int64) (deployment.Result, error)
-	pool         *sshx.Pool
-	deployer     *deployment.Deployer
-	deployStore  *deployment.Store
-	users        UserProvider
+	// chainPlanDeploy 只给测试用:替换链式编排(ApplyChainTarget)里逐个组件的下发;component 是
+	// applyintent.SingBox / Relays / Realm。
+	chainPlanDeploy func(ctx context.Context, nodeID int64, component string) (deployment.Result, error)
+	pool            *sshx.Pool
+	deployer        *deployment.Deployer
+	deployStore     *deployment.Store
+	users           UserProvider
 	// binaries 是 sing-box 二进制来源。
 	//
 	// 服务自己也要它:一个带出口的 Mieru 入口要借道本机 sing-box,

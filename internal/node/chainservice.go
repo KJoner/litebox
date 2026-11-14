@@ -153,23 +153,29 @@ func (s *Service) runChainPlan(ctx context.Context, plan []chainDeployStep, out 
 		out.Stage = out.Steps[i].NodeName + ":" + out.Steps[i].Why
 		var result deployment.Result
 		var err error
+		deploy := func(real func(context.Context, int64) (deployment.Result, error)) (deployment.Result, error) {
+			if s.chainPlanDeploy != nil {
+				return s.chainPlanDeploy(ctx, st.nodeID, st.component)
+			}
+			return real(ctx, st.nodeID)
+		}
 		switch st.component {
 		case applyintent.Relays:
 			seq := s.queuedSeq(ctx, st.nodeID, st.component)
-			result, err = s.DeployRelays(ctx, st.nodeID)
+			result, err = deploy(s.DeployRelays)
 			if err == nil {
 				s.settleQueued(ctx, st.nodeID, st.component, seq)
 			}
 			out.RelayDeploys = append(out.RelayDeploys, result)
 		case applyintent.Realm:
 			seq := s.queuedSeq(ctx, st.nodeID, st.component)
-			result, err = s.DeployRealm(ctx, st.nodeID)
+			result, err = deploy(s.DeployRealm)
 			if err == nil {
 				s.settleQueued(ctx, st.nodeID, st.component, seq)
 			}
 			out.RelayDeploys = append(out.RelayDeploys, result)
 		default:
-			result, err = s.Deploy(ctx, st.nodeID)
+			result, err = deploy(s.Deploy)
 			r := result
 			if st.landing {
 				out.TargetDeploy = &r
