@@ -149,3 +149,72 @@ export const PREVIEW = {
   revision: 'rev-0002',
 }
 
+
+/**
+ * 性能验收用的固定数据集(A28):每台机器 5 个入口(3 个 sing-box,第一个三条地址;2 条转发),
+ * 每 10 台一组 —— 前 8 台的一个入口链到第 9 台的共享转发,共享转发再到第 10 台的落地;其余是独立入口。
+ */
+export function scaleSnapshot(total: number) {
+  const hosts = Math.floor(total / 5)
+  const entries: Record<string, unknown>[] = []
+  const edges: Record<string, unknown>[] = []
+  for (let h = 0; h < hosts; h++) {
+    const ip = `192.0.2.${(h % 250) + 1}`
+    for (let k = 0; k < 3; k++) {
+      const id = h * 10 + k + 1
+      entries.push(
+        entry({
+          key: `SINGBOX:${id}`, kind: 'SINGBOX', id, node_id: h + 1, node_name: `主机${h + 1}`, name: `入口${h + 1}-${k + 1}`,
+          protocol: k === 0 ? 'VLESS_REALITY' : 'SHADOWSOCKS', region: ['HK', 'JP', 'SG', 'US', ''][h % 5], sort_order: k,
+          endpoints: k === 0
+            ? [EP(id * 10 + 1, ip, 443), EP(id * 10 + 2, `198.51.100.${(h % 250) + 1}`, 2443), EP(id * 10 + 3, `2001:db8::${(h + 1).toString(16)}`, 3443, 'V6')]
+            : [EP(id * 10 + 1, ip, 20000 + k)],
+        }),
+      )
+    }
+    for (let k = 0; k < 2; k++) {
+      const id = h * 10 + k + 1
+      entries.push(
+        entry({
+          key: `NGINX:${id}`, kind: 'NGINX', id, node_id: h + 1, node_name: `主机${h + 1}`, name: `转发${h + 1}-${k + 1}`,
+          transparent: true, direct_access: false, endpoints: [EP(9000000 + id, ip, 30000 + k)],
+          next: { target: `ADDRESS:${id}`, dial: '198.51.100.200:8443' }, egress: 'NEXT',
+        }),
+      )
+    }
+  }
+  const aux: Record<string, unknown>[] = []
+  const byKey = new Map(entries.map((e) => [e.key as string, e]))
+  for (let g = 0; g + 9 < hosts; g += 10) {
+    const landing = `SINGBOX:${(g + 9) * 10 + 1}`
+    const shared = `NGINX:${(g + 8) * 10 + 1}`
+    const s = byKey.get(shared)!
+    s.next = { target: landing, endpoint_id: ((g + 9) * 10 + 1) * 10 + 1, addr_mode: 'ENDPOINT', dial: '192.0.2.1:443' }
+    s.referenced = 8
+    edges.push({ id: `e:${shared}`, from: shared, to: landing, kind: 'FORWARD', endpoint_id: ((g + 9) * 10 + 1) * 10 + 1, addr_mode: 'ENDPOINT', dial: '192.0.2.1:443', state: 'OK' })
+    for (let k = 0; k < 8; k++) {
+      const src = `SINGBOX:${(g + k) * 10 + 2}`
+      byKey.get(src)!.next = { target: shared, addr_mode: 'ENDPOINT', endpoint_id: 9000000 + (g + 8) * 10 + 1, dial: '192.0.2.9:30000' }
+      byKey.get(src)!.egress = 'NEXT'
+      edges.push({ id: `e:${src}`, from: src, to: shared, kind: 'PROXY', addr_mode: 'ENDPOINT', endpoint_id: 9000000 + (g + 8) * 10 + 1, dial: '192.0.2.9:30000', state: 'OK' })
+    }
+  }
+  for (const e of entries) {
+    const n = e.next as { target: string; dial: string } | undefined
+    if (n && n.target.startsWith('ADDRESS:')) {
+      aux.push({ key: n.target, kind: 'ADDRESS', label: n.dial, detail: '指定地址终点:后端未知' })
+      edges.push({ id: `e:${e.key}`, from: e.key, to: n.target, kind: 'FORWARD', dial: n.dial, state: 'UNKNOWN_BACKEND' })
+    }
+  }
+  return {
+    ...SNAP,
+    hosts: Array.from({ length: hosts }, (_, i) => ({
+      id: i + 1, name: `h${i + 1}`, display_name: `主机${i + 1}`, region: '', status: 'ONLINE', role: 'LANDING', sort_order: i, config_state: 'IN_SYNC',
+    })),
+    entries,
+    edges,
+    aux,
+    problems: [],
+    counts: { entries: entries.length, edges: edges.length, hosts, problems: 0 },
+  }
+}

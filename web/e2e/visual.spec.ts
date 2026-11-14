@@ -226,6 +226,10 @@ test.describe('@visual nexthop picker', () => {
     await expect(dialog.getByTestId('nexthop-preview')).toBeVisible()
     await page.waitForTimeout(1600)
     await settle(page)
-    await expect(page).toHaveScreenshot('nexthop-picker-light-1440.png', { animations: 'disabled' })
+    // 只截弹窗:点「出口」时背景页会不会被滚动取决于那一行是否已在视口里,截整页会随之漂移。
+    await expect(page.locator('.ant-modal-content').filter({ hasText: '的下一跳' })).toHaveScreenshot(
+      'nexthop-picker-light-1440.png',
+      { animations: 'disabled' },
+    )
   })
 })

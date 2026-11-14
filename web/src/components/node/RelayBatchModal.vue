@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { api, ApiError, type RelayBatchPlan } from '@/api/client'
+import { api, ApiError, type RelayBatchPlan, type TopoEndpoint } from '@/api/client'
+import { endpointText, familyText } from '@/components/topology/topoText'
 
 /**
  * 一个中转配多个落地(复核批次三)。
@@ -23,6 +24,8 @@ interface Row {
   label: string
   name: string
   port: number
+  /** 连落地的哪一条地址(v23.3);落地只有一条或没有条目时留 0 */
+  endpoint: number
 }
 const engine = ref<'NGINX' | 'REALM'>('NGINX')
 const startPort = ref(40000)
@@ -30,6 +33,25 @@ const picked = ref<number[]>([])
 const rows = ref<Row[]>([])
 const plan = ref<RelayBatchPlan | null>(null)
 const busy = ref(false)
+/** 落地入口的地址条目(来自链路画布同一份快照);多条时每一行都要选连哪一条。 */
+const endpointsOf = ref<Record<number, TopoEndpoint[]>>({})
+async function loadEndpoints() {
+  try {
+    const snap = await api.topology()
+    const m: Record<number, TopoEndpoint[]> = {}
+    for (const e of snap.entries) if (e.kind === 'SINGBOX') m[e.id] = e.endpoints.filter((x) => !x.default)
+    endpointsOf.value = m
+  } catch {
+    endpointsOf.value = {}
+  }
+}
+function epOptions(inbound: number) {
+  return (endpointsOf.value[inbound] ?? []).map((ep) => ({
+    value: ep.id,
+    label: `${endpointText(ep)} · ${familyText(ep.family)}`,
+  }))
+}
+const missing = computed(() => rows.value.some((r) => epOptions(r.inbound).length > 1 && !r.endpoint))
 
 watch(
   () => props.open,
@@ -38,6 +60,7 @@ watch(
     picked.value = []
     rows.value = []
     plan.value = null
+    void loadEndpoints()
   },
 )
 
@@ -52,7 +75,7 @@ watch(picked, (ids) => {
     while (used.has(next)) next++
     used.add(next)
     const label = props.landings.find((l) => l.value === id)?.label ?? String(id)
-    return { inbound: id, label, name: `${props.nodeLabel} → ${label}`.slice(0, 64), port: next++ }
+    return { inbound: id, label, name: `${props.nodeLabel} → ${label}`.slice(0, 64), port: next++, endpoint: 0 }
   })
   plan.value = null
 })
@@ -64,6 +87,7 @@ const items = computed(() =>
     listen_port: r.port,
     target_kind: 'INBOUND',
     target_inbound_id: r.inbound,
+    target_endpoint_id: r.endpoint,
   })),
 )
 
@@ -137,11 +161,24 @@ async function submit() {
       <div v-if="!landings.length" class="rb__hint">没有可选的落地入口:先在落地机器上建好入口。</div>
       <table v-if="rows.length" class="rb__table">
         <thead>
-          <tr><th>落地</th><th>名称</th><th>监听端口</th><th></th></tr>
+          <tr><th>落地</th><th>连接地址</th><th>名称</th><th>监听端口</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="(r, i) in rows" :key="r.inbound" :class="{ 'rb__bad-row': problemOf(i) }">
             <td class="rb__muted">{{ r.label }}</td>
+            <td>
+              <a-select
+                v-if="epOptions(r.inbound).length > 1"
+                v-model:value="r.endpoint"
+                :options="epOptions(r.inbound)"
+                size="small"
+                placeholder="连哪一条"
+                style="min-width: 180px"
+                :aria-label="`${r.label} 的连接地址`"
+                @change="plan = null"
+              />
+              <span v-else class="rb__muted">{{ epOptions(r.inbound)[0]?.label ?? '默认地址' }}</span>
+            </td>
             <td><a-input v-model:value="r.name" size="small" :maxlength="64" @change="plan = null" /></td>
             <td><a-input-number v-model:value="r.port" :min="1" :max="65535" size="small" @change="plan = null" /></td>
             <td class="rb__bad">{{ problemOf(i) }}</td>
@@ -149,7 +186,8 @@ async function submit() {
         </tbody>
       </table>
       <div class="rb__foot">
-        <a-button size="small" :disabled="!rows.length" :loading="busy" @click="preview">预览</a-button>
+        <a-button size="small" :disabled="!rows.length || missing" :loading="busy" @click="preview">预览</a-button>
+        <span v-if="missing" class="rb__hint">有落地有多条地址,请在「连接地址」里选连哪一条</span>
         <span v-if="plan?.ok" class="rb__ok">预览通过:{{ plan.items.length }} 条都能写入,提交后整批生效</span>
         <span v-else-if="plan" class="rb__bad">有通不过的条目:改好再预览;提交是整批的,不会只写进去一部分</span>
         <span v-else class="rb__hint">先预览;提交按钮在预览通过之后才能点</span>
