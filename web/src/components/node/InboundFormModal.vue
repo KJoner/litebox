@@ -71,6 +71,8 @@ async function loadAddrsEndpoints() {
   if (props.inbound) {
     try {
       endpoints.value = (await api.inboundEndpoints('SINGBOX', props.inbound.id)).items.map((e) => ({
+        // 带上稳定 id(v23.3):链路按 id 选目的地址,不带的话保存会把被选中的条目当成新的。
+        id: e.id,
         address_id: e.address_id,
         public_port: e.public_port,
         public_port_end: e.public_port_end,

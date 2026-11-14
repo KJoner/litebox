@@ -44,13 +44,22 @@ type TargetCandidates struct {
 }
 
 // TargetCandidates 列出 from 可以选的下一跳:全部入口都列,不兼容的禁用并写明原因。
-func (s *Service) TargetCandidates(ctx context.Context, from chaingraph.Ref) (*TargetCandidates, error) {
+// from.ID 为 0 表示一个还没建出来的来源,newOnNode 是它将要所在的机器。
+func (s *Service) TargetCandidates(ctx context.Context, from chaingraph.Ref, newOnNode int64) (*TargetCandidates, error) {
 	snap, err := s.Topology(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var src *TopoEntry
+	if from.ID == 0 {
+		// 还没建出来的来源(快速组链的新入口、新建的转发规则):只有种类与机器,校验按同一个函数做。
+		src = &TopoEntry{Key: string(from.Kind) + ":new", Kind: string(from.Kind), NodeID: newOnNode,
+			Transparent: from.Kind.IsRelay()}
+	}
 	for i := range snap.Entries {
+		if src != nil {
+			break
+		}
 		if snap.Entries[i].Key == from.Key() || (from.Kind.IsRelay() && snap.Entries[i].Transparent && snap.Entries[i].ID == from.ID) {
 			src = &snap.Entries[i]
 		}
@@ -127,9 +136,12 @@ func (s *Service) candidateReason(ctx context.Context, src, e *TopoEntry) string
 		return ""
 	}
 	// Mieru 的出口经本机 sing-box 桥接,所以它连转发入口与 sing-box 入站一样按认证终点判(validateProxyNextHop)。
-	entry, err := chaingraph.Load(ctx, s.store.db, chaingraph.Ref{Kind: chaingraph.Kind(src.Kind), ID: src.ID})
-	if err != nil {
-		return err.Error()
+	entry := &chaingraph.Entry{Ref: chaingraph.Ref{Kind: chaingraph.Kind(src.Kind)}, NodeID: src.NodeID}
+	if src.ID != 0 {
+		var err error
+		if entry, err = chaingraph.Load(ctx, s.store.db, chaingraph.Ref{Kind: chaingraph.Kind(src.Kind), ID: src.ID}); err != nil {
+			return err.Error()
+		}
 	}
 	if _, err := s.store.validateProxyNextHop(ctx, s.store.db, entry, NextHop{Kind: ChainTargetKind(kind), ID: id, EndpointID: endpoint}); err != nil {
 		return err.Error()

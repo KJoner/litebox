@@ -10,6 +10,7 @@ import {
   type QuickChainPreview,
 } from '@/api/client'
 import { LbInfoTip, lbDangerConfirm } from '@/components/lb'
+import NextHopPicker, { type NextHopValue } from '@/components/topology/NextHopPicker.vue'
 
 /**
  * 快速组链(VNext CHAIN02–05):在入口机上新建一个入口,出口指向已有的落地。
@@ -25,7 +26,7 @@ const props = defineProps<{
   open: boolean
   nodes: Node[]
   externals: ExternalProxy[]
-  preset: { entryNodeId?: number; targetKind?: 'INBOUND' | 'EXTERNAL'; targetId?: number } | null
+  preset: { entryNodeId?: number; targetKind?: 'INBOUND' | 'EXTERNAL' | 'RELAY'; targetId?: number } | null
 }>()
 const emit = defineEmits<{ 'update:open': [boolean]; saved: [] }>()
 
@@ -34,9 +35,8 @@ const form = ref({
   display_name: '',
   protocol: 'SHADOWSOCKS' as 'SHADOWSOCKS' | 'VLESS_REALITY',
   listen_port: undefined as number | undefined,
-  target_kind: 'INBOUND' as 'INBOUND' | 'EXTERNAL',
-  target_inbound_id: undefined as number | undefined,
-  target_external_id: undefined as number | undefined,
+  // 出口:统一选择器给的「入口 + 连它的哪一条地址」(v23.3),也可以是一条透明转发规则。
+  target: null as NextHopValue | null,
   user_ids: [] as number[],
 })
 const users = ref<ProxyUser[]>([])
@@ -45,23 +45,6 @@ const previewError = ref('')
 const saving = ref('')
 
 const entryNodes = computed(() => props.nodes.filter((n) => n.role !== 'RELAY'))
-const landingOptions = computed(() =>
-  props.nodes
-    .filter((n) => n.role !== 'RELAY' && n.id !== form.value.entry_node_id)
-    .flatMap((n) =>
-      (n.inbounds ?? []).map((i) => ({
-        value: i.id,
-        label: `${n.display_name || n.name} / ${i.display_name}${i.deployed_protocol ? '' : '(未部署过)'}${i.enabled ? '' : '(已停用)'}`,
-      })),
-    ),
-)
-const externalOptions = computed(() =>
-  props.externals.map((p) => ({
-    value: p.id,
-    label: p.dialable_by_node ? p.display_name : `${p.display_name}(不能当出口:${p.dialable_reason})`,
-    disabled: !p.dialable_by_node,
-  })),
-)
 const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label: `${u.display_name}(${u.user_code})` })))
 
 function body() {
@@ -70,8 +53,9 @@ function body() {
     display_name: form.value.display_name.trim(),
     protocol: form.value.protocol,
     listen_port: form.value.listen_port ?? 0,
-    target_kind: form.value.target_kind,
-    target_id: (form.value.target_kind === 'INBOUND' ? form.value.target_inbound_id : form.value.target_external_id) ?? 0,
+    target_kind: (form.value.target?.kind ?? 'INBOUND') as 'INBOUND' | 'EXTERNAL' | 'RELAY',
+    target_id: form.value.target?.id ?? 0,
+    target_endpoint_id: form.value.target?.endpoint_id ?? 0,
     user_ids: form.value.user_ids,
   }
 }
@@ -86,9 +70,7 @@ watch(
       display_name: '',
       protocol: 'SHADOWSOCKS',
       listen_port: undefined,
-      target_kind: p.targetKind ?? 'INBOUND',
-      target_inbound_id: p.targetKind !== 'EXTERNAL' ? p.targetId : undefined,
-      target_external_id: p.targetKind === 'EXTERNAL' ? p.targetId : undefined,
+      target: p.targetId ? { kind: p.targetKind ?? 'INBOUND', id: p.targetId, endpoint_id: 0 } : null,
       user_ids: [],
     }
     preview.value = null
@@ -105,7 +87,7 @@ const ready = computed(
   () =>
     !!form.value.entry_node_id &&
     !!form.value.listen_port &&
-    !!(form.value.target_kind === 'INBOUND' ? form.value.target_inbound_id : form.value.target_external_id),
+    !!form.value.target,
 )
 
 let seq = 0
@@ -177,6 +159,8 @@ async function doSave(apply: boolean) {
       target_kind: b.target_kind,
       target_inbound_id: b.target_kind === 'INBOUND' ? b.target_id : 0,
       target_external_id: b.target_kind === 'EXTERNAL' ? b.target_id : 0,
+      target_relay_id: b.target_kind === 'RELAY' ? b.target_id : 0,
+      target_endpoint_id: b.target_endpoint_id,
     })
     if (r.error) message.error(`入口已保存,但下发没完成:${r.error}`)
     else message.success('链路已生效')
@@ -220,31 +204,14 @@ async function doSave(apply: boolean) {
             <a-input-number v-model:value="form.listen_port" :min="1" :max="65535" placeholder="如 31000" />
           </a-form-item>
         </div>
-        <a-form-item label="出口">
-          <div class="qc__row">
-            <a-radio-group v-model:value="form.target_kind" size="small">
-              <a-radio value="INBOUND">自建入口</a-radio>
-              <a-radio value="EXTERNAL">外部代理</a-radio>
-            </a-radio-group>
-            <a-select
-              v-if="form.target_kind === 'INBOUND'"
-              v-model:value="form.target_inbound_id"
-              placeholder="选择落地入口"
-              :options="landingOptions"
-              show-search
-              option-filter-prop="label"
-              class="qc__grow"
-            />
-            <a-select
-              v-else
-              v-model:value="form.target_external_id"
-              placeholder="选择外部代理"
-              :options="externalOptions"
-              show-search
-              option-filter-prop="label"
-              class="qc__grow"
-            />
-          </div>
+        <a-form-item label="出口(下一跳与连接地址)">
+          <NextHopPicker
+            v-if="open && form.entry_node_id"
+            v-model="form.target"
+            new-kind="SINGBOX"
+            :new-node="form.entry_node_id"
+          />
+          <div v-else class="qc__note">先选入口机:同一台机器上的入口不能当出口,候选要按它算。</div>
         </a-form-item>
         <a-form-item label="使用用户(可选)">
           <a-select

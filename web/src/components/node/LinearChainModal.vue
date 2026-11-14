@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { api, ApiError, type ExternalProxy, type LinearChainPlan, type Node } from '@/api/client'
+import { api, ApiError, type ExternalProxy, type LinearChainPlan, type Node, type TopoEndpoint } from '@/api/client'
+import { endpointText, familyText } from '@/components/topology/topoText'
 import { lbDangerConfirm } from '@/components/lb'
 
 /**
@@ -52,6 +53,40 @@ const applied = ref<LinearChainPlan | null>(null)
 const stateText: Record<string, string> = { DEPLOYED: '已下发', FAILED: '失败', NOT_RUN: '没有下发' }
 const busy = ref(false)
 const dragFrom = ref<number | null>(null)
+/**
+ * 每一段连下一跳的哪一条地址(v23.3):键是下一跳在路径里的位置(2、3…)或 landing。
+ * 地址来自链路画布同一份快照;多条时必须选,只有一条时不用选。
+ */
+const endpointsOf = ref<Record<number, TopoEndpoint[]>>({})
+const epPick = ref<Record<string, number>>({})
+
+async function loadEndpoints() {
+  try {
+    const snap = await api.topology()
+    const m: Record<number, TopoEndpoint[]> = {}
+    for (const e of snap.entries) {
+      if (e.kind === 'SINGBOX') m[e.id] = e.endpoints.filter((x) => !x.default)
+    }
+    endpointsOf.value = m
+  } catch {
+    endpointsOf.value = {}
+  }
+}
+function epOptions(inboundID: number | null) {
+  return (inboundID ? endpointsOf.value[inboundID] ?? [] : []).map((ep) => ({
+    value: ep.id,
+    label: `${endpointText(ep)} · ${familyText(ep.family)}${ep.label ? ' · ' + ep.label : ''}`,
+  }))
+}
+/** 多条地址却没选的那几处:不选就不让预览,后端也会拒。 */
+const missingEndpoint = computed(() => {
+  const out: string[] = []
+  middle.value.forEach((id, i) => {
+    if (epOptions(id).length > 1 && !epPick.value[String(i + 2)]) out.push(`第 ${i + 2} 跳`)
+  })
+  if (landingKind.value === 'INBOUND' && epOptions(landingId.value).length > 1 && !epPick.value.landing) out.push('落地')
+  return out
+})
 
 watch(
   () => props.open,
@@ -62,9 +97,11 @@ watch(
     landingId.value = null
     plan.value = null
     applied.value = null
+    epPick.value = {}
+    void loadEndpoints()
   },
 )
-watch([middle, landingKind, landingId], () => (plan.value = null), { deep: true })
+watch([middle, landingKind, landingId, epPick], () => (plan.value = null), { deep: true })
 
 const machineCount = computed(() => 1 + middle.value.length + (landingKind.value === 'INBOUND' && landingId.value ? 1 : 0))
 const canAddHop = computed(() => machineCount.value < MAX_MACHINES - (landingKind.value === 'INBOUND' && !landingId.value ? 1 : 0))
@@ -93,8 +130,15 @@ function onDrop(i: number) {
 }
 
 const body = computed(() =>
-  props.entry && landingId.value
-    ? { entry_kind: 'SINGBOX' as const, hops: [props.entry.id, ...middle.value], landing_kind: landingKind.value, landing_id: landingId.value }
+  props.entry && landingId.value && !missingEndpoint.value.length
+    ? {
+        entry_kind: 'SINGBOX' as const,
+        hops: [props.entry.id, ...middle.value],
+        landing_kind: landingKind.value,
+        landing_id: landingId.value,
+        hop_endpoints: [0, ...middle.value.map((_, i) => epPick.value[String(i + 2)] ?? 0)],
+        landing_endpoint_id: landingKind.value === 'INBOUND' ? (epPick.value.landing ?? 0) : 0,
+      }
     : null,
 )
 
@@ -197,6 +241,15 @@ async function doApply() {
             class="lc__select"
             :aria-label="`第 ${i + 2} 跳`"
           />
+          <a-select
+            v-if="epOptions(id).length > 1"
+            v-model:value="epPick[String(i + 2)]"
+            :options="epOptions(id)"
+            size="small"
+            placeholder="连它的哪一条地址"
+            class="lc__select"
+            :aria-label="`第 ${i + 2} 跳的连接地址`"
+          />
           <a-button size="small" :disabled="i === 0" :aria-label="`第 ${i + 2} 跳上移`" @click="move(i, -1)">↑</a-button>
           <a-button size="small" :disabled="i === middle.length - 1" :aria-label="`第 ${i + 2} 跳下移`" @click="move(i, 1)">↓</a-button>
           <a-button size="small" :disabled="!canAddHop" @click="insertAfter(i)">后面插一跳</a-button>
@@ -218,12 +271,22 @@ async function doApply() {
             class="lc__select"
             aria-label="落地"
           />
+          <a-select
+            v-if="landingKind === 'INBOUND' && epOptions(landingId).length > 1"
+            v-model:value="epPick.landing"
+            :options="epOptions(landingId)"
+            size="small"
+            placeholder="连它的哪一条地址"
+            class="lc__select"
+            aria-label="落地的连接地址"
+          />
         </li>
       </ol>
 
       <div class="lc__foot">
         <a-button size="small" :disabled="!body" :loading="busy" @click="preview">预览</a-button>
-        <span v-if="!body" class="lc__hint">选好落地之后预览</span>
+        <span v-if="missingEndpoint.length" class="lc__hint">{{ missingEndpoint.join('、') }}有多条地址,请选连哪一条</span>
+        <span v-else-if="!body" class="lc__hint">选好落地之后预览</span>
         <span v-else-if="!plan" class="lc__hint">应用按钮在预览通过之后才能点</span>
       </div>
 

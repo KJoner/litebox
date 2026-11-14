@@ -58,6 +58,13 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '入口管理' },
       },
       {
+        // 链路画布(v23.3):全部入口与它们之间的配置关系,从左到右分层。图组件与布局按路由懒加载。
+        path: '/topology',
+        name: 'topology',
+        component: () => import('@/views/TopologyView.vue'),
+        meta: { title: '链路画布' },
+      },
+      {
         path: '/external-proxies',
         name: 'external-proxies',
         component: () => import('@/views/ExternalProxiesView.vue'),

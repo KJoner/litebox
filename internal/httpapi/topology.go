@@ -39,13 +39,30 @@ func parseEntryRef(raw string) (chaingraph.Ref, error) {
 	return chaingraph.Ref{Kind: k, ID: n}, nil
 }
 
+// handleTopologyTargets 列出一个来源的候选。from 是已有的入口(SINGBOX:12);还没建出来的来源写成
+// new=SINGBOX(或 NGINX / REALM)+ node=<机器 id>,快速组链与新建转发规则用。
 func (s *Server) handleTopologyTargets(w http.ResponseWriter, r *http.Request) {
-	from, err := parseEntryRef(r.URL.Query().Get("from"))
-	if err != nil {
-		badRequest(w, err)
-		return
+	var from chaingraph.Ref
+	var nodeID int64
+	if kind := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("new"))); kind != "" {
+		k, err := chaingraph.ParseKind(kind)
+		if err != nil || k == chaingraph.KindExternal || k == chaingraph.KindMieru {
+			writeError(w, http.StatusBadRequest, "new 只能是 SINGBOX / NGINX / REALM")
+			return
+		}
+		if nodeID, err = strconv.ParseInt(r.URL.Query().Get("node"), 10, 64); err != nil || nodeID <= 0 {
+			writeError(w, http.StatusBadRequest, "要给出将要所在的机器 node")
+			return
+		}
+		from = chaingraph.Ref{Kind: k}
+	} else {
+		var err error
+		if from, err = parseEntryRef(r.URL.Query().Get("from")); err != nil {
+			badRequest(w, err)
+			return
+		}
 	}
-	out, err := s.nodes.TargetCandidates(r.Context(), from)
+	out, err := s.nodes.TargetCandidates(r.Context(), from, nodeID)
 	if errors.Is(err, chaingraph.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "入口不存在")
 		return

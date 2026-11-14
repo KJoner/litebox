@@ -1,4 +1,5 @@
 import { test, expect, adminOnly, portalOnly } from './support/mock'
+import { CANDS, mockCanvas, PREVIEW } from './support/topologyData'
 import type { Page } from '@playwright/test'
 
 // VNext 起没选过主题时默认深色;截图要按 colorScheme 分浅 / 深两套,所以先把偏好设成「跟随系统」,
@@ -188,5 +189,43 @@ test.describe('@visual 状态', () => {
     await form.getByPlaceholder('例如 自建测速点').fill('示例 204')
     await page.waitForTimeout(400)
     await expect(page.getByRole('dialog').filter({ hasText: '新增探测目标' })).toHaveScreenshot('public-target-http-light-1440.png')
+  })
+})
+
+// v23.3 链路画布:虚构拓扑(共享中继、多地址卡片、指定地址终点、待确认旧地址)在浅 / 深两种主题与手机宽度下。
+for (const [theme, w, h] of [
+  ['light', 1440, 900],
+  ['dark', 1440, 900],
+  ['light', 390, 844],
+] as const) {
+  test.describe(`@visual topology ${theme} ${w}`, () => {
+    test.use({ viewport: { width: w, height: h }, colorScheme: theme })
+    test(`链路画布 ${theme} ${w}`, async ({ page, api }) => {
+      mockCanvas(api)
+      await page.goto('/topology')
+      await expect(page.getByTestId('card-SINGBOX:1')).toBeVisible()
+      // 侧栏计数晚 1.2 秒才读(V22.7),等它回来再截,否则基线时有时无。
+      await page.waitForTimeout(1600)
+      await settle(page)
+      await expect(page).toHaveScreenshot(`topology-${theme}-${w}.png`, { fullPage: false, animations: 'disabled' })
+    })
+  })
+}
+
+test.describe('@visual nexthop picker', () => {
+  test.use({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' })
+  test('下一跳选择器 light 1440', async ({ page, api }) => {
+    adminOnly(api)
+    api.on('GET', /^\/api\/topology\/targets/, { json: CANDS })
+    api.on('POST', '/api/topology/preview', { json: PREVIEW })
+    await page.goto('/nodes/1/entries')
+    await page.getByRole('button', { name: '出口' }).first().click()
+    const dialog = page.getByRole('dialog').filter({ hasText: '的下一跳' })
+    await dialog.getByTestId('cand-SINGBOX:2').click()
+    await dialog.getByTestId('ep-22').click()
+    await expect(dialog.getByTestId('nexthop-preview')).toBeVisible()
+    await page.waitForTimeout(1600)
+    await settle(page)
+    await expect(page).toHaveScreenshot('nexthop-picker-light-1440.png', { animations: 'disabled' })
   })
 })

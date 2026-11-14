@@ -142,6 +142,28 @@ test('快速组链:预览按跳列出路径与改动,有问题时不能保存', 
       problems,
     },
   }))
+  api.on('GET', /^\/api\/topology\/targets/, {
+    json: {
+      from: { key: 'SINGBOX:new', kind: 'SINGBOX', id: 0, name: '', endpoints: [], problems: [] },
+      revision: 'rev-1',
+      groups: [
+        {
+          host_id: 2,
+          host_name: 'tk-node',
+          region: '',
+          candidates: [
+            {
+              key: 'SINGBOX:2', kind: 'SINGBOX', id: 2, node_id: 2, node_name: 'tk-node', name: '东京-beta',
+              protocol: 'VLESS_REALITY', region: '', enabled: true, deployed: true, tier_id: 1, access_mode: 'TIER',
+              subscription_enabled: true, direct_users: 1, direct_access: true, referenced: 0, egress: 'DIRECT',
+              sort_order: 0, problems: [], disabled: false,
+              endpoints: [{ id: 0, family: 'V4', address: '192.0.2.20', port: 24443, label: '默认地址', default: true, referenced: 0 }],
+            },
+          ],
+        },
+      ],
+    },
+  })
   await page.goto('/inbounds')
   const row = page.getByRole('row').filter({ hasText: '上海-alpha' }).first()
   await row.getByRole('button', { name: '更多操作' }).click()
@@ -149,10 +171,9 @@ test('快速组链:预览按跳列出路径与改动,有问题时不能保存', 
   const dialog = page.getByRole('dialog').filter({ hasText: '快速组链' })
   await dialog.getByPlaceholder('出现在订阅里的名字').fill('经东京出')
   await dialog.getByPlaceholder('如 31000').fill('31000')
-  // 时钟固定时 AntD 的空值下拉框点一下不会展开,用方向键(见 e2e/README)。
-  await dialog.locator('.ant-select').filter({ hasText: '选择落地入口' }).locator('input').focus()
-  await page.keyboard.press('ArrowDown')
-  await page.locator('.ant-select-item-option').filter({ hasText: '东京-beta / 东京-beta' }).click()
+  // 出口走统一的下一跳选择器(v23.3):候选来自后端,目标只有一条地址时不用再选。
+  await dialog.getByTestId('cand-SINGBOX:2').click()
+  expect(api.requests('GET', /^\/api\/topology\/targets/).at(-1)?.query.get('new')).toBe('SINGBOX')
   const path = dialog.getByLabel('链路路径')
   await expect(path.getByText('第 2 跳')).toBeVisible()
   await expect(dialog.getByText('从 tk-node 直连出网')).toBeVisible()

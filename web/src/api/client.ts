@@ -246,8 +246,11 @@ export interface LinearChainInput {
   /** 起点入口的种类:只收 SINGBOX;Mieru 入口暂不能作为多跳起点,接口明确拒绝 */
   entry_kind?: 'SINGBOX' | 'MIERU'
   hops: number[]
-  landing_kind: 'INBOUND' | 'EXTERNAL'
+  landing_kind: 'INBOUND' | 'EXTERNAL' | 'RELAY'
   landing_id: number
+  /** hop_endpoints[i](i ≥ 1)是连 hops[i] 时选的地址条目;landing_endpoint_id 是连落地的 */
+  hop_endpoints?: number[]
+  landing_endpoint_id?: number
 }
 export interface LinearChainPlan {
   ok: boolean
@@ -559,7 +562,19 @@ export const NODE_ROLE_LABEL: Record<NodeRole, string> = {
  * 两个入口时,「转发到 B」是有歧义的,而歧义的表现是流量进了管理员没打算
  * 用的那个入口(协议、端口、等级都不同),没有任何一层会报错。
  */
-export type ChainTargetKind = '' | 'INBOUND' | 'EXTERNAL'
+export type ChainTargetKind = '' | 'INBOUND' | 'EXTERNAL' | 'RELAY'
+
+/**
+ * 下一跳是入口(入站或转发规则)时「连它的哪一条地址」(v23.3)。
+ * ENDPOINT = 选定的地址条目;DEFAULT = 目标一条条目都没有,连管理地址 + 跟随端口;
+ * LEGACY = 迁移时没找到唯一等价条目而保留的兼容快照,待确认。
+ */
+export interface AddrSel {
+  mode: '' | 'ENDPOINT' | 'DEFAULT' | 'LEGACY'
+  endpoint_id?: number
+  legacy_host?: string
+  legacy_port?: number
+}
 
 /**
  * 一台落地机器上的一个 sing-box 入站(V8 多入站)。
@@ -636,9 +651,12 @@ export interface MieruInbound {
    */
   egress_socks_port: number
   /** 出口去向。空串表示直连。 */
-  chain_target_kind: '' | 'INBOUND' | 'EXTERNAL'
+  chain_target_kind: ChainTargetKind
   chain_target_inbound_id: number
   chain_target_external_id: number
+  /** 下一跳是转发规则时的规则 id(v23.3) */
+  chain_target_relay_id: number
+  chain_target_addr: AddrSel
   /** 这条链路在【落地】的流量统计里的计数器名。凭据本身永不下发到前端。 */
   chain_code: string
 
@@ -708,6 +726,8 @@ export interface InboundEndpoint {
   sort_order: number
 }
 export interface InboundEndpointInput {
+  /** 稳定身份(v23.3):已有的条目原样带上,新增的留 0 / 不填。链路按 id 选目的地址,重建会让它们失效 */
+  id?: number
   address_id: number | null
   public_port: number
   public_port_end: number
@@ -795,6 +815,9 @@ export interface NodeInbound {
   chain_target_kind: ChainTargetKind
   chain_target_inbound_id: number
   chain_target_external_id: number
+  /** 下一跳是转发规则时的规则 id(v23.3) */
+  chain_target_relay_id: number
+  chain_target_addr: AddrSel
   /** 链路凭据在落地那台机器的流量统计里的计数器名。空串表示还没分配过。 */
   chain_code: string
   access_tier_id: number
@@ -1108,10 +1131,14 @@ export interface NodeRelay {
    * ADDRESS(V15)是管理员直接填的 host:port —— 面板不知道它背后的协议,
    * 所以这种规则不进订阅、不进门户,拨测也测不了。
    */
-  target_kind: 'INBOUND' | 'EXTERNAL' | 'ADDRESS'
+  target_kind: 'INBOUND' | 'EXTERNAL' | 'ADDRESS' | 'RELAY'
   /** 落地是自建节点【某一个入口】的 id,不是机器的 id */
   target_inbound_id: number
   target_external_id: number
+  /** RELAY(v23.3):转发到另一条转发规则 */
+  target_relay_id: number
+  /** 落地为入站或转发规则时连它的哪一条地址 */
+  target_addr: AddrSel
   /** 只在 ADDRESS 下有值 */
   target_host: string
   target_port: number
@@ -1219,8 +1246,20 @@ export interface ChainApplyResult {
   target_deploy: DeployResult | null
   /** 中转主机那一次部署 */
   host_deploy: DeployResult | null
+  /** 路径上还欠着没下发、按顺序先下发的透明转发 */
+  relay_deploys?: DeployResult[]
   /** 最终停在哪一步,失败时用来定位是哪台机器 */
   stage: string
+  /** 逐个组件的结果:这不是跨机器的事务,中途失败时前面的已经生效 */
+  steps?: ChainApplyStep[]
+}
+export interface ChainApplyStep {
+  node_id: number
+  node_name: string
+  component: string
+  why: string
+  state?: 'DEPLOYED' | 'FAILED' | 'NOT_RUN' | ''
+  error?: string
 }
 
 export type NodeConfigState =
@@ -3795,7 +3834,7 @@ export interface EntryAccess {
 
 export interface ChainHop {
   /** SINGBOX / MIERU / EXTERNAL;NEW 是快速组链里还没建的那个入口 */
-  kind: 'SINGBOX' | 'MIERU' | 'EXTERNAL' | 'NEW'
+  kind: 'SINGBOX' | 'MIERU' | 'EXTERNAL' | 'NEW' | 'NGINX' | 'REALM' | 'ADDRESS'
   id: number
   name: string
   node_id?: number
@@ -3807,6 +3846,11 @@ export interface ChainHop {
   udp: string
   enabled: boolean
   deployed: boolean
+  /** 上一跳连这一跳时实际拨的地址(v23.3) */
+  dial?: string
+  addr_mode?: AddrSel['mode']
+  /** 透明转发:只搬字节,不认证 */
+  transparent?: boolean
   problem?: string
 }
 export interface ChainPath {
@@ -3815,6 +3859,8 @@ export interface ChainPath {
   dns: string
   loop: boolean
   problems: string[]
+  /** 要人确认、但不妨碍使用的事(迁移留下的兼容地址) */
+  notes?: string[]
 }
 export interface QuickChainPreview {
   path: ChainPath
@@ -3828,8 +3874,10 @@ export interface QuickChainBody {
   display_name: string
   protocol: string
   listen_port: number
-  target_kind: 'INBOUND' | 'EXTERNAL'
+  target_kind: 'INBOUND' | 'EXTERNAL' | 'RELAY'
   target_id: number
+  /** 目标入口上选定的那一条地址;0 只在目标恰好有零条或一条时可以 */
+  target_endpoint_id?: number
   user_ids: number[]
 }
 
@@ -4323,7 +4371,7 @@ export const api = {
   /** 多选拖动之后一次提交整组;期间有人改过其中任何一项 → 409,一行不改 */
   sortBatch: (items: { kind: string; id: number; sort_order: number; expected: number }[]) =>
     request<{ updated: number }>('/api/sort-order/batch', { method: 'POST', body: { items } }),
-  chainPath: (kind: 'SINGBOX' | 'MIERU', id: number) =>
+  chainPath: (kind: 'SINGBOX' | 'MIERU' | 'NGINX' | 'REALM', id: number) =>
     request<ChainPath>(`/api/chain-path/${kind.toLowerCase()}/${id}`),
   /** 只读:路径、新建与改动清单、注定不可用的问题 */
   quickChainPreview: (body: QuickChainBody) =>
@@ -4334,6 +4382,17 @@ export const api = {
       method: 'POST',
       body,
     }),
+  /** 链路画布:全部入口与配置关系(只读,不连节点) */
+  topology: () => request<TopologySnapshot>('/api/topology'),
+  /** 统一目标选择器:from 的全部候选,不兼容的带原因 */
+  topologyTargets: (from: string) =>
+    request<TargetCandidates>('/api/topology/targets', { query: { from } }),
+  /** 还没建出来的来源(快速组链的新入口、新建的转发规则):种类 + 将要所在的机器 */
+  topologyTargetsNew: (kind: 'SINGBOX' | 'NGINX' | 'REALM', nodeID: number) =>
+    request<TargetCandidates>('/api/topology/targets', { query: { new: kind, node: String(nodeID) } }),
+  /** 改 from 的下一跳之后的完整后果(不写库);带回 revision,提交时原样带上 */
+  topologyPreview: (body: TopologyPreviewBody) =>
+    request<NextHopPreview>('/api/topology/preview', { method: 'POST', body }),
   clearChain: (inboundID: number) =>
     request<{ result: ChainApplyResult; error?: string }>(`/api/inbounds/${inboundID}/chain`, {
       method: 'DELETE',
@@ -4694,4 +4753,143 @@ export const api = {
   // 全站每日流量。只返回确实有记录的日子,缺的日子由前端画成缺口而不是 0。
   siteDailyTraffic: (days = 30) =>
     request<{ daily: DailyPoint[] }>('/api/traffic/daily', { query: { days } }),
+}
+
+// —— 链路画布与统一目标选择器(v23.3)——
+
+export type TopoEntryKind = 'SINGBOX' | 'MIERU' | 'NGINX' | 'REALM' | 'EXTERNAL'
+
+export interface TopoEndpoint {
+  /** 0 = 默认地址(入口一条地址条目都没有时的管理地址 + 跟随端口) */
+  id: number
+  family: 'V4' | 'V6'
+  address: string
+  port: number
+  port_end?: number
+  label: string
+  default?: boolean
+  /** 把它选作目的地址的入口个数 */
+  referenced: number
+}
+export interface TopoNext {
+  target: string
+  endpoint_id?: number
+  addr_mode?: AddrSel['mode']
+  dial?: string
+}
+export interface TopoEntry {
+  key: string
+  kind: TopoEntryKind
+  id: number
+  node_id?: number
+  node_name?: string
+  source?: string
+  name: string
+  protocol?: string
+  desired_protocol?: string
+  region: string
+  enabled: boolean
+  deployed: boolean
+  pending?: '' | 'PENDING' | 'RETRY' | 'BLOCKED'
+  tier_id: number
+  access_mode: 'TIER' | 'RESTRICTED'
+  subscription_enabled: boolean
+  direct_users: number
+  direct_access: boolean
+  endpoints: TopoEndpoint[]
+  next?: TopoNext
+  egress: 'DIRECT' | 'NEXT' | 'NONE' | 'EXTERNAL'
+  referenced: number
+  transparent?: boolean
+  note?: string
+  sort_order: number
+  problems: string[]
+}
+export interface TopoEdge {
+  id: string
+  from: string
+  to: string
+  kind: 'PROXY' | 'FORWARD'
+  endpoint_id?: number
+  addr_mode?: AddrSel['mode']
+  dial?: string
+  state: 'OK' | 'LEGACY' | 'BROKEN' | 'LOOP' | 'UNKNOWN_BACKEND'
+  problem?: string
+}
+export interface TopoAux {
+  key: string
+  kind: 'ADDRESS' | 'MISSING'
+  label: string
+  detail: string
+}
+export interface TopoProblem {
+  kind: 'MISSING_TARGET' | 'LEGACY_ADDR' | 'LOOP' | 'PENDING' | 'DEPLOY_FAILED' | 'UNKNOWN' | 'INCOMPATIBLE'
+  entry?: string
+  edge?: string
+  message: string
+}
+export interface TopoHost {
+  id: number
+  name: string
+  display_name: string
+  region: string
+  status: string
+  role: string
+  sort_order: number
+  config_state: string
+}
+export interface TopoTier {
+  id: number
+  code: string
+  name: string
+  level: number
+}
+export interface TopologySnapshot {
+  revision: string
+  generated_at: string
+  hosts: TopoHost[]
+  entries: TopoEntry[]
+  edges: TopoEdge[]
+  aux: TopoAux[]
+  problems: TopoProblem[]
+  tiers: TopoTier[]
+  counts: { entries: number; edges: number; hosts: number; problems: number }
+}
+export interface TargetCandidate extends TopoEntry {
+  disabled: boolean
+  reason?: string
+  current?: boolean
+}
+export interface TargetCandidates {
+  from: TopoEntry
+  groups: { host_id: number; host_name: string; region: string; candidates: TargetCandidate[] }[]
+  revision: string
+}
+export interface TopologyPreviewBody {
+  from: string
+  target_kind: 'INBOUND' | 'EXTERNAL' | 'RELAY' | 'ADDRESS'
+  target_id: number
+  target_endpoint_id?: number
+  target_host?: string
+  target_port?: number
+}
+export interface ChainReferrer {
+  ref: { kind: TopoEntryKind; id: number }
+  node_id: number
+  node_name: string
+  name: string
+  endpoint_id?: number
+}
+export interface NextHopPreview {
+  from: string
+  dial: string
+  auth: string
+  transparent: string[]
+  path: ChainPath | null
+  affected: ChainReferrer[]
+  deploys: ChainApplyStep[]
+  warnings: string[]
+  problems: string[]
+  notes: string[]
+  revision: string
 }

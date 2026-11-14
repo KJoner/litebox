@@ -12,10 +12,8 @@ import {
   type MieruInbound,
   type NodeInbound,
   type NodeRelay,
-  type NodeAddress,
   type NodeServiceFacts,
   type ServiceStatus,
-  type InboundEndpointInput,
   usesReality,
 } from '@/api/client'
 import {
@@ -37,7 +35,7 @@ import { servicePhase, servicePhaseMeta, type ServicePhase } from './serviceStat
 import { confirmDeployNode, confirmRestartNode, DIAL_OPTION, DIAL_SKIPPED_NOTE } from './nodeOps'
 import { sortByEntryOrder } from './entryOrder'
 import MieruInboundFormModal from './MieruInboundFormModal.vue'
-import EndpointsEditor from './EndpointsEditor.vue'
+import RelayFormModal from './RelayFormModal.vue'
 import {
   addressFamilyMeta,
   confirmRemoveInbound,
@@ -417,6 +415,7 @@ function chainTargetName(i: NodeInbound) {
     const p = externalProxies.value.find((x) => x.id === i.chain_target_external_id)
     return p ? p.display_name : `外部代理 #${i.chain_target_external_id}`
   }
+  if (i.chain_target_kind === 'RELAY') return `转发规则 #${i.chain_target_relay_id}(透明转发,协议在它后面的入口认证)`
   return ''
 }
 
@@ -436,6 +435,7 @@ function mieruChainName(m: MieruInbound) {
     const p = externalProxies.value.find((x) => x.id === m.chain_target_external_id)
     return p ? p.display_name : `外部代理 #${m.chain_target_external_id}`
   }
+  if (m.chain_target_kind === 'RELAY') return `转发规则 #${m.chain_target_relay_id}(透明转发)`
   return ''
 }
 
@@ -1428,153 +1428,24 @@ function openChain(i: NodeInbound) {
   chainOpen.value = true
 }
 
-// ---------------------------------------------------------------- nginx 转发
+// ---------------------------------------------------------------- nginx / realm 转发
 
-/**
- * nginx 透传的落地候选与链式的不是同一组。
- *
- * nginx stream 只渲染 TCP 的 server 块,而 Hysteria2 / TUIC 是纯 UDP ——
- * 它们照常进订阅给用户直连,只是不能当透传落地。两个谓词在后端由
- * DialableByNode / RelayableByNginx 分别回答,前端也必须分开用:
- * 混成一个的话,不能拨的会出现在转发的下拉里,而部署要到十几秒后才失败。
- */
-const relayableProxies = computed(() => externalProxies.value.filter((p) => p.relayable))
-/** realm 同时搬 UDP,Hysteria2 / TUIC 也能当落地 —— 但拨测测不了它们,部署记录里会记 SKIPPED。 */
-const realmTargetProxies = computed(() => externalProxies.value)
-const targetProxies = computed(() =>
-  form.value.engine === 'REALM' ? realmTargetProxies.value : relayableProxies.value,
-)
-const hiddenRelayTargets = computed(
-  () => externalProxies.value.length - relayableProxies.value.length,
-)
-
-const editing = ref<NodeRelay | null>(null)
-const formOpen = ref(false)
-const form = ref({
-  engine: 'NGINX' as 'NGINX' | 'REALM',
-  display_name: '',
-  listen_port: 0,
-  public_port: 0,
-  target_kind: 'INBOUND' as 'INBOUND' | 'EXTERNAL' | 'ADDRESS',
-  target_inbound_id: 0,
-  target_external_id: 0,
-  target_host: '',
-  target_port: 0,
-  access_tier_id: 0,
-  sort_order: 0,
-  subscription_enabled: true,
-  enabled: true,
-  public_remark: '',
-})
-
-// V16:中转规则的订阅地址条目(单端口)。nodeAddresses 是这台机器的地址池。
-const nodeAddresses = ref<NodeAddress[]>([])
-const relayEndpoints = ref<InboundEndpointInput[]>([])
-
-async function loadNodeAddresses() {
-  try {
-    nodeAddresses.value = (await api.nodeAddresses(props.node.id)).items
-  } catch {
-    nodeAddresses.value = []
-  }
-}
+// 表单本身在 RelayFormModal 里(v23.3 抽出来,链路画布也用它):转发目标走统一的选择器,
+// 候选与禁用原因来自后端,与保存时的校验是同一个函数。
+const relayFormOpen = ref(false)
+const relayEditing = ref<NodeRelay | null>(null)
+const relayEngine = ref<'NGINX' | 'REALM'>('NGINX')
 
 function openCreate(engine: 'NGINX' | 'REALM' = 'NGINX') {
-  editing.value = null
-  relayEndpoints.value = []
-  void loadNodeAddresses()
-  form.value = {
-    engine,
-    display_name: '',
-    listen_port: 0,
-    public_port: 0,
-    target_kind: 'INBOUND',
-    target_inbound_id: landingInbounds.value[0]?.value ?? 0,
-    target_external_id: relayableProxies.value[0]?.id ?? 0,
-    target_host: '',
-    target_port: 0,
-    access_tier_id: props.tiers[0]?.id ?? 1,
-    sort_order: 0,
-    subscription_enabled: true,
-    enabled: true,
-    public_remark: '',
-  }
-  formOpen.value = true
+  relayEditing.value = null
+  relayEngine.value = engine
+  relayFormOpen.value = true
 }
 
-async function openEdit(r: NodeRelay) {
-  editing.value = r
-  relayEndpoints.value = []
-  void loadNodeAddresses()
-  // 「指定地址」不进订阅、没有地址条目。其余引擎按种类拉一次。
-  if (r.target_kind !== 'ADDRESS') {
-    try {
-      relayEndpoints.value = (await api.inboundEndpoints(r.engine, r.id)).items.map((e) => ({
-        address_id: e.address_id,
-        public_port: e.public_port,
-        public_port_end: e.public_port_end,
-        display_name: e.display_name,
-      }))
-    } catch {
-      relayEndpoints.value = []
-    }
-  }
-  form.value = {
-    engine: r.engine,
-    display_name: r.display_name,
-    listen_port: r.listen_port,
-    public_port: r.public_port,
-    target_kind: r.target_kind,
-    target_inbound_id: r.target_inbound_id,
-    target_external_id: r.target_external_id,
-    target_host: r.target_host,
-    target_port: r.target_port,
-    access_tier_id: r.access_tier_id,
-    sort_order: r.sort_order,
-    subscription_enabled: r.subscription_enabled,
-    enabled: r.enabled,
-    public_remark: r.public_remark,
-  }
-  formOpen.value = true
-}
-
-async function submitForm() {
-  if (!form.value.display_name.trim()) {
-    message.warning('请填写线路名称')
-    return
-  }
-  running.value = editing.value ? '正在保存' : '正在新增'
-  emit('busy', running.value)
-  try {
-    let relayID: number
-    let engine: 'NGINX' | 'REALM'
-    if (editing.value) {
-      await api.updateRelay(editing.value.id, { ...form.value })
-      relayID = editing.value.id
-      engine = editing.value.engine
-    } else {
-      relayID = (await api.createRelay(props.node.id, { ...form.value })).relay.id
-      engine = form.value.engine
-    }
-    // 「指定地址」不进订阅,没有地址条目要存。其余按引擎(NGINX / REALM)存。
-    if (form.value.target_kind !== 'ADDRESS') {
-      await api.saveInboundEndpoints(engine, relayID, relayEndpoints.value)
-    }
-    formOpen.value = false
-    await load()
-    // 说明「已排队」而不是「已生效」:标脏之后由协调器合并下发,
-    // 中间有几秒的静默期。说成已生效会让管理员立刻去客户端上试。
-    message.success(
-      form.value.engine === 'REALM'
-        ? '已保存,realm 配置将在数秒内下发(restart,这台机器上全部 realm 线路的在途连接会断开)'
-        : '已保存,中转配置将在数秒内下发(只 reload,不断开在途连接)',
-    )
-  } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '保存失败')
-  } finally {
-    running.value = ''
-    emit('busy', '')
-  }
+function openEdit(r: NodeRelay) {
+  relayEditing.value = r
+  relayEngine.value = r.engine
+  relayFormOpen.value = true
 }
 
 /**
@@ -2012,115 +1883,17 @@ onMounted(async () => {
       @busy="(l: string) => emit('busy', l)"
     />
 
-    <!-- ---------------- nginx 转发表单 ---------------- -->
-    <a-modal
-      v-model:open="formOpen"
-      :title="
-        (editing ? '编辑' : '新增') + (form.engine === 'REALM' ? ' realm ' : ' nginx ') + '转发线路'
-      "
-      :confirm-loading="!!running"
-      @ok="submitForm"
-    >
-      <a-form layout="vertical" size="small">
-        <a-form-item label="线路名称(会发给用户)">
-          <a-input v-model:value="form.display_name" placeholder="例如:香港中转-东京" />
-        </a-form-item>
-        <a-form-item :label="`监听端口(${form.engine === 'REALM' ? 'realm' : 'nginx'} 在这台机器上真正监听的号码)`">
-          <a-input-number v-model:value="form.listen_port" :min="1" :max="65535" />
-        </a-form-item>
-        <!-- 「指定地址」不进订阅,没有订阅地址条目,只有监听端口。 -->
-        <a-form-item
-          v-if="form.target_kind !== 'ADDRESS'"
-          label="订阅地址(用户连哪几个地址、各自的公网端口与名字)"
-        >
-          <EndpointsEditor
-            v-model="relayEndpoints"
-            :addresses="nodeAddresses"
-            :host="node.host"
-            :is-mieru="false"
-            :name-hint="form.display_name"
-          />
-          <div class="nr__hint">
-            这条中转在订阅里下发的每一条地址(管理 IP / 额外 IPv4 / IPv6)。端口留空表示跟随监听端口;
-            NAT 主机上两者不同 —— 公网 443 映射到主机 20443 时,监听端口填 20443、这里填 443。
-            名字留空表示跟随线路名(IPv6 条目加 -IPV6)。
-          </div>
-        </a-form-item>
-        <a-form-item v-if="!editing" label="转发引擎">
-          <a-radio-group v-model:value="form.engine" size="small" button-style="solid">
-            <a-radio-button value="NGINX">nginx</a-radio-button>
-            <a-radio-button value="REALM">realm</a-radio-button>
-          </a-radio-group>
-          <div class="nr__hint">
-            引擎建好之后不能改。nginx 改规则 reload、在途连接不断;realm 改规则 restart、在途连接全断,
-            但它由面板下发二进制、同时搬 UDP(Hysteria2 / TUIC 也能当落地)。
-          </div>
-        </a-form-item>
-        <a-form-item v-if="!editing" label="落地去向">
-          <a-radio-group v-model:value="form.target_kind" size="small" button-style="solid">
-            <a-radio-button value="INBOUND">自建节点的入口</a-radio-button>
-            <a-radio-button value="EXTERNAL">外部代理</a-radio-button>
-            <a-radio-button value="ADDRESS">指定地址</a-radio-button>
-          </a-radio-group>
-          <div class="nr__hint">落地种类建好之后不能改 —— 换种类等于换成另一条线路。</div>
-        </a-form-item>
-        <a-form-item v-if="form.target_kind === 'ADDRESS'" label="落地地址(IP 或域名)与端口">
-          <a-input v-model:value="form.target_host" placeholder="例如:203.0.113.9 或 landing.example.com" style="width: 60%" />
-          <a-input-number v-model:value="form.target_port" :min="1" :max="65535" style="margin-left: 8px" />
-          <div class="nr__hint">
-            <b>这种线路不进订阅、不进门户,也不做拨测</b> —— 面板不知道那个地址背后跑的是什么协议、凭据是什么,
-            造不出条目。它的用途是把这台机器当纯端口转发器,用户拿到的地址由你另行分发。
-            域名原样写进配置、由转发程序自己解析,面板不解析它。
-          </div>
-        </a-form-item>
-        <a-form-item v-else label="落地">
-          <a-select
-            v-if="form.target_kind === 'INBOUND'"
-            v-model:value="form.target_inbound_id"
-            :options="landingInbounds"
-          />
-          <a-select
-            v-else
-            v-model:value="form.target_external_id"
-            :disabled="!targetProxies.length"
-            :options="targetProxies.map((p) => ({ value: p.id, label: p.display_name }))"
-          />
-          <div class="nr__hint">
-            落地是一个<b>入口</b>而不是一台机器 —— 一台机器上有两个入口时,
-            「转发到它」是有歧义的,而流量进错入口不会有任何报错。
-            <template v-if="form.target_kind === 'EXTERNAL' && form.engine === 'NGINX' && hiddenRelayTargets">
-              <br />
-              另有 {{ hiddenRelayTargets }} 条外部代理走 QUIC(Hysteria2 / TUIC),
-              是纯 UDP,而 nginx 透传只搬 TCP 字节 —— 没有列出来。
-              给它们配转发的话,规则下发得下去,但用户永远连不上,面板还全绿。
-            </template>
-          </div>
-        </a-form-item>
-        <a-form-item v-if="form.target_kind !== 'ADDRESS'" label="访问等级">
-          <a-select
-            v-model:value="form.access_tier_id"
-            :options="tiers.map((t) => ({ value: t.id, label: t.name }))"
-          />
-          <div class="nr__hint">
-            等级不高于它的用户才看得到这条线路。它与落地那个入口的等级是
-            <b>两道独立的闸门</b> —— 用户必须同时过得了两边,否则会拿到一条
-            订阅里看得见、连上去握手被拒的条目。
-          </div>
-        </a-form-item>
-        <a-form-item label="排序">
-          <a-input-number v-model:value="form.sort_order" />
-        </a-form-item>
-        <a-form-item label="对用户公开的备注">
-          <a-input v-model:value="form.public_remark" />
-        </a-form-item>
-        <a-form-item>
-          <a-checkbox v-model:checked="form.enabled">启用(关掉后不再监听这个端口)</a-checkbox>
-          <a-checkbox v-if="form.target_kind !== 'ADDRESS'" v-model:checked="form.subscription_enabled">
-            下发到订阅
-          </a-checkbox>
-        </a-form-item>
-      </a-form>
-    </a-modal>
+    <!-- ---------------- nginx / realm 转发表单(与链路画布共用) ---------------- -->
+    <RelayFormModal
+      v-model:open="relayFormOpen"
+      :node-id="node.id"
+      :node-host="node.host"
+      :relay="relayEditing"
+      :engine="relayEngine"
+      :tiers="tiers"
+      @saved="() => load()"
+      @busy="(l: string) => emit('busy', l)"
+    />
   </section>
 </template>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
   api,
@@ -76,6 +76,7 @@ import { useNarrow } from '@/composables/useNarrow'
  */
 
 const router = useRouter()
+const route = useRoute()
 const narrow = useNarrow()
 
 const nodes = ref<Node[]>([])
@@ -500,7 +501,13 @@ async function load() {
   loading.value = false
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // 从链路画布「定位到入口列表」过来:按那个入口的名字筛出来(不改任何别的筛选偏好)。
+  const focus = typeof route.query.focus === 'string' ? route.query.focus : ''
+  const hit = focus ? rows.value.find((r) => topoKey(r) === focus) : undefined
+  if (hit) kw.value = rowName(hit)
+})
 
 // ---------------------------------------------------------------- 显示
 
@@ -522,15 +529,42 @@ function exitText(r: Row): string {
   // 那一跳必须说出来:不说的话,管理员不明白改个 Mieru 出口为什么
   // 还要重启 sing-box,而那个问题没有答案就只能被读成面板有 bug。
   const via = r.kind === 'mieru' ? '经本机 sing-box → ' : '经 '
+  const addr = r.kind === 'singbox' ? r.inbound.chain_target_addr : r.mieru.chain_target_addr
+  const pending = addr?.mode === 'LEGACY' ? '(连接地址待确认)' : ''
+  if (kind === 'RELAY') {
+    const relayID = r.kind === 'singbox' ? r.inbound.chain_target_relay_id : r.mieru.chain_target_relay_id
+    const hit = rows.value.find((x) => isRelay(x) && (x as RelayRow).relay.id === relayID) as RelayRow | undefined
+    return hit
+      ? `${via}转发 ${nodeLabel(hit.node)} / ${hit.relay.display_name}${pending}`
+      : `${via}转发规则 #${relayID}${pending}`
+  }
   if (kind === 'INBOUND') {
     const hit = rows.value.find((x) => x.kind === 'singbox' && x.inbound.id === inboundID)
-    return hit ? `${via}${nodeLabel((hit as SingBoxRow).node)} / ${rowName(hit)}` : `${via}入口 #${inboundID}`
+    return hit
+      ? `${via}${nodeLabel((hit as SingBoxRow).node)} / ${rowName(hit)}${pending}`
+      : `${via}入口 #${inboundID}${pending}`
   }
   if (kind === 'EXTERNAL') {
     const hit = externals.value.find((p) => p.id === externalID)
     return hit ? `${via}外部代理 ${hit.final_display_name || hit.display_name}` : `${via}外部代理 #${externalID}`
   }
   return '本机直连'
+}
+
+/** 这一行在链路画布上的那张卡片(画布 ↔ 入口管理双向定位)。 */
+function topoKey(r: Row): string {
+  switch (r.kind) {
+    case 'singbox':
+      return `SINGBOX:${r.inbound.id}`
+    case 'mieru':
+      return `MIERU:${r.mieru.id}`
+    case 'external':
+      return `EXTERNAL:${r.proxy.id}`
+  }
+  return `${r.kind === 'realm' ? 'REALM' : 'NGINX'}:${r.relay.id}`
+}
+function goTopology(r: Row) {
+  router.push(`/topology?focus=${encodeURIComponent(topoKey(r))}`)
 }
 
 function goNode(r: Row) {
@@ -1158,6 +1192,7 @@ const columns = [
                   </a-menu-item>
                   <a-menu-item @click="expiryTarget = (record as ExternalRow).proxy">续费 / 修改到期时间</a-menu-item>
                   <a-menu-item @click="openSort(record as Row)">调整排序</a-menu-item>
+                  <a-menu-item @click="goTopology(record as Row)">在画布中查看</a-menu-item>
                   <a-menu-divider />
                   <a-menu-item @click="goExternal">去「外部代理」页(源 / 同步 / 删除)</a-menu-item>
                 </a-menu>
@@ -1176,7 +1211,8 @@ const columns = [
                     下发这台机器的{{ (record as Row).kind === 'realm' ? ' realm(重启)' : ' nginx 转发(reload)' }}
                   </a-menu-item>
                   <a-menu-item @click="openSort(record as Row)">调整排序</a-menu-item>
-                  <a-menu-item @click="goNode(record as Row)">编辑 / 删除(节点详情)</a-menu-item>
+                  <a-menu-item @click="goNode(record as Row)">编辑 / 设置转发目标 / 删除(节点详情)</a-menu-item>
+                  <a-menu-item @click="goTopology(record as Row)">在画布中查看</a-menu-item>
                 </a-menu>
               </template>
             </a-dropdown>
@@ -1216,6 +1252,7 @@ const columns = [
                     实测握手目标
                   </a-menu-item>
                   <a-menu-item @click="goNode(record as Row)">进入这台机器</a-menu-item>
+                  <a-menu-item @click="goTopology(record as Row)">在画布中查看</a-menu-item>
                   <a-menu-divider />
                   <!-- 机器级操作单独一组并写明"整台" —— 它们影响这台机器上
                        全部 sing-box 入口,而管理员是从某一行点进来的。

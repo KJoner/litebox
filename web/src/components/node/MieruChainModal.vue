@@ -4,11 +4,12 @@ import { message } from 'ant-design-vue'
 import {
   api,
   ApiError,
-  type ExternalProxy,
   type MieruInbound,
+  type NextHopPreview,
   type Node,
 } from '@/api/client'
 import { lbDangerConfirm } from '@/components/lb'
+import NextHopPicker, { type NextHopValue } from '@/components/topology/NextHopPicker.vue'
 
 /**
  * 改一个 Mieru 入口的出口去向。
@@ -46,162 +47,92 @@ const emit = defineEmits<{
 }>()
 
 const running = ref('')
-const landingNodes = ref<Node[]>([])
-const externalProxies = ref<ExternalProxy[]>([])
+const socksPort = ref(11081)
+const choice = ref<NextHopValue | null>(null)
+const preview = ref<NextHopPreview | null>(null)
+const picker = ref<InstanceType<typeof NextHopPicker> | null>(null)
+const fromKey = computed(() => (props.inbound ? `MIERU:${props.inbound.id}` : ''))
 
-const form = ref({
-  target_kind: 'INBOUND' as 'INBOUND' | 'EXTERNAL',
-  // undefined 而不是 0:0 会被 a-select 当成一个已选中的值渲染出来,
-  // 而占位提示永远不出现 —— 管理员看到一个像是选好了的框,
-  // 点确定却被拦下来说没选落地。
-  target_inbound_id: undefined as number | undefined,
-  target_external_id: undefined as number | undefined,
-  socks_port: 11081,
-})
-
+// 候选、禁用原因与完整路径来自统一的选择器(v23.3):与 sing-box 入口的出口、转发规则的目标同一套,
+// 而且与后端保存时的校验是同一个函数 —— 同机的入口、不能当链式落地的协议、拼不出出站的外部代理、
+// 终点是指定地址的转发都在列表里禁用并写明原因。订阅开关关着的线路照样能当出口:那个开关只管它进不进订阅。
 watch(
-  () => props.open,
-  async (open) => {
-    if (!open) return
+  () => [props.open, props.inbound?.id],
+  () => {
+    if (!props.open) return
     const cur = props.inbound
-    form.value = {
-      target_kind: (cur?.chain_target_kind as 'INBOUND' | 'EXTERNAL') || 'INBOUND',
-      target_inbound_id: cur?.chain_target_inbound_id || undefined,
-      target_external_id: cur?.chain_target_external_id || undefined,
-      // 已经配过就沿用原来那个端口:换一个只会让这次下发多断一次连接,
-      // 而端口本身没有任何需要变的理由。
-      socks_port: cur?.egress_socks_port || 11081,
-    }
-    try {
-      const [ns, ps] = await Promise.all([api.nodes(), api.externalProxies()])
-      landingNodes.value = (ns.items ?? []).filter(
-        (n) => n.role !== 'RELAY' && n.id !== props.node.id,
-      )
-      // **不按 `subscription_enabled` 过滤。** 它只管这条线路进不进用户的订阅,
-      // 与能不能当出口无关 —— 把一条线路的订阅关掉、只让用户经这台机器
-      // 访问它,正是配出口最典型的用法。按它过滤过的话,那条线路在这里
-      // 静默消失,而管理员在外部代理页上明明看得到它;sing-box 入口的
-      // 出口弹窗与后端 SetMieruChain 都不看这个开关,这里不能是第三种判据。
-      externalProxies.value = ps.items ?? []
-    } catch {
-      // 拉不到候选不影响"解除出口"那条路 —— 它不需要任何候选。
-      landingNodes.value = []
-      externalProxies.value = []
-    }
+    preview.value = null
+    // 已经配过就沿用原来那个端口:换一个只会让这次下发多断一次连接。
+    socksPort.value = cur?.egress_socks_port || 11081
+    choice.value = !cur?.chain_target_kind
+      ? null
+      : cur.chain_target_kind === 'EXTERNAL'
+        ? { kind: 'EXTERNAL', id: cur.chain_target_external_id, endpoint_id: 0 }
+        : cur.chain_target_kind === 'RELAY'
+          ? { kind: 'RELAY', id: cur.chain_target_relay_id, endpoint_id: cur.chain_target_addr?.endpoint_id ?? 0 }
+          : { kind: 'INBOUND', id: cur.chain_target_inbound_id, endpoint_id: cur.chain_target_addr?.endpoint_id ?? 0 }
   },
+  { immediate: true },
 )
 
-/**
- * 可选的落地入站。
- *
- * **同机的入站不在列表里**(上面按 node.id 过滤掉了):流量确实多走了
- * mita → sing-box 这一跳,但出口 IP 一个字节都没变 —— 后端也会拒绝,
- * 在这里就不列出来,省得管理员选完才被告知。
- *
- * 没部署过的落地也标出来:它上面还没有这条链路的凭据,选了会被拦下。
- */
-const inboundOptions = computed(() =>
-  landingNodes.value.flatMap((n) =>
-    (n.inbounds ?? [])
-      .filter((i) => i.enabled)
-      .map((i) => ({
-        value: i.id,
-        label:
-          `${n.display_name || n.name} / ${i.display_name}` +
-          (i.deployed_protocol ? '' : '(还没上过节点)'),
-      })),
-  ),
-)
-
-/**
- * 节点上的 sing-box 拼不出出站的外部代理不能当出口:走 QUIC 的
- * (Hysteria2 / TUIC)、插件名它不认的、SS2022 密钥长度不对的。判据由后端
- * 按渲染出站的同一条路算(dialable_reason),与 InboundChainModal 同一套;
- * 在这里就滤掉并逐条说明 —— 等到下发才发现的话,错误是十几秒后【本机
- * sing-box】部署记录里的一句 FATAL,而管理员做的事情是"给 Mieru 入口设出口"。
- */
-const chainableProxies = computed(() => externalProxies.value.filter((p) => p.dialable_by_node))
-const hiddenProxies = computed(() => externalProxies.value.filter((p) => !p.dialable_by_node))
-const hiddenCount = computed(() => hiddenProxies.value.length)
-const hiddenNote = computed(() =>
-  hiddenProxies.value.map((p) => `「${p.display_name}」${p.dialable_reason}`).join(';'),
-)
-
-const externalOptions = computed(() =>
-  chainableProxies.value.map((p) => ({ value: p.id, label: p.display_name })),
-)
-
-/** 外部代理那一栏空着时,说清楚是一条都没有,还是有但都拼不出出站。 */
-const externalReason = computed(() => {
-  if (chainableProxies.value.length) return ''
-  return hiddenCount.value > 0
-    ? `${hiddenCount.value} 条外部代理都不能当出口:${hiddenNote.value}。它们照常发给用户直连。`
-    : '还没有可用的外部代理 —— 去「外部代理」页添加一条(订阅开关关着的也能当出口)。'
+const blocked = computed(() => {
+  if (!choice.value) return '请选择出口与连接地址'
+  if (!preview.value) return '正在预览完整路径'
+  if (preview.value.problems.length) return preview.value.problems[0]
+  if (!socksPort.value) return '请填写回环端口'
+  return ''
 })
 
 const hasChain = computed(() => !!props.inbound?.chain_target_kind)
 
-/** 落地是外部代理时不需要下发落地那一台 —— 凭据是机场给的。 */
-const landingIsExternal = computed(() => form.value.target_kind === 'EXTERNAL')
-
 function submit() {
-  const f = form.value
-  if (f.target_kind === 'INBOUND' && !f.target_inbound_id) {
-    message.warning('请选择落地入口')
+  if (blocked.value) {
+    message.warning(blocked.value)
     return
   }
-  if (f.target_kind === 'EXTERNAL' && !f.target_external_id) {
-    message.warning('请选择外部代理')
-    return
-  }
-  if (!f.socks_port) {
-    message.warning('请填写回环端口')
-    return
-  }
-
-  const steps = [
-    ...(landingIsExternal.value
-      ? []
-      : ['先下发**落地那台机器** —— 把这条链路的凭据写进它的用户列表。'
-        + '不做这一步,后面两步都会失败,而报错会落在这台机器上,看起来像是链路不通。']),
-    `再下发 **${props.node.display_name || props.node.name} 的 sing-box** —— ` +
-      '加上那个只监听回环的 socks 入站。这一下会重启 sing-box,' +
-      '踢掉这台机器上**全部 sing-box 入口**的在线连接(Mieru 入口不受影响)。',
-    '最后下发**这个 Mieru 入口** —— 让 mita 的出口指过去。' +
-      '这一下只断这一个入口的连接,同机其他入口与 sing-box 都不受影响。',
-  ]
+  const pv = preview.value!
   lbDangerConfirm({
-    title: `确认把「${props.inbound?.display_name}」的出口改到落地?`,
+    title: `确认把「${props.inbound?.display_name}」的出口改到 ${pv.dial || '所选目标'}?`,
     okType: 'primary',
     okText: '保存出口设置',
     impacts: [
       '**现在只写数据库,节点上一个字节都不动。** 生效要按下面的顺序下发:',
-      ...steps.map((s, i) => `${i + 1}. ${s}`),
+      `实际连接 ${pv.dial},在「${pv.auth}」认证` +
+        (pv.transparent.length ? `(经过透明转发:${pv.transparent.join(' → ')})` : ''),
+      ...pv.deploys.map((d, i) => `${i + 1}. 下发 ${d.node_name} 的 ${d.component} —— ${d.why}`),
+      `${pv.deploys.length + 1}. 最后下发**这个 Mieru 入口** —— 让 mita 的出口指过去(只断这一个入口的连接)。`,
+      ...pv.warnings,
     ],
     footer:
       'mita 的出口代理只认 SOCKS5,拨不出 VLESS 或 Shadowsocks —— ' +
       '中间借道本机 sing-box 那一跳是协议限制,不是面板绕的路。',
-    onOk: () => void doSave(),
+    onOk: () => void doSave(pv.revision),
   })
 }
 
-async function doSave() {
+async function doSave(revision: string) {
+  const v = choice.value
+  if (!v) return
   running.value = '正在保存出口设置'
   emit('busy', running.value)
   try {
     await api.setMieruChain(props.inbound!.id, {
-      kind: form.value.target_kind,
-      target_id:
-        form.value.target_kind === 'INBOUND'
-          ? form.value.target_inbound_id
-          : form.value.target_external_id,
-      socks_port: form.value.socks_port,
+      kind: v.kind,
+      target_id: v.id,
+      target_endpoint_id: v.endpoint_id,
+      socks_port: socksPort.value,
+      revision,
     })
     emit('update:open', false)
     emit('applied')
     message.success('已保存。按上面的顺序下发之后才会生效')
   } catch (e) {
-    message.error(e instanceof ApiError ? e.message : '保存失败')
+    if (e instanceof ApiError && e.code === 'STALE_PREVIEW') {
+      message.warning('预览之后链路数据变过了,请重新确认出口')
+      void picker.value?.reload()
+    } else {
+      message.error(e instanceof ApiError ? e.message : '保存失败')
+    }
   } finally {
     running.value = ''
     emit('busy', '')
@@ -241,6 +172,7 @@ function clearChain() {
 <template>
   <a-modal
     :open="open"
+    width="640px"
     :title="`Mieru 入口「${inbound?.display_name ?? ''}」的出口`"
     :confirm-loading="!!running"
     @update:open="(v: boolean) => emit('update:open', v)"
@@ -256,51 +188,19 @@ function clearChain() {
     </a-alert>
 
     <a-form layout="vertical" size="small">
-      <a-form-item label="落地种类">
-        <a-radio-group v-model:value="form.target_kind" size="small" button-style="solid">
-          <a-radio-button value="INBOUND">自建节点的入口</a-radio-button>
-          <a-radio-button value="EXTERNAL">外部代理</a-radio-button>
-        </a-radio-group>
-      </a-form-item>
-
-      <a-form-item v-if="form.target_kind === 'INBOUND'" label="落地入口">
-        <a-select
-          v-model:value="form.target_inbound_id"
-          :options="inboundOptions"
-          placeholder="选择落地入口"
-          show-search
-          option-filter-prop="label"
+      <a-form-item label="出口(下一跳与连接地址)">
+        <NextHopPicker
+          v-if="open && inbound"
+          ref="picker"
+          v-model="choice"
+          :from="fromKey"
+          @preview="(p) => (preview = p)"
         />
-        <div class="mcm__hint">
-          <b>同一台机器上的入口不在列表里</b>:流量确实多走了一跳,
-          但出口 IP 一个字节都没变。
-          <br />
-          标着「还没上过节点」的落地选了会被拦下 —— 它上面还没有这条链路的凭据。
-        </div>
-      </a-form-item>
-
-      <a-form-item v-else label="外部代理">
-        <a-select
-          v-model:value="form.target_external_id"
-          :options="externalOptions"
-          :disabled="!chainableProxies.length"
-          placeholder="选择外部代理"
-          show-search
-          option-filter-prop="label"
-        />
-        <p v-if="externalReason" class="mcm__warn">{{ externalReason }}</p>
-        <div class="mcm__hint">
-          订阅开关关着的线路也在列表里 —— 那个开关只管它进不进用户的订阅,
-          与能不能当出口无关。
-          <template v-if="hiddenCount > 0">
-            <br />
-            另有 {{ hiddenCount }} 条没列出来(节点上的 sing-box 拼不出它的出站):{{ hiddenNote }}
-          </template>
-        </div>
+        <p v-if="blocked && choice" class="mcm__warn">{{ blocked }}</p>
       </a-form-item>
 
       <a-form-item label="回环端口(mita 与 sing-box 之间那一跳)">
-        <a-input-number v-model:value="form.socks_port" :min="1" :max="65535" />
+        <a-input-number v-model:value="socksPort" :min="1" :max="65535" />
         <div class="mcm__hint">
           它只监听 127.0.0.1,不对外。要避开这台机器上已有的端口 ——
           撞上了保存时就会拒绝,不会等到下发失败。
@@ -320,7 +220,7 @@ function clearChain() {
         </a-button>
         <span class="mcm__spacer" />
         <a-button size="small" @click="emit('update:open', false)">取消</a-button>
-        <a-button size="small" type="primary" :loading="!!running" @click="submit">
+        <a-button size="small" type="primary" :loading="!!running" :disabled="!!blocked" @click="submit">
           保存出口设置
         </a-button>
       </div>

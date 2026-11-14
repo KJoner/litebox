@@ -89,6 +89,8 @@ const groups = computed<{ title: string; items: NavItem[] }[]>(() => [
     items: [
       // 入口、转发与链式出口都在这一页按条列出;订阅配置决定这些线路怎么发到客户端。
       { key: 'inbounds', label: '入口管理', icon: 'log-in' },
+      // 链路画布:按入口聚合、从左到右分层看全部配置关系;编辑仍走各自的表单。
+      { key: 'topology', label: '链路画布', icon: 'network' },
       { key: 'subscription-profiles', label: '订阅配置', icon: 'file-text' },
     ],
   },
