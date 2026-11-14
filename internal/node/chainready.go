@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/litebox/litebox/internal/applyintent"
+	"github.com/litebox/litebox/internal/chaingraph"
 )
 
 // ErrChainTargetOutOfSync 落地上跑的配置还不包含这条链路的凭据。
@@ -78,34 +81,10 @@ func (s *Service) checkChainTargetsReady(ctx context.Context, inbounds []*Inboun
 	var problems []string
 
 	for _, in := range inbounds {
-		if !in.Enabled || in.ChainTargetKind != ChainTargetInbound {
+		if !in.Enabled || (in.ChainTargetKind != ChainTargetInbound && in.ChainTargetKind != ChainTargetRelay) {
 			continue
 		}
-		target, err := s.store.GetInbound(ctx, in.ChainTargetInboundID)
-		if err != nil {
-			// 落地入站查不到(被删了)交给渲染期报 —— 那里的错误更准确,
-			// 而这里再包一层只会把原因盖掉。
-			continue
-		}
-		// 同一个落地节点可能被这台机器上的好几个入口指向,只查一次:
-		// ConfigStatus 要重新渲染整份配置,逐个入口查会把它跑上好几遍。
-		if seen[target.NodeID] {
-			continue
-		}
-		seen[target.NodeID] = true
-
-		landing, err := s.store.Get(ctx, target.NodeID)
-		if err != nil {
-			continue
-		}
-		state, _ := s.ConfigStatus(ctx, landing)
-		if !chainTargetBlocks(state) {
-			continue
-		}
-		problems = append(problems, fmt.Sprintf(
-			"入口「%s」的出口指向落地「%s」上的「%s」,而那台机器%s",
-			in.DisplayName, landing.DisplayName, target.DisplayName,
-			chainTargetStateLabel(state)))
+		problems = append(problems, s.hopReadiness(ctx, "入口「"+in.DisplayName+"」", hopOfInbound(in), seen)...)
 	}
 
 	if len(problems) == 0 {
@@ -114,12 +93,85 @@ func (s *Service) checkChainTargetsReady(ctx context.Context, inbounds []*Inboun
 	return fmt.Errorf("%w。\n%s\n\n%s", ErrChainTargetOutOfSync,
 		strings.Join(problems, "\n"),
 		"落地上很可能还没有这条链路的凭据 —— 它由面板分配,但要落地重新部署一次才会"+
-			"出现在它的用户列表里。现在部署下去,拨测会在十几秒后失败并自动回滚,"+
-			"而报错会落在【这台机器】上,写着一句「读不到数据」,"+
+			"出现在它的用户列表里;经转发过去时,转发规则也要先下发到它那台机器上。现在部署下去,"+
+			"拨测会在十几秒后失败并自动回滚,而报错会落在【这台机器】上,写着一句「读不到数据」,"+
 			"看起来完全像是链路不通。\n"+
-			"处置:先部署上面那台落地;或者对这个入口重新点一次「设置出口」——"+
-			"后者会按正确的顺序做两次部署(先落地写入凭据,再中转启用出站),"+
+			"处置:先部署上面那台落地(以及转发规则所在的机器);或者对这个入口重新点一次「设置出口」——"+
+			"后者会按正确的顺序做几次部署(先落地写入凭据,再中转启用出站),"+
 			"那正是这个顺序存在的理由。")
+}
+
+// hopReadiness 是一个链式下一跳在动节点之前要确认的几件事(sing-box 入站与 Mieru 出口共用):
+// 经过的每一条透明转发都启用着、而且已经下发到它那台机器上(队列里没有欠着的);认证终点那台机器的配置已同步。
+// 只查库,不连节点。landingSeen 让同一台落地只算一次配置状态(ConfigStatus 要重新渲染整份配置)。
+//
+// 判据保守 —— **只有确定就绪了才放行**:误拦是让管理员先部署别的机器(本来就该做),漏拦是一次重启服务 +
+// 回滚,外加一句指向错误方向的报错,两者不对等。外部代理那一端不检查:那是别人的机器,我们不往上面写任何东西。
+func (s *Service) hopReadiness(ctx context.Context, who string, hop *chaingraph.Hop, landingSeen map[int64]bool) []string {
+	if hop == nil {
+		return nil
+	}
+	var problems []string
+	landingID := int64(0)
+	if hop.To.Kind == chaingraph.KindSingBox {
+		landingID = hop.To.ID
+	} else if hop.To.Kind.IsRelay() {
+		path, err := chaingraph.Walk(ctx, s.store.db, hop)
+		if err != nil {
+			return []string{who + ":读取转发路径失败:" + err.Error()}
+		}
+		for _, st := range path.Transparent {
+			e := st.Entry
+			if !e.Enabled {
+				problems = append(problems, fmt.Sprintf("%s经过的转发「%s / %s」已停用", who, e.NodeName, e.Name))
+				continue
+			}
+			kind := applyintent.Relays
+			if e.Kind == chaingraph.KindRealm {
+				kind = applyintent.Realm
+			}
+			if pending, _ := s.applyPending(ctx, e.NodeID, kind); pending {
+				problems = append(problems, fmt.Sprintf("%s经过的转发「%s / %s」还有没下发的改动(%s 待下发)",
+					who, e.NodeName, e.Name, e.Kind.Label()))
+			}
+		}
+		// 转发路径本身的问题(断了、成环、走到指定地址)交给渲染期报 —— 那里的错误更准确。
+		if path.Auth != nil && path.Auth.Ref.Kind == chaingraph.KindSingBox {
+			landingID = path.Auth.Ref.ID
+		}
+	}
+	if landingID == 0 {
+		return problems
+	}
+	target, err := s.store.GetInbound(ctx, landingID)
+	if err != nil {
+		// 落地入站查不到(被删了)交给渲染期报 —— 那里的错误更准确。
+		return problems
+	}
+	// 同一个落地节点可能被这台机器上的好几个入口指向,只查一次。
+	if landingSeen[target.NodeID] {
+		return problems
+	}
+	landingSeen[target.NodeID] = true
+	landing, err := s.store.Get(ctx, target.NodeID)
+	if err != nil {
+		return problems
+	}
+	state, _ := s.ConfigStatus(ctx, landing)
+	if chainTargetBlocks(state) {
+		problems = append(problems, fmt.Sprintf(
+			"%s的出口指向落地「%s」上的「%s」,而那台机器%s",
+			who, landing.DisplayName, target.DisplayName, chainTargetStateLabel(state)))
+	}
+	return problems
+}
+
+// applyPending 回答「这台机器的这一种下发在持久化队列里还欠着没有」。
+func (s *Service) applyPending(ctx context.Context, nodeID int64, kind string) (bool, error) {
+	var n int
+	err := s.store.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM apply_queue WHERE node_id = ? AND kind = ?`, nodeID, kind).Scan(&n)
+	return n > 0, err
 }
 
 // checkMieruChainTargetReady 在下发一个带出口的 Mieru 入口之前,
@@ -139,29 +191,18 @@ func (s *Service) checkChainTargetsReady(ctx context.Context, inbounds []*Inboun
 // (本来就该做),漏拦是两次重启加一句指向错误方向的报错,两者不对等。
 func (s *Service) checkMieruChainTargetReady(ctx context.Context, m *MieruInbound) error {
 	kind, err := ParseChainTargetKind(m.ChainTargetKind)
-	if err != nil || kind != ChainTargetInbound {
+	if err != nil || (kind != ChainTargetInbound && kind != ChainTargetRelay) {
 		// 外部代理落地不需要这个检查:凭据是机场给的,不由面板下发。
 		return nil
 	}
-	target, err := s.store.GetInbound(ctx, m.ChainTargetInboundID)
-	if err != nil {
-		// 落地入站查不到(被删了)交给渲染期报 —— 那里的错误更准确。
+	problems := s.hopReadiness(ctx, "Mieru 入口「"+m.DisplayName+"」", hopOfMieru(m), map[int64]bool{})
+	if len(problems) == 0 {
 		return nil
 	}
-	landing, err := s.store.Get(ctx, target.NodeID)
-	if err != nil {
-		return nil
-	}
-	state, _ := s.ConfigStatus(ctx, landing)
-	if !chainTargetBlocks(state) {
-		return nil
-	}
-	return fmt.Errorf("%w。\nMieru 入口「%s」的出口指向落地「%s」上的「%s」,而那台机器%s\n\n%s",
-		ErrChainTargetOutOfSync,
-		m.DisplayName, landing.DisplayName, target.DisplayName,
-		chainTargetStateLabel(state),
+	return fmt.Errorf("%w。\n%s\n\n%s",
+		ErrChainTargetOutOfSync, strings.Join(problems, "\n"),
 		"落地上很可能还没有这条链路的凭据("+m.ChainCode+")—— 它由面板分配,"+
-			"但要落地重新部署一次才会出现在它的用户列表里。现在下发下去,"+
+			"但要落地重新部署一次才会出现在它的用户列表里;经转发过去时,转发规则也要先下发。现在下发下去,"+
 			"拨测会在十几秒后失败并自动回滚,而报错会落在【这台机器】上,"+
-			"看起来完全像是链路不通。\n处置:先部署上面那台落地。")
+			"看起来完全像是链路不通。\n处置:先部署上面那台落地(以及转发规则所在的机器)。")
 }

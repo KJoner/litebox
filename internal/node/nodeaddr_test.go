@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-// 地址池首条 V4 / V6 要自动写回 nodes 的镜像列(sub_ipv4_address / ipv6_address),
-// 并在主地址变化时报 relayTargetChanged —— 链式/中转的落地读的是那两列。
+// 地址池首条 V4 / V6 要自动写回 nodes 的镜像列(sub_ipv4_address / ipv6_address)。
+// v23.3 起链路的目的地址不再读这两列:没有被链路选中的条目时,改地址池不报任何要传播的条目。
 func TestReplaceAddressesMaintainsMirror(t *testing.T) {
 	store, _ := newTestStore(t)
 	n, err := store.Create(t.Context(), defaultCreateParams())
@@ -22,8 +22,8 @@ func TestReplaceAddressesMaintainsMirror(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !changed {
-		t.Error("加了额外地址,主地址镜像应变化并报 relayTargetChanged")
+	if len(changed) != 0 {
+		t.Errorf("没有任何链路选中这些地址上的条目,不该报要传播的条目,得到 %v", changed)
 	}
 	got, err := store.Get(ctx, n.ID)
 	if err != nil {
@@ -70,13 +70,13 @@ func TestReplaceEndpointsValidation(t *testing.T) {
 
 	// 指向不存在的地址 → 拒绝。
 	bogus := int64(9999)
-	if err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindSingBox, inbound.ID,
+	if _, err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindSingBox, inbound.ID,
 		[]EndpointInput{{AddressID: &bogus}}, false); err == nil {
 		t.Error("指向不属于本机的地址应被拒绝")
 	}
 
 	// host(nil 地址)+ 显式端口,合法。
-	if err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindSingBox, inbound.ID,
+	if _, err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindSingBox, inbound.ID,
 		[]EndpointInput{{AddressID: nil, PublicPort: 8443}}, false); err != nil {
 		t.Fatalf("host + 端口应合法:%v", err)
 	}
@@ -89,12 +89,12 @@ func TestReplaceEndpointsValidation(t *testing.T) {
 	}
 
 	// 单端口入口带端口段终点 → 拒绝。
-	if err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindSingBox, inbound.ID,
+	if _, err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindSingBox, inbound.ID,
 		[]EndpointInput{{PublicPort: 8443, PublicPortEnd: 8450}}, false); err == nil {
 		t.Error("单端口入口不该接受端口段终点")
 	}
 	// Mieru 段:只填起点不填终点 → 拒绝。
-	if err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindMieru, inbound.ID,
+	if _, err := store.ReplaceEndpoints(ctx, n.ID, EndpointKindMieru, inbound.ID,
 		[]EndpointInput{{PublicPort: 40000}}, true); err == nil {
 		t.Error("Mieru 端口段要么两端都空、要么都填")
 	}

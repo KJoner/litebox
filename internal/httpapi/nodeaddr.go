@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -8,10 +9,12 @@ import (
 
 	"github.com/litebox/litebox/internal/audit"
 	"github.com/litebox/litebox/internal/node"
+	"github.com/litebox/litebox/internal/relay"
 )
 
-// V16:多订阅地址与入口地址条目。两者都只影响订阅内容,不动节点配置 ——
-// 所以是纯数据库写,不经协调器、不标脏、不部署(与 IPv6 那一套同类)。
+// V16:多订阅地址与入口地址条目。它们本身不进这台机器的配置 —— 纯数据库写,不标脏、不部署。
+// v23.3 起地址条目也是链路的目的地址:被选中的条目改了地址或端口,选它的上游要重新下发
+// (PropagateEndpointChange);被选中的条目、以及删除会连带掉它的地址池项,不能删(409 + 是谁在用)。
 
 const (
 	actionNodeAddresses  = "node.addresses"
@@ -44,16 +47,13 @@ func (s *Server) handleSaveNodeAddresses(w http.ResponseWriter, r *http.Request)
 		badRequest(w, err)
 		return
 	}
-	relayTargetChanged, err := s.nodes.Store().ReplaceAddresses(r.Context(), id, req.Addresses)
+	changed, err := s.nodes.Store().ReplaceAddresses(r.Context(), id, req.Addresses)
 	if err != nil {
-		badRequest(w, err)
+		writeReferenceOrBadRequest(w, err)
 		return
 	}
-	// 主地址(镜像)变了就把下游中转机标脏 —— 落地对外的地址换了,
-	// 中转的 proxy_pass 目标跟着换,不传播的话中转机会继续送到旧地址。
-	if relayTargetChanged {
-		s.nodes.PropagateTargetChange(r.Context(), id)
-	}
+	// 只有被链路选中的条目的地址真的变了才传播:地址池重排、改没被选中的地址,链路的目的地址都不变。
+	s.nodes.PropagateEndpointChange(r.Context(), changed)
 	admin := adminFromContext(r.Context())
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionNodeAddresses,
@@ -117,11 +117,14 @@ func (s *Server) handleSaveEndpoints(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	if err := s.nodes.Store().ReplaceEndpoints(
-		r.Context(), nodeID, kind, id, req.Endpoints, isMieru); err != nil {
-		badRequest(w, err)
+	changed, err := s.nodes.Store().ReplaceEndpoints(
+		r.Context(), nodeID, kind, id, req.Endpoints, isMieru)
+	if err != nil {
+		writeReferenceOrBadRequest(w, err)
 		return
 	}
+	// 改名、排序、原样保存不下发任何东西;只有被选中的条目改了地址或端口,选它的上游才重新下发。
+	s.nodes.PropagateEndpointChange(r.Context(), changed)
 	admin := adminFromContext(r.Context())
 	s.audit.Record(r.Context(), audit.Entry{
 		AdminUserID: &admin.ID, Action: actionInboundEndpts,
@@ -136,4 +139,23 @@ func (s *Server) handleSaveEndpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": eps})
+}
+
+// writeReferenceOrBadRequest 把「还被引用着」与「旧页面没带编号」写成 409(带上是谁在用),其余按 400。
+func writeReferenceOrBadRequest(w http.ResponseWriter, err error) {
+	var ref *node.ReferencedError
+	if errors.As(err, &ref) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "REFERENCED", "referrers": ref.Referrers})
+		return
+	}
+	var rref *relay.ReferencedError
+	if errors.As(err, &rref) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "REFERENCED", "referrers": rref.Referrers})
+		return
+	}
+	if errors.Is(err, node.ErrEndpointsNeedIDs) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "STALE_CLIENT"})
+		return
+	}
+	badRequest(w, err)
 }

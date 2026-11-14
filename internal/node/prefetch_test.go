@@ -52,7 +52,7 @@ func TestPrefetchRenderMatchesPerNode(t *testing.T) {
 	// 第二台机器的一个入口链到第一台机器的第一个入口:落地上要多一份链路凭据。
 	enc, _ := store.cipher.Encrypt("11111111-2222-3333-4444-555555555555")
 	if _, err := db.Exec(`UPDATE node_inbounds SET chain_target_kind = 'INBOUND', chain_target_inbound_id = ?,
-		chain_code = 'chain_000001', chain_uuid_encrypted = ? WHERE node_id = ? AND listen_port = 30001`,
+		chain_target_addr_mode = 'DEFAULT', chain_code = 'chain_000001', chain_uuid_encrypted = ? WHERE node_id = ? AND listen_port = 30001`,
 		firstInbound, enc, nodeIDs[1]); err != nil {
 		t.Fatal(err)
 	}

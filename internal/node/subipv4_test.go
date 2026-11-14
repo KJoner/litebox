@@ -171,12 +171,10 @@ func TestClearingIPv6StillZerosIPv6PublicPort(t *testing.T) {
 
 // ---------- 落地地址 ----------
 
-// 中转的 proxy_pass 与链式出站指向的是落地的【对外落脚点】:
-// 订阅 IPv4 优先,没填才回落到管理地址。
-//
-// 固定用管理地址的话,一台"管理口上根本没开代理端口"的落地会连不上,
-// 而部署失败的报错落在【中转】的部署记录里 —— 看起来完全像是中转坏了。
-func TestChainTargetUsesSubscriptionIPv4(t *testing.T) {
+// v23.3 起链路的目的地址是发起方明确选的那一条地址条目,不再是「订阅 IPv4 优先、回落管理地址」:
+// 订阅 IPv4 是地址池首条的镜像,让它决定目的地址等于让地址池一重排就改了链路的目的地。
+// 落地(认证终点)自己的默认地址是管理地址 + 公网端口;订阅 IPv4 这一栏怎么填都不影响它。
+func TestChainTargetIgnoresSubscriptionIPv4Mirror(t *testing.T) {
 	svc, _, landing := chainPair(t)
 
 	u := nodeUpdateParamsOf(landing)
@@ -193,10 +191,9 @@ func TestChainTargetUsesSubscriptionIPv4(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Host != "203.0.113.20" {
-		t.Errorf("落地地址 = %q,应当用订阅 IPv4", target.Host)
+	if target.Host != "192.0.2.20" {
+		t.Errorf("落地的默认地址 = %q,应当是管理地址(订阅 IPv4 镜像不再决定链路目的地址)", target.Host)
 	}
-	// 端口仍然是公网端口,不受这一栏影响 —— 两者各管一半。
 	if target.Port != 24444 {
 		t.Errorf("落地端口 = %d,期望 24444", target.Port)
 	}

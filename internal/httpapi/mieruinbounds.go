@@ -352,8 +352,12 @@ func rollbackNote(result deployment.Result) string {
 type mieruChainRequest struct {
 	// Kind 是 INBOUND(自建入站)或 EXTERNAL(外部代理)。
 	Kind string `json:"kind"`
-	// TargetID 是落地入站或外部代理的 id。
+	// TargetID 是落地入站、转发规则(RELAY,v23.3)或外部代理的 id。
 	TargetID int64 `json:"target_id"`
+	// TargetEndpointID 是目标入口上选定的那一条地址;0 只在目标恰好有零条或一条时可以。
+	TargetEndpointID int64 `json:"target_endpoint_id"`
+	// Revision 是预览时拿到的拓扑修订;非空时与此刻的不一致就拒绝(数据在预览之后变过)。
+	Revision string `json:"revision"`
 	// SocksPort 是 mita 与本机 sing-box 之间那一跳的回环端口,必填。
 	//
 	// 由管理员给而不是面板自动挑:自动挑会在某天与一个还没进数据库的
@@ -385,8 +389,11 @@ func (s *Server) handleSetMieruChain(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
-	if err := s.nodes.Store().SetMieruChain(
-		r.Context(), id, kind, req.TargetID, req.SocksPort); err != nil {
+	if !s.checkTopologyRevision(w, r, req.Revision) {
+		return
+	}
+	if err := s.nodes.Store().SetMieruChainTarget(
+		r.Context(), id, node.NextHop{Kind: kind, ID: req.TargetID, EndpointID: req.TargetEndpointID}, req.SocksPort); err != nil {
 		s.writeMieruError(w, err, "设置出口失败")
 		return
 	}

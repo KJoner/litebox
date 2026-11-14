@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/litebox/litebox/internal/agent"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/litebox/litebox/internal/agent"
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/adjustment"
@@ -364,6 +365,9 @@ func (s *Server) Handler() http.Handler {
 		authed.HandleFunc("POST /api/nodes/{id}/config-in-ram", s.longOperation(s.handleSetConfigInRAM))
 		authed.HandleFunc("POST /api/inbounds/{id}/chain", s.longOperation(s.handleApplyChain))
 		authed.HandleFunc("GET /api/chain-path/{kind}/{id}", s.handleChainPath)
+		authed.HandleFunc("GET /api/topology", s.handleTopology)
+		authed.HandleFunc("GET /api/topology/targets", s.handleTopologyTargets)
+		authed.HandleFunc("POST /api/topology/preview", s.handleTopologyPreview)
 		authed.HandleFunc("POST /api/chains/quick-preview", s.handleQuickChainPreview)
 		authed.HandleFunc("POST /api/chains/quick", s.handleQuickChainCreate)
 		authed.HandleFunc("POST /api/chains/linear/preview", s.handleLinearChainPreview)

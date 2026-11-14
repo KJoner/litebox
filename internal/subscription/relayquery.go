@@ -39,7 +39,7 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		       -- 而中转主机上根本没有入站。转发规则本身没有 IPv6 端口字段 ——
 		       -- nginx 的 listen 是同一个,两个协议栈到达的是同一个 server 块。
 		       0,
-		       r.engine, r.target_kind,
+		       r.engine, t.target_kind,
 		       COALESCE(b.deployed_protocol, ''), COALESCE(b.deployed_ss_method, ''),
 		       COALESCE(b.deployed_tcp_fast_open, 0),
 		       COALESCE(b.ss_password_encrypted, ''),
@@ -50,8 +50,12 @@ func (s *Service) relaysFor(ctx context.Context, userID int64) ([]PhysicalRelay,
 		  FROM node_relays r
 		  JOIN `+access.EffectiveRelaysView+` er ON er.relay_id = r.id
 		  JOIN nodes a ON a.id = r.node_id
-		  LEFT JOIN node_inbounds b    ON b.id = r.target_inbound_id
-		  LEFT JOIN external_proxies p ON p.id = r.target_external_id
+		  -- 级联转发(v23.3):协议参数与凭据取沿 RELAY 走到的那条终点转发的落地,地址仍是这条规则自己的。
+		  -- 不级联的规则终点就是它自己,结果与原来逐字节相同。
+		  JOIN relay_forward_paths fp ON fp.relay_id = r.id
+		  JOIN node_relays t ON t.id = fp.terminal_relay_id
+		  LEFT JOIN node_inbounds b    ON b.id = t.target_inbound_id
+		  LEFT JOIN external_proxies p ON p.id = t.target_external_id
 		 WHERE er.proxy_user_id = ?
 		   AND r.deleted_at IS NULL
 		   AND r.enabled = 1

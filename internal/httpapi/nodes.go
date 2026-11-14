@@ -644,6 +644,13 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 	//   - 这台机器自己链到别处 —— 落地上会永远留着一份没人用、
 	//     也没人知道是谁的链路凭据,那就是权限没有真正收回。
 	// 与「删除用户时的受影响节点必须在打标记之前取」是同一条。
+	// v23.3:别的机器上还有入口以这台机器上的入口为下一跳时**拒绝删除**,并说清是谁 ——
+	// 原来这里会把它们悄悄改回直连(ReleaseChainsTargeting),而用户以为走的还是这台机器。
+	// 管理员先给它们重选目标或解除关系,再删。
+	if err := s.nodes.Store().CheckNodeDeletable(r.Context(), id); err != nil {
+		writeReferenceOrBadRequest(w, err)
+		return
+	}
 	orphanedHosts := s.nodes.ReleaseChainsTargeting(r.Context(), id)
 	chainTargets := s.nodes.ChainTargetsToRelease(r.Context(), id)
 	relayHosts, _ := s.relays.HostIDsTargetingNode(r.Context(), id)

@@ -55,6 +55,9 @@ const (
 	ChainTargetNone     ChainTargetKind = ""
 	ChainTargetInbound  ChainTargetKind = "INBOUND"
 	ChainTargetExternal ChainTargetKind = "EXTERNAL"
+	// ChainTargetRelay 的下一跳是一条 nginx / realm 转发规则(v23.3):拨号地址取那条规则的地址条目,
+	// 协议参数与凭据取它透传过去的第一个代理入口(认证终点),见 chaingraph。
+	ChainTargetRelay ChainTargetKind = "RELAY"
 )
 
 // ParseChainTargetKind 解析链式去向种类。
@@ -66,6 +69,8 @@ func ParseChainTargetKind(raw string) (ChainTargetKind, error) {
 		return ChainTargetInbound, nil
 	case ChainTargetExternal:
 		return ChainTargetExternal, nil
+	case ChainTargetRelay:
+		return ChainTargetRelay, nil
 	default:
 		return "", fmt.Errorf("未知的链式去向 %q", raw)
 	}

@@ -6,13 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/litebox/litebox/internal/chaingraph"
 )
 
 // V16:一台机器多个订阅地址(host 之外),每个入口按地址各配端口与订阅名。
 //
-// node_addresses 是地址池,inbound_endpoints 是「哪个入口下发哪几条地址」。
-// 两者都只影响订阅内容,一个字节都不进节点配置 —— 与 IPv6 那一套同类,
-// 改它们既不置 SSHChanged 也不置 NeedsDeploy。
+// node_addresses 是地址池,inbound_endpoints 是「哪个入口可以从哪几条地址连进来」。
+// 它们本身一个字节都不进**这台**机器的配置 —— 改它们既不置 SSHChanged 也不置 NeedsDeploy。
+//
+// **v23.3 起地址条目同时是链路的目的地址**:链式出站与转发规则精确地选目标入口的某一条条目(稳定 id)。
+// 于是两件事变了:条目按 id 增量保存(改名、排序、原样保存都不能换 id),被选中的条目不能删、
+// 它所在的地址池项也不能删(删除会级联掉它);被选中的条目改了地址或端口,选它的上游要重新下发。
+// 「可连接地址」与「进不进用户订阅」是两回事:条目在不在订阅里仍由入口自己的规则决定
+// (指定地址转发不进订阅),链路选它与订阅无关。
 
 // AddrFamilyV4 / AddrFamilyV6 是地址族。
 const (
@@ -55,8 +62,9 @@ type Endpoint struct {
 	SortOrder     int    `json:"sort_order"`
 }
 
-// EndpointInput 是保存入口地址条目时前端传来的一条。
+// EndpointInput 是保存入口地址条目时前端传来的一条。ID 为 0 表示新增(v23.3)。
 type EndpointInput struct {
+	ID            int64  `json:"id"`
 	AddressID     *int64 `json:"address_id"`
 	PublicPort    int    `json:"public_port"`
 	PublicPortEnd int    `json:"public_port_end"`
@@ -115,109 +123,166 @@ func (s *Store) AddressesForNode(ctx context.Context, nodeID int64) ([]NodeAddre
 }
 
 // ReplaceAddresses 用前端传来的整份列表替换一台机器的地址池,按 id 做增量:
-// 带 id 的更新、无 id 的新增、列表里没有的删除。返回值表示这次改动是否动了
-// 中转/链式落地要用的那个地址(见下面对镜像列的说明)。
+// 带 id 的更新、无 id 的新增、列表里没有的删除。返回地址真的变了、而且被链路选中的那些地址条目 ——
+// 选它们的上游要重新下发(调用方传给 PropagateEndpointChange)。
 //
 // **删除是有连带的**:inbound_endpoints.address_id 挂了 ON DELETE CASCADE ——
 // 删掉一个地址,引用它的入口地址条目一起消失,那条地址就从所有订阅里撤下来。
-// 这正是「把某个额外地址从机器上拿掉」的语义。所以不能整表删了重插(那会把
-// 全部入口条目连带清掉再让新地址拿到新 id、条目变成孤儿),必须保住存量 id。
+// 所以不能整表删了重插(那会把全部入口条目连带清掉再让新地址拿到新 id、条目变成孤儿),必须保住存量 id。
+// 被链路选中的条目会被这样连带删掉时,**整个保存拒绝**并说清是谁在用(v23.3)。
 //
 // **顺便把 nodes.sub_ipv4_address / ipv6_address 当成地址池首条的镜像维护起来。**
-// 这两列不再由节点表单直接编辑(V16),但仍是一堆地方读的"这台机器对外的
-// 主地址":链式/中转的落地(chainInboundTarget → SubscriptionIPv4)、列表与
-// 详情里显示的 subscription_host。让地址池的第一条 V4 / V6 自动写回这两列,
-// 这些读法就一个字都不用改,而且永远与池子一致。镜像变了要传播中转脏标记 ——
-// 落地的对外落脚点换了地址,下游中转机的 proxy_pass 目标就跟着换了。
-func (s *Store) ReplaceAddresses(ctx context.Context, nodeID int64, inputs []AddressInput) (relayTargetChanged bool, err error) {
+// 这两列不再由节点表单直接编辑(V16),只剩列表与详情里显示的 subscription_host、以及没有地址条目的入口在
+// 订阅里的回落在读它们。v23.3 起链路的目的地址不再读这一栏 —— 地址池怎么重排,已经选定的链路目的地址都不变。
+func (s *Store) ReplaceAddresses(ctx context.Context, nodeID int64, inputs []AddressInput) (changedEndpoints []int64, err error) {
 	norm := make([]AddressInput, len(inputs))
 	seenVal := make(map[string]bool, len(inputs))
 	for i, in := range inputs {
 		addr, e := normalizePoolAddress(in.Family, in.Address)
 		if e != nil {
-			return false, e
+			return nil, e
 		}
 		key := in.Family + "|" + addr
 		if seenVal[key] {
-			return false, fmt.Errorf("地址 %s 重复了", addr)
+			return nil, fmt.Errorf("地址 %s 重复了", addr)
 		}
 		seenVal[key] = true
 		norm[i] = AddressInput{ID: in.ID, Family: in.Family, Address: addr}
 	}
 
+	existing := map[int64]NodeAddress{}
+	cur, err := s.AddressesForNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range cur {
+		existing[a.ID] = a
+	}
+	keptIDs := map[int64]bool{}
+	var changedAddrIDs []int64
+	for _, in := range norm {
+		if old, ok := existing[in.ID]; in.ID > 0 && ok {
+			keptIDs[in.ID] = true
+			if old.Address != in.Address || old.Family != in.Family {
+				changedAddrIDs = append(changedAddrIDs, in.ID)
+			}
+		}
+	}
+	// 要删的地址会连带删掉引用它的条目:有条目被链路选中就拒绝。
+	var removed []int64
+	for id := range existing {
+		if !keptIDs[id] {
+			removed = append(removed, id)
+		}
+	}
+	if refs, err := s.referrersOfAddresses(ctx, removed); err != nil {
+		return nil, err
+	} else if len(refs) > 0 {
+		return nil, &ReferencedError{What: "要删除的地址上的地址条目", Referrers: refs}
+	}
+	if changedEndpoints, err = s.referencedEndpointsOfAddresses(ctx, changedAddrIDs); err != nil {
+		return nil, err
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer tx.Rollback()
 
-	var oldV4, oldV6 string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT sub_ipv4_address, ipv6_address FROM nodes WHERE id = ?`, nodeID).
-		Scan(&oldV4, &oldV6); err != nil {
-		return false, err
-	}
-
-	existing := make(map[int64]bool)
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM node_addresses WHERE node_id = ?`, nodeID)
-	if err != nil {
-		return false, err
-	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return false, err
-		}
-		existing[id] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-
 	now := time.Now().UTC().Format(time.RFC3339)
-	seen := make(map[int64]bool)
 	for order, in := range norm {
-		if in.ID > 0 && existing[in.ID] {
+		if in.ID > 0 && keptIDs[in.ID] {
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE node_addresses SET family = ?, address = ?, sort_order = ?, updated_at = ?
 				  WHERE id = ? AND node_id = ?`,
 				in.Family, in.Address, order, now, in.ID, nodeID); err != nil {
-				return false, err
+				return nil, err
 			}
-			seen[in.ID] = true
 			continue
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO node_addresses (node_id, family, address, sort_order, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?)`,
 			nodeID, in.Family, in.Address, order, now, now); err != nil {
-			return false, err
+			return nil, err
 		}
 	}
-	for id := range existing {
-		if !seen[id] {
-			if _, err := tx.ExecContext(ctx,
-				`DELETE FROM node_addresses WHERE id = ? AND node_id = ?`, id, nodeID); err != nil {
-				return false, err
-			}
+	for _, id := range removed {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM node_addresses WHERE id = ? AND node_id = ?`, id, nodeID); err != nil {
+			return nil, err
 		}
 	}
 
-	// 把地址池首条 V4 / V6 写回镜像列(没有则清空)。改动了 V4 或 V6 都要
-	// 传播中转脏标记:落地对外的地址换了,下游中转机的 proxy_pass 目标就变了。
+	// 把地址池首条 V4 / V6 写回镜像列(没有则清空)。只影响显示与没有条目的入口在订阅里的回落。
 	newV4 := firstPoolAddress(norm, AddrFamilyV4)
 	newV6 := firstPoolAddress(norm, AddrFamilyV6)
-	if newV4 != oldV4 || newV6 != oldV6 {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE nodes SET sub_ipv4_address = ?, ipv6_address = ?, updated_at = ? WHERE id = ?`,
-			newV4, newV6, now, nodeID); err != nil {
-			return false, err
-		}
-		relayTargetChanged = true
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE nodes SET sub_ipv4_address = ?, ipv6_address = ?, updated_at = ? WHERE id = ?
+		    AND (sub_ipv4_address != ? OR ipv6_address != ?)`,
+		newV4, newV6, now, nodeID, newV4, newV6); err != nil {
+		return nil, err
 	}
-	return relayTargetChanged, tx.Commit()
+	return changedEndpoints, tx.Commit()
+}
+
+// referrersOfAddresses 列出选中了「挂在这些地址上的条目」的入口。
+func (s *Store) referrersOfAddresses(ctx context.Context, addressIDs []int64) ([]chaingraph.Referrer, error) {
+	eps, err := s.endpointsOnAddresses(ctx, addressIDs)
+	if err != nil {
+		return nil, err
+	}
+	var out []chaingraph.Referrer
+	for _, id := range eps {
+		refs, err := chaingraph.EndpointReferrers(ctx, s.db, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, refs...)
+	}
+	return out, nil
+}
+
+func (s *Store) referencedEndpointsOfAddresses(ctx context.Context, addressIDs []int64) ([]int64, error) {
+	eps, err := s.endpointsOnAddresses(ctx, addressIDs)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for _, id := range eps {
+		refs, err := chaingraph.EndpointReferrers(ctx, s.db, id)
+		if err != nil {
+			return nil, err
+		}
+		if len(refs) > 0 {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) endpointsOnAddresses(ctx context.Context, addressIDs []int64) ([]int64, error) {
+	var out []int64
+	for _, aid := range addressIDs {
+		rows, err := s.db.QueryContext(ctx, `SELECT id FROM inbound_endpoints WHERE address_id = ?`, aid)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // firstPoolAddress 取归一化后列表里某个族的第一条(按列表顺序,即 sort_order)。
@@ -281,59 +346,149 @@ func (s *Store) EndpointsForEntry(ctx context.Context, kind string, entryID int6
 	return out, rows.Err()
 }
 
-// ReplaceEndpoints 用前端传来的整份列表替换一个入口的订阅地址条目。
+// ErrEndpointsNeedIDs 旧版页面提交的地址条目没有带 id,而这个入口的条目正被链路选中、又对不上唯一一条。
+var ErrEndpointsNeedIDs = errors.New("这个入口的地址条目正被链路选作目的地址,而这次提交没有带上条目编号、也对不上唯一一条 —— 请刷新页面后再保存")
+
+// ReplaceEndpoints 用前端传来的整份列表保存一个入口的地址条目,**按 id 增量**(v23.3):
+// 带 id 的更新(改名、排序、改地址或端口都不换 id)、无 id 的新增、列表里没有的删除。
+// 在此之前是整表删了重插 —— 那时条目没有任何引用者,id 不承载语义;现在链路按 id 选目的地址,
+// 重插一次就会让所有选了它的链路指向一个不存在的条目。
 //
-// 整表删了重插(不像地址池要保 id):inbound_endpoints 没有任何东西引用它自己,
-// id 不承载语义。isMieru 为真时端口按段校验(起点、终点),否则是单端口。
+// 返回地址或端口真的变了、而且被链路选中的那些条目(调用方传给 PropagateEndpointChange):
+// 选它们的上游要重新下发;没被选中的、只改了名字或顺序的,什么都不用下发。
+//
+// 旧版页面不带 id:能把每一条被选中的条目按 (地址, 端口段) 唯一对上就沿用它的 id,对不上就拒绝(ErrEndpointsNeedIDs),
+// 不静默重建。被选中的条目不能删(ReferencedError)。isMieru 为真时端口按段校验(起点、终点),否则是单端口。
 func (s *Store) ReplaceEndpoints(
 	ctx context.Context, nodeID int64, kind string, entryID int64,
 	inputs []EndpointInput, isMieru bool,
-) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
+) (changedReferenced []int64, err error) {
 	// 地址池:endpoint 只能指向本机的地址(或 host=NULL)。指向别的机器的
-	// 地址是一条不属于这台机器的订阅条目 —— 在这里拦住。
+	// 地址是一条不属于这台机器的条目 —— 在这里拦住。
 	owned := make(map[int64]bool)
-	arows, err := tx.QueryContext(ctx, `SELECT id FROM node_addresses WHERE node_id = ?`, nodeID)
+	addrs, err := s.AddressesForNode(ctx, nodeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for arows.Next() {
-		var id int64
-		if err := arows.Scan(&id); err != nil {
-			arows.Close()
-			return err
-		}
-		owned[id] = true
+	for _, a := range addrs {
+		owned[a.ID] = true
 	}
-	arows.Close()
-	if err := arows.Err(); err != nil {
-		return err
-	}
-
 	for i, in := range inputs {
 		if in.AddressID != nil && !owned[*in.AddressID] {
-			return fmt.Errorf("第 %d 条地址不属于这台机器", i+1)
+			return nil, fmt.Errorf("第 %d 条地址不属于这台机器", i+1)
 		}
 		if err := validateEndpointPorts(in, isMieru); err != nil {
-			return fmt.Errorf("第 %d 条:%w", i+1, err)
+			return nil, fmt.Errorf("第 %d 条:%w", i+1, err)
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM inbound_endpoints WHERE entry_kind = ? AND entry_id = ?`,
-		kind, entryID); err != nil {
-		return err
+	existing, err := s.EndpointsForEntry(ctx, kind, entryID)
+	if err != nil {
+		return nil, err
 	}
+	byID := map[int64]Endpoint{}
+	referenced := map[int64][]chaingraph.Referrer{}
+	for _, e := range existing {
+		byID[e.ID] = e
+		refs, err := chaingraph.EndpointReferrers(ctx, s.db, e.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(refs) > 0 {
+			referenced[e.ID] = refs
+		}
+	}
+
+	hasIDs := false
+	for _, in := range inputs {
+		if in.ID != 0 {
+			hasIDs = true
+		}
+	}
+	work := make([]EndpointInput, len(inputs))
+	copy(work, inputs)
+	if !hasIDs && len(existing) > 0 {
+		// 旧版页面:按 (地址, 端口段) 对回原来的 id,一对一,对上几条算几条。
+		used := map[int64]bool{}
+		for i, in := range work {
+			match := int64(0)
+			for _, e := range existing {
+				if used[e.ID] || !sameAddrPtr(e.AddressID, in.AddressID) ||
+					e.PublicPort != in.PublicPort || e.PublicPortEnd != in.PublicPortEnd {
+					continue
+				}
+				if match != 0 {
+					match = -1 // 歧义
+					break
+				}
+				match = e.ID
+			}
+			if match > 0 {
+				work[i].ID = match
+				used[match] = true
+			}
+		}
+		for id := range referenced {
+			if !used[id] {
+				return nil, ErrEndpointsNeedIDs
+			}
+		}
+	}
+
+	seen := map[int64]bool{}
+	for i, in := range work {
+		if in.ID == 0 {
+			continue
+		}
+		if _, ok := byID[in.ID]; !ok {
+			return nil, fmt.Errorf("第 %d 条的编号 #%d 不是这个入口的地址条目(请刷新页面)", i+1, in.ID)
+		}
+		if seen[in.ID] {
+			return nil, fmt.Errorf("地址条目 #%d 重复提交了", in.ID)
+		}
+		seen[in.ID] = true
+	}
+	var removed []int64
+	var blocked []chaingraph.Referrer
+	for _, e := range existing {
+		if !seen[e.ID] {
+			removed = append(removed, e.ID)
+			blocked = append(blocked, referenced[e.ID]...)
+		}
+	}
+	if len(blocked) > 0 {
+		return nil, &ReferencedError{What: "要删除的地址条目", Referrers: blocked}
+	}
+	for _, in := range work {
+		old, ok := byID[in.ID]
+		if !ok || len(referenced[in.ID]) == 0 {
+			continue
+		}
+		if !sameAddrPtr(old.AddressID, in.AddressID) || old.PublicPort != in.PublicPort || old.PublicPortEnd != in.PublicPortEnd {
+			changedReferenced = append(changedReferenced, in.ID)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339)
-	for order, in := range inputs {
+	for order, in := range work {
 		var addrID any
 		if in.AddressID != nil {
 			addrID = *in.AddressID
+		}
+		if in.ID != 0 {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE inbound_endpoints SET address_id = ?, public_port = ?, public_port_end = ?,
+				       display_name = ?, sort_order = ?, updated_at = ?
+				 WHERE id = ? AND entry_kind = ? AND entry_id = ?`,
+				addrID, in.PublicPort, in.PublicPortEnd, in.DisplayName, order, now, in.ID, kind, entryID); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO inbound_endpoints
@@ -342,10 +497,22 @@ func (s *Store) ReplaceEndpoints(
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			nodeID, kind, entryID, addrID, in.PublicPort, in.PublicPortEnd,
 			in.DisplayName, order, now, now); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return tx.Commit()
+	for _, id := range removed {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM inbound_endpoints WHERE id = ?`, id); err != nil {
+			return nil, err
+		}
+	}
+	return changedReferenced, tx.Commit()
+}
+
+func sameAddrPtr(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func validateEndpointPorts(in EndpointInput, isMieru bool) error {

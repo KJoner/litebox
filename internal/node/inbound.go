@@ -11,9 +11,11 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/applyintent"
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/singbox"
+
 	// 只为 IPv6 条目名那一条回落规则(subscription.IPv6EntryName)。方向看着
 	// 是反的,但反过来更糟:把规则搬进 node 包,subscription 就要 import
 	// 整个 node(含 deployment/sshx/nginx),而公开订阅路由刻意不依赖它们。
@@ -156,6 +158,11 @@ type Inbound struct {
 	ChainTargetKind       ChainTargetKind `json:"chain_target_kind"`
 	ChainTargetInboundID  int64           `json:"chain_target_inbound_id"`
 	ChainTargetExternalID int64           `json:"chain_target_external_id"`
+	// ChainTargetRelayID 是下一跳为转发规则(RELAY)时的规则 id(v23.3)。
+	ChainTargetRelayID int64 `json:"chain_target_relay_id"`
+	// ChainTargetAddr 是下一跳为入站或转发规则时「连它的哪一条地址」,见 chaingraph.AddrSel。
+	// LEGACY 是迁移时没找到唯一等价条目而保留的兼容快照,界面上标「待确认地址选择」。
+	ChainTargetAddr chaingraph.AddrSel `json:"chain_target_addr"`
 	// ChainCode 是链路凭据在【落地入站】的流量统计里的计数器名(chain_000001)。
 	ChainCode       string `json:"chain_code"`
 	ChainUUID       string `json:"-"`
@@ -218,6 +225,8 @@ const inboundColumns = `i.id, i.node_id, n.name, n.display_name,
 	i.reality_dest, i.reality_dest_port, i.reality_privkey_encrypted, i.reality_pubkey,
 	i.reality_short_id, i.handshake_max_record_size, i.handshake_checked_at,
 	i.chain_target_kind, i.chain_target_inbound_id, i.chain_target_external_id,
+	i.chain_target_relay_id, i.chain_target_endpoint_id, i.chain_target_addr_mode,
+	i.chain_target_legacy_host, i.chain_target_legacy_port,
 	i.chain_code, i.chain_uuid_encrypted, i.chain_ss_password_encrypted,
 	i.access_tier_id, t.code, t.name, t.level,
 	i.sort_order, i.subscription_enabled, i.public_remark, i.enabled, i.restricted,
@@ -233,7 +242,8 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 	var in Inbound
 	var realityKeyEnc, ssKeyEnc, chainUUIDEnc, chainSSEnc, snellPSKEnc string
 	// 目标列可空:直连的入站这两列是 NULL,扫进 int64 会报错。
-	var chainInboundID, chainExternalID sql.NullInt64
+	var chainInboundID, chainExternalID, chainRelayID, chainEndpointID sql.NullInt64
+	var chainAddrMode string
 	err := scan(
 		&in.ID, &in.NodeID, &in.NodeName, &in.NodeDisplayName,
 		&in.Tag, &in.DisplayName, &in.Protocol, &in.SSMethod, &ssKeyEnc,
@@ -249,6 +259,8 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 		&in.RealityDest, &in.RealityDestPort, &realityKeyEnc, &in.RealityPublicKey,
 		&in.RealityShortID, &in.HandshakeMaxRecordSize, &in.HandshakeCheckedAt,
 		&in.ChainTargetKind, &chainInboundID, &chainExternalID,
+		&chainRelayID, &chainEndpointID, &chainAddrMode,
+		&in.ChainTargetAddr.LegacyHost, &in.ChainTargetAddr.LegacyPort,
 		&in.ChainCode, &chainUUIDEnc, &chainSSEnc,
 		&in.AccessTierID, &in.AccessTierCode, &in.AccessTierName, &in.AccessTierLevel,
 		&in.SortOrder, &in.SubscriptionEnabled, &in.PublicRemark, &in.Enabled, &in.Restricted,
@@ -259,6 +271,9 @@ func (s *Store) scanInbound(scan func(dest ...any) error) (*Inbound, error) {
 	}
 	in.ChainTargetInboundID = chainInboundID.Int64
 	in.ChainTargetExternalID = chainExternalID.Int64
+	in.ChainTargetRelayID = chainRelayID.Int64
+	in.ChainTargetAddr.Mode = chaingraph.AddrMode(chainAddrMode)
+	in.ChainTargetAddr.EndpointID = chainEndpointID.Int64
 	for _, f := range []struct {
 		enc  string
 		dest *string

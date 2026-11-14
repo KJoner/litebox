@@ -41,6 +41,8 @@ func (s *Server) writeRelayError(w http.ResponseWriter, err error, fallback stri
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, node.ErrNotFound):
 		writeError(w, http.StatusNotFound, "节点不存在")
+	case errors.As(err, new(*relay.ReferencedError)):
+		writeReferenceOrBadRequest(w, err)
 	default:
 		writeError(w, http.StatusBadRequest, fallback+":"+err.Error())
 	}
@@ -77,6 +79,13 @@ type relayRequest struct {
 	TargetKind       string `json:"target_kind"`
 	TargetInboundID  int64  `json:"target_inbound_id"`
 	TargetExternalID int64  `json:"target_external_id"`
+	// TargetRelayID 只在 RELAY 下用(v23.3:透明转发级联)。
+	TargetRelayID int64 `json:"target_relay_id"`
+	// TargetEndpointID 是落地为入站或转发规则时选的那一条地址;0 只在目标恰好有零条或一条时可以,
+	// 编辑时落地没变就沿用原来的选择。
+	TargetEndpointID int64 `json:"target_endpoint_id"`
+	// Revision 是预览时拿到的拓扑修订;非空时与此刻的不一致就拒绝。
+	Revision string `json:"revision"`
 	// TargetHost / TargetPort 只在 ADDRESS 下用(V15)。
 	TargetHost   string `json:"target_host"`
 	TargetPort   int    `json:"target_port"`
@@ -111,6 +120,8 @@ func (s *Server) handleCreateRelay(w http.ResponseWriter, r *http.Request) {
 		TargetKind:          strings.TrimSpace(req.TargetKind),
 		TargetInboundID:     req.TargetInboundID,
 		TargetExternalID:    req.TargetExternalID,
+		TargetRelayID:       req.TargetRelayID,
+		TargetEndpointID:    req.TargetEndpointID,
 		TargetHost:          strings.TrimSpace(req.TargetHost),
 		TargetPort:          req.TargetPort,
 		AccessTierID:        req.AccessTierID,
@@ -156,6 +167,7 @@ func (s *Server) handleCreateRelayBatch(w http.ResponseWriter, r *http.Request) 
 			NodeID: nodeID, Engine: strings.TrimSpace(it.Engine), DisplayName: strings.TrimSpace(it.DisplayName),
 			ListenPort: it.ListenPort, PublicPort: it.PublicPort, TargetKind: strings.TrimSpace(it.TargetKind),
 			TargetInboundID: it.TargetInboundID, TargetExternalID: it.TargetExternalID,
+			TargetRelayID: it.TargetRelayID, TargetEndpointID: it.TargetEndpointID,
 			TargetHost: strings.TrimSpace(it.TargetHost), TargetPort: it.TargetPort,
 			AccessTierID: it.AccessTierID, SortOrder: it.SortOrder, SubscriptionEnabled: it.SubscriptionEnabled,
 			PublicRemark: strings.TrimSpace(it.PublicRemark), Enabled: it.Enabled,
@@ -203,13 +215,19 @@ func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admin := adminFromContext(r.Context())
+	if !s.checkTopologyRevision(w, r, req.Revision) {
+		return
+	}
 
 	item, err := s.relays.Update(r.Context(), id, relay.UpdateParams{
+		TargetKind:          strings.TrimSpace(req.TargetKind),
 		DisplayName:         strings.TrimSpace(req.DisplayName),
 		ListenPort:          req.ListenPort,
 		PublicPort:          req.PublicPort,
 		TargetInboundID:     req.TargetInboundID,
 		TargetExternalID:    req.TargetExternalID,
+		TargetRelayID:       req.TargetRelayID,
+		TargetEndpointID:    req.TargetEndpointID,
 		TargetHost:          strings.TrimSpace(req.TargetHost),
 		TargetPort:          req.TargetPort,
 		AccessTierID:        req.AccessTierID,
@@ -227,6 +245,8 @@ func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request) {
 		s.writeRelayError(w, err, "修改转发规则失败")
 		return
 	}
+	// 经它的代理发起方、新的认证终点与直接上游已经在同一个事务里记进了下发队列(relay.ChangeHook),这里叫醒协调器。
+	s.nodes.FlushWake()
 	s.nodes.MarkEngineDirty(item.Engine, item.NodeID)
 	writeJSON(w, http.StatusOK, map[string]any{"relay": item})
 }
@@ -318,6 +338,12 @@ type chainRequest struct {
 	TargetKind       string `json:"target_kind"`
 	TargetInboundID  int64  `json:"target_inbound_id"`
 	TargetExternalID int64  `json:"target_external_id"`
+	// TargetRelayID 是下一跳为透明转发规则时的规则 id(v23.3)。
+	TargetRelayID int64 `json:"target_relay_id"`
+	// TargetEndpointID 是目标入口上选定的那一条地址;0 只在目标恰好有零条或一条时可以。
+	TargetEndpointID int64 `json:"target_endpoint_id"`
+	// Revision 是预览时拿到的拓扑修订;非空时与此刻的不一致就拒绝(409,要求重新预览)。
+	Revision string `json:"revision"`
 }
 
 // handleApplyChain 启用或改变链式出站。
@@ -341,16 +367,22 @@ func (s *Server) handleApplyChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetID := req.TargetInboundID
-	if kind == node.ChainTargetExternal {
+	switch kind {
+	case node.ChainTargetExternal:
 		targetID = req.TargetExternalID
+	case node.ChainTargetRelay:
+		targetID = req.TargetRelayID
 	}
 	if targetID <= 0 {
 		writeError(w, http.StatusBadRequest, "请选择落地")
 		return
 	}
 	admin := adminFromContext(r.Context())
+	if !s.checkTopologyRevision(w, r, req.Revision) {
+		return
+	}
 
-	result, err := s.nodes.ApplyChain(r.Context(), id, kind, targetID)
+	result, err := s.nodes.ApplyChainTarget(r.Context(), id, node.NextHop{Kind: kind, ID: targetID, EndpointID: req.TargetEndpointID})
 	detail := "落地 " + string(kind) + "#" + strconv.FormatInt(targetID, 10) + ",停在:" + result.Stage
 	if err != nil {
 		detail += ";" + err.Error()

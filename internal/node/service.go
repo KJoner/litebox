@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/litebox/litebox/internal/applyintent"
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/mieru"
@@ -84,6 +86,10 @@ type Service struct {
 	relays RelayProvider
 	// relayHosts 回答"哪些中转主机指向这个落地",用于跨节点脏标记。
 	relayHosts RelayHostProvider
+
+	// wakeQueue 是在别人的事务里攒下、等提交之后再叫醒协调器的下发(见 pendingWake)。
+	wakeMu    sync.Mutex
+	wakeQueue *impact
 	// trigger 是部署协调器。为 nil 时全部传播静默跳过 ——
 	// 那是测试与一次性命令的形态,生产装配必须给。
 	trigger DeployTrigger
@@ -650,7 +656,7 @@ func chainProbeFor(target *ChainTarget, chainCode string) *deployment.ChainProbe
 	case ChainTargetInbound:
 		t := target.Inbound
 		return &deployment.ChainProbe{
-			Landing:        t.NodeName + " / " + t.DisplayName,
+			Landing:        viaPrefix(target.Via) + t.NodeName + " / " + t.DisplayName,
 			Server:         t.Host,
 			Port:           t.Port,
 			Code:           chainCode,
@@ -662,12 +668,21 @@ func chainProbeFor(target *ChainTarget, chainCode string) *deployment.ChainProbe
 		// chain_xxxxxx 在它那里根本不存在 —— 写出来只会让人去搜一个
 		// 必然搜不到的字符串,然后据此以为链路没到落地。
 		return &deployment.ChainProbe{
-			Landing: t.DisplayName,
-			Server:  t.Server,
-			Port:    t.Port,
+			Landing: viaPrefix(target.Via) + t.DisplayName,
+			Server:  target.Dial.Host,
+			Port:    target.Dial.Port,
 		}
 	}
 	return nil
+}
+
+// viaPrefix 把经过的透明转发写在落地前面:「经 X / 转发 → 」。拨测失败时报错落在入口机上,
+// 而三台机器里哪一台出了问题,要先知道流量经过了谁。
+func viaPrefix(via []string) string {
+	if len(via) == 0 {
+		return ""
+	}
+	return "经 " + strings.Join(via, " → ") + " 转发到 "
 }
 
 // chainOutboundFor 把一个已解析的落地连同链路凭据翻成出站参数。
@@ -717,6 +732,11 @@ func chainOutboundFor(
 			"", "", t.Protocol, t.Server, t.Port, t.Params)
 		if err != nil {
 			return nil, fmt.Errorf("外部代理 %s: %w", t.DisplayName, err)
+		}
+		// 经透明转发过去:先按真实地址构造(没写 sni 的 TLS 线路靠它回填 server_name),再换连接目标 ——
+		// 顺序反了的话握手会用转发入口的名字,落地那边直接拒绝,而直连同一条线路完全正常。
+		if t.DialHost != "" {
+			out.Server, out.ServerPort = t.DialHost, t.DialPort
 		}
 		return &singbox.ChainOutbound{Prebuilt: &out}, nil
 	}
@@ -809,6 +829,8 @@ func (s *Service) DeployWith(ctx context.Context, nodeID int64, opts DeployOptio
 			StartedAt: startedAt, FinishedAt: time.Now().UTC(),
 		}
 		s.saveDeployRecord(done, result)
+		// 配置已一致:节点上跑的就是现在的期望配置,换走认证终点的那些发起方也已经切过去了。
+		s.releaseChainHolds(done, nodeID, startedAt)
 		return result, nil
 	}
 
@@ -895,7 +917,76 @@ func (s *Service) DeployWith(ctx context.Context, nodeID int64, opts DeployOptio
 	if err := s.store.MarkDeployed(done, nodeID, result.ConfigSHA256, deployed); err != nil {
 		s.logger.Error("记录部署成功状态出错", "node_id", nodeID, "error", err)
 	}
+	s.releaseChainHolds(done, nodeID, startedAt)
 	return result, nil
+}
+
+// releaseChainHolds 在这台机器的 sing-box 成功下发(或确认配置已一致)之后,放掉它上面的发起方在
+// 旧认证终点上保留的链路凭据,并在同一个事务里把那些终点记成要重新下发(撤掉凭据,G01)。
+//
+// 只放「这次下发开始之前记下的」:之后才改的关系,这次渲染出来的配置里还没有,远端仍按旧参数在连旧终点。
+// 失败只记日志 —— 保留的凭据多留一会儿只是晚一点收回,下一次这台机器下发成功时会再试。
+func (s *Service) releaseChainHolds(ctx context.Context, nodeID int64, startedAt time.Time) {
+	cut := holdTime(startedAt)
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		s.logger.Error("放掉旧终点上保留的链路凭据失败", "node_id", nodeID, "error", err)
+		return
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT i.node_id FROM chain_credential_holds h
+		  JOIN node_inbounds i ON i.id = h.landing_inbound_id
+		 WHERE h.source_node_id = ? AND h.created_at < ?`, nodeID, cut)
+	if err != nil {
+		s.logger.Error("放掉旧终点上保留的链路凭据失败", "node_id", nodeID, "error", err)
+		return
+	}
+	var landings []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			landings = append(landings, id)
+		}
+	}
+	rows.Close()
+	res, err := tx.ExecContext(ctx, `DELETE FROM chain_credential_holds WHERE source_node_id = ? AND created_at < ?`, nodeID, cut)
+	if err != nil {
+		s.logger.Error("放掉旧终点上保留的链路凭据失败", "node_id", nodeID, "error", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return
+	}
+	if err := applyintent.Record(ctx, tx, applyintent.SingBox, landings...); err != nil {
+		s.logger.Error("记录旧终点的下发意图失败", "node_id", nodeID, "error", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		s.logger.Error("放掉旧终点上保留的链路凭据失败", "node_id", nodeID, "error", err)
+		return
+	}
+	s.logger.Info("发起方已切到新的认证终点,旧终点上保留的链路凭据进入撤除", "node_id", nodeID, "landings", landings)
+	s.wake(applyintent.SingBox, landings...)
+}
+
+// wake 让协调器立刻知道队列里多了几行(意图已经在库里了);没有接协调器时退回到普通标脏。
+func (s *Service) wake(kind string, nodeIDs ...int64) {
+	if len(nodeIDs) == 0 || s.trigger == nil {
+		return
+	}
+	if w, ok := s.trigger.(applyintent.Waker); ok {
+		w.WakeIntent(kind, nodeIDs...)
+		return
+	}
+	switch kind {
+	case applyintent.Relays:
+		s.trigger.MarkRelaysDirty(nodeIDs...)
+	case applyintent.Realm:
+		s.trigger.MarkRealmDirty(nodeIDs...)
+	default:
+		s.trigger.MarkDirty(nodeIDs...)
+	}
 }
 
 // saveDeployRecord 落一条部署记录;没接部署记录存储(测试环境)时静默跳过。

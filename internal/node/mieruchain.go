@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/singbox"
@@ -35,17 +35,23 @@ import (
 // "这个入站该配哪套出站 tag"的唯一依据,两处各写一份的话,
 // 判据一分叉,断言要么把正确的配置拦住,要么放行一份路由写错的。
 
-// SetMieruChain 把一个 mieru 入口的出口指向落地。
+// SetMieruChain 把一个 mieru 入口的出口指向落地(目标地址按 PickAddr 的规则选)。见 SetMieruChainTarget。
+func (s *Store) SetMieruChain(
+	ctx context.Context, mieruID int64, kind ChainTargetKind, targetID int64, socksPort int,
+) error {
+	return s.SetMieruChainTarget(ctx, mieruID, NextHop{Kind: kind, ID: targetID}, socksPort)
+}
+
+// SetMieruChainTarget 把一个 mieru 入口的出口指向一个下一跳。
 //
 // socksPort 是 mita 与本机 sing-box 之间那一跳的回环端口,必填 ——
 // 没有它这条链路接不起来,而 0 在库里表示「直连」。
 //
-// 链路凭据一旦分配就不再变,与 SetChain 一字不差的理由:凭据是"这个入口的身份",
-// 与它今天连的是谁无关。
-func (s *Store) SetMieruChain(
-	ctx context.Context, mieruID int64, kind ChainTargetKind, targetID int64, socksPort int,
-) error {
-	if !kind.Enabled() {
+// 校验与 sing-box 入站那一侧是同一个函数(validateProxyNextHop):目标能不能当落地、同机、成环、
+// 经透明转发时按认证终点判。Mieru 这一侧只多一条:它的出口要经本机 sing-box 的回环 socks。
+// 链路凭据一旦分配就不再变,与 SetChain 一字不差的理由:凭据是"这个入口的身份",与它今天连的是谁无关。
+func (s *Store) SetMieruChainTarget(ctx context.Context, mieruID int64, hop NextHop, socksPort int) error {
+	if !hop.Kind.Enabled() {
 		return errors.New("出口去向不能为空,清除请用 ClearMieruChain")
 	}
 	if socksPort < 1 || socksPort > 65535 {
@@ -58,114 +64,76 @@ func (s *Store) SetMieruChain(
 	}
 	defer tx.Rollback()
 
-	var nodeID int64
-	var existingCode string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT node_id, chain_code FROM node_mieru_inbounds
-		  WHERE id = ? AND deleted_at IS NULL`, mieruID).Scan(&nodeID, &existingCode); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrMieruInboundNotFound
-		}
+	src, err := chaingraph.Load(ctx, tx, chaingraph.Ref{Kind: chaingraph.KindMieru, ID: mieruID})
+	if errors.Is(err, chaingraph.ErrNotFound) {
+		return ErrMieruInboundNotFound
+	}
+	if err != nil {
 		return err
 	}
-
-	switch kind {
-	case ChainTargetInbound:
-		var targetNodeID int64
-		var deployed string
-		err := tx.QueryRowContext(ctx,
-			`SELECT node_id, deployed_protocol FROM node_inbounds
-			  WHERE id = ? AND deleted_at IS NULL`, targetID).Scan(&targetNodeID, &deployed)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: 落地入站 id=%d", ErrInboundNotFound, targetID)
-		}
-		if err != nil {
-			return err
-		}
-		// 同机绕一圈不是中转:流量确实多走了 mita → sing-box 这一跳,
-		// 但**出口 IP 一个字节都没变**。与 node_inbounds 那一侧同一条道理,
-		// 也同一个哨兵 —— 两处给出不同的解释会让管理员以为是两回事。
-		if targetNodeID == nodeID {
-			return ErrChainSameHost
-		}
-		// 没部署过的落地上根本没有那个 inbound,凭据加进去也无处生效。
-		// 在这里拦住,而不是等下发之后拨测失败自动回滚 —— 那时报错落在
-		// **这台机器**的部署记录里,管理员不会想到问题在另一台机器上。
-		if deployed == "" {
-			return ErrChainTargetNotDeployed
-		}
-		if !singbox.Protocol(deployed).ChainLandable() {
-			return ErrChainTargetProtocol
-		}
-		// Mieru 入口自己不会是任何人的去向,所以这里只可能撞上下游已有的环(旧数据)。
-		if err := chainTargetUsable(ctx, s, tx, 0, targetID); err != nil {
-			return err
-		}
-	case ChainTargetExternal:
-		// 与 SetChain 一模一样的拦截,而且是同一个函数:先按渲染期那条路把它
-		// 拼成 sing-box 出站。走 QUIC 的、插件名 sing-box 不认的、SS2022 密钥
-		// 长度不对的,都在写库这一步被拒 —— 不然报错会在十几秒后出现在
-		// 【本机 sing-box】的部署记录里,而管理员做的事情是"给 Mieru 入口设出口"。
-		if err := s.externalEgressPreflight(ctx, tx, targetID); err != nil {
-			return err
-		}
+	oldLanding, err := authLandingOf(ctx, tx, src.Next)
+	if err != nil {
+		return err
+	}
+	// 同机绕一圈不是中转:流量确实多走了 mita → sing-box 这一跳,但**出口 IP 一个字节都没变**。
+	// 与 node_inbounds 那一侧同一条道理,也同一个哨兵 —— 两处给出不同的解释会让管理员以为是两回事。
+	// 走到外部代理时用渲染期那条路先拼一遍出站:走 QUIC 的、插件名 sing-box 不认的、SS2022 密钥长度不对的,
+	// 都在写库这一步被拒 —— 不然报错会在十几秒后出现在【本机 sing-box】的部署记录里。
+	next, err := s.validateProxyNextHop(ctx, tx, src, hop)
+	if err != nil {
+		return err
 	}
 
 	// 回环端口照样要查冲突:它一样会与 V2Ray API、别的 mieru 入口的 socks 端口
 	// 撞车,而撞车的表现是 sing-box 整个起不来 —— 那会把这台机器上
 	// 全部 sing-box 入口一起带下水,而管理员改的只是一个 mieru 出口。
-	if err := s.checkMieruSocksPortFree(ctx, tx, nodeID, socksPort, mieruID); err != nil {
+	if err := s.checkMieruSocksPortFree(ctx, tx, src.NodeID, socksPort, mieruID); err != nil {
 		return err
 	}
 
-	code := existingCode
+	code := src.ChainCode
 	uuidEnc, ssEnc := "", ""
 	if code == "" {
 		if code, err = nextChainCode(ctx, tx); err != nil {
 			return err
 		}
-		uuid, err := GenerateUUID()
-		if err != nil {
+		if uuidEnc, ssEnc, err = s.newChainSecrets(); err != nil {
 			return err
-		}
-		ssKey, err := GenerateSSKey()
-		if err != nil {
-			return err
-		}
-		if uuidEnc, err = s.cipher.Encrypt(uuid); err != nil {
-			return fmt.Errorf("加密链路 UUID: %w", err)
-		}
-		if ssEnc, err = s.cipher.Encrypt(ssKey); err != nil {
-			return fmt.Errorf("加密链路 Shadowsocks 密钥: %w", err)
 		}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	var inboundTarget, externalTarget any
-	if kind == ChainTargetInbound {
-		inboundTarget = targetID
-	} else {
-		externalTarget = targetID
-	}
-
-	if existingCode == "" {
+	c := hopColumnsOf(next)
+	if src.ChainCode == "" {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE node_mieru_inbounds
-			   SET chain_target_kind = ?, chain_target_inbound_id = ?,
-			       chain_target_external_id = ?, egress_socks_port = ?, chain_code = ?,
+			   SET chain_target_kind = ?, chain_target_inbound_id = ?, chain_target_external_id = ?,
+			       chain_target_relay_id = ?, chain_target_endpoint_id = ?, chain_target_addr_mode = ?,
+			       chain_target_legacy_host = ?, chain_target_legacy_port = ?,
+			       egress_socks_port = ?, chain_code = ?,
 			       chain_uuid_encrypted = ?, chain_ss_password_encrypted = ?, updated_at = ?
 			 WHERE id = ?`,
-			string(kind), inboundTarget, externalTarget, socksPort, code, uuidEnc, ssEnc,
-			now, mieruID)
+			c.kind, c.inbound, c.external, c.relay, c.endpoint, c.mode, c.legacyHost, c.legacyPort,
+			socksPort, code, uuidEnc, ssEnc, now, mieruID)
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE node_mieru_inbounds
-			   SET chain_target_kind = ?, chain_target_inbound_id = ?,
-			       chain_target_external_id = ?, egress_socks_port = ?, updated_at = ?
+			   SET chain_target_kind = ?, chain_target_inbound_id = ?, chain_target_external_id = ?,
+			       chain_target_relay_id = ?, chain_target_endpoint_id = ?, chain_target_addr_mode = ?,
+			       chain_target_legacy_host = ?, chain_target_legacy_port = ?,
+			       egress_socks_port = ?, updated_at = ?
 			 WHERE id = ?`,
-			string(kind), inboundTarget, externalTarget, socksPort, now, mieruID)
+			c.kind, c.inbound, c.external, c.relay, c.endpoint, c.mode, c.legacyHost, c.legacyPort,
+			socksPort, now, mieruID)
 	}
 	if err != nil {
+		return err
+	}
+	newLanding, err := authLandingOf(ctx, tx, next)
+	if err != nil {
+		return err
+	}
+	if err := noteAuthChange(ctx, tx, chaingraph.KindMieru, mieruID, src.NodeID, code, oldLanding, newLanding); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -175,21 +143,38 @@ func (s *Store) SetMieruChain(
 //
 // **凭据不清除**,只清去向与回环端口,与 ClearChain 同理:清掉的话再次启用
 // 会分配一个新代码,而落地的 traffic_ledger 里那个旧代码就成了永远对不上
-// 任何东西的历史行。
+// 任何东西的历史行。原来的认证终点上暂时保留这份凭据,直到本机 sing-box 改回去的那次下发成功。
 func (s *Store) ClearMieruChain(ctx context.Context, mieruID int64) error {
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE node_mieru_inbounds
-		   SET chain_target_kind = '', chain_target_inbound_id = NULL,
-		       chain_target_external_id = NULL, egress_socks_port = 0, updated_at = ?
-		 WHERE id = ? AND deleted_at IS NULL`,
-		time.Now().UTC().Format(time.RFC3339), mieruID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+	src, err := chaingraph.Load(ctx, tx, chaingraph.Ref{Kind: chaingraph.KindMieru, ID: mieruID})
+	if errors.Is(err, chaingraph.ErrNotFound) {
 		return ErrMieruInboundNotFound
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	oldLanding, err := authLandingOf(ctx, tx, src.Next)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_mieru_inbounds
+		   SET chain_target_kind = '', chain_target_inbound_id = NULL,
+		       chain_target_external_id = NULL, chain_target_relay_id = NULL, chain_target_endpoint_id = NULL,
+		       chain_target_addr_mode = '', chain_target_legacy_host = '', chain_target_legacy_port = 0,
+		       egress_socks_port = 0, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339), mieruID); err != nil {
+		return err
+	}
+	if err := noteAuthChange(ctx, tx, chaingraph.KindMieru, mieruID, src.NodeID, src.ChainCode, oldLanding, 0); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // checkMieruSocksPortFree 确认回环端口在这台机器上没被占用。
@@ -245,49 +230,9 @@ func (s *Store) MieruChainUsersForInbound(ctx context.Context, inboundID int64) 
 }
 
 // MieruChainUsersForInbounds 是批量版(节点列表一次取全部入口的,VNext PERF03);单个入口就是只有一个 id 的批量。
+// 与 sing-box 那一侧共用一份实现:直接指向的、经透明转发认证终点落在这里的、以及换走之后暂时保留的。
 func (s *Store) MieruChainUsersForInbounds(ctx context.Context, inboundIDs []int64) (map[int64][]singbox.User, error) {
-	out := make(map[int64][]singbox.User, len(inboundIDs))
-	if len(inboundIDs) == 0 {
-		return out, nil
-	}
-	ph := make([]string, len(inboundIDs))
-	args := make([]any, len(inboundIDs))
-	for i, id := range inboundIDs {
-		ph[i], args[i] = "?", id
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT chain_target_inbound_id, chain_code, chain_uuid_encrypted, chain_ss_password_encrypted
-		  FROM node_mieru_inbounds
-		 WHERE deleted_at IS NULL
-		   AND chain_target_kind = 'INBOUND'
-		   AND chain_target_inbound_id IN (`+strings.Join(ph, ",")+`)
-		   AND chain_code != ''
-		 ORDER BY chain_target_inbound_id, chain_code`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var target int64
-		var code, uuidEnc, ssEnc string
-		if err := rows.Scan(&target, &code, &uuidEnc, &ssEnc); err != nil {
-			return nil, err
-		}
-		u := singbox.User{Code: code}
-		if uuidEnc != "" {
-			if u.UUID, err = s.cipher.Decrypt(uuidEnc); err != nil {
-				return nil, fmt.Errorf("解密链路 %s 的 UUID: %w", code, err)
-			}
-		}
-		if ssEnc != "" {
-			if u.SSPassword, err = s.cipher.Decrypt(ssEnc); err != nil {
-				return nil, fmt.Errorf("解密链路 %s 的 Shadowsocks 密钥: %w", code, err)
-			}
-		}
-		out[target] = append(out[target], u)
-	}
-	return out, rows.Err()
+	return s.chainUsersFor(ctx, chainSourceMieru, inboundIDs)
 }
 
 // MieruChainTarget 是一个 mieru 入口的出口去向,已解析成可渲染的形态。
@@ -332,22 +277,23 @@ func (s *Store) ResolveMieruChain(
 		UUID:        m.ChainUUID,
 		SSPassword:  m.ChainSSPassword,
 	}
-	switch kind {
-	case ChainTargetInbound:
-		t, deployed, err := s.chainInboundTarget(ctx, m.ChainTargetInboundID)
-		if err != nil {
-			return nil, err
-		}
-		if !deployed {
-			return nil, fmt.Errorf("%w: %s", ErrChainTargetNotDeployed, t.DisplayName)
-		}
-		out.Target = &ChainTarget{Kind: ChainTargetInbound, Inbound: t}
-	case ChainTargetExternal:
-		t, err := s.chainExternalTarget(ctx, s.db, m.ChainTargetExternalID)
-		if err != nil {
-			return nil, err
-		}
-		out.Target = &ChainTarget{Kind: ChainTargetExternal, External: t}
+	target, err := s.resolveHop(ctx, hopOfMieru(m))
+	if err != nil {
+		return nil, err
 	}
+	out.Target = target
 	return out, nil
+}
+
+// hopOfMieru 把 Mieru 入口上存的去向拼成 chaingraph.Hop。
+func hopOfMieru(m *MieruInbound) *chaingraph.Hop {
+	switch ChainTargetKind(m.ChainTargetKind) {
+	case ChainTargetInbound:
+		return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: m.ChainTargetInboundID}, Addr: m.ChainTargetAddr}
+	case ChainTargetExternal:
+		return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindExternal, ID: m.ChainTargetExternalID}}
+	case ChainTargetRelay:
+		return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindNginx, ID: m.ChainTargetRelayID}, Addr: m.ChainTargetAddr}
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/database"
 	"github.com/litebox/litebox/internal/deployment"
 )
@@ -43,9 +44,25 @@ type LinearChain struct {
 	EntryKind string `json:"entry_kind,omitempty"`
 	// Hops[0] 是用户连的入口,Hops[i] 的出口是 Hops[i+1];都是 sing-box 入站 id。
 	Hops []int64 `json:"hops"`
-	// Landing 是最后一跳的出口:另一台机器上的入站,或者一条外部代理。
+	// Landing 是最后一跳的出口:另一台机器上的入站、一条透明转发规则(经它到达的认证终点算落地),
+	// 或者一条外部代理。
 	LandingKind ChainTargetKind `json:"landing_kind"`
 	LandingID   int64           `json:"landing_id"`
+	// HopEndpoints[i](i ≥ 1)是第 i 段连 Hops[i] 时选的地址条目;LandingEndpointID 是最后一段连落地的。
+	// 0 只在目标恰好有零条或一条地址条目时可以(v23.3,见 chaingraph.PickAddr);下标 0 不用。
+	HopEndpoints      []int64 `json:"hop_endpoints,omitempty"`
+	LandingEndpointID int64   `json:"landing_endpoint_id,omitempty"`
+}
+
+// endpointFor 取第 i 段(从 Hops[i] 出发)要连的那一条地址。
+func (c LinearChain) endpointFor(i int) int64 {
+	if i+1 < len(c.Hops) {
+		if i+1 < len(c.HopEndpoints) {
+			return c.HopEndpoints[i+1]
+		}
+		return 0
+	}
+	return c.LandingEndpointID
 }
 
 // LinearSegment 是路径上的一段。
@@ -137,6 +154,14 @@ func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, comm
 		seen[in.NodeID] = i
 	}
 	var landing *Inbound
+	if c.LandingKind == ChainTargetRelay {
+		// 落地是一条转发规则时,下发顺序里落地那一步是它透传过去的认证终点(凭据要部署在那里);
+		// 转发规则本身不在这条路径的编排里 —— 它要先由它自己的下发就绪(入口机的下发会检查)。
+		if _, err := chaingraph.Load(ctx, tx, chaingraph.Ref{Kind: chaingraph.KindNginx, ID: c.LandingID}); err != nil {
+			plan.Problems = append(plan.Problems, fmt.Sprintf("落地转发规则不存在(id=%d)", c.LandingID))
+			return plan, nil
+		}
+	}
 	if c.LandingKind == ChainTargetInbound {
 		in, err := s.GetInbound(ctx, c.LandingID)
 		if err != nil {
@@ -156,11 +181,24 @@ func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, comm
 	if err := s.sharedHopWarnings(ctx, tx, hops, plan); err != nil {
 		return nil, err
 	}
+	// 摘掉之前先记下每一跳原来的认证终点:换走的那几处要在旧终点上暂时保留凭据(noteAuthChange)。
+	oldLandings := make([]int64, len(hops))
+	for i, h := range hops {
+		e, err := chaingraph.Load(ctx, tx, chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: h.ID})
+		if err != nil {
+			return nil, err
+		}
+		if oldLandings[i], err = authLandingOf(ctx, tx, e.Next); err != nil {
+			return nil, err
+		}
+	}
 	// 先摘掉路径上每一跳原来的去向(F02):在最终的图上校验,而不是新旧边混着的图。只动去向,链路凭据不动。
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, h := range hops {
 		if _, err := tx.ExecContext(ctx, `UPDATE node_inbounds SET chain_target_kind = '', chain_target_inbound_id = NULL,
-			chain_target_external_id = NULL, updated_at = ? WHERE id = ?`, now, h.ID); err != nil {
+			chain_target_external_id = NULL, chain_target_relay_id = NULL, chain_target_endpoint_id = NULL,
+			chain_target_addr_mode = '', chain_target_legacy_host = '', chain_target_legacy_port = 0,
+			updated_at = ? WHERE id = ?`, now, h.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -174,16 +212,19 @@ func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, comm
 		} else {
 			kind, target = c.LandingKind, c.LandingID
 			seg.ToKind, seg.ToID = string(kind), target
-			if landing != nil {
+			switch {
+			case landing != nil:
 				seg.ToName = landing.NodeName + " / " + landing.DisplayName
-			} else {
+			case kind == ChainTargetRelay:
+				seg.ToName = fmt.Sprintf("转发规则 #%d", target)
+			default:
 				seg.ToName = fmt.Sprintf("外部代理 #%d", target)
 			}
 		}
 		// 每一段一个保存点:PG 下事务里一条语句失败整个事务就中止,不隔开的话第一段失败之后后面全报
 		// 「current transaction is aborted」,看不出它们自己有没有问题。
 		err := database.Savepoint(ctx, tx, fmt.Sprintf("seg%d", i), func() error {
-			return s.setChainTx(ctx, tx, from.ID, kind, target)
+			return s.setChainTx(ctx, tx, from.ID, NextHop{Kind: kind, ID: target, EndpointID: c.endpointFor(i)})
 		})
 		if err != nil {
 			seg.Error = err.Error()
@@ -192,6 +233,34 @@ func (s *Store) buildLinear(ctx context.Context, tx *sql.Tx, c LinearChain, comm
 		plan.Segments = append(plan.Segments, seg)
 	}
 	plan.OK = len(plan.Problems) == 0
+	if plan.OK {
+		for i, h := range hops {
+			e, err := chaingraph.Load(ctx, tx, chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: h.ID})
+			if err != nil {
+				return nil, err
+			}
+			newLanding, err := authLandingOf(ctx, tx, e.Next)
+			if err != nil {
+				return nil, err
+			}
+			if err := noteAuthChange(ctx, tx, chaingraph.KindSingBox, h.ID, h.NodeID, e.ChainCode, oldLandings[i], newLanding); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if c.LandingKind == ChainTargetRelay && plan.OK {
+		last, err := chaingraph.Load(ctx, tx, chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: hops[len(hops)-1].ID})
+		if err != nil {
+			return nil, err
+		}
+		if authID, err := authLandingOf(ctx, tx, last.Next); err != nil {
+			return nil, err
+		} else if authID != 0 {
+			if in, err := s.GetInbound(ctx, authID); err == nil {
+				landing = in
+			}
+		}
+	}
 
 	if landing != nil {
 		plan.DeployOrder = append(plan.DeployOrder, LinearDeployStep{NodeID: landing.NodeID, NodeName: landing.NodeName,

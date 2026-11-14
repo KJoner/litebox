@@ -10,6 +10,7 @@ import (
 
 	"github.com/litebox/litebox/internal/access"
 	"github.com/litebox/litebox/internal/applyintent"
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/mieru"
 	"github.com/litebox/litebox/internal/nodeport"
 	"github.com/litebox/litebox/internal/subscription"
@@ -105,6 +106,9 @@ type MieruInbound struct {
 	ChainTargetKind       string `json:"chain_target_kind"`
 	ChainTargetInboundID  int64  `json:"chain_target_inbound_id"`
 	ChainTargetExternalID int64  `json:"chain_target_external_id"`
+	// ChainTargetRelayID / ChainTargetAddr 与 sing-box 入站上的同名字段一个意思(v23.3)。
+	ChainTargetRelayID int64              `json:"chain_target_relay_id"`
+	ChainTargetAddr    chaingraph.AddrSel `json:"chain_target_addr"`
 	// ChainCode 是这条链路在【落地入站】的流量统计里的计数器名。
 	// 凭据本身永不出现在 API 响应里。
 	ChainCode       string `json:"chain_code"`
@@ -167,6 +171,8 @@ const mieruColumns = `m.id, m.node_id, n.name, n.display_name,
 	m.deployed_listen_port_start, m.deployed_listen_port_end, m.deployed_config_sha256, m.deployed_shape_sha256,
 	m.egress_socks_port, m.chain_target_kind,
 	m.chain_target_inbound_id, m.chain_target_external_id,
+	m.chain_target_relay_id, m.chain_target_endpoint_id, m.chain_target_addr_mode,
+	m.chain_target_legacy_host, m.chain_target_legacy_port,
 	m.chain_code, m.chain_uuid_encrypted, m.chain_ss_password_encrypted,
 	m.access_tier_id, t.code, t.name, t.level,
 	m.sort_order, m.subscription_enabled, m.public_remark, m.enabled, m.restricted,
@@ -182,7 +188,8 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 	var m MieruInbound
 	var chainUUIDEnc, chainSSEnc string
 	// 目标列可空:直连的入口这两列是 NULL,扫进 int64 会报错。
-	var chainInboundID, chainExternalID sql.NullInt64
+	var chainInboundID, chainExternalID, chainRelayID, chainEndpointID sql.NullInt64
+	var chainAddrMode string
 	if err := scan(
 		&m.ID, &m.NodeID, &m.NodeName, &m.NodeDisplayName,
 		&m.DisplayName,
@@ -195,6 +202,8 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 		&m.DeployedListenPortStart, &m.DeployedListenPortEnd, &m.DeployedConfigSHA256, &m.DeployedShapeSHA256,
 		&m.EgressSocksPort, &m.ChainTargetKind,
 		&chainInboundID, &chainExternalID,
+		&chainRelayID, &chainEndpointID, &chainAddrMode,
+		&m.ChainTargetAddr.LegacyHost, &m.ChainTargetAddr.LegacyPort,
 		&m.ChainCode, &chainUUIDEnc, &chainSSEnc,
 		&m.AccessTierID, &m.AccessTierCode, &m.AccessTierName, &m.AccessTierLevel,
 		&m.SortOrder, &m.SubscriptionEnabled, &m.PublicRemark, &m.Enabled, &m.Restricted,
@@ -208,6 +217,9 @@ func (s *Store) scanMieruInbound(scan func(dest ...any) error) (*MieruInbound, e
 		Start: m.IPv6PublicPortStart, End: m.IPv6PublicPortEnd}
 	m.ChainTargetInboundID = chainInboundID.Int64
 	m.ChainTargetExternalID = chainExternalID.Int64
+	m.ChainTargetRelayID = chainRelayID.Int64
+	m.ChainTargetAddr.Mode = chaingraph.AddrMode(chainAddrMode)
+	m.ChainTargetAddr.EndpointID = chainEndpointID.Int64
 	for _, f := range []struct {
 		enc  string
 		dest *string

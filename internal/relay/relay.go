@@ -12,10 +12,11 @@ package relay
 
 import (
 	"errors"
-
 	"fmt"
-	"github.com/litebox/litebox/internal/nodeport"
 	"strings"
+
+	"github.com/litebox/litebox/internal/chaingraph"
+	"github.com/litebox/litebox/internal/nodeport"
 )
 
 var (
@@ -46,6 +47,9 @@ const (
 	// (视图里没有它那一段),拨测也测不了 —— 它的用途是把这台机器当
 	// 纯端口转发器,用户拿到的地址由管理员另行分发。
 	TargetAddress TargetKind = "ADDRESS"
+	// TargetRelay 的落地是另一条 nginx / realm 转发规则(v23.3):透明转发级联。两条规则都只搬字节,
+	// 协议与凭据仍是路径最后那个代理入口(认证终点)的;订阅与权限沿级联走到它,见 relay_forward_paths 视图。
+	TargetRelay TargetKind = "RELAY"
 )
 
 func ParseTargetKind(raw string) (TargetKind, error) {
@@ -56,6 +60,8 @@ func ParseTargetKind(raw string) (TargetKind, error) {
 		return TargetExternal, nil
 	case TargetAddress:
 		return TargetAddress, nil
+	case TargetRelay:
+		return TargetRelay, nil
 	default:
 		return "", fmt.Errorf("未知的落地去向 %q", raw)
 	}
@@ -142,6 +148,11 @@ type Relay struct {
 	TargetKind       TargetKind `json:"target_kind"`
 	TargetInboundID  int64      `json:"target_inbound_id"`
 	TargetExternalID int64      `json:"target_external_id"`
+	// TargetRelayID 只在 RELAY 下有值。
+	TargetRelayID int64 `json:"target_relay_id"`
+	// TargetAddr 是落地为入站或转发规则时「连它的哪一条地址」(v23.3)。LEGACY 是迁移时没找到唯一等价条目
+	// 而保留的兼容快照,界面上标「待确认地址选择」。
+	TargetAddr chaingraph.AddrSel `json:"target_addr"`
 	// TargetHost / TargetPort 只在 ADDRESS 下有值。
 	TargetHost string `json:"target_host"`
 	TargetPort int    `json:"target_port"`

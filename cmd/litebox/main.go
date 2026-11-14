@@ -670,6 +670,10 @@ func cmdServe(args []string) error {
 	// "这台机器的 Mieru 流量永远是 0" —— 与"真的没人用"长得一模一样。
 	syncer.WithMieru(traffic.NewMieruTunnelSampler(pool, nodeService.MieruEndpoints))
 
+	// 转发规则改去向时,经它的代理发起方的认证终点跟着换(v23.3):新终点补凭据、旧终点暂时保留,
+	// 这几件事与规则的改动在同一个事务里提交(G01),由 node 那一侧算 —— relay 包不认识这些概念。
+	relayStore.SetChangeHook(nodeService.RelayChangeHook())
+
 	// 用户变更不直接部署,而是标脏后由协调器合并 ——
 	// 连续编辑多个用户只会让同一节点重启一次。
 	// notifier 先建出来:协调器要在无人值守的部署失败时用它,

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/sshx"
 )
@@ -133,21 +134,30 @@ func (s *Service) DependentsOf(ctx context.Context, nodeID int64) []DependentHos
 		}
 		out = append(out, DependentHost{NodeID: id, Name: name, Kind: kind})
 	}
-	if s.relayHosts != nil {
-		if hosts, err := s.relayHosts.HostIDsTargetingNode(ctx, nodeID); err == nil {
-			for _, h := range hosts {
-				add(h.NodeID, strings.ToLower(string(h.Engine))+" 转发")
+	// 这台机器上每个入口的直接上游(v23.3 起包括转发到转发、链式出站经转发):它们拨的地址跟着这台机器的地址走。
+	refs, err := s.store.entriesOnNode(ctx, s.store.db, nodeID)
+	if err != nil {
+		return out
+	}
+	for _, ref := range refs {
+		direct, err := chaingraph.Referrers(ctx, s.store.db, ref)
+		if err != nil {
+			continue
+		}
+		for _, r := range direct {
+			if r.NodeID == nodeID {
+				continue
 			}
-		}
-	}
-	if links, err := s.store.ChainsTargetingNode(ctx, nodeID); err == nil {
-		for _, id := range chainSourceNodes(links) {
-			add(id, "sing-box 链式出站")
-		}
-	}
-	if ids, err := s.store.MieruChainSourceNodeIDs(ctx, nodeID); err == nil {
-		for _, id := range ids {
-			add(id, "Mieru 出口")
+			switch r.Ref.Kind {
+			case chaingraph.KindNginx:
+				add(r.NodeID, "nginx 转发")
+			case chaingraph.KindRealm:
+				add(r.NodeID, "realm 转发")
+			case chaingraph.KindMieru:
+				add(r.NodeID, "Mieru 出口")
+			default:
+				add(r.NodeID, "sing-box 链式出站")
+			}
 		}
 	}
 	return out

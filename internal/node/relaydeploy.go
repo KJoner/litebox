@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/litebox/litebox/internal/applyintent"
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/deployment"
 	"github.com/litebox/litebox/internal/externalproxy"
 	"github.com/litebox/litebox/internal/nginx"
@@ -158,38 +160,16 @@ func (s *Service) relayServer(
 // nginx 与 realm 共用:落地是什么、拨测怎么构造,与搬字节的程序无关。
 // 各写一遍的话,加一种落地要改两处,而漏掉一处的表现是
 // 「nginx 那条能用、realm 那条渲染失败」。
+//
+// v23.3 起落地可以是另一条转发规则,地址也精确到选定的那一条:要拨的地址取这条规则自己的下一跳(选定的地址条目、
+// 默认地址或兼容快照),拨测参数取沿转发级联走到的第一个代理入口(认证终点)。两件事分开解析 ——
+// 地址池重排、认证终点改协议,都不会让另一件事悄悄变掉。引用失效时整份配置不下发,**不回落到任何别的地址**。
 func (s *Service) relayTarget(
 	ctx context.Context, r *relay.Relay,
 ) (string, int, deployment.RelayProbe, error) {
 	probe := deployment.RelayProbe{Name: r.DisplayName, ListenPort: r.ListenPort}
 
 	switch r.TargetKind {
-	case relay.TargetInbound:
-		target, deployed, err := s.store.chainInboundTarget(ctx, r.TargetInboundID)
-		if err != nil {
-			return "", 0, probe, err
-		}
-		// **落地的公网端口,不是它 sing-box 的监听端口。**
-		// 中转机是从公网连落地的,与客户端直连落地走的是同一个号码。
-		// 写成监听端口的后果在 NAT 机器上是连不上,在直连机器上碰巧一样 ——
-		// 后者更糟,它会一直是对的,直到某天落地换成 NAT 小鸡。
-
-		// 落地还没部署过:转发照常渲染(它只需要地址与公网端口),
-		// 但拨测做不了 —— 那台机器上还没有 sing-box 在听。
-		// 记下原因而不是判失败:这条线路此刻本来就不在任何人的订阅里,
-		// 而配置本身是对的,等落地上线就能用。
-		if !deployed {
-			probe.SkipReason = fmt.Sprintf("落地「%s」尚未成功部署过,无法拨测",
-				target.DisplayName)
-			return target.Host, target.Port, probe, nil
-		}
-		out, reason, err := s.probeOutboundForNode(ctx, target, r.ListenPort)
-		if err != nil {
-			return "", 0, probe, err
-		}
-		probe.Outbound, probe.SkipReason = out, reason
-		return target.Host, target.Port, probe, nil
-
 	case relay.TargetExternal:
 		target, err := s.externalRelayTarget(ctx, r.TargetExternalID)
 		if err != nil {
@@ -205,8 +185,96 @@ func (s *Service) relayTarget(
 		probe.SkipReason = fmt.Sprintf("落地是指定地址 %s:%d,面板不知道它背后的协议,无法拨测",
 			r.TargetHost, r.TargetPort)
 		return r.TargetHost, r.TargetPort, probe, nil
+
+	case relay.TargetInbound, relay.TargetRelay:
+		hop := relayHop(r)
+		first, err := chaingraph.Load(ctx, s.store.db, hop.To)
+		if errors.Is(err, chaingraph.ErrNotFound) {
+			// 落地已经被删掉了:交给调用方跳过这一条(它此刻已经从 user_effective_relays 里消失)。
+			return "", 0, probe, fmt.Errorf("%w: %s", ErrNotFound, hop.To.Key())
+		}
+		if err != nil {
+			return "", 0, probe, err
+		}
+		// **落地的公网端口,不是它 sing-box 的监听端口。**
+		// 中转机是从公网连落地的,与客户端直连落地走的是同一个号码。
+		dial, err := chaingraph.ResolveDial(ctx, s.store.db, first, hop.Addr)
+		if err != nil {
+			return "", 0, probe, err
+		}
+		probe.Outbound, probe.SkipReason, err = s.relayProbe(ctx, hop, r.ListenPort)
+		if err != nil {
+			return "", 0, probe, err
+		}
+		return dial.Host, dial.Port, probe, nil
 	}
 	return "", 0, probe, fmt.Errorf("未知的落地去向 %q", r.TargetKind)
+}
+
+// relayHop 把一条规则存下来的去向拼成 chaingraph.Hop。
+func relayHop(r *relay.Relay) *chaingraph.Hop {
+	switch r.TargetKind {
+	case relay.TargetInbound:
+		return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: r.TargetInboundID}, Addr: r.TargetAddr}
+	case relay.TargetRelay:
+		return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindNginx, ID: r.TargetRelayID}, Addr: r.TargetAddr}
+	case relay.TargetExternal:
+		return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindExternal, ID: r.TargetExternalID}}
+	}
+	return &chaingraph.Hop{To: chaingraph.Ref{Kind: chaingraph.KindAddress}, Host: r.TargetHost, Port: r.TargetPort}
+}
+
+// relayProbe 沿转发级联走到认证终点,用它的参数构造探测出站(server 指向本机这条规则的监听端口)。
+// 测不了的情形(终点是指定地址、下游转发还没下发、落地没部署过、没有用户、协议这一版没打通)
+// 返回原因,不判失败也不报成功。
+func (s *Service) relayProbe(ctx context.Context, hop *chaingraph.Hop, listenPort int) (map[string]any, string, error) {
+	path, err := chaingraph.Walk(ctx, s.store.db, hop)
+	if err != nil {
+		return nil, "", err
+	}
+	if path.Loop {
+		return nil, "这条转发的下游成环了(" + describeSteps(path) + "),无法拨测", nil
+	}
+	for _, st := range path.Steps {
+		if st.Missing {
+			return nil, "转发路径断了(" + describeSteps(path) + "),无法拨测", nil
+		}
+	}
+	if path.UnknownBackend || path.Auth == nil {
+		return nil, "沿转发走到的终点是指定地址,面板不知道它背后的协议,无法拨测(" + describeSteps(path) + ")", nil
+	}
+	for _, st := range path.Transparent {
+		e := st.Entry
+		if !e.Enabled {
+			return nil, fmt.Sprintf("下游转发「%s / %s」已停用,这一次没有拨测", e.NodeName, e.Name), nil
+		}
+		kind := applyintent.Relays
+		if e.Kind == chaingraph.KindRealm {
+			kind = applyintent.Realm
+		}
+		if pending, _ := s.applyPending(ctx, e.NodeID, kind); pending {
+			// 下游那条还没下发,这时拨测只会撞上它的旧配置 —— 判失败会把这一条完全正确的转发回滚掉。
+			return nil, fmt.Sprintf("下游转发「%s / %s」还有没下发的改动,这一次没有拨测", e.NodeName, e.Name), nil
+		}
+	}
+	if path.Auth.Ref.Kind == chaingraph.KindExternal {
+		target, err := s.externalRelayTarget(ctx, path.Auth.Ref.ID)
+		if err != nil {
+			return nil, "", err
+		}
+		out, reason := externalProbeOutbound(target, listenPort)
+		return out, reason, nil
+	}
+	target, deployed, err := s.store.chainInboundTarget(ctx, path.Auth.Ref.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	// 落地还没部署过:转发照常渲染(它只需要地址与公网端口),但拨测做不了 ——
+	// 那台机器上还没有 sing-box 在听。记下原因而不是判失败。
+	if !deployed {
+		return nil, fmt.Sprintf("落地「%s」尚未成功部署过,无法拨测", target.DisplayName), nil
+	}
+	return s.probeOutboundForNode(ctx, target, listenPort)
 }
 
 // probeOutboundForNode 用落地节点上的一个真实用户凭据构造探测出站。
@@ -229,17 +297,18 @@ func (s *Service) probeOutboundForNode(
 		// 一句"跳过"会被读成"没什么事",而"落地上一个用户都没有"是要处理的。
 		return nil, fmt.Sprintf("落地「%s」上没有任何用户,无法拨测", target.DisplayName), nil
 	}
-	out, err := relayProbeOutbound(target, users[0], listenPort)
-	if err != nil {
-		return nil, "", err
-	}
-	return out, "", nil
+	return relayProbeOutbound(target, users[0], listenPort)
 }
 
 // relayProbeOutbound 按落地协议生成探测出站,server 指向本机的转发端口。
+//
+// 只构造确实打通了的协议:VLESS + REALITY、Trojan + REALITY 与 Shadowsocks。原来这里只分 SS 与「其余」,
+// 其余一律按 VLESS 拼 —— 落地是 Trojan 或 Snell 时探测出站说的是另一种协议,拨测必然失败,
+// 一条完全正确的转发被回滚掉,而报错只说「经代理未取到 HTTP 响应」。Snell 这一版的转发拨测没有打通,
+// 如实记成测不了,不拿一份错的出站去冒充。
 func relayProbeOutbound(
 	target *ChainInboundTarget, user singbox.User, listenPort int,
-) (map[string]any, error) {
+) (map[string]any, string, error) {
 	base := map[string]any{
 		"tag": "probe-out",
 		// 连本机的 nginx 监听端口,走的是与真实用户完全相同的那条转发。
@@ -248,22 +317,29 @@ func relayProbeOutbound(
 		"server":      "127.0.0.1",
 		"server_port": listenPort,
 	}
-	if target.Protocol == singbox.ProtocolShadowsocks {
+	switch target.Protocol {
+	case singbox.ProtocolShadowsocks:
 		// password 走 SSClientPassword,与部署拨测、订阅生成同一个实现。
-		// 另拼一遍的话,某天改了拼法只改到一处,表现是"拨测通过但用户连不上",
-		// 或者反过来 —— 两条路径各自看起来都对。
 		password, err := singbox.SSClientPassword(target.SSServerKey, user.SSPassword, target.SSMethod)
 		if err != nil {
-			return nil, fmt.Errorf("拼接探测用的 Shadowsocks 凭据: %w", err)
+			return nil, "", fmt.Errorf("拼接探测用的 Shadowsocks 凭据: %w", err)
 		}
 		base["type"] = "shadowsocks"
 		base["method"] = string(target.SSMethod)
 		base["password"] = password
-		return base, nil
+		return base, "", nil
+	case singbox.ProtocolVLESSReality:
+		base["type"] = "vless"
+		base["uuid"] = user.UUID
+		base["flow"] = singbox.FlowVision
+	case singbox.ProtocolTrojan:
+		// TLS 那一段与 VLESS 一字不差(REALITY),只是出站类型与凭据不同:password 就是用户的 UUID。
+		base["type"] = "trojan"
+		base["password"] = user.UUID
+	default:
+		return nil, fmt.Sprintf("落地「%s」是 %s,经转发的拨测这一版没有打通,这一次没有拨测它",
+			target.DisplayName, target.Protocol.Label()), nil
 	}
-	base["type"] = "vless"
-	base["uuid"] = user.UUID
-	base["flow"] = singbox.FlowVision
 	base["tls"] = map[string]any{
 		"enabled":     true,
 		"server_name": target.RealityDest,
@@ -274,7 +350,7 @@ func relayProbeOutbound(
 			"short_id":   target.RealityShortID,
 		},
 	}
-	return base, nil
+	return base, "", nil
 }
 
 // externalRelayTarget 读出外部代理的转发目标。

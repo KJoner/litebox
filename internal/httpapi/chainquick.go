@@ -48,6 +48,8 @@ type quickChainRequest struct {
 	AccessTierID int64  `json:"access_tier_id"`
 	TargetKind   string `json:"target_kind"`
 	TargetID     int64  `json:"target_id"`
+	// TargetEndpointID 是目标入口上选定的那一条地址(v23.3)。
+	TargetEndpointID int64 `json:"target_endpoint_id"`
 	// UserIDs 非空时新入口设成「仅指定用户」并直接授权给他们(CHAIN02 的「使用用户」)。
 	UserIDs []int64 `json:"user_ids"`
 }
@@ -56,7 +58,7 @@ func (q quickChainRequest) params() node.QuickChainParams {
 	return node.QuickChainParams{
 		EntryNodeID: q.EntryNodeID, DisplayName: strings.TrimSpace(q.DisplayName), Protocol: q.Protocol,
 		SSMethod: q.SSMethod, ListenPort: q.ListenPort, AccessTierID: q.AccessTierID,
-		TargetKind: node.ChainTargetKind(q.TargetKind), TargetID: q.TargetID,
+		TargetKind: node.ChainTargetKind(q.TargetKind), TargetID: q.TargetID, TargetEndpointID: q.TargetEndpointID,
 	}
 }
 
@@ -107,7 +109,8 @@ func (s *Server) handleQuickChainCreate(w http.ResponseWriter, r *http.Request) 
 	// 任何一次顺带触发的下发(改个用户、改个等级)都会把这个入口按【直连】部署上去 ——
 	// 那正是 CHAIN05 禁止的「静默回退为直接连接出口」。写进库之后,入口机的部署会被
 	// 「落地未同步」那道闸拦住,直到 ApplyChain 按顺序先下发落地。
-	if err := s.nodes.Store().SetChain(r.Context(), in.ID, node.ChainTargetKind(req.TargetKind), req.TargetID); err != nil {
+	if err := s.nodes.Store().SetChainTarget(r.Context(), in.ID, node.NextHop{
+		Kind: node.ChainTargetKind(req.TargetKind), ID: req.TargetID, EndpointID: req.TargetEndpointID}); err != nil {
 		if delErr := s.nodes.Store().DeleteInbound(r.Context(), in.ID); delErr != nil {
 			s.logger.Error("快速组链:设出口失败后删除刚建的入口也失败", "inbound", in.ID, "error", delErr)
 		}

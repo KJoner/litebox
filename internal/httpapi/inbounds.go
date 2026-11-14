@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/litebox/litebox/internal/audit"
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/node"
 )
 
@@ -41,6 +42,8 @@ func (s *Server) writeInboundError(w http.ResponseWriter, err error, fallback st
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, node.ErrInboundNotOnLanding):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.As(err, new(*node.ReferencedError)):
+		writeReferenceOrBadRequest(w, err)
 	default:
 		writeError(w, http.StatusBadRequest, fallback+":"+err.Error())
 	}
@@ -282,6 +285,11 @@ func (s *Server) handleDeleteInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFromContext(r.Context())
 
+	// 还有入口把它当下一跳:拒绝并说清是谁(v23.3)。删掉之后它们要么渲染不出来,要么被悄悄改成直连。
+	if err := s.nodes.Store().CheckEntryDeletable(r.Context(), chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: id}); err != nil {
+		s.writeInboundError(w, err, "删除入口失败")
+		return
+	}
 	if err := s.nodes.Store().DeleteInbound(r.Context(), id); err != nil {
 		s.writeInboundError(w, err, "删除入口失败")
 		return

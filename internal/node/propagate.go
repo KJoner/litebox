@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 
+	"github.com/litebox/litebox/internal/chaingraph"
 	"github.com/litebox/litebox/internal/relay"
 )
 
@@ -40,31 +41,25 @@ func (s *Service) PropagateTargetChange(ctx context.Context, targetNodeID int64)
 	if s.trigger == nil {
 		return
 	}
-	if s.relayHosts != nil {
-		if hosts, err := s.relayHosts.HostIDsTargetingNode(ctx, targetNodeID); err != nil {
-			s.logger.Error("查询指向该落地的中转主机失败",
-				"target_node_id", targetNodeID, "error", err)
-		} else {
-			s.MarkRelayHostsDirty(hosts)
+	// 机器的管理地址变了:这台机器上每个入口的「默认地址」与指向管理地址的地址条目跟着变,
+	// 直接连着它们的上游(转发规则、链式出站、Mieru 出口)都要重新下发。只按拨号依赖标:协议参数没变。
+	refs, err := s.store.entriesOnNode(ctx, s.store.db, targetNodeID)
+	if err != nil {
+		s.logger.Error("查询这台机器上的入口失败", "target_node_id", targetNodeID, "error", err)
+		return
+	}
+	im := newImpact()
+	for _, ref := range refs {
+		direct, err := chaingraph.Referrers(ctx, s.store.db, ref)
+		if err != nil {
+			s.logger.Error("查询指向该入口的上游失败", "ref", ref.Key(), "error", err)
+			continue
+		}
+		for _, r := range direct {
+			im.addDial(r)
 		}
 	}
-	// 链式出站按【这台机器上的任意入站】找发起方。原来这里把节点 id 当成入站 id
-	// 传给 ChainSourceNodeIDs,于是改落地的地址之后链到它的入口机一台都标不到 ——
-	// 它们继续用旧地址连落地,而两台机器都显示正常。
-	if links, err := s.store.ChainsTargetingNode(ctx, targetNodeID); err != nil {
-		s.logger.Error("查询链到该落地的中转主机失败",
-			"target_node_id", targetNodeID, "error", err)
-	} else if ids := chainSourceNodes(links); len(ids) > 0 {
-		s.trigger.MarkDirty(ids...)
-	}
-	// 带出口的 Mieru 入口也链到落地:它借道本机 sing-box 的回环 socks 出站,
-	// 那份配置里写着落地的地址 —— 同样要重新下发本机 sing-box。
-	if ids, err := s.store.MieruChainSourceNodeIDs(ctx, targetNodeID); err != nil {
-		s.logger.Error("查询 Mieru 链到该落地的机器失败",
-			"target_node_id", targetNodeID, "error", err)
-	} else if len(ids) > 0 {
-		s.trigger.MarkDirty(ids...)
-	}
+	s.applyImpact(im)
 }
 
 // chainSourceNodes 去重取发起方所在的机器。
@@ -80,53 +75,33 @@ func chainSourceNodes(links []ChainLink) []int64 {
 	return out
 }
 
-// PropagateInboundChange 在一个【入站】的对外参数变化之后,把依赖它的中转主机标脏。
+// PropagateInboundChange 在一个【入站】的对外参数变化之后,把依赖它的上游标脏。
 //
 // 与 PropagateTargetChange 的区别只是粒度:改一个入站时,同机别的入站没变,
 // 把指向它们的中转主机也标脏会白 reload 一遍 nginx、白重启一次 sing-box。
-// 而机器级的变更(地址、IPv6)走那一个。
+// 直接连它的上游按拨号依赖标(端口可能变了);经透明转发在它这里认证的代理发起方按认证依赖标(协议参数可能变了)。
 func (s *Service) PropagateInboundChange(ctx context.Context, inboundID int64) {
-	if s.trigger == nil {
-		return
-	}
-	if s.relayHosts != nil {
-		if hosts, err := s.relayHosts.HostIDsTargetingInbound(ctx, inboundID); err != nil {
-			s.logger.Error("查询指向该落地入站的中转主机失败",
-				"target_inbound_id", inboundID, "error", err)
-		} else {
-			s.MarkRelayHostsDirty(hosts)
-		}
-	}
-	if sources, err := s.store.ChainSourceNodeIDs(ctx, inboundID); err != nil {
-		s.logger.Error("查询链到该落地入站的中转主机失败",
-			"target_inbound_id", inboundID, "error", err)
-	} else if len(sources) > 0 {
-		s.trigger.MarkDirty(sources...)
-	}
+	s.propagateRef(ctx, chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: inboundID})
 }
 
-// PropagateExternalChange 与 PropagateTargetChange 同理,落地是外部代理。
+// PropagateExternalChange 与 PropagateInboundChange 同理,落地是外部代理。
 //
 // 机场换域名、换端口是常事,而那正是"面板一切正常、用户连不上"的典型来源:
 // 外部代理那一行更新了,中转机上的 proxy_pass 却还指着旧地址。
 func (s *Service) PropagateExternalChange(ctx context.Context, externalID int64) {
+	s.propagateRef(ctx, chaingraph.Ref{Kind: chaingraph.KindExternal, ID: externalID})
+}
+
+func (s *Service) propagateRef(ctx context.Context, ref chaingraph.Ref) {
 	if s.trigger == nil {
 		return
 	}
-	if s.relayHosts != nil {
-		if hosts, err := s.relayHosts.HostIDsTargetingExternal(ctx, externalID); err != nil {
-			s.logger.Error("查询指向该外部代理的中转主机失败",
-				"external_id", externalID, "error", err)
-		} else {
-			s.MarkRelayHostsDirty(hosts)
-		}
+	im, err := s.store.collectImpact(ctx, s.store.db, []chaingraph.Ref{ref})
+	if err != nil {
+		s.logger.Error("计算依赖这个入口的上游失败", "ref", ref.Key(), "error", err)
+		return
 	}
-	if sources, err := s.store.ChainSourceNodeIDsForExternal(ctx, externalID); err != nil {
-		s.logger.Error("查询链到该外部代理的中转主机失败",
-			"external_id", externalID, "error", err)
-	} else if len(sources) > 0 {
-		s.trigger.MarkDirty(sources...)
-	}
+	s.applyImpact(im)
 }
 
 // MarkRelayHostsDirty 按引擎把一批中转主机标脏。
