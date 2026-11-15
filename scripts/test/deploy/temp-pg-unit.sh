@@ -45,6 +45,28 @@ FAIL_AT=""
 if temp_pg_start /does/not/exist.pgdump && [ -n "$TMP_DSN" ]; then ok "全部成功 → 函数成功、设好连接串"; else bad "全部成功时函数失败"; fi
 temp_pg_stop
 
+# 临时容器必须连匿名卷一起删:postgres 镜像声明了 VOLUME,`docker rm -f` 不带 -v 会留下一整份恢复出来的库。
+# 生产上每次备份自检、校验、升级演练各留一个约 1.4 GB 的卷,攒到 9 GB 才被发现。
+CALLS=()
+docker() { CALLS+=("$*"); return 0; }
+temp_pg_start /does/not/exist.pgdump >/dev/null 2>&1 || true
+pg="$TMP_PG"
+temp_pg_stop
+if printf '%s\n' "${CALLS[@]}" | grep -qx "rm -f -v $pg"; then ok "temp_pg_stop 连匿名卷一起删($pg)"; else bad "temp_pg_stop 没带 -v:$(printf '%s; ' "${CALLS[@]}" | grep -o 'rm [^;]*')"; fi
+
+eval "$(sed -n '/^extract_deploy_files() {$/,/^}$/p' "$SRC")"
+DEPLOY_FILES="compose.yaml"
+CALLS=()
+docker() {
+    CALLS+=("$*")
+    case "$1" in create) echo cid-1 ;; esac
+    return 0
+}
+tmp="$(mktemp -d)"
+extract_deploy_files kjoner/litebox:test "$tmp" || true
+rm -rf "$tmp"
+if printf '%s\n' "${CALLS[@]}" | grep -qx "rm -v cid-1"; then ok "取部署文件的临时容器连匿名卷一起删"; else bad "取部署文件的临时容器没带 -v:$(printf '%s; ' "${CALLS[@]}")"; fi
+
 echo
 echo "[temp_pg_start] 通过 $PASS 项,失败 $FAIL 项"
 [ "$FAIL" = 0 ]

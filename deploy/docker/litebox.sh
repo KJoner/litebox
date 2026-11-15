@@ -102,15 +102,15 @@ DEPLOY_FILES="compose.yaml compose.postgres.yaml compose.external-postgres.yaml 
 extract_deploy_files() {
     local ref="$1" dest="${2:-$DIR}" cid f
     cid="$(docker create "$ref")" || { echo "从 $ref 取部署文件失败:建不出临时容器" >&2; return 1; }
-    mkdir -p "$dest/pg-init" || { docker rm "$cid" >/dev/null 2>&1; return 1; }
+    mkdir -p "$dest/pg-init" || { docker rm -v "$cid" >/dev/null 2>&1; return 1; }
     for f in $DEPLOY_FILES; do
         if ! docker cp "$cid:/opt/litebox/deploy/$f" "$dest/$f" >/dev/null; then
             echo "从 $ref 取 $f 失败" >&2
-            docker rm "$cid" >/dev/null 2>&1
+            docker rm -v "$cid" >/dev/null 2>&1
             return 1
         fi
     done
-    docker rm "$cid" >/dev/null 2>&1 || true
+    docker rm -v "$cid" >/dev/null 2>&1 || true
 }
 
 # copy_deploy_files SRC DEST:把一套部署文件整套复制过去(升级前暂存的、回滚时另存的)。
@@ -236,8 +236,11 @@ temp_pg_start() {
     fi
     TMP_DSN="postgres://postgres:verify@$TMP_PG:5432/litebox?sslmode=disable"
 }
+# -v 是载重的:postgres 镜像声明了 VOLUME,不带 -v 删容器会留下一个匿名卷,里面是一整份恢复出来的生产库
+# (生产上每次备份自检、校验、升级演练各留一个,约 1.4 GB,攒到 9 GB 才被发现)。取部署文件的临时容器同理
+# (主控镜像声明了 VOLUME /data)。
 temp_pg_stop() {
-    if [ -n "$TMP_PG" ]; then docker rm -f "$TMP_PG" >/dev/null 2>&1 || true; fi
+    if [ -n "$TMP_PG" ]; then docker rm -f -v "$TMP_PG" >/dev/null 2>&1 || true; fi
     if [ -n "$TMP_NET" ]; then docker network rm "$TMP_NET" >/dev/null 2>&1 || true; fi
     TMP_NET=""; TMP_PG=""; TMP_DSN=""
 }

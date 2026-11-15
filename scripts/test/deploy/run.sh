@@ -59,7 +59,7 @@ for m in sqlite postgres external-postgres; do
 done
 if [ "$WHAT" = all ] || [ "$WHAT" = native ]; then
     mkdir -p "$work/native"
-    cid="$(docker create "kjoner/litebox:$OLD")"; docker cp "$cid:/usr/local/bin/litebox" "$work/native/old-litebox" >/dev/null; docker rm "$cid" >/dev/null
+    cid="$(docker create "kjoner/litebox:$OLD")"; docker cp "$cid:/usr/local/bin/litebox" "$work/native/old-litebox" >/dev/null; docker rm -v "$cid" >/dev/null
     cp "$work/new/litebox" "$work/native/new-litebox"
     cp scripts/upgrade.sh scripts/restore.sh scripts/test/deploy/native-upgrade.sh "$work/native/"
     printf '#!/bin/sh\nfor a in "$@"; do if [ "$a" = migrate ]; then /t/new-litebox "$@"; echo "注入:迁移失败" >&2; exit 1; fi; done\nexec /t/new-litebox "$@"\n' > "$work/native/broken-litebox"
