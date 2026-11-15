@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/litebox/litebox/internal/chaingraph"
 )
 
 // CHAIN04:A → B 之后再把 B → A,在此之前存得进去 —— 两台机器的部署都成功、拨测都失败,
@@ -89,5 +91,19 @@ func TestPreviewQuickChain(t *testing.T) {
 	joined := strings.Join(pv.Problems, ";")
 	if !strings.Contains(joined, ErrChainSameHost.Error()) || !strings.Contains(joined, "端口") {
 		t.Fatalf("同机与端口冲突都该报出来,得到 %v", pv.Problems)
+	}
+}
+
+// 报错里的路径:外部代理不属于任何一台机器,写成「外部代理 名字」,而不是前面空着的「 / 名字」——
+// 真机上撞到过,管理员会以为机器名丢了。
+func TestDescribeStepsNamesExternalProxy(t *testing.T) {
+	p := &chaingraph.Path{Steps: []chaingraph.Step{
+		{Ref: chaingraph.Ref{Kind: chaingraph.KindSingBox, ID: 1}, Entry: &chaingraph.Entry{NodeName: "甲", Name: "入口"}},
+		{Ref: chaingraph.Ref{Kind: chaingraph.KindNginx, ID: 2}, Entry: &chaingraph.Entry{NodeName: "乙", Name: "转发"}},
+		{Ref: chaingraph.Ref{Kind: chaingraph.KindExternal, ID: 3}, Entry: &chaingraph.Entry{Name: "机场线路"}},
+	}}
+	got := describeSteps(p)
+	if want := "甲 / 入口 → 乙 / 转发 → 外部代理 机场线路"; got != want {
+		t.Fatalf("describeSteps = %q,应当是 %q", got, want)
 	}
 }

@@ -429,6 +429,9 @@ func describeSteps(p *chaingraph.Path) string {
 	parts := make([]string, 0, len(p.Steps))
 	for _, st := range p.Steps {
 		switch {
+		case st.Entry != nil && st.Ref.Kind == chaingraph.KindExternal:
+			// 外部代理不属于任何一台机器,写成「 / 名字」会让人以为机器名丢了。
+			parts = append(parts, "外部代理 "+st.Entry.Name)
 		case st.Entry != nil:
 			parts = append(parts, st.Entry.NodeName+" / "+st.Entry.Name)
 		case st.Ref.Kind == chaingraph.KindAddress && st.Via != nil:
