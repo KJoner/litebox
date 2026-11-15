@@ -5,7 +5,7 @@
 # 启动时不现场编译任何东西。多架构:产物在构建平台上交叉编译一次(与目标架构无关的阶段只跑一遍)。
 #
 # 基础镜像版本写死;换版本在这里改并在 docs/vnext/deploy.md 的兼容矩阵里记一笔。
-ARG GO_IMAGE=golang:1.26.10-alpine
+ARG GO_IMAGE=golang:1.26.11-alpine
 ARG NODE_IMAGE=node:22.22.0-alpine
 ARG RUNTIME_IMAGE=alpine:3.22.2
 # 模块代理与 npm 源可以换成本地镜像源(网络受限的构建机);CI 用默认值。

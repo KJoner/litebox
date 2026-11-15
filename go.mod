@@ -1,6 +1,6 @@
 module github.com/litebox/litebox
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/enfein/mieru/v3 v3.36.0

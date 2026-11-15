@@ -201,7 +201,7 @@ litebox version          # 打印版本
 
 ## 从源码构建
 
-需要 Go 1.26.10+(以 `go.mod` 为准)与 Node.js 22+。
+需要 Go 1.26.11+(以 `go.mod` 为准)与 Node.js 22+。
 
 ```bash
 cd web && npm ci && npm run build && cd ..   # 前端产物会被嵌进二进制
