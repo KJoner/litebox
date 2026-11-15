@@ -3603,6 +3603,10 @@ SQLite 默认,PostgreSQL 可选(`database.driver`)。设计见 `docs/vnext/desig
 * 部署脚本:重复执行沿用 `.env` / `secrets/` / `compose.override.yaml`,**绝不重新生成主密钥、不覆盖数据**;
   备份验证通过之前不删任何旧备份;`verify-backup` 在断网容器里做,并用备份里的主密钥抽查解密(`litebox check` 的密文抽查);
   `update` 先在数据副本上演练迁移,失败回滚应用与应用库 —— **恢复主控库不会回滚节点**,恢复之后先核对再恢复调度。
+* **临时容器删除时一律带 `-v`**(`docker rm -v` / `docker rm -f -v`;`docker run --rm` 本来就会删匿名卷)。postgres 镜像与主控镜像
+  都声明了 VOLUME,不带 -v 删容器会留下匿名卷 —— 临时 PG 那一个里是一整份恢复出来的生产库(含密文)。生产上每次备份自检、
+  verify-backup、升级演练各留一个约 1.4 GB,到 v23.3.0 上线时攒了 24 个、磁盘 96% 才发现(v23.3.1 修复,`temp-pg-unit.sh` 钉着)。
+  手工跑一次性工具容器同理。`update` 不会更新 `litebox.sh` 自己:脚本修复要重新下载或从新版本镜像的 `/opt/litebox/deploy/` 取
 
 ## VNext 视觉与创建流程约束(S4)
 

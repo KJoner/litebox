@@ -89,6 +89,9 @@ sudo bash litebox.sh restore 备份文件
 
 重复执行 `install` 会沿用已有的配置与主密钥,不会重新生成、也不会覆盖数据。
 
+`update` 只换主控版本与 Compose 文件,**不会更新 `litebox.sh` 自己**。脚本有修复时(例如 v23.3.1:备份与升级不再留下临时数据库卷),
+用上面那行 `wget` 重新下载一次。v23.3.1 之前的脚本留下的卷可以用 `docker volume ls -f dangling=true` 查看,确认是 LiteBox 的之后删除。
+
 ### 方式二:原生安装(systemd)
 
 主控机器上以 root 执行:
